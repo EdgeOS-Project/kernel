@@ -1,0 +1,254 @@
+# Architecture-independent EdgeOS kernel sources.
+#
+# Both architecture targets must converge on this manifest.  Architecture
+# Makefile fragments may append mechanisms only; Linux-visible policy belongs
+# here.
+EDGE_SHARED_SRCS := \
+	$(SRC)/elf/elf_abi.c \
+	$(SRC)/fs/permission.c \
+	$(SRC)/fs/devpts.c \
+	$(SRC)/fs/cgroupfs.c \
+	$(SRC)/fs/procfs.c \
+	$(SRC)/fs/proc_sysctl.c \
+	$(SRC)/vfs/append.c \
+	$(SRC)/vfs/fallocate.c \
+	$(SRC)/vfs/fiemap.c \
+	$(SRC)/vfs/file_handle.c \
+	$(SRC)/vfs/filesystem_registry.c \
+	$(SRC)/vfs/inode_lifetime.c \
+	$(SRC)/vfs/mount_namespace.c \
+	$(SRC)/vfs/mount_snapshot.c \
+	$(SRC)/vfs/mount_topology.c \
+	$(SRC)/vfs/page_writeback.c \
+	$(SRC)/vfs/path_cache.c \
+	$(SRC)/vfs/readahead.c \
+	$(SRC)/vfs/readahead_state.c \
+	$(SRC)/vfs/resolve_superblock.c \
+	$(SRC)/vfs/seek.c \
+	$(SRC)/vfs/truncate.c \
+	$(SRC)/vfs/writeback.c \
+	$(SRC)/vfs/xattr.c \
+	$(SRC)/dev/alsa.c \
+	$(SRC)/dev/alsa_user_io.c \
+	$(SRC)/dev/memdev.c \
+	$(SRC)/kernel/boot_command_line.c \
+	$(SRC)/kernel/boot_filesystems.c \
+	$(SRC)/kernel/boot_log_policy.c \
+	$(SRC)/kernel/boot_logfile.c \
+	$(SRC)/kernel/boot_root.c \
+	$(SRC)/kernel/boottime.c \
+	$(SRC)/kernel/anonymous_fd.c \
+	$(SRC)/kernel/anonymous_fd_poll.c \
+	$(SRC)/kernel/abi_service_dispatch.c \
+	$(SRC)/kernel/console_device.c \
+	$(SRC)/kernel/credentials.c \
+	$(SRC)/kernel/deferred_work.c \
+	$(SRC)/kernel/device_uevent.c \
+	$(SRC)/kernel/directory.c \
+	$(SRC)/kernel/drm_runtime.c \
+	$(SRC)/kernel/virtgpu_runtime.c \
+	$(SRC)/kernel/descriptor_factory_runtime.c \
+	$(SRC)/kernel/epoll_runtime.c \
+	$(SRC)/kernel/event_dispatch_policy.c \
+	$(SRC)/kernel/eventfd.c \
+	$(SRC)/kernel/exec_descriptor.c \
+	$(SRC)/kernel/exec_payload.c \
+	$(SRC)/kernel/fbdev_runtime.c \
+	$(SRC)/kernel/file_description_runtime.c \
+	$(SRC)/kernel/fd_runtime.c \
+	$(SRC)/kernel/fd_table_runtime.c \
+	$(SRC)/kernel/fs_context.c \
+	$(SRC)/kernel/file_metadata.c \
+	$(SRC)/kernel/file_lock.c \
+	$(SRC)/kernel/futex_runtime.c \
+	$(SRC)/kernel/groups.c \
+	$(SRC)/kernel/inotify.c \
+	$(SRC)/kernel/io_buffer.c \
+	$(SRC)/kernel/io_dispatch_policy.c \
+	$(SRC)/kernel/input_device.c \
+	$(SRC)/kernel/itimer_runtime.c \
+	$(SRC)/kernel/linux_abi.c \
+	$(SRC)/kernel/linux_vdso.c \
+	$(SRC)/kernel/linux_vdso_image.c \
+	$(SRC)/kernel/linux_mount.c \
+	$(SRC)/kernel/linux_ethtool.c \
+	$(SRC)/kernel/linux_fiemap.c \
+	$(SRC)/kernel/linux_genetlink.c \
+	$(SRC)/kernel/linux_netlink.c \
+	$(SRC)/kernel/linux_sock_diag.c \
+	$(SRC)/kernel/netlink_delivery_policy.c \
+	$(SRC)/kernel/linux_ptrace.c \
+	$(SRC)/kernel/linux_seek.c \
+	$(SRC)/kernel/linux_syscall.c \
+	$(SRC)/kernel/mount_api.c \
+	$(SRC)/kernel/membarrier.c \
+	$(SRC)/kernel/mm_runtime.c \
+	$(SRC)/mm/page_allocator.c \
+	$(SRC)/mm/swap_map.c \
+	$(SRC)/mm/statistics.c \
+	$(SRC)/kernel/linux_packet.c \
+	$(SRC)/kernel/linux_prctl.c \
+	$(SRC)/kernel/namespaces.c \
+	$(SRC)/kernel/pid_index.c \
+	$(SRC)/kernel/pipe_runtime.c \
+	$(SRC)/kernel/posix_timer_runtime.c \
+	$(SRC)/kernel/proc_maps.c \
+	$(SRC)/kernel/proc_memory.c \
+	$(SRC)/kernel/proc_task.c \
+	$(SRC)/kernel/process_accounting.c \
+	$(SRC)/kernel/process_clone.c \
+	$(SRC)/kernel/process_exec.c \
+	$(SRC)/kernel/process_commit.c \
+	$(SRC)/kernel/process_control.c \
+	$(SRC)/kernel/process_identity.c \
+	$(SRC)/kernel/process_limits.c \
+	$(SRC)/kernel/process_oom.c \
+	$(SRC)/kernel/process_session.c \
+	$(SRC)/kernel/process_wait.c \
+	$(SRC)/kernel/process_native_view.c \
+	$(SRC)/kernel/process_thread.c \
+	$(SRC)/kernel/pty_runtime.c \
+	$(SRC)/kernel/random.c \
+	$(SRC)/kernel/scheduler_policy.c \
+	$(SRC)/kernel/scheduler_runtime.c \
+	$(SRC)/kernel/smp.c \
+	$(SRC)/kernel/seccomp.c \
+	$(SRC)/kernel/signal_policy.c \
+	$(SRC)/kernel/signal_queue.c \
+	$(SRC)/kernel/signal_runtime.c \
+	$(SRC)/kernel/signalfd.c \
+	$(SRC)/kernel/socket_accept_queue.c \
+	$(SRC)/kernel/socket_factory_runtime.c \
+	$(SRC)/kernel/socket_poll.c \
+	$(SRC)/kernel/socket_option.c \
+	$(SRC)/kernel/socket_option_state.c \
+	$(SRC)/kernel/socket_message.c \
+	$(SRC)/kernel/socket_rights.c \
+	$(SRC)/kernel/socket_unix_policy.c \
+	$(SRC)/kernel/sysv_shm.c \
+	$(SRC)/kernel/syslog_runtime.c \
+	$(SRC)/kernel/system_information.c \
+	$(SRC)/kernel/task_scratch.c \
+	$(SRC)/kernel/timerfd.c \
+	$(SRC)/kernel/time.c \
+	$(SRC)/kernel/tty_session.c \
+	$(SRC)/kernel/utsname.c \
+	$(SRC)/kernel/vfs_context.c \
+	$(SRC)/kernel/vfs_descriptor_policy.c \
+	$(SRC)/kernel/vfs_metadata.c \
+	$(SRC)/kernel/vfs_open.c \
+	$(SRC)/kernel/vfs_readlink.c \
+	$(SRC)/kernel/vfs_result.c \
+	$(SRC)/kernel/wait_runtime.c \
+	$(SRC)/net/netdev.c \
+	$(SRC)/net/native_netdev.c \
+	$(SRC)/net/network_core.c \
+	$(SRC)/net/linux_tun.c \
+	$(SRC)/net/lwip_etharp.c \
+	$(SRC)/net/lwip_stack.c \
+	$(SRC)/drivers/audio/audio.c \
+	$(SRC)/drivers/usb/xhci_device_policy.c \
+	$(SRC)/console.c \
+	$(SRC)/display.c \
+	$(SRC)/fb.c \
+	$(SRC)/fb_console.c \
+	$(SRC)/font8x8_basic.c \
+	$(SRC)/string.c \
+	$(SRC)/stdio.c \
+	$(SRC)/sys/bootlog.c \
+	$(SRC)/block/block.c \
+	$(SRC)/block/device_mapper.c \
+	$(SRC)/block/loop.c \
+	$(SRC)/lib/aes.c \
+	$(SRC)/fs/tmpfs.c
+
+ifeq ($(CONFIG_NFSD),y)
+EDGE_SHARED_SRCS += \
+	$(SRC)/fs/nfsd/nfsd_protocol.c \
+	$(SRC)/fs/nfsd/nfsd_transport.c
+endif
+
+ifeq ($(CONFIG_FUSE_FS),y)
+EDGE_SHARED_SRCS += $(SRC)/fs/fuse/fuse.c
+endif
+
+EDGE_ZLIB_SRCS := \
+	$(SRC)/lib/zlib/adler32.c \
+	$(SRC)/lib/zlib/crc32.c \
+	$(SRC)/lib/zlib/inffast.c \
+	$(SRC)/lib/zlib/inflate.c \
+	$(SRC)/lib/zlib/inftrees.c \
+	$(SRC)/lib/zlib/zutil.c
+
+ifeq ($(CONFIG_INITRAMFS_GZIP),y)
+EDGE_SHARED_SRCS += $(SRC)/lib/gzip.c
+endif
+
+ifneq ($(filter y,$(CONFIG_INITRAMFS_GZIP) $(CONFIG_BSD_DRIVER_BRIDGE) $(CONFIG_FS_SQUASHFS) $(ARM64_CONFIG_FS_SQUASHFS)),)
+EDGE_SHARED_SRCS += $(EDGE_ZLIB_SRCS)
+endif
+
+ifneq ($(filter y,$(CONFIG_FS_SQUASHFS) $(ARM64_CONFIG_FS_SQUASHFS)),)
+EDGE_SHARED_SRCS += \
+	$(SRC)/fs/squashfs/squashfs.c \
+	$(SRC)/fs/squashfs/squashfs_port.c \
+	$(SRC)/fs/squashfs/upstream/cache.c \
+	$(SRC)/fs/squashfs/upstream/decompress.c \
+	$(SRC)/fs/squashfs/upstream/dir.c \
+	$(SRC)/fs/squashfs/upstream/file.c \
+	$(SRC)/fs/squashfs/upstream/fs.c \
+	$(SRC)/fs/squashfs/upstream/swap.c \
+	$(SRC)/fs/squashfs/upstream/table.c \
+	$(SRC)/fs/squashfs/upstream/xattr.c
+endif
+
+ifneq ($(filter y,$(CONFIG_FS_EROFS) $(ARM64_CONFIG_FS_EROFS)),)
+EDGE_SHARED_SRCS += \
+	$(SRC)/fs/erofs/erofs.c \
+	$(SRC)/fs/erofs/erofs_reader.c \
+	$(SRC)/fs/erofs/lz4_decode.c
+endif
+
+ifneq ($(filter y,$(CONFIG_FS_XFS) $(ARM64_CONFIG_FS_XFS)),)
+EDGE_SHARED_SRCS += \
+	$(SRC)/fs/xfs/xfs.c \
+	$(SRC)/fs/xfs/xfs_reader.c
+endif
+
+ifneq ($(filter y,$(CONFIG_FS_BTRFS) $(ARM64_CONFIG_FS_BTRFS)),)
+EDGE_SHARED_SRCS += \
+	$(SRC)/fs/btrfs/btrfs.c \
+	$(SRC)/fs/btrfs/btrfs_reader.c
+endif
+
+ifneq ($(filter y,$(CONFIG_OVERLAY_FS) $(ARM64_CONFIG_OVERLAY_FS)),)
+EDGE_SHARED_SRCS += $(SRC)/fs/overlayfs.c
+endif
+
+ifneq ($(filter y,$(CONFIG_FS_SWAP) $(ARM64_CONFIG_FS_SWAP)),)
+EDGE_SHARED_SRCS += $(SRC)/fs/swap.c
+endif
+
+# Runtime composition that is already shared internally but is not yet linked
+# by the legacy x86 process/syscall implementation.
+EDGE_RUNTIME_SRCS := \
+	$(SRC)/fs/vfs_early.c \
+	$(SRC)/fs/sysfs.c \
+	$(SRC)/elf/elf_image.c \
+	$(SRC)/kernel/user_stack.c \
+	$(SRC)/mm/fbdev_sync.c \
+	$(SRC)/drivers/virtio/virtio_net_mmio.c \
+	$(SRC)/drivers/virtio/virtio_input_mmio.c \
+	$(SRC)/drivers/virtio/virtio_blk_mmio.c \
+	$(SRC)/drivers/net/virtio_net_frontend.c \
+	$(SRC)/drivers/block/ramdisk.c \
+	$(SRC)/dev/devtmpfs.c \
+	$(SRC)/fs/ext4/ext4.c \
+	$(SRC)/fs/initramfs.c \
+	$(EDGE_SHARED_SRCS) \
+	$(LWIP_SRCS)
+
+ifeq ($(ARM64_CONFIG_VIRTIO_GPU),y)
+EDGE_RUNTIME_SRCS += $(SRC)/drivers/virtio/virtio_gpu.c \
+	$(SRC)/drivers/virtio/virtio_gpu_damage.c
+endif

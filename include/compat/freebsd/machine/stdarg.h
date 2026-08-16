@@ -1,0 +1,6 @@
+#ifndef EDGEOS_COMPAT_FREEBSD_MACHINE_STDARG_H
+#define EDGEOS_COMPAT_FREEBSD_MACHINE_STDARG_H
+
+#include <stdarg.h>
+
+#endif
