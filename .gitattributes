@@ -1,0 +1,10 @@
+* text=auto
+*.asm text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.ld text eol=lf
+*.py text eol=lf
+*.S text eol=lf
+*.sh text eol=lf
+*.bin binary
+*.fw binary
