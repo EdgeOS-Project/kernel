@@ -1,0 +1,73 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-fdt-platform",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD simple-bus and FDT pin-control platform support.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/fdt/fdt_pinctrl.c",
+      "sys/dev/fdt/fdt_pinctrl.h",
+      "sys/dev/fdt/fdt_pinctrl_if.m",
+      "sys/dev/fdt/simple_mfd.c",
+      "sys/dev/fdt/simple_mfd.h",
+      "sys/dev/fdt/simplebus.c",
+      "sys/dev/fdt/simplebus.h"
+    ],
+    "file_count": 7,
+    "tree_sha256": "935f65880cc78632f0953ac42302e0700cbfc2a2952c4169b4baedf14688f722"
+  },
+  "generated_interfaces": [
+    "sys/dev/fdt/fdt_pinctrl_if.m"
+  ],
+  "modules": [
+    {
+      "id": "fdt-platform",
+      "sources": [
+        "sys/dev/fdt/fdt_pinctrl.c",
+        "sys/dev/fdt/simple_mfd.c",
+        "sys/dev/fdt/simplebus.c"
+      ],
+      "capabilities": [
+        "base",
+        "character-device",
+        "fdt",
+        "generated",
+        "module",
+        "newbus",
+        "resource"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

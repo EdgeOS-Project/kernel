@@ -1,0 +1,8 @@
+#!/bin/sh
+# Original EdgeOS test script, licensed under MPL-2.0.
+exec >/dev/console 2>&1
+echo CAPABILITY_TEST_BEGIN
+/root/capability_abi_probe
+echo capability_probe_rc:$?
+uname -m
+echo CAPABILITY_TEST_END

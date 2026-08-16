@@ -1,0 +1,64 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-watchdog-core",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD watchdog character device and event-handler core.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/watchdog",
+      "sys/dev/watchdog/watchdog.c"
+    ],
+    "file_count": 1,
+    "tree_sha256": "1b4273c91e7fa16c512f06ee03c74adee56e614f38de101d0c350cb7661b67b9"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "watchdog_core",
+      "sources": [
+        "sys/dev/watchdog/watchdog.c"
+      ],
+      "capabilities": [
+        "base",
+        "character-device",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "synchronization",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

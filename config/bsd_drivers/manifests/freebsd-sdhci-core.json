@@ -1,0 +1,165 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-sdhci-core",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD SDHCI core and applicable x86_64 and arm64 frontends.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "DEV_ACPI",
+      "FDT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/sdhci",
+      "sys/dev/sdhci/sdhci.c",
+      "sys/dev/sdhci/sdhci_if.m",
+      "sys/dev/sdhci/sdhci_pci.c"
+    ],
+    "file_count": 18,
+    "tree_sha256": "2be47b31d9b5e52adae2c43dfbc965ac2ed18c4f3c3093f7eaf3cfcc088eb068"
+  },
+  "generated_interfaces": [
+    "sys/dev/sdhci/sdhci_if.m"
+  ],
+  "modules": [
+    {
+      "id": "sdhci-core",
+      "sources": [
+        "sys/dev/sdhci/sdhci.c",
+        "sys/dev/sdhci/sdhci_pci.c"
+      ],
+      "capabilities": [
+        "base",
+        "callout",
+        "cam",
+        "character-device",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "sdhci-acpi",
+      "sources": [
+        "sys/dev/sdhci/sdhci_acpi.c",
+        "sys/dev/sdhci/sdhci_xenon_acpi.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "callout",
+        "cam",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue"
+      ],
+      "kconfig_requires": [
+        "ACPI"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "sdhci-fdt",
+      "sources": [
+        "sys/dev/sdhci/sdhci_fdt.c",
+        "sys/dev/sdhci/sdhci_fdt_cvitek.c",
+        "sys/dev/sdhci/sdhci_fdt_gpio.c",
+        "sys/dev/sdhci/sdhci_fdt_rockchip.c",
+        "sys/dev/sdhci/sdhci_fdt_xilinx.c",
+        "sys/dev/sdhci/sdhci_fsl_fdt.c",
+        "sys/dev/sdhci/sdhci_xenon.c",
+        "sys/dev/sdhci/sdhci_xenon_fdt.c"
+      ],
+      "capabilities": [
+        "base",
+        "callout",
+        "cam",
+        "fdt",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "sdhci-fsl-legacy",
+      "sources": [
+        "sys/dev/sdhci/fsl_sdhci.c"
+      ],
+      "capabilities": [
+        "base",
+        "callout",
+        "cam",
+        "fdt",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "disabled",
+        "reason": "Upstream frontend supports 32-bit i.MX ARM and QorIQ PowerPC only; neither hardware architecture is an EdgeOS target."
+      }
+    }
+  ]
+}

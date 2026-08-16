@@ -1,0 +1,222 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-hyperv-common",
+  "provider": "freebsd",
+  "description": "Unmodified shared FreeBSD Hyper-V VMBus, network, storage, input, PCI, and utility drivers.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": [],
+    "arm64_definitions": [
+      "DEV_ACPI",
+      "INTRNG"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/hyperv/include",
+      "sys/dev/hyperv/input/hv_kbd.c",
+      "sys/dev/hyperv/input/hv_kbdc.c",
+      "sys/dev/hyperv/input/hv_kbdc.h",
+      "sys/dev/hyperv/netvsc",
+      "sys/dev/hyperv/pcib",
+      "sys/dev/hyperv/storvsc",
+      "sys/dev/hyperv/utilities/hv_kvp.c",
+      "sys/dev/hyperv/utilities/hv_kvp.h",
+      "sys/dev/hyperv/utilities/hv_utilreg.h",
+      "sys/dev/hyperv/utilities/unicode.h",
+      "sys/dev/hyperv/utilities/vmbus_heartbeat.c",
+      "sys/dev/hyperv/utilities/vmbus_ic.c",
+      "sys/dev/hyperv/utilities/vmbus_icreg.h",
+      "sys/dev/hyperv/utilities/vmbus_icvar.h",
+      "sys/dev/hyperv/utilities/vmbus_shutdown.c",
+      "sys/dev/hyperv/utilities/vmbus_timesync.c",
+      "sys/dev/hyperv/vmbus/hyperv.c",
+      "sys/dev/hyperv/vmbus/hyperv_busdma.c",
+      "sys/dev/hyperv/vmbus/hyperv_common_reg.h",
+      "sys/dev/hyperv/vmbus/hyperv_var.h",
+      "sys/dev/hyperv/vmbus/vmbus.c",
+      "sys/dev/hyperv/vmbus/vmbus_br.c",
+      "sys/dev/hyperv/vmbus/vmbus_brvar.h",
+      "sys/dev/hyperv/vmbus/vmbus_chan.c",
+      "sys/dev/hyperv/vmbus/vmbus_chanvar.h",
+      "sys/dev/hyperv/vmbus/vmbus_if.m",
+      "sys/dev/hyperv/vmbus/vmbus_reg.h",
+      "sys/dev/hyperv/vmbus/vmbus_res.c",
+      "sys/dev/hyperv/vmbus/vmbus_var.h",
+      "sys/dev/hyperv/vmbus/vmbus_xact.c"
+    ],
+    "file_count": 42,
+    "tree_sha256": "dd517de6346e295116e1d62bc7ee4409435b4e0ae57f2d930431e468280b2179"
+  },
+  "generated_interfaces": [
+    "sys/dev/hyperv/vmbus/vmbus_if.m"
+  ],
+  "modules": [
+    {
+      "id": "hyperv-vmbus-common",
+      "sources": [
+        "sys/dev/hyperv/vmbus/hyperv.c",
+        "sys/dev/hyperv/vmbus/hyperv_busdma.c",
+        "sys/dev/hyperv/vmbus/vmbus.c",
+        "sys/dev/hyperv/vmbus/vmbus_br.c",
+        "sys/dev/hyperv/vmbus/vmbus_chan.c",
+        "sys/dev/hyperv/vmbus/vmbus_res.c",
+        "sys/dev/hyperv/vmbus/vmbus_xact.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "hyperv-keyboard",
+      "sources": [
+        "sys/dev/hyperv/input/hv_kbd.c",
+        "sys/dev/hyperv/input/hv_kbdc.c"
+      ],
+      "capabilities": [
+        "base",
+        "character-device",
+        "generated",
+        "interrupt",
+        "memory",
+        "module",
+        "newbus",
+        "synchronization"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "hyperv-netvsc",
+      "sources": [
+        "sys/dev/hyperv/netvsc/hn_nvs.c",
+        "sys/dev/hyperv/netvsc/hn_rndis.c",
+        "sys/dev/hyperv/netvsc/if_hn.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "ifnet",
+        "interrupt",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "synchronization",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "hyperv-pcib",
+      "sources": [
+        "sys/dev/hyperv/pcib/vmbus_pcib.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "generated",
+        "interrupt",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "hyperv-storvsc",
+      "sources": [
+        "sys/dev/hyperv/storvsc/hv_storvsc_drv_freebsd.c"
+      ],
+      "capabilities": [
+        "base",
+        "block",
+        "cam",
+        "generated",
+        "interrupt",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "scsi",
+        "synchronization",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "hyperv-utilities",
+      "sources": [
+        "sys/dev/hyperv/utilities/hv_kvp.c",
+        "sys/dev/hyperv/utilities/vmbus_heartbeat.c",
+        "sys/dev/hyperv/utilities/vmbus_ic.c",
+        "sys/dev/hyperv/utilities/vmbus_shutdown.c",
+        "sys/dev/hyperv/utilities/vmbus_timesync.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "memory",
+        "module",
+        "newbus",
+        "synchronization",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

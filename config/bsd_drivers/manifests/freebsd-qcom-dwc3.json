@@ -1,0 +1,62 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-qcom-dwc3",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Qualcomm DWC3 USB glue driver.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/qcom_dwc3",
+      "sys/dev/qcom_dwc3/qcom_dwc3.c"
+    ],
+    "file_count": 1,
+    "tree_sha256": "96d80d6b42aca5a95d87e2fd4d6c90375c0447e55f8e2d419c532846ce5bda98"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "qcom-dwc3",
+      "sources": [
+        "sys/dev/qcom_dwc3/qcom_dwc3.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "machine",
+        "module",
+        "newbus",
+        "resource"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

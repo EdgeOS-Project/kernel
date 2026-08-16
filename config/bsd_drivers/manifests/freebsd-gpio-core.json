@@ -1,0 +1,75 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-gpio-core",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD GPIO bus core and OFW frontend.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/gpio/gpio_if.m",
+      "sys/dev/gpio/gpiobus.c",
+      "sys/dev/gpio/gpiobus_if.m",
+      "sys/dev/gpio/gpiobus_internal.h",
+      "sys/dev/gpio/gpiobusvar.h",
+      "sys/dev/gpio/ofw_gpiobus.c",
+      "sys/dev/ofw/ofw_bus_if.m"
+    ],
+    "file_count": 7,
+    "tree_sha256": "97675217370a5ad5a786f830660cc331c8b95ed6b6e596cc48b48c4a80af518e"
+  },
+  "generated_interfaces": [
+    "sys/dev/gpio/gpio_if.m",
+    "sys/dev/gpio/gpiobus_if.m",
+    "sys/dev/ofw/ofw_bus_if.m"
+  ],
+  "modules": [
+    {
+      "id": "gpio-core",
+      "sources": [
+        "sys/dev/gpio/gpiobus.c",
+        "sys/dev/gpio/ofw_gpiobus.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "generated",
+        "interrupt",
+        "memory",
+        "module",
+        "newbus",
+        "resource"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

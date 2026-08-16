@@ -1,0 +1,63 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-qcom-rnd",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Qualcomm hardware random-number generator driver.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/qcom_rnd",
+      "sys/dev/qcom_rnd/qcom_rnd.c"
+    ],
+    "file_count": 2,
+    "tree_sha256": "854e3ad1f9c12bc3f4c6d6a3d02a19d43df9b6bc4acebe94124b33f850b755ab"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "qcom-rnd",
+      "sources": [
+        "sys/dev/qcom_rnd/qcom_rnd.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "random"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

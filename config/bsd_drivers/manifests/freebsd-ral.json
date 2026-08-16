@@ -1,0 +1,80 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-ral",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Ralink RT2560, RT2661, and RT2860 PCI wireless driver family imported through the EdgeOS BSD Driver Bridge.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "__FreeBSD__=14"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "ISC"
+    ],
+    "license_exceptions": {
+      "sys/contrib/dev/ral/Makefile": {
+        "license": "ISC",
+        "evidence": "The adjacent LICENSE applies to the firmware generation recipe and generated firmware files."
+      }
+    }
+  },
+  "source_lock": {
+    "paths": [
+      "sys/contrib/dev/ral",
+      "sys/dev/ral",
+      "sys/dev/ral/if_ral_pci.c",
+      "sys/dev/ral/rt2560.c",
+      "sys/dev/ral/rt2661.c",
+      "sys/dev/ral/rt2860.c"
+    ],
+    "file_count": 17,
+    "tree_sha256": "92c5c9ff214f3972f8df380b9941a00af2c455197c28b31c4ad072ff5b4bf3cc"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "ral-family",
+      "sources": [
+        "sys/dev/ral/if_ral_pci.c",
+        "sys/dev/ral/rt2560.c",
+        "sys/dev/ral/rt2661.c",
+        "sys/dev/ral/rt2860.c"
+      ],
+      "capabilities": [
+        "base",
+        "machine",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

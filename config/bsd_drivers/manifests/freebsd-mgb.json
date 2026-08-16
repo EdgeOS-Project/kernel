@@ -1,0 +1,64 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-mgb",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Microchip LAN7430 PCIe Gigabit Ethernet driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "ISC"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/mgb",
+      "sys/dev/mgb/if_mgb.c"
+    ],
+    "file_count": 2,
+    "tree_sha256": "46c154a88a724d14956570e49082dd51558778649dbf958dd2f1ac80e8edabae"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "mgb",
+      "sources": [
+        "sys/dev/mgb/if_mgb.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

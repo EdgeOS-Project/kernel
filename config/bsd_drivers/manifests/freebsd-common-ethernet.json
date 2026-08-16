@@ -1,0 +1,209 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-common-ethernet",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Atheros, Intel, JMicron, and NVIDIA PCI Ethernet drivers.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "ISC"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/age/if_age.c",
+      "sys/dev/age/if_agereg.h",
+      "sys/dev/age/if_agevar.h",
+      "sys/dev/alc/if_alc.c",
+      "sys/dev/alc/if_alcreg.h",
+      "sys/dev/alc/if_alcvar.h",
+      "sys/dev/ale/if_ale.c",
+      "sys/dev/ale/if_alereg.h",
+      "sys/dev/ale/if_alevar.h",
+      "sys/dev/fxp/if_fxp.c",
+      "sys/dev/fxp/if_fxpreg.h",
+      "sys/dev/fxp/if_fxpvar.h",
+      "sys/dev/fxp/inphy.c",
+      "sys/dev/fxp/inphyreg.h",
+      "sys/dev/fxp/rcvbundl.h",
+      "sys/dev/mii/miidevs",
+      "sys/dev/mii/tiphy.h",
+      "sys/dev/jme/if_jme.c",
+      "sys/dev/jme/if_jmereg.h",
+      "sys/dev/jme/if_jmevar.h",
+      "sys/dev/nfe/if_nfe.c",
+      "sys/dev/nfe/if_nfereg.h",
+      "sys/dev/nfe/if_nfevar.h"
+    ],
+    "file_count": 23,
+    "tree_sha256": "9d8476dcb354b7119c8ff42a22c30f01450df32a43a101fbf601bb2f0041cb0e"
+  },
+  "generated_interfaces": [],
+  "generated_databases": [
+    "miidevs"
+  ],
+  "modules": [
+    {
+      "id": "age",
+      "sources": [
+        "sys/dev/age/if_age.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "alc",
+      "sources": [
+        "sys/dev/alc/if_alc.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "ale",
+      "sources": [
+        "sys/dev/ale/if_ale.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "fxp",
+      "sources": [
+        "sys/dev/fxp/if_fxp.c",
+        "sys/dev/fxp/inphy.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "jme",
+      "sources": [
+        "sys/dev/jme/if_jme.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "nfe",
+      "sources": [
+        "sys/dev/nfe/if_nfe.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

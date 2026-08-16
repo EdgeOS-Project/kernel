@@ -1,0 +1,67 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-enetc",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD NXP ENETC PCI Ethernet and MDIO driver.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/enetc",
+      "sys/dev/enetc/enetc_mdio.c",
+      "sys/dev/enetc/if_enetc.c"
+    ],
+    "file_count": 5,
+    "tree_sha256": "68d416490edf60746d2038443a6690cb1a6d0c239b76f7a39f6d963152d5d7a3"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "enetc",
+      "sources": [
+        "sys/dev/enetc/enetc_mdio.c",
+        "sys/dev/enetc/if_enetc.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "generated",
+        "machine",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

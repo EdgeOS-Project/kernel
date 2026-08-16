@@ -1,0 +1,85 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-qcom-gcc",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Qualcomm global clock and reset controller.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "ISC"
+    ],
+    "license_exceptions": {
+      "sys/contrib/device-tree/include/dt-bindings/clock/qcom,gcc-ipq4019.h": {
+        "license": "ISC",
+        "evidence": "The complete ISC permission grant and disclaimer are present in the file header."
+      }
+    }
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/qcom_gcc",
+      "sys/dev/qcom_gcc/qcom_gcc_clock.c",
+      "sys/dev/qcom_gcc/qcom_gcc_ipq4018_clock.c",
+      "sys/dev/qcom_gcc/qcom_gcc_ipq4018_reset.c",
+      "sys/dev/qcom_gcc/qcom_gcc_main.c",
+      "sys/dev/qcom_gcc/qcom_gcc_msm8916_clock.c",
+      "sys/dev/qcom_gcc/qcom_gcc_msm8916_reset.c",
+      "sys/dev/qcom_gcc/qcom_gcc_reset.c",
+      "sys/contrib/device-tree/include/dt-bindings/clock/qcom,gcc-ipq4019.h"
+    ],
+    "file_count": 11,
+    "tree_sha256": "3fd903db5efd3d56cdefe68d2b76b0b31073652b66d6a612dc0f1e52faf7f8e3"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "qcom-gcc",
+      "sources": [
+        "sys/dev/qcom_gcc/qcom_gcc_clock.c",
+        "sys/dev/qcom_gcc/qcom_gcc_ipq4018_clock.c",
+        "sys/dev/qcom_gcc/qcom_gcc_ipq4018_reset.c",
+        "sys/dev/qcom_gcc/qcom_gcc_main.c",
+        "sys/dev/qcom_gcc/qcom_gcc_msm8916_clock.c",
+        "sys/dev/qcom_gcc/qcom_gcc_msm8916_reset.c",
+        "sys/dev/qcom_gcc/qcom_gcc_reset.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "random",
+        "resource",
+        "synchronization"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

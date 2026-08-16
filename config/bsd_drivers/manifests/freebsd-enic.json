@@ -1,0 +1,81 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-enic",
+  "provider": "freebsd",
+  "description": "Unmodified complete standard FreeBSD Cisco UCS Virtual Interface Card PCIe Ethernet driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/enic",
+      "sys/dev/enic/enic_res.c",
+      "sys/dev/enic/enic_txrx.c",
+      "sys/dev/enic/if_enic.c",
+      "sys/dev/enic/vnic_cq.c",
+      "sys/dev/enic/vnic_dev.c",
+      "sys/dev/enic/vnic_intr.c",
+      "sys/dev/enic/vnic_rq.c",
+      "sys/dev/enic/vnic_wq.c"
+    ],
+    "file_count": 26,
+    "tree_sha256": "293f31c4edccb558d8381dc9b64836ca0a94847f84e3f09643c61612da10133f"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "enic",
+      "sources": [
+        "sys/dev/enic/enic_res.c",
+        "sys/dev/enic/enic_txrx.c",
+        "sys/dev/enic/if_enic.c",
+        "sys/dev/enic/vnic_cq.c",
+        "sys/dev/enic/vnic_dev.c",
+        "sys/dev/enic/vnic_intr.c",
+        "sys/dev/enic/vnic_rq.c",
+        "sys/dev/enic/vnic_wq.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "sysctl",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

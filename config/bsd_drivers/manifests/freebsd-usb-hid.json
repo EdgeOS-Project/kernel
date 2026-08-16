@@ -1,0 +1,80 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-usb-hid",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD USB HID transport and device drivers for Apple touchpads, Elo touchscreens, raw HID devices, SNES controllers, USB multitouch devices, and Apple Wellspring touchpads.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "EVDEV_SUPPORT",
+      "USB_VERBOSE"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/usb/input/atp.c",
+      "sys/dev/usb/input/uep.c",
+      "sys/dev/usb/input/uhid.c",
+      "sys/dev/usb/input/uhid_snes.c",
+      "sys/dev/usb/input/usb_rdesc.h",
+      "sys/dev/usb/input/usbhid.c",
+      "sys/dev/usb/input/wmt.c",
+      "sys/dev/usb/input/wsp.c"
+    ],
+    "file_count": 8,
+    "tree_sha256": "07bd36a8b8e7cc26febcdf20965802a279b4586d6dbafb81af2c53a84e08ba08"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "usb-hid-complete",
+      "sources": [
+        "sys/dev/usb/input/atp.c",
+        "sys/dev/usb/input/uep.c",
+        "sys/dev/usb/input/uhid.c",
+        "sys/dev/usb/input/uhid_snes.c",
+        "sys/dev/usb/input/usbhid.c",
+        "sys/dev/usb/input/wmt.c",
+        "sys/dev/usb/input/wsp.c"
+      ],
+      "capabilities": [
+        "base",
+        "callout",
+        "character-device",
+        "generated",
+        "memory",
+        "module",
+        "newbus",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "usb"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

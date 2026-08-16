@@ -1,0 +1,63 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-ismt",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Intel SMBus Message Transport controller driver.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/ismt/ismt.c"
+    ],
+    "file_count": 1,
+    "tree_sha256": "cde3f4a7996a53e0e7c1ec233b21261edf15f99dcdbe9b7f85cf7e2357f10a3f"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "ismt",
+      "sources": [
+        "sys/dev/ismt/ismt.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

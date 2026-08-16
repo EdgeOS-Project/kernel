@@ -1,0 +1,57 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-chromebook-platform",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Chromebook I2C platform device enumerator.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/chromebook_platform/chromebook_platform.c"
+    ],
+    "file_count": 1,
+    "tree_sha256": "0df8000e4ce0b8e9507e8dda66dfd06c885094d29012420e0b598c13e5c8dd05"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "chromebook-platform",
+      "sources": [
+        "sys/dev/chromebook_platform/chromebook_platform.c"
+      ],
+      "capabilities": [
+        "base",
+        "module",
+        "newbus",
+        "pci"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

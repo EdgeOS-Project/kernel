@@ -1,0 +1,129 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-iwm",
+  "provider": "freebsd",
+  "description": "Unmodified FreeBSD Intel 7000 through 9000-series wireless driver family imported through the EdgeOS BSD Driver Bridge.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "IWM_DEBUG",
+      "__FreeBSD__=14"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "ISC"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/iwm/if_iwm.c",
+      "sys/dev/iwm/if_iwm_7000.c",
+      "sys/dev/iwm/if_iwm_8000.c",
+      "sys/dev/iwm/if_iwm_9000.c",
+      "sys/dev/iwm/if_iwm_9260.c",
+      "sys/dev/iwm/if_iwm_binding.c",
+      "sys/dev/iwm/if_iwm_binding.h",
+      "sys/dev/iwm/if_iwm_config.h",
+      "sys/dev/iwm/if_iwm_constants.h",
+      "sys/dev/iwm/if_iwm_debug.h",
+      "sys/dev/iwm/if_iwm_fw.c",
+      "sys/dev/iwm/if_iwm_fw.h",
+      "sys/dev/iwm/if_iwm_led.c",
+      "sys/dev/iwm/if_iwm_led.h",
+      "sys/dev/iwm/if_iwm_mac_ctxt.c",
+      "sys/dev/iwm/if_iwm_mac_ctxt.h",
+      "sys/dev/iwm/if_iwm_notif_wait.c",
+      "sys/dev/iwm/if_iwm_notif_wait.h",
+      "sys/dev/iwm/if_iwm_pcie_trans.c",
+      "sys/dev/iwm/if_iwm_pcie_trans.h",
+      "sys/dev/iwm/if_iwm_phy_ctxt.c",
+      "sys/dev/iwm/if_iwm_phy_ctxt.h",
+      "sys/dev/iwm/if_iwm_phy_db.c",
+      "sys/dev/iwm/if_iwm_phy_db.h",
+      "sys/dev/iwm/if_iwm_power.c",
+      "sys/dev/iwm/if_iwm_power.h",
+      "sys/dev/iwm/if_iwm_scan.c",
+      "sys/dev/iwm/if_iwm_scan.h",
+      "sys/dev/iwm/if_iwm_sf.c",
+      "sys/dev/iwm/if_iwm_sf.h",
+      "sys/dev/iwm/if_iwm_sta.c",
+      "sys/dev/iwm/if_iwm_sta.h",
+      "sys/dev/iwm/if_iwm_time_event.c",
+      "sys/dev/iwm/if_iwm_time_event.h",
+      "sys/dev/iwm/if_iwm_util.c",
+      "sys/dev/iwm/if_iwm_util.h",
+      "sys/dev/iwm/if_iwmreg.h",
+      "sys/dev/iwm/if_iwmvar.h"
+    ],
+    "file_count": 38,
+    "tree_sha256": "8b7924b77d7988027a42040411a618a44f290043f72d52b27e40ffb03843aeb0"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "iwm-family",
+      "sources": [
+        "sys/dev/iwm/if_iwm.c",
+        "sys/dev/iwm/if_iwm_binding.c",
+        "sys/dev/iwm/if_iwm_util.c",
+        "sys/dev/iwm/if_iwm_phy_db.c",
+        "sys/dev/iwm/if_iwm_mac_ctxt.c",
+        "sys/dev/iwm/if_iwm_phy_ctxt.c",
+        "sys/dev/iwm/if_iwm_time_event.c",
+        "sys/dev/iwm/if_iwm_power.c",
+        "sys/dev/iwm/if_iwm_scan.c",
+        "sys/dev/iwm/if_iwm_led.c",
+        "sys/dev/iwm/if_iwm_notif_wait.c",
+        "sys/dev/iwm/if_iwm_7000.c",
+        "sys/dev/iwm/if_iwm_8000.c",
+        "sys/dev/iwm/if_iwm_9000.c",
+        "sys/dev/iwm/if_iwm_fw.c",
+        "sys/dev/iwm/if_iwm_9260.c",
+        "sys/dev/iwm/if_iwm_sta.c",
+        "sys/dev/iwm/if_iwm_sf.c",
+        "sys/dev/iwm/if_iwm_pcie_trans.c"
+      ],
+      "capabilities": [
+        "base",
+        "callout",
+        "character-device",
+        "firmware",
+        "generated",
+        "interrupt",
+        "machine",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

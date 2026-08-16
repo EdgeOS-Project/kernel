@@ -1,0 +1,80 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-bwi",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Broadcom AirForce PCI wireless driver imported through the EdgeOS BSD Driver Bridge.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "EDGEOS_BSD_DRIVER_PROVIDES_ABS",
+      "__FreeBSD__=14"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "ISC",
+      "Public-Domain"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/bwi",
+      "sys/dev/bwi/bwimac.c",
+      "sys/dev/bwi/bwiphy.c",
+      "sys/dev/bwi/bwirf.c",
+      "sys/dev/bwi/if_bwi.c",
+      "sys/dev/bwi/if_bwi_pci.c"
+    ],
+    "file_count": 11,
+    "tree_sha256": "bf60d4899c11560b2bb4b5422f543bcfc4dfa12c3a65692b336e83ceb451bb19"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "bwi",
+      "sources": [
+        "sys/dev/bwi/bwimac.c",
+        "sys/dev/bwi/bwiphy.c",
+        "sys/dev/bwi/bwirf.c",
+        "sys/dev/bwi/if_bwi.c",
+        "sys/dev/bwi/if_bwi_pci.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-libkern-scanf",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD kernel scanf implementation.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/kern/subr_scanf.c"
+    ],
+    "file_count": 1,
+    "tree_sha256": "fb6adac086b7e8e81ce2bda92602392feb93bd46a013d45cd5767723867670f5"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "libkern-scanf",
+      "sources": [
+        "sys/kern/subr_scanf.c"
+      ],
+      "capabilities": [
+        "base"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

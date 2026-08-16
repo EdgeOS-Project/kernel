@@ -1,0 +1,123 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-ixgbe",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Intel 10-gigabit and multi-gigabit PCIe Ethernet physical and virtual function drivers.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "SMP"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {
+      "sys/dev/ixgbe/ixgbe_fw_logging.c": {
+        "license": "BSD-2-Clause",
+        "evidence": "The FreeBSD top-level COPYRIGHT applies its compilation license to this source file, which has no separate license header."
+      },
+      "sys/dev/mdio/mdio_if.m": {
+        "license": "BSD-2-Clause",
+        "evidence": "The FreeBSD top-level COPYRIGHT applies its compilation license to this generated-interface definition."
+      }
+    }
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/ixgbe",
+      "sys/dev/ixgbe/if_bypass.c",
+      "sys/dev/ixgbe/if_fdir.c",
+      "sys/dev/ixgbe/if_ix.c",
+      "sys/dev/ixgbe/if_ix_mdio.c",
+      "sys/dev/ixgbe/if_ix_mdio_hw.c",
+      "sys/dev/ixgbe/if_ixv.c",
+      "sys/dev/ixgbe/if_sriov.c",
+      "sys/dev/ixgbe/ix_txrx.c",
+      "sys/dev/ixgbe/ixgbe_82598.c",
+      "sys/dev/ixgbe/ixgbe_82599.c",
+      "sys/dev/ixgbe/ixgbe_api.c",
+      "sys/dev/ixgbe/ixgbe_common.c",
+      "sys/dev/ixgbe/ixgbe_dcb.c",
+      "sys/dev/ixgbe/ixgbe_dcb_82598.c",
+      "sys/dev/ixgbe/ixgbe_dcb_82599.c",
+      "sys/dev/ixgbe/ixgbe_e610.c",
+      "sys/dev/ixgbe/ixgbe_fw_logging.c",
+      "sys/dev/ixgbe/ixgbe_mbx.c",
+      "sys/dev/ixgbe/ixgbe_osdep.c",
+      "sys/dev/ixgbe/ixgbe_phy.c",
+      "sys/dev/ixgbe/ixgbe_vf.c",
+      "sys/dev/ixgbe/ixgbe_x540.c",
+      "sys/dev/ixgbe/ixgbe_x550.c",
+      "sys/dev/mdio",
+      "sys/dev/mdio/mdio.c",
+      "sys/dev/mdio/mdio_if.m",
+      "sys/net/netmap.h",
+      "sys/net/netmap_legacy.h"
+    ],
+    "file_count": 52,
+    "tree_sha256": "c3c1d9e0307eb262bee795da53b2ed24b9cf299f5d99b554846348575eee696f"
+  },
+  "generated_interfaces": [
+    "sys/dev/mdio/mdio_if.m"
+  ],
+  "modules": [
+    {
+      "id": "ixgbe",
+      "sources": [
+        "sys/dev/ixgbe/if_bypass.c",
+        "sys/dev/ixgbe/if_fdir.c",
+        "sys/dev/ixgbe/if_ix.c",
+        "sys/dev/ixgbe/if_ix_mdio.c",
+        "sys/dev/ixgbe/if_ix_mdio_hw.c",
+        "sys/dev/ixgbe/if_ixv.c",
+        "sys/dev/ixgbe/if_sriov.c",
+        "sys/dev/ixgbe/ix_txrx.c",
+        "sys/dev/ixgbe/ixgbe_82598.c",
+        "sys/dev/ixgbe/ixgbe_82599.c",
+        "sys/dev/ixgbe/ixgbe_api.c",
+        "sys/dev/ixgbe/ixgbe_common.c",
+        "sys/dev/ixgbe/ixgbe_dcb.c",
+        "sys/dev/ixgbe/ixgbe_dcb_82598.c",
+        "sys/dev/ixgbe/ixgbe_dcb_82599.c",
+        "sys/dev/ixgbe/ixgbe_e610.c",
+        "sys/dev/ixgbe/ixgbe_fw_logging.c",
+        "sys/dev/ixgbe/ixgbe_mbx.c",
+        "sys/dev/ixgbe/ixgbe_osdep.c",
+        "sys/dev/ixgbe/ixgbe_phy.c",
+        "sys/dev/ixgbe/ixgbe_vf.c",
+        "sys/dev/ixgbe/ixgbe_x540.c",
+        "sys/dev/ixgbe/ixgbe_x550.c",
+        "sys/dev/mdio/mdio.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "module",
+        "network",
+        "newbus"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

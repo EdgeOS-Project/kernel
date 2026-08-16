@@ -1,0 +1,155 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-pci-audio",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD HDA, AC97, and PCI audio controller drivers.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/sound/pcm/ac97.c",
+      "sys/dev/sound/pcm/ac97_if.m",
+      "sys/dev/sound/pci/hda",
+      "sys/dev/sound/pci/ich.c",
+      "sys/dev/sound/pci/ich.h",
+      "sys/dev/sound/pci/atiixp.c",
+      "sys/dev/sound/pci/atiixp.h",
+      "sys/dev/sound/pci/via8233.c",
+      "sys/dev/sound/pci/via8233.h",
+      "sys/dev/sound/pci/via82c686.c",
+      "sys/dev/sound/pci/via82c686.h",
+      "sys/dev/sound/pci/fm801.c",
+      "sys/dev/sound/pci/cs4281.c",
+      "sys/dev/sound/pci/cs4281.h",
+      "sys/dev/sound/pci/t4dwave.c",
+      "sys/dev/sound/pci/t4dwave.h",
+      "sys/dev/sound/pci/vibes.c",
+      "sys/dev/sound/pci/vibes.h",
+      "sys/dev/sound/pci/neomagic.c",
+      "sys/dev/sound/pci/neomagic.h",
+      "sys/dev/sound/pci/neomagic-coeff.h",
+      "sys/dev/sound/pci/maestro3.c",
+      "sys/dev/sound/pci/allegro_reg.h",
+      "sys/dev/sound/pci/allegro_code.h"
+    ],
+    "file_count": 35,
+    "tree_sha256": "01dff939a95e7aa98843b174915cf21a7f11f99e88c37ac4fa8dfafcec6bfed2"
+  },
+  "generated_interfaces": [
+    "sys/dev/sound/pcm/ac97_if.m",
+    "sys/dev/sound/pci/hda/hdac_if.m"
+  ],
+  "modules": [
+    {
+      "id": "sound-ac97-codec",
+      "sources": [
+        "sys/dev/sound/pcm/ac97.c"
+      ],
+      "capabilities": [
+        "base", "generated", "memory", "module", "newbus", "pci",
+        "synchronization", "sysctl"
+      ],
+      "build": { "mode": "builtin" }
+    },
+    {
+      "id": "sound-hda",
+      "sources": [
+        "sys/dev/sound/pci/hda/hdaa.c",
+        "sys/dev/sound/pci/hda/hdaa_patches.c",
+        "sys/dev/sound/pci/hda/hdac.c",
+        "sys/dev/sound/pci/hda/hdacc.c"
+      ],
+      "capabilities": [
+        "base", "callout", "generated", "interrupt", "memory", "module",
+        "newbus", "pci", "resource", "synchronization", "sysctl",
+        "taskqueue"
+      ],
+      "build": { "mode": "builtin" }
+    },
+    {
+      "id": "sound-ich",
+      "sources": ["sys/dev/sound/pci/ich.c"],
+      "capabilities": ["base", "generated", "interrupt", "memory", "module", "newbus", "pci", "resource", "synchronization", "sysctl"],
+      "build": { "mode": "builtin" }
+    },
+    {
+      "id": "sound-atiixp",
+      "sources": ["sys/dev/sound/pci/atiixp.c"],
+      "capabilities": ["base", "generated", "interrupt", "memory", "module", "newbus", "pci", "resource", "synchronization", "sysctl"],
+      "build": { "mode": "builtin" }
+    },
+    {
+      "id": "sound-via8233",
+      "sources": ["sys/dev/sound/pci/via8233.c"],
+      "capabilities": ["base", "generated", "interrupt", "memory", "module", "newbus", "pci", "resource", "synchronization", "sysctl"],
+      "build": { "mode": "builtin" }
+    },
+    {
+      "id": "sound-via82c686",
+      "sources": ["sys/dev/sound/pci/via82c686.c"],
+      "capabilities": ["base", "generated", "interrupt", "memory", "module", "newbus", "pci", "resource", "synchronization", "sysctl"],
+      "build": { "mode": "builtin" }
+    },
+    {
+      "id": "sound-fm801",
+      "sources": ["sys/dev/sound/pci/fm801.c"],
+      "capabilities": ["base", "generated", "interrupt", "memory", "module", "newbus", "pci", "resource", "synchronization", "sysctl"],
+      "build": { "mode": "builtin" }
+    },
+    {
+      "id": "sound-cs4281",
+      "sources": ["sys/dev/sound/pci/cs4281.c"],
+      "capabilities": ["base", "generated", "interrupt", "memory", "module", "newbus", "pci", "resource", "synchronization", "sysctl"],
+      "build": { "mode": "builtin" }
+    },
+    {
+      "id": "sound-t4dwave",
+      "sources": ["sys/dev/sound/pci/t4dwave.c"],
+      "capabilities": ["base", "generated", "interrupt", "memory", "module", "newbus", "pci", "resource", "synchronization", "sysctl"],
+      "build": { "mode": "builtin" }
+    },
+    {
+      "id": "sound-vibes",
+      "sources": ["sys/dev/sound/pci/vibes.c"],
+      "capabilities": ["base", "generated", "interrupt", "memory", "module", "newbus", "pci", "resource", "synchronization", "sysctl"],
+      "build": { "mode": "builtin" }
+    },
+    {
+      "id": "sound-neomagic",
+      "sources": ["sys/dev/sound/pci/neomagic.c"],
+      "capabilities": ["base", "generated", "interrupt", "memory", "module", "newbus", "pci", "resource", "synchronization", "sysctl"],
+      "build": { "mode": "builtin" }
+    },
+    {
+      "id": "sound-maestro3",
+      "sources": ["sys/dev/sound/pci/maestro3.c"],
+      "capabilities": ["base", "generated", "interrupt", "memory", "module", "newbus", "pci", "resource", "synchronization", "sysctl"],
+      "build": { "mode": "builtin" }
+    }
+  ]
+}

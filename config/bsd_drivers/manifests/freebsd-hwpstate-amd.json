@@ -1,0 +1,72 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-hwpstate-amd",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD AMD CPPC and hardware P-state driver.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [
+      "EDGEOS_BSD_FULL_ACPICA"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "acpica"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/x86/cpufreq/hwpstate_amd.c",
+      "sys/x86/cpufreq/hwpstate_common.c",
+      "sys/x86/cpufreq/hwpstate_common.h",
+      "sys/x86/include/cputypes.h",
+      "sys/x86/include/specialreg.h"
+    ],
+    "file_count": 5,
+    "tree_sha256": "50010bc8e8c20f4b264f4e98ea545585c8406a8ff573890ff6c6f6a6377a47d6"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "hwpstate-amd",
+      "sources": [
+        "sys/x86/cpufreq/hwpstate_amd.c",
+        "sys/x86/cpufreq/hwpstate_common.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "synchronization",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

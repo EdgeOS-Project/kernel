@@ -1,0 +1,61 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-amdsmb",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD AMD-8111 SMBus 2.0 controller driver.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/amdsmb/amdsmb.c"
+    ],
+    "file_count": 1,
+    "tree_sha256": "06a1d6e59a25cb67bceb14afa2255e080f34ebc90d9b9d1fcb2e2d33d3af6259"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "amdsmb",
+      "sources": [
+        "sys/dev/amdsmb/amdsmb.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

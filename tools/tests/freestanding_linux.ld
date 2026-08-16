@@ -1,0 +1,39 @@
+/* SPDX-License-Identifier: MPL-2.0 */
+/* Linux-style ELF layout for libc-independent EdgeOS ABI probes. */
+
+ENTRY(_start)
+
+PHDRS
+{
+    headers PT_PHDR PHDRS;
+    text PT_LOAD FILEHDR PHDRS FLAGS(5);
+    data PT_LOAD FLAGS(6);
+}
+
+SECTIONS
+{
+    . = 0x400000 + SIZEOF_HEADERS;
+    .text :
+    {
+        *(.text .text.*)
+    } :text
+    .rodata :
+    {
+        *(.rodata .rodata.*)
+    } :text
+
+    . = ALIGN(0x1000);
+    .data :
+    {
+        *(.data .data.*)
+    } :data
+    .bss :
+    {
+        *(.bss .bss.* COMMON)
+    } :data
+
+    /DISCARD/ :
+    {
+        *(.comment .note .note.* .eh_frame .eh_frame_hdr)
+    }
+}

@@ -1,0 +1,62 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-amdsbwd",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD AMD SB600 through FCH watchdog timer driver.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/amdsbwd/amd_chipset.h",
+      "sys/dev/amdsbwd/amdsbwd.c"
+    ],
+    "file_count": 2,
+    "tree_sha256": "55208febe1809a3fb83cf7492880596e46b5870c51d9e355c099ce24380b8134"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "amdsbwd",
+      "sources": [
+        "sys/dev/amdsbwd/amdsbwd.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

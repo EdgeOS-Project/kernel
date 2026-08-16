@@ -1,0 +1,74 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-mrsas",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD MegaRAID SAS3 storage driver with fast-path, CAM, management, and PCI support.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/mrsas"
+    ],
+    "file_count": 7,
+    "tree_sha256": "f0eff96eddb055757fc096908bf17ff6562273ba663523ddaff1cc666ab1cf59"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "mrsas",
+      "sources": [
+        "sys/dev/mrsas/mrsas.c",
+        "sys/dev/mrsas/mrsas_cam.c",
+        "sys/dev/mrsas/mrsas_ioctl.c",
+        "sys/dev/mrsas/mrsas_fp.c"
+      ],
+      "capabilities": [
+        "base",
+        "block",
+        "callout",
+        "cam",
+        "character-device",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "scsi",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

@@ -1,0 +1,75 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-qlxge",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD QLogic 8100 Series PCIe Ethernet driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "QL_DBG"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/pci/pci_if.m",
+      "sys/dev/qlxge",
+      "sys/dev/qlxge/qls_dbg.c",
+      "sys/dev/qlxge/qls_dump.c",
+      "sys/dev/qlxge/qls_hw.c",
+      "sys/dev/qlxge/qls_ioctl.c",
+      "sys/dev/qlxge/qls_isr.c",
+      "sys/dev/qlxge/qls_os.c",
+      "sys/kern/bus_if.m",
+      "sys/kern/device_if.m"
+    ],
+    "file_count": 18,
+    "tree_sha256": "ccb185d0850f31ae4fcddf94b553a1a54d3bc03291d910af0436ecbc1cb0eb5a"
+  },
+  "generated_interfaces": [
+    "sys/dev/pci/pci_if.m",
+    "sys/kern/bus_if.m",
+    "sys/kern/device_if.m"
+  ],
+  "modules": [
+    {
+      "id": "qlxge",
+      "sources": [
+        "sys/dev/qlxge/qls_dbg.c",
+        "sys/dev/qlxge/qls_dump.c",
+        "sys/dev/qlxge/qls_hw.c",
+        "sys/dev/qlxge/qls_ioctl.c",
+        "sys/dev/qlxge/qls_isr.c",
+        "sys/dev/qlxge/qls_os.c"
+      ],
+      "capabilities": [
+        "base"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-libnv",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD kernel name-value list implementation shared by imported drivers.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/contrib/libnv",
+      "sys/sys/cnv.h",
+      "sys/sys/dnv.h"
+    ],
+    "file_count": 9,
+    "tree_sha256": "7183b16d2e436c16f84f141a0ef2414d8eef54e30a6dc6840b453ca132874639"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "libnv",
+      "sources": [
+        "sys/contrib/libnv/bsd_nvpair.c",
+        "sys/contrib/libnv/cnvlist.c",
+        "sys/contrib/libnv/dnvlist.c",
+        "sys/contrib/libnv/nvlist.c"
+      ],
+      "capabilities": [
+        "base",
+        "memory"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

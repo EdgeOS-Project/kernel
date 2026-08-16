@@ -1,0 +1,82 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-axgbe",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD AMD 10Gb Ethernet PCI driver.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/axgbe",
+      "sys/dev/axgbe/if_axgbe_pci.c",
+      "sys/dev/axgbe/xgbe-desc.c",
+      "sys/dev/axgbe/xgbe-dev.c",
+      "sys/dev/axgbe/xgbe-drv.c",
+      "sys/dev/axgbe/xgbe-i2c.c",
+      "sys/dev/axgbe/xgbe-mdio.c",
+      "sys/dev/axgbe/xgbe-phy-v2.c",
+      "sys/dev/axgbe/xgbe-sysctl.c",
+      "sys/dev/axgbe/xgbe-txrx.c",
+      "sys/dev/axgbe/xgbe_osdep.c"
+    ],
+    "file_count": 17,
+    "tree_sha256": "8283335ae45597072ff3d0145871a26dc974bf244050c01fe19dfa06ee64be34"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "axgbe",
+      "sources": [
+        "sys/dev/axgbe/if_axgbe_pci.c",
+        "sys/dev/axgbe/xgbe-desc.c",
+        "sys/dev/axgbe/xgbe-dev.c",
+        "sys/dev/axgbe/xgbe-drv.c",
+        "sys/dev/axgbe/xgbe-i2c.c",
+        "sys/dev/axgbe/xgbe-mdio.c",
+        "sys/dev/axgbe/xgbe-phy-v2.c",
+        "sys/dev/axgbe/xgbe-sysctl.c",
+        "sys/dev/axgbe/xgbe-txrx.c",
+        "sys/dev/axgbe/xgbe_osdep.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

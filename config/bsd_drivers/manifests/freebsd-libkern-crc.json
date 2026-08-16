@@ -1,0 +1,68 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-libkern-crc",
+  "provider": "freebsd",
+  "description": "Unmodified FreeBSD Gary S. Brown CRC implementation shared by imported drivers.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": [
+      "__aarch64__",
+      "__amd64__",
+      "__i386__"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "LicenseRef-Gary-S-Brown-Unrestricted"
+    ],
+    "license_exceptions": {
+      "sys/libkern/gsb_crc32.c": {
+        "license": "LicenseRef-Gary-S-Brown-Unrestricted",
+        "evidence": "The retained notice permits use of the program, code, or extracted tables without restriction."
+      },
+      "sys/sys/gsb_crc32.h": {
+        "license": "LicenseRef-Gary-S-Brown-Unrestricted",
+        "evidence": "The retained notice permits use of the program, code, or extracted tables without restriction."
+      }
+    }
+  },
+  "source_lock": {
+    "paths": [
+      "sys/libkern/gsb_crc32.c",
+      "sys/sys/gsb_crc32.h"
+    ],
+    "file_count": 2,
+    "tree_sha256": "c9537fdeeeb13e8b5931e6c746ee2ba1c4df90c036b57f59c115427fbb6d88f6"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "libkern-crc",
+      "sources": [
+        "sys/libkern/gsb_crc32.c"
+      ],
+      "capabilities": [
+        "base"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "description": "Exact cross-architecture implementation inventory. Remove entries as policy moves into common code; do not expand debt to make validation pass.",
+  "common_runtime_roots": [
+    "src/kernel"
+  ],
+  "true_architecture_mechanisms": {
+    "kernel_arch_boottime_initialize": {
+      "category": "clock source",
+      "reason": "Reads and initializes the hardware-specific monotonic clock source."
+    },
+    "kernel_arch_boottime_monotonic_us": {
+      "category": "clock source",
+      "reason": "Reads the current architecture timer and converts its counter value."
+    },
+    "kernel_arch_boottime_refine": {
+      "category": "clock source",
+      "reason": "Refines boot time against the architecture-specific timer frequency."
+    },
+    "kernel_arch_boottime_source_hz": {
+      "category": "clock source",
+      "reason": "Reports the frequency of the selected hardware clock source."
+    },
+    "kernel_arch_boottime_source_name": {
+      "category": "clock source",
+      "reason": "Reports the name of the selected hardware clock source."
+    },
+    "kernel_arch_boottime_timer_tick": {
+      "category": "clock source",
+      "reason": "Receives ticks from the architecture-specific timer interrupt."
+    },
+    "kernel_arch_boottime_vdso_snapshot": {
+      "category": "clock source",
+      "reason": "Snapshots the architecture counter state used by the shared vDSO time conversion."
+    },
+    "kernel_arch_scheduler_cpu_stats": {
+      "category": "CPU topology",
+      "reason": "Snapshots counters owned by each architecture scheduler while common code defines their Linux-visible format."
+    },
+    "kernel_arch_scheduler_online_cpu_mask": {
+      "category": "CPU topology",
+      "reason": "Reports CPUs discovered and brought online by architecture startup code."
+    },
+    "kernel_arch_serial_console_device": {
+      "category": "console hardware",
+      "reason": "Maps platform UART hardware to its Linux-visible serial device identity."
+    },
+    "kernel_arch_signal_user_stack_pointer": {
+      "category": "signal frame mechanics",
+      "reason": "Reads the user stack pointer from the architecture-specific saved register frame."
+    },
+    "kernel_arch_signal_wait_block": {
+      "category": "signal frame mechanics",
+      "reason": "Parks either a saved user frame or the live syscall stack as required by the entry mechanism."
+    },
+    "kernel_ptrace_current_syscall": {
+      "category": "register ABI conversion",
+      "reason": "Decodes syscall arguments and results from the architecture-specific saved register frame."
+    },
+    "kernel_ptrace_get_regset": {
+      "category": "register ABI conversion",
+      "reason": "Exports architecture-specific Linux general-purpose, floating-point, and extension register sets."
+    },
+    "kernel_ptrace_read_user_area": {
+      "category": "register ABI conversion",
+      "reason": "Reads the architecture-specific Linux ptrace user-register layout at a byte offset."
+    },
+    "kernel_ptrace_set_regset": {
+      "category": "register ABI conversion",
+      "reason": "Imports architecture-specific Linux general-purpose, floating-point, and extension register sets."
+    },
+    "kernel_ptrace_write_user_area": {
+      "category": "register ABI conversion",
+      "reason": "Updates the architecture-specific Linux ptrace user-register layout at a byte offset."
+    },
+    "kernel_sysv_shm_arch_current_address_space": {
+      "category": "address-space mechanics",
+      "reason": "Returns the native address-space handle used by architecture VM operations."
+    },
+    "kernel_sysv_shm_arch_map": {
+      "category": "address-space mechanics",
+      "reason": "Maps validated shared-memory pages using architecture page-table mechanics."
+    },
+    "kernel_sysv_shm_arch_page_allocate": {
+      "category": "address-space mechanics",
+      "reason": "Allocates a native page handle through the architecture VM allocator."
+    },
+    "kernel_sysv_shm_arch_page_release": {
+      "category": "address-space mechanics",
+      "reason": "Releases a native page handle through the architecture VM allocator."
+    },
+    "kernel_sysv_shm_arch_unmap": {
+      "category": "address-space mechanics",
+      "reason": "Unmaps shared memory using architecture page-table mechanics."
+    }
+  },
+  "duplicate_policy_migration_target": "Move every listed service to one architecture-neutral implementation and retain only the smallest required architecture operation callback.",
+  "duplicate_policy_debt": [],
+  "architecture_reference_allowlist": [],
+  "architecture_leakage_debt": []
+}

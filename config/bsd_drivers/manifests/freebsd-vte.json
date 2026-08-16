@@ -1,0 +1,68 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-vte",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD RDC R6040 Ethernet driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "ISC"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/vte",
+      "sys/dev/vte/if_vte.c"
+    ],
+    "file_count": 3,
+    "tree_sha256": "cb81117ba61c4570dd94c4678cb896e210a1b0c1d6a5979d0a49f068bcd4ee0b"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "vte",
+      "sources": [
+        "sys/dev/vte/if_vte.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

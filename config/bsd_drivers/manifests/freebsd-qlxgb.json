@@ -1,0 +1,80 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-qlxgb",
+  "provider": "freebsd",
+  "description": "Unmodified complete standard FreeBSD QLogic QLE8000 and QLE8100 PCIe Ethernet driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/qlxgb",
+      "sys/dev/qlxgb/qla_dbg.c",
+      "sys/dev/qlxgb/qla_hw.c",
+      "sys/dev/qlxgb/qla_ioctl.c",
+      "sys/dev/qlxgb/qla_isr.c",
+      "sys/dev/qlxgb/qla_misc.c",
+      "sys/dev/qlxgb/qla_os.c"
+    ],
+    "file_count": 15,
+    "tree_sha256": "316085719be40f42751032ff8dd0b7672d389eef45266be2426351f2b378e8ee"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "qlxgb",
+      "sources": [
+        "sys/dev/qlxgb/qla_dbg.c",
+        "sys/dev/qlxgb/qla_hw.c",
+        "sys/dev/qlxgb/qla_ioctl.c",
+        "sys/dev/qlxgb/qla_isr.c",
+        "sys/dev/qlxgb/qla_misc.c",
+        "sys/dev/qlxgb/qla_os.c"
+      ],
+      "capabilities": [
+        "base",
+        "character-device",
+        "generated",
+        "interrupt",
+        "machine",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

@@ -1,0 +1,89 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-acpi-laptops",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD ACPI laptop drivers for legacy ASUS systems and IBM or Lenovo ThinkPad systems.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [
+      "EDGEOS_BSD_FULL_ACPICA"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "acpica"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/acpi_support/acpi_asus.c",
+      "sys/dev/acpi_support/acpi_ibm.c"
+    ],
+    "file_count": 2,
+    "tree_sha256": "a95c4047e7d7ef097339b09850d401e4bb7efcfb8a4dd4a7dc3d3560330d59df"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "asus-laptop",
+      "sources": [
+        "sys/dev/acpi_support/acpi_asus.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "character-device",
+        "generated",
+        "memory",
+        "module",
+        "newbus",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "thinkpad-laptop",
+      "sources": [
+        "sys/dev/acpi_support/acpi_ibm.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "character-device",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

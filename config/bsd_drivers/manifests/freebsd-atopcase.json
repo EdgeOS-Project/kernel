@@ -1,0 +1,76 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-atopcase",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Apple SPI keyboard, trackpad, ambient-light, and backlight driver.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [
+      "EDGEOS_BSD_FULL_ACPICA",
+      "EVDEV_SUPPORT"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "acpica"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/atopcase",
+      "sys/dev/atopcase/atopcase.c",
+      "sys/dev/atopcase/atopcase_acpi.c"
+    ],
+    "file_count": 4,
+    "tree_sha256": "321e594e1641671ba2441577407dd3ffa3e34f94646f4653e157ee2faa76ee53"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "atopcase",
+      "sources": [
+        "sys/dev/atopcase/atopcase.c",
+        "sys/dev/atopcase/atopcase_acpi.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "callout",
+        "character-device",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

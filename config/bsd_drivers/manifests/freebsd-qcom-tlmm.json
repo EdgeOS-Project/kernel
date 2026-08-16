@@ -1,0 +1,75 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-qcom-tlmm",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Qualcomm IPQ4018 TLMM GPIO and pin control driver.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/qcom_tlmm",
+      "sys/dev/qcom_tlmm/qcom_tlmm.c",
+      "sys/dev/qcom_tlmm/qcom_tlmm_debug.c",
+      "sys/dev/qcom_tlmm/qcom_tlmm_ipq4018.c",
+      "sys/dev/qcom_tlmm/qcom_tlmm_ipq4018_hw.c",
+      "sys/dev/qcom_tlmm/qcom_tlmm_pin.c",
+      "sys/dev/qcom_tlmm/qcom_tlmm_pinmux.c"
+    ],
+    "file_count": 11,
+    "tree_sha256": "7bf18f9e75ec8f6cd0b010d43e99aadff100f05c82c24fb459ca24f7b8a5b5bc"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "qcom_tlmm",
+      "sources": [
+        "sys/dev/qcom_tlmm/qcom_tlmm.c",
+        "sys/dev/qcom_tlmm/qcom_tlmm_debug.c",
+        "sys/dev/qcom_tlmm/qcom_tlmm_ipq4018.c",
+        "sys/dev/qcom_tlmm/qcom_tlmm_ipq4018_hw.c",
+        "sys/dev/qcom_tlmm/qcom_tlmm_pin.c",
+        "sys/dev/qcom_tlmm/qcom_tlmm_pinmux.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

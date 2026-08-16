@@ -1,0 +1,78 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-usb-dwc2",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Synopsys DWC2 dual-role USB controller family.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT",
+      "USB_VERBOSE"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/usb/controller/dwc_otg.c",
+      "sys/dev/usb/controller/dwc_otg.h",
+      "sys/dev/usb/controller/dwc_otg_acpi.c",
+      "sys/dev/usb/controller/dwc_otg_fdt.c",
+      "sys/dev/usb/controller/dwc_otg_fdt.h",
+      "sys/dev/usb/controller/dwc_otg_hisi.c",
+      "sys/dev/usb/controller/dwc_otgreg.h"
+    ],
+    "file_count": 7,
+    "tree_sha256": "7370ee77fed7380ab28e7cfe6d2e1f55744a80d862e7c15707b40eadd9491844"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "usb-dwc2",
+      "sources": [
+        "sys/dev/usb/controller/dwc_otg.c",
+        "sys/dev/usb/controller/dwc_otg_acpi.c",
+        "sys/dev/usb/controller/dwc_otg_fdt.c",
+        "sys/dev/usb/controller/dwc_otg_hisi.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "callout",
+        "fdt",
+        "generated",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "usb"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}
