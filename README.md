@@ -1,5 +1,7 @@
 # EdgeOS
 
+![EdgeOS running Debian KDE Plasma on AArch64](docs/images/edgeos-kde-arm64-desktop.png)
+
 EdgeOS is an independent Unix-like kernel for x86_64 and AArch64. It is not a
 Linux fork. Linux userspace is the compatibility target: the kernel loads Linux
 ELF64 binaries and implements the Linux-facing system call and device
