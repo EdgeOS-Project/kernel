@@ -107,7 +107,8 @@
 #define EDGE_DRM_FB_ID_BASE   100u
 #define EDGE_DRM_CURRENT_MODE_BLOB_ID 40u
 #define EDGE_DRM_IN_FORMATS_BLOB_ID   41u
-#define EDGE_DRM_SCANOUT_ACTIVE_INTERVAL_US 16667ull
+#define EDGE_DRM_EDID_BLOB_ID         42u
+#define EDGE_DRM_SCANOUT_DEFAULT_INTERVAL_US 16667ull
 #define EDGE_DRM_SCANOUT_IDLE_INTERVAL_US   250000ull
 #define EDGE_DRM_SCANOUT_IDLE_THRESHOLD     6u
 #define EDGE_DRM_EXPLICIT_DAMAGE_GRACE_US   100000ull
@@ -127,6 +128,7 @@
 #define EDGE_DRM_PROP_CONNECTOR_CRTC_ID 10u
 #define EDGE_DRM_PROP_LINK_STATUS       11u
 #define EDGE_DRM_PROP_NON_DESKTOP       12u
+#define EDGE_DRM_PROP_EDID              13u
 #define EDGE_DRM_PROP_CRTC_MODE_ID      20u
 #define EDGE_DRM_PROP_CRTC_ACTIVE       21u
 #define EDGE_DRM_PROP_PLANE_FB_ID       30u
@@ -143,16 +145,16 @@
 #define EDGE_DRM_PROP_PLANE_IN_FORMATS  43u
 #define EDGE_DRM_PROP_PLANE_FB_DAMAGE_CLIPS 44u
 
-#define EDGE_DRM_MAX_WIDTH  1920u
-#define EDGE_DRM_MAX_HEIGHT 1080u
+#define EDGE_DRM_MAX_WIDTH  7680u
+#define EDGE_DRM_MAX_HEIGHT 4320u
 #define EDGE_DRM_MAX_BUFFER_DIMENSION 8192u
 #define EDGE_DRM_BUFFER_COUNT 64u
 #define EDGE_DRM_FRAMEBUFFER_COUNT 128u
 #define EDGE_DRM_CLIENT_COUNT 64u
 #define EDGE_DRM_EVENT_COUNT 32u
-#define EDGE_DRM_MODE_COUNT 10u
+#define EDGE_DRM_MODE_COUNT 32u
 #define EDGE_DRM_BLOB_COUNT 16u
-#define EDGE_DRM_BLOB_CAPACITY 256u
+#define EDGE_DRM_BLOB_CAPACITY DISPLAY_MODE_EDID_MAX_BYTES
 #define EDGE_DRM_BLOB_ID_BASE 1000u
 #define EDGE_DRM_DAMAGE_RECT_LIMIT 4u
 #define EDGE_DRM_SCANOUT_BATCH_RECTS 8u
@@ -161,7 +163,7 @@
 #define EDGE_DRM_ATOMIC_PROPERTY_COUNT 64u
 #define EDGE_DRM_PAGE_SIZE 4096u
 #define EDGE_DRM_PITCH_ALIGN 64u
-#define EDGE_DRM_BUFFER_CAPACITY (32u * 1024u * 1024u)
+#define EDGE_DRM_BUFFER_CAPACITY (128u * 1024u * 1024u)
 #define EDGE_DRM_MAX_BUFFER_PAGES \
     (EDGE_DRM_BUFFER_CAPACITY / EDGE_DRM_PAGE_SIZE)
 #define EDGE_DRM_DIRTY_PAGE_WORDS \
@@ -642,6 +644,8 @@ static volatile uint32_t g_edge_drm_scanout_refresh_required;
 static edge_drm_cursor_state_t g_edge_drm_cursor;
 static uint32_t g_edge_drm_flip_sequence;
 static volatile uint64_t g_edge_drm_next_scanout_us;
+static volatile uint64_t g_edge_drm_scanout_interval_us =
+    EDGE_DRM_SCANOUT_DEFAULT_INTERVAL_US;
 static volatile uint32_t g_edge_drm_scanout_idle_frames;
 static volatile uint32_t g_edge_drm_scanout_activity_sequence;
 static volatile unsigned int g_edge_drm_scanout_guard;
@@ -839,6 +843,11 @@ static int edge_drm_property_spec(uint32_t id,
             spec->values[0] = 0u;
             spec->values[1] = 1u;
             return 1;
+        case EDGE_DRM_PROP_EDID:
+            spec->name = "EDID";
+            spec->flags = EDGE_DRM_MODE_PROP_BLOB |
+                EDGE_DRM_MODE_PROP_IMMUTABLE;
+            return 1;
         case EDGE_DRM_PROP_CRTC_MODE_ID:
             spec->name = "MODE_ID";
             spec->flags = EDGE_DRM_MODE_PROP_BLOB |
@@ -998,19 +1007,32 @@ static int edge_drm_mode_available(display_mode_t *mode,
     memset(mode, 0, sizeof(*mode));
     mode->width = fb.width;
     mode->height = fb.height;
-    mode->refresh_millihz = 60000u;
+    mode->refresh_millihz = DISPLAY_MODE_DEFAULT_REFRESH_MILLIHZ;
     if (display_backend_get_mode(mode) < 0) {
         mode->width = fb.width;
         mode->height = fb.height;
-        mode->refresh_millihz = 60000u;
+        mode->refresh_millihz = DISPLAY_MODE_DEFAULT_REFRESH_MILLIHZ;
     }
-    if (!mode->refresh_millihz) mode->refresh_millihz = 60000u;
+    if (!mode->refresh_millihz)
+        mode->refresh_millihz = DISPLAY_MODE_DEFAULT_REFRESH_MILLIHZ;
+    if (!display_mode_valid(mode))
+        return 0;
+    __atomic_store_n(&g_edge_drm_scanout_interval_us,
+                     display_mode_frame_interval_us(mode),
+                     __ATOMIC_RELEASE);
     if (backend_flags) {
         *backend_flags = 0;
         if (display_backend_snapshot(&backend, 0))
             *backend_flags = backend.flags;
     }
     return mode->width != 0 && mode->height != 0;
+}
+
+static uint64_t edge_drm_scanout_active_interval(void) {
+    uint64_t interval = __atomic_load_n(
+        &g_edge_drm_scanout_interval_us, __ATOMIC_ACQUIRE);
+
+    return interval ? interval : EDGE_DRM_SCANOUT_DEFAULT_INTERVAL_US;
 }
 
 static void edge_drm_append_decimal(char *destination, uint32_t *position,
@@ -1027,25 +1049,40 @@ static void edge_drm_append_decimal(char *destination, uint32_t *position,
 }
 
 static void edge_drm_fill_mode(edge_drm_modeinfo_t *output,
-                               uint32_t width, uint32_t height,
-                               uint32_t refresh_millihz, int preferred) {
+                               const display_mode_t *mode,
+                               int preferred) {
     uint32_t position = 0;
     uint64_t pixels;
+    uint32_t width = mode->width;
+    uint32_t height = mode->height;
+    uint32_t refresh_millihz = mode->refresh_millihz;
 
     memset(output, 0, sizeof(*output));
     output->hdisplay = (uint16_t)width;
-    output->hsync_start = (uint16_t)(width + 16u);
-    output->hsync_end = (uint16_t)(width + 48u);
-    output->htotal = (uint16_t)(width + 80u);
+    output->hsync_start = mode->hsync_start ?
+        mode->hsync_start : (uint16_t)(width + 16u);
+    output->hsync_end = mode->hsync_end ?
+        mode->hsync_end : (uint16_t)(width + 48u);
+    output->htotal = mode->htotal ?
+        mode->htotal : (uint16_t)(width + 80u);
     output->vdisplay = (uint16_t)height;
-    output->vsync_start = (uint16_t)(height + 3u);
-    output->vsync_end = (uint16_t)(height + 8u);
-    output->vtotal = (uint16_t)(height + 23u);
+    output->vsync_start = mode->vsync_start ?
+        mode->vsync_start : (uint16_t)(height + 3u);
+    output->vsync_end = mode->vsync_end ?
+        mode->vsync_end : (uint16_t)(height + 8u);
+    output->vtotal = mode->vtotal ?
+        mode->vtotal : (uint16_t)(height + 23u);
     output->vrefresh = refresh_millihz ?
         (refresh_millihz + 500u) / 1000u : 60u;
     pixels = (uint64_t)output->htotal * output->vtotal *
              output->vrefresh;
-    output->clock = (uint32_t)((pixels + 500u) / 1000u);
+    output->clock = mode->pixel_clock_khz ?
+        mode->pixel_clock_khz : (uint32_t)((pixels + 500u) / 1000u);
+    if (mode->flags & DISPLAY_MODE_PHSYNC) output->flags |= 1u << 0;
+    if (mode->flags & DISPLAY_MODE_NHSYNC) output->flags |= 1u << 1;
+    if (mode->flags & DISPLAY_MODE_PVSYNC) output->flags |= 1u << 2;
+    if (mode->flags & DISPLAY_MODE_NVSYNC) output->flags |= 1u << 3;
+    if (mode->flags & DISPLAY_MODE_INTERLACE) output->flags |= 1u << 4;
     output->type = EDGE_DRM_MODE_TYPE_DRIVER |
         (preferred ? EDGE_DRM_MODE_TYPE_PREFERRED : 0u);
     edge_drm_append_decimal(output->name, &position,
@@ -1057,40 +1094,98 @@ static void edge_drm_fill_mode(edge_drm_modeinfo_t *output,
     output->name[position] = 0;
 }
 
+static void edge_drm_display_mode_from_modeinfo(
+    const edge_drm_modeinfo_t *input, display_mode_t *output) {
+    uint64_t timing_pixels;
+
+    memset(output, 0, sizeof(*output));
+    output->width = input->hdisplay;
+    output->height = input->vdisplay;
+    timing_pixels = (uint64_t)input->htotal * input->vtotal;
+    if (input->clock && timing_pixels) {
+        output->refresh_millihz = (uint32_t)(
+            ((uint64_t)input->clock * 1000000ull + timing_pixels / 2u) /
+            timing_pixels);
+    } else {
+        output->refresh_millihz = input->vrefresh ?
+            input->vrefresh * 1000u : DISPLAY_MODE_DEFAULT_REFRESH_MILLIHZ;
+    }
+    output->pixel_clock_khz = input->clock;
+    output->hsync_start = input->hsync_start;
+    output->hsync_end = input->hsync_end;
+    output->htotal = input->htotal;
+    output->vsync_start = input->vsync_start;
+    output->vsync_end = input->vsync_end;
+    output->vtotal = input->vtotal;
+    if (input->flags & (1u << 0)) output->flags |= DISPLAY_MODE_PHSYNC;
+    if (input->flags & (1u << 1)) output->flags |= DISPLAY_MODE_NHSYNC;
+    if (input->flags & (1u << 2)) output->flags |= DISPLAY_MODE_PVSYNC;
+    if (input->flags & (1u << 3)) output->flags |= DISPLAY_MODE_NVSYNC;
+    if (input->flags & (1u << 4)) output->flags |= DISPLAY_MODE_INTERLACE;
+}
+
 static int edge_drm_mode_duplicate(const edge_drm_modeinfo_t *modes,
-                                   uint32_t count, uint32_t width,
-                                   uint32_t height) {
+                                   uint32_t count,
+                                   const display_mode_t *mode) {
     for (uint32_t index = 0; index < count; ++index)
-        if (modes[index].hdisplay == width &&
-            modes[index].vdisplay == height)
+        if (modes[index].hdisplay == mode->width &&
+            modes[index].vdisplay == mode->height &&
+            modes[index].vrefresh ==
+                (mode->refresh_millihz + 500u) / 1000u &&
+            ((modes[index].flags >> 4) & 1u) ==
+                ((mode->flags & DISPLAY_MODE_INTERLACE) != 0))
             return 1;
     return 0;
 }
 
 static uint32_t edge_drm_collect_modes(edge_drm_modeinfo_t *modes) {
     static const uint16_t common[][2] = {
+        { 7680u, 4320u }, { 5120u, 2880u }, { 5120u, 2160u },
+        { 3840u, 2160u }, { 3440u, 1440u }, { 2560u, 1440u },
         { 1920u, 1080u }, { 1600u, 900u }, { 1440u, 900u },
         { 1366u, 768u }, { 1280u, 1024u }, { 1280u, 800u },
         { 1280u, 720u }, { 1024u, 768u }, { 800u, 600u },
     };
     display_mode_t current;
+    display_mode_t backend_modes[DISPLAY_MODE_EDID_MAX_MODES];
     uint32_t backend_flags = 0;
+    uint32_t backend_count;
     uint32_t count = 0;
 
     if (!modes || !edge_drm_mode_available(&current, &backend_flags))
         return 0;
-    edge_drm_fill_mode(&modes[count++], current.width, current.height,
-                       current.refresh_millihz, 1);
+    edge_drm_fill_mode(&modes[count++], &current, 1);
+    backend_count = display_backend_get_modes(
+        backend_modes, DISPLAY_MODE_EDID_MAX_MODES);
+    if (backend_count > DISPLAY_MODE_EDID_MAX_MODES)
+        backend_count = DISPLAY_MODE_EDID_MAX_MODES;
+    for (uint32_t index = 0;
+         index < backend_count && count < EDGE_DRM_MODE_COUNT; ++index) {
+        display_mode_t *candidate = &backend_modes[index];
+
+        if (!display_mode_valid(candidate) ||
+            candidate->width > EDGE_DRM_MAX_WIDTH ||
+            candidate->height > EDGE_DRM_MAX_HEIGHT ||
+            edge_drm_mode_duplicate(modes, count, candidate))
+            continue;
+        edge_drm_fill_mode(&modes[count++], candidate,
+                           (candidate->flags & DISPLAY_MODE_PREFERRED) != 0);
+    }
     if (!(backend_flags & DISPLAY_BACKEND_DYNAMIC_MODE)) return count;
     for (uint32_t index = 0;
          index < sizeof(common) / sizeof(common[0]) &&
          count < EDGE_DRM_MODE_COUNT; ++index) {
         uint32_t width = common[index][0];
         uint32_t height = common[index][1];
+        display_mode_t candidate = {
+            .width = width,
+            .height = height,
+            .refresh_millihz = current.refresh_millihz,
+        };
         if (width > EDGE_DRM_MAX_WIDTH || height > EDGE_DRM_MAX_HEIGHT ||
-            edge_drm_mode_duplicate(modes, count, width, height))
+            edge_drm_mode_duplicate(modes, count, &candidate))
             continue;
-        edge_drm_fill_mode(&modes[count++], width, height, 60000u, 0);
+        edge_drm_fill_mode(&modes[count++], &candidate, 0);
     }
     return count;
 }
@@ -1261,8 +1356,10 @@ static int edge_drm_cursor_clip(const edge_drm_cursor_state_t *cursor,
     return *width && *height;
 }
 
-static int edge_drm_cursor_restore(const edge_drm_cursor_state_t *cursor,
-                                   uint32_t primary_fb_id) {
+static int edge_drm_cursor_restore_internal(
+    const edge_drm_cursor_state_t *cursor, uint32_t primary_fb_id,
+    int flush, display_rect_t *damage) {
+    edge_drm_present_source_t source;
     uint32_t destination_x;
     uint32_t destination_y;
     uint32_t source_x;
@@ -1276,8 +1373,26 @@ static int edge_drm_cursor_restore(const edge_drm_cursor_state_t *cursor,
         return 0;
     (void)source_x;
     (void)source_y;
-    return edge_drm_present_rect(primary_fb_id, destination_x,
-                                 destination_y, width, height);
+    edge_drm_lock();
+    if (edge_drm_present_source_locked(primary_fb_id, &source) < 0) {
+        edge_drm_unlock();
+        return -EDGE_LINUX_ENOENT;
+    }
+    edge_drm_unlock();
+    if (damage) {
+        damage->x = destination_x;
+        damage->y = destination_y;
+        damage->width = width;
+        damage->height = height;
+    }
+    return edge_drm_present_source_rect(
+        &source, destination_x, destination_y, width, height, flush);
+}
+
+static int edge_drm_cursor_restore(const edge_drm_cursor_state_t *cursor,
+                                   uint32_t primary_fb_id) {
+    return edge_drm_cursor_restore_internal(
+        cursor, primary_fb_id, 1, 0);
 }
 
 static uint8_t edge_drm_cursor_blend_channel(uint8_t source,
@@ -1288,7 +1403,9 @@ static uint8_t edge_drm_cursor_blend_channel(uint8_t source,
     return (uint8_t)(value > 255u ? 255u : value);
 }
 
-static int edge_drm_cursor_draw(const edge_drm_cursor_state_t *cursor) {
+static int edge_drm_cursor_draw_internal(
+    const edge_drm_cursor_state_t *cursor, int flush,
+    display_rect_t *damage) {
     edge_drm_present_source_t source;
     uint32_t destination_x;
     uint32_t destination_y;
@@ -1359,8 +1476,41 @@ static int edge_drm_cursor_draw(const edge_drm_cursor_state_t *cursor) {
             }
         }
     }
-    fb_flush_rect((int)destination_x, (int)destination_y,
-                  (int)width, (int)height);
+    if (damage) {
+        damage->x = destination_x;
+        damage->y = destination_y;
+        damage->width = width;
+        damage->height = height;
+    }
+    if (flush)
+        fb_flush_rect((int)destination_x, (int)destination_y,
+                      (int)width, (int)height);
+    return 0;
+}
+
+static int edge_drm_cursor_draw(const edge_drm_cursor_state_t *cursor) {
+    return edge_drm_cursor_draw_internal(cursor, 1, 0);
+}
+
+static int edge_drm_cursor_transition(
+    const edge_drm_cursor_state_t *previous,
+    const edge_drm_cursor_state_t *next, uint32_t primary_fb_id) {
+    display_rect_t damage[2];
+    uint32_t count = 0;
+    int result;
+
+    memset(damage, 0, sizeof(damage));
+    result = edge_drm_cursor_restore_internal(
+        previous, primary_fb_id, 0, &damage[count]);
+    if (result < 0) return result;
+    if (damage[count].width && damage[count].height) ++count;
+    result = edge_drm_cursor_draw_internal(next, 0, &damage[count]);
+    if (result < 0) {
+        if (count) fb_flush_rects(damage, count);
+        return result;
+    }
+    if (damage[count].width && damage[count].height) ++count;
+    if (count) fb_flush_rects(damage, count);
     return 0;
 }
 
@@ -1495,6 +1645,100 @@ static void edge_drm_scanout_page_invalidate(void) {
            sizeof(g_edge_drm_scanout_page_hash_valid));
 }
 
+static void edge_drm_scanout_damage_add(
+    display_rect_t *batch, uint32_t *batch_count,
+    const display_rect_t *rect) {
+    display_rect_t merged;
+    uint32_t right;
+    uint32_t bottom;
+
+    if (!batch || !batch_count || !rect ||
+        !rect->width || !rect->height)
+        return;
+    if (*batch_count < EDGE_DRM_SCANOUT_BATCH_RECTS) {
+        batch[(*batch_count)++] = *rect;
+        return;
+    }
+    merged = batch[0];
+    right = merged.x + merged.width;
+    bottom = merged.y + merged.height;
+    for (uint32_t index = 1u; index < *batch_count; ++index) {
+        uint32_t rect_right = batch[index].x + batch[index].width;
+        uint32_t rect_bottom = batch[index].y + batch[index].height;
+
+        if (batch[index].x < merged.x) merged.x = batch[index].x;
+        if (batch[index].y < merged.y) merged.y = batch[index].y;
+        if (rect_right > right) right = rect_right;
+        if (rect_bottom > bottom) bottom = rect_bottom;
+    }
+    if (rect->x < merged.x) merged.x = rect->x;
+    if (rect->y < merged.y) merged.y = rect->y;
+    if (rect->x + rect->width > right)
+        right = rect->x + rect->width;
+    if (rect->y + rect->height > bottom)
+        bottom = rect->y + rect->height;
+    merged.width = right - merged.x;
+    merged.height = bottom - merged.y;
+    batch[0] = merged;
+    *batch_count = 1u;
+}
+
+static int edge_drm_rects_intersect(const display_rect_t *left,
+                                    const display_rect_t *right) {
+    if (!left || !right || !left->width || !left->height ||
+        !right->width || !right->height)
+        return 0;
+    return left->x < right->x + right->width &&
+           right->x < left->x + left->width &&
+           left->y < right->y + right->height &&
+           right->y < left->y + left->height;
+}
+
+static void edge_drm_scanout_flush_present(
+    display_rect_t *batch, uint32_t *batch_count,
+    int redraw_cursor, uint32_t primary_fb_id) {
+    edge_drm_cursor_state_t cursor;
+    display_rect_t cursor_rect;
+    uint32_t destination_x;
+    uint32_t destination_y;
+    uint32_t source_x;
+    uint32_t source_y;
+    uint32_t width;
+    uint32_t height;
+    int cursor_damaged = 0;
+
+    if (!batch || !batch_count || !*batch_count)
+        return;
+    memset(&cursor, 0, sizeof(cursor));
+    memset(&cursor_rect, 0, sizeof(cursor_rect));
+    if (redraw_cursor) {
+        edge_drm_cursor_snapshot(&cursor);
+        if (cursor.fb_id && edge_drm_cursor_clip(
+                &cursor, &destination_x, &destination_y,
+                &source_x, &source_y, &width, &height)) {
+            cursor_rect.x = destination_x;
+            cursor_rect.y = destination_y;
+            cursor_rect.width = width;
+            cursor_rect.height = height;
+            for (uint32_t index = 0; index < *batch_count; ++index) {
+                if (edge_drm_rects_intersect(
+                        &batch[index], &cursor_rect)) {
+                    cursor_damaged = 1;
+                    break;
+                }
+            }
+        }
+    }
+    if (cursor_damaged &&
+        edge_drm_cursor_restore_internal(
+            &cursor, primary_fb_id, 0, 0) == 0 &&
+        edge_drm_cursor_draw_internal(&cursor, 0, 0) == 0)
+        edge_drm_scanout_damage_add(
+            batch, batch_count, &cursor_rect);
+    fb_flush_rects(batch, *batch_count);
+    *batch_count = 0;
+}
+
 static int edge_drm_scanout_queue_span(
     const edge_drm_present_source_t *source,
     uint32_t row, uint32_t first_column, uint32_t last_column,
@@ -1521,25 +1765,8 @@ static int edge_drm_scanout_queue_span(
         source, rect.x, rect.y, rect.width, rect.height, 0);
     if (result < 0)
         return result;
-    batch[(*batch_count)++] = rect;
-    if (*batch_count == EDGE_DRM_SCANOUT_BATCH_RECTS) {
-        fb_flush_rects(batch, *batch_count);
-        *batch_count = 0;
-    }
+    edge_drm_scanout_damage_add(batch, batch_count, &rect);
     return 0;
-}
-
-static void edge_drm_scanout_flush_batch(display_rect_t *batch,
-                                         uint32_t *batch_count) {
-    if (!batch || !batch_count || !*batch_count)
-        return;
-    if (*batch_count == 1u) {
-        fb_flush_rect((int)batch[0].x, (int)batch[0].y,
-                      (int)batch[0].width, (int)batch[0].height);
-    } else {
-        fb_flush_rects(batch, *batch_count);
-    }
-    *batch_count = 0;
 }
 
 static int edge_drm_dirty_page_test(const uint32_t *dirty_pages,
@@ -1572,16 +1799,19 @@ static void edge_drm_scanout_writeprotect_dirty(
 }
 
 static int edge_drm_scanout_present_page_run(
-    uint32_t framebuffer_id, uint32_t first_page,
+    const edge_drm_present_source_t *source, uint32_t first_page,
     uint32_t end_page, uint32_t pitch, uint32_t source_y,
-    uint32_t width, uint32_t height) {
+    uint32_t width, uint32_t height,
+    display_rect_t *batch, uint32_t *batch_count) {
+    display_rect_t rect;
     uint64_t byte_start;
     uint64_t byte_end;
     uint32_t first_row;
     uint32_t last_row;
     uint32_t visible_end;
 
-    if (first_page >= end_page || !pitch || !width || !height)
+    if (!source || !batch || !batch_count ||
+        first_page >= end_page || !pitch || !width || !height)
         return 0;
     byte_start = (uint64_t)first_page * EDGE_DRM_PAGE_SIZE;
     byte_end = (uint64_t)end_page * EDGE_DRM_PAGE_SIZE;
@@ -1591,14 +1821,21 @@ static int edge_drm_scanout_present_page_run(
     if (last_row < source_y || first_row >= visible_end) return 0;
     if (first_row < source_y) first_row = source_y;
     if (last_row >= visible_end) last_row = visible_end - 1u;
-    return edge_drm_present_rect(
-        framebuffer_id, 0u, first_row - source_y,
-        width, last_row - first_row + 1u);
+    rect.x = 0u;
+    rect.y = first_row - source_y;
+    rect.width = width;
+    rect.height = last_row - first_row + 1u;
+    if (edge_drm_present_source_rect(
+            source, rect.x, rect.y, rect.width, rect.height, 0) < 0)
+        return -EDGE_LINUX_EIO;
+    edge_drm_scanout_damage_add(batch, batch_count, &rect);
+    return 0;
 }
 
 void edge_drm_scanout_activity(void) {
     uint64_t now_us;
     uint64_t next_scanout_us;
+    uint64_t interval_us;
 
     /*
      * Direct scanout polling backs off while the screen is unchanged. Input
@@ -1610,10 +1847,11 @@ void edge_drm_scanout_activity(void) {
         &g_edge_drm_scanout_activity_sequence, 1u, __ATOMIC_RELEASE);
     __atomic_store_n(&g_edge_drm_scanout_idle_frames, 0u, __ATOMIC_RELEASE);
     now_us = boottime_monotonic_us();
+    interval_us = edge_drm_scanout_active_interval();
     next_scanout_us = __atomic_load_n(
         &g_edge_drm_next_scanout_us, __ATOMIC_ACQUIRE);
     if (next_scanout_us == 0u || next_scanout_us <= now_us ||
-        next_scanout_us - now_us > EDGE_DRM_SCANOUT_ACTIVE_INTERVAL_US) {
+        next_scanout_us - now_us > interval_us) {
         __atomic_store_n(
             &g_edge_drm_next_scanout_us, 0u, __ATOMIC_RELEASE);
         kernel_display_work_request();
@@ -1634,6 +1872,7 @@ int edge_drm_scanout_refresh_required(void) {
 
 static void edge_drm_pump_deferred_internal(int redraw_cursor,
                                             int explicit_commit) {
+    display_mode_t active_mode;
     edge_drm_framebuffer_t *framebuffer;
     edge_drm_buffer_t *buffer;
     edge_drm_buffer_t *tracked_buffer = 0;
@@ -1656,6 +1895,7 @@ static void edge_drm_pump_deferred_internal(int redraw_cursor,
     int changed = 0;
     uint64_t now_us;
 
+    (void)edge_drm_mode_available(&active_mode, 0);
     now_us = boottime_monotonic_us();
     edge_drm_pump_flip_events(now_us);
     if (!explicit_commit && g_edge_drm_next_scanout_us &&
@@ -1827,8 +2067,9 @@ static void edge_drm_pump_deferred_internal(int redraw_cursor,
                    edge_drm_dirty_page_test(changed_pages, page))
                 ++page;
             result = edge_drm_scanout_present_page_run(
-                framebuffer_id, first, page, pitch,
-                source_y, width, height);
+                &present_source, first, page, pitch,
+                source_y, width, height,
+                present_batch, &present_batch_count);
             if (result < 0) break;
         }
         edge_drm_scanout_invalidate();
@@ -1844,6 +2085,9 @@ static void edge_drm_pump_deferred_internal(int redraw_cursor,
             for (; page < EDGE_DRM_MAX_BUFFER_PAGES; ++page)
                 g_edge_drm_scanout_page_hash_valid[page] = 0u;
         }
+        edge_drm_scanout_flush_present(
+            present_batch, &present_batch_count,
+            redraw_cursor, framebuffer_id);
         goto schedule;
     }
     edge_drm_scanout_page_invalidate();
@@ -1904,33 +2148,32 @@ static void edge_drm_pump_deferred_internal(int redraw_cursor,
                     row * EDGE_DRM_SCANOUT_TILE_COLUMNS + retry] = 0u;
         }
     }
-    edge_drm_scanout_flush_batch(present_batch, &present_batch_count);
+    edge_drm_scanout_flush_present(
+        present_batch, &present_batch_count,
+        redraw_cursor, framebuffer_id);
 schedule:
-    if (__atomic_load_n(
-            &g_edge_drm_scanout_activity_sequence, __ATOMIC_ACQUIRE) !=
-        activity_sequence) {
-        g_edge_drm_scanout_idle_frames = 0;
-        g_edge_drm_next_scanout_us =
-            now_us + EDGE_DRM_SCANOUT_ACTIVE_INTERVAL_US;
-    } else if (changed) {
-        g_edge_drm_scanout_idle_frames = 0;
-        g_edge_drm_next_scanout_us =
-            now_us + EDGE_DRM_SCANOUT_ACTIVE_INTERVAL_US;
-    } else {
-        if (g_edge_drm_scanout_idle_frames <
-            EDGE_DRM_SCANOUT_IDLE_THRESHOLD)
-            ++g_edge_drm_scanout_idle_frames;
-        g_edge_drm_next_scanout_us =
-            now_us +
-            (g_edge_drm_scanout_idle_frames >=
-                     EDGE_DRM_SCANOUT_IDLE_THRESHOLD ?
-                 EDGE_DRM_SCANOUT_IDLE_INTERVAL_US :
-                 EDGE_DRM_SCANOUT_ACTIVE_INTERVAL_US);
-    }
-    if (changed && redraw_cursor) {
-        edge_drm_cursor_state_t cursor;
-        edge_drm_cursor_snapshot(&cursor);
-        if (cursor.fb_id) (void)edge_drm_cursor_draw(&cursor);
+    {
+        uint64_t interval_us = edge_drm_scanout_active_interval();
+
+        if (__atomic_load_n(
+                &g_edge_drm_scanout_activity_sequence, __ATOMIC_ACQUIRE) !=
+            activity_sequence) {
+            g_edge_drm_scanout_idle_frames = 0;
+            g_edge_drm_next_scanout_us = now_us + interval_us;
+        } else if (changed) {
+            g_edge_drm_scanout_idle_frames = 0;
+            g_edge_drm_next_scanout_us = now_us + interval_us;
+        } else {
+            if (g_edge_drm_scanout_idle_frames <
+                EDGE_DRM_SCANOUT_IDLE_THRESHOLD)
+                ++g_edge_drm_scanout_idle_frames;
+            g_edge_drm_next_scanout_us =
+                now_us +
+                (g_edge_drm_scanout_idle_frames >=
+                         EDGE_DRM_SCANOUT_IDLE_THRESHOLD ?
+                     EDGE_DRM_SCANOUT_IDLE_INTERVAL_US :
+                     interval_us);
+        }
     }
 out:
     __atomic_clear(&g_edge_drm_scanout_guard, __ATOMIC_RELEASE);
@@ -2172,7 +2415,7 @@ static int edge_drm_queue_flip_event(uint64_t identity,
          * already visible.
          */
         client->flip_due_us =
-            submitted_us + EDGE_DRM_SCANOUT_ACTIVE_INTERVAL_US;
+            submitted_us + edge_drm_scanout_active_interval();
     }
     edge_drm_unlock();
     return result;
@@ -2399,8 +2642,7 @@ static int64_t edge_drm_ioctl_get_crtc(
     crtc.mode_valid = g_edge_drm_crtc_active ? 1u : 0u;
     edge_drm_unlock();
     crtc.gamma_size = 0;
-    edge_drm_fill_mode(&crtc.mode, current.width, current.height,
-                       current.refresh_millihz, 1);
+    edge_drm_fill_mode(&crtc.mode, &current, 1);
     return edge_drm_copy_to(request, request->argument, &crtc,
                             sizeof(crtc)) < 0 ?
         -EDGE_LINUX_EFAULT : 0;
@@ -2481,17 +2723,17 @@ static int64_t edge_drm_ioctl_set_crtc(
     if (result < 0) return result;
     if (!edge_drm_mode_available(&current, 0))
         return -EDGE_LINUX_ENODEV;
-    if (crtc.mode.hdisplay != current.width ||
-        crtc.mode.vdisplay != current.height) {
-        memset(&requested_mode, 0, sizeof(requested_mode));
-        requested_mode.width = crtc.mode.hdisplay;
-        requested_mode.height = crtc.mode.vdisplay;
-        requested_mode.refresh_millihz =
-            crtc.mode.vrefresh ? crtc.mode.vrefresh * 1000u : 60000u;
+    edge_drm_display_mode_from_modeinfo(&crtc.mode, &requested_mode);
+    if (requested_mode.width != current.width ||
+        requested_mode.height != current.height ||
+        requested_mode.refresh_millihz != current.refresh_millihz) {
         if (requested_mode.width > EDGE_DRM_MAX_WIDTH ||
             requested_mode.height > EDGE_DRM_MAX_HEIGHT ||
             display_backend_set_mode(&requested_mode) < 0)
             return -EDGE_LINUX_EINVAL;
+        __atomic_store_n(&g_edge_drm_scanout_interval_us,
+                         display_mode_frame_interval_us(&requested_mode),
+                         __ATOMIC_RELEASE);
     }
     if (framebuffer.width < crtc.x + crtc.mode.hdisplay ||
         framebuffer.height < crtc.y + crtc.mode.vdisplay)
@@ -2541,11 +2783,16 @@ static int64_t edge_drm_ioctl_connector(
     uint64_t identity, const kernel_ioctl_request_t *request) {
     edge_drm_connector_t connector;
     edge_drm_modeinfo_t modes[EDGE_DRM_MODE_COUNT];
-    uint32_t property_ids[3];
-    uint64_t property_values[3];
+    uint32_t property_ids[4];
+    uint64_t property_values[4];
     uint32_t property_count = 0;
     uint32_t mode_count;
     uint32_t count;
+    uint8_t edid[DISPLAY_MODE_EDID_MAX_BYTES];
+    display_mode_t edid_modes[DISPLAY_MODE_EDID_MAX_MODES];
+    uint32_t edid_size;
+    uint32_t width_mm = 0u;
+    uint32_t height_mm = 0u;
 
     if (!request->argument ||
         edge_drm_copy_from(request, &connector, request->argument,
@@ -2555,6 +2802,12 @@ static int64_t edge_drm_ioctl_connector(
         return -EDGE_LINUX_ENOENT;
     mode_count = edge_drm_collect_modes(modes);
     if (!mode_count) return -EDGE_LINUX_ENODEV;
+    edid_size = display_backend_get_edid(edid, sizeof(edid));
+    if (edid_size > sizeof(edid))
+        edid_size = sizeof(edid);
+    if (edid_size)
+        (void)display_edid_parse(edid, edid_size, edid_modes,
+            DISPLAY_MODE_EDID_MAX_MODES, &width_mm, &height_mm);
     count = edge_drm_min_u32(connector.count_modes, mode_count);
     if (count && (!connector.modes_ptr ||
         edge_drm_copy_to(request, connector.modes_ptr, modes,
@@ -2576,6 +2829,10 @@ static int64_t edge_drm_ioctl_connector(
     }
     property_ids[property_count] = EDGE_DRM_PROP_NON_DESKTOP;
     property_values[property_count++] = 0u;
+    if (edid_size) {
+        property_ids[property_count] = EDGE_DRM_PROP_EDID;
+        property_values[property_count++] = EDGE_DRM_EDID_BLOB_ID;
+    }
     edge_drm_unlock();
     count = edge_drm_min_u32(connector.count_props, property_count);
     if (count && (!connector.props_ptr || !connector.prop_values_ptr ||
@@ -2591,8 +2848,10 @@ static int64_t edge_drm_ioctl_connector(
     connector.connector_type = EDGE_DRM_MODE_CONNECTOR_VIRTUAL;
     connector.connector_type_id = 1u;
     connector.connection = EDGE_DRM_MODE_CONNECTED;
-    connector.mm_width = (modes[0].hdisplay * 254u + 480u) / 960u;
-    connector.mm_height = (modes[0].vdisplay * 254u + 480u) / 960u;
+    connector.mm_width = width_mm ? width_mm :
+        (modes[0].hdisplay * 254u + 480u) / 960u;
+    connector.mm_height = height_mm ? height_mm :
+        (modes[0].vdisplay * 254u + 480u) / 960u;
     connector.subpixel = EDGE_DRM_MODE_SUBPIXEL_UNKNOWN;
     connector.pad = 0;
     return edge_drm_copy_to(request, request->argument, &connector,
@@ -2659,6 +2918,10 @@ static int edge_drm_object_properties_locked(
         values[count++] = 0u;
         ids[count] = EDGE_DRM_PROP_NON_DESKTOP;
         values[count++] = 0u;
+        if (display_backend_get_edid(0, 0u)) {
+            ids[count] = EDGE_DRM_PROP_EDID;
+            values[count++] = EDGE_DRM_EDID_BLOB_ID;
+        }
     } else if (object_id == EDGE_DRM_CRTC_ID &&
                object_type == EDGE_DRM_MODE_OBJECT_CRTC) {
         ids[count] = EDGE_DRM_PROP_CRTC_MODE_ID;
@@ -2797,8 +3060,7 @@ static int edge_drm_blob_snapshot(uint32_t id, uint8_t *data,
         edge_drm_modeinfo_t current;
         if (!edge_drm_mode_available(&mode, 0))
             return -EDGE_LINUX_ENODEV;
-        edge_drm_fill_mode(&current, mode.width, mode.height,
-                           mode.refresh_millihz, 1);
+        edge_drm_fill_mode(&current, &mode, 1);
         memcpy(data, &current, sizeof(current));
         *length = sizeof(current);
         return 0;
@@ -2818,6 +3080,16 @@ static int edge_drm_blob_snapshot(uint32_t id, uint8_t *data,
         formats.linear.modifier = 0u;
         memcpy(data, &formats, sizeof(formats));
         *length = sizeof(formats);
+        return 0;
+    }
+    if (id == EDGE_DRM_EDID_BLOB_ID) {
+        uint32_t size = display_backend_get_edid(
+            data, EDGE_DRM_BLOB_CAPACITY);
+        if (!size)
+            return -EDGE_LINUX_ENOENT;
+        if (size > EDGE_DRM_BLOB_CAPACITY)
+            size = EDGE_DRM_BLOB_CAPACITY;
+        *length = size;
         return 0;
     }
     edge_drm_lock();
@@ -3733,11 +4005,11 @@ static int64_t edge_drm_ioctl_set_plane(
         next_cursor.crtc_y = plane.crtc_y;
         next_cursor.crtc_w = plane.crtc_w;
         next_cursor.crtc_h = plane.crtc_h;
-        (void)edge_drm_cursor_restore(&previous_cursor, primary_fb_id);
         edge_drm_lock();
         g_edge_drm_cursor = next_cursor;
         edge_drm_unlock();
-        return edge_drm_cursor_draw(&next_cursor);
+        return edge_drm_cursor_transition(
+            &previous_cursor, &next_cursor, primary_fb_id);
     }
     if (!plane.crtc_id && !plane.fb_id) {
         edge_drm_lock();
@@ -3834,6 +4106,22 @@ static void edge_drm_atomic_cursor_state(
     cursor->crtc_y = state->cursor_crtc_y;
     cursor->crtc_w = state->cursor_crtc_w;
     cursor->crtc_h = state->cursor_crtc_h;
+}
+
+static int edge_drm_cursor_state_equal(
+    const edge_drm_cursor_state_t *left,
+    const edge_drm_cursor_state_t *right) {
+    if (!left || !right) return 0;
+    return left->fb_id == right->fb_id &&
+           left->crtc_id == right->crtc_id &&
+           left->src_x == right->src_x &&
+           left->src_y == right->src_y &&
+           left->src_w == right->src_w &&
+           left->src_h == right->src_h &&
+           left->crtc_x == right->crtc_x &&
+           left->crtc_y == right->crtc_y &&
+           left->crtc_w == right->crtc_w &&
+           left->crtc_h == right->crtc_h;
 }
 
 static int edge_drm_atomic_set_property(
@@ -3969,7 +4257,10 @@ static int edge_drm_mode_supported(const edge_drm_modeinfo_t *requested) {
     count = edge_drm_collect_modes(modes);
     for (uint32_t index = 0; index < count; ++index)
         if (modes[index].hdisplay == requested->hdisplay &&
-            modes[index].vdisplay == requested->vdisplay)
+            modes[index].vdisplay == requested->vdisplay &&
+            (!requested->vrefresh ||
+             modes[index].vrefresh == requested->vrefresh) &&
+            ((modes[index].flags ^ requested->flags) & (1u << 4)) == 0)
             return 1;
     return 0;
 }
@@ -4119,6 +4410,8 @@ static int64_t edge_drm_ioctl_atomic(
     uint32_t property_total = 0;
     uint32_t property_cursor = 0;
     uint64_t submitted_us;
+    int cursor_changed;
+    int cursor_only;
     int primary_changed;
     int primary_plane_touched = 0;
     int mode_blob_referenced = 0;
@@ -4198,6 +4491,8 @@ static int64_t edge_drm_ioctl_atomic(
     if (command.flags & EDGE_DRM_MODE_ATOMIC_TEST_ONLY) goto out;
     edge_drm_atomic_cursor_state(&previous, &previous_cursor);
     edge_drm_atomic_cursor_state(&state, &next_cursor);
+    cursor_changed = !edge_drm_cursor_state_equal(
+        &previous_cursor, &next_cursor);
     primary_changed =
         previous.plane_fb_id != state.plane_fb_id ||
         previous.plane_crtc_id != state.plane_crtc_id ||
@@ -4209,6 +4504,8 @@ static int64_t edge_drm_ioctl_atomic(
         previous.crtc_h != state.crtc_h ||
         previous.crtc_active != state.crtc_active ||
         previous.mode_blob_id != state.mode_blob_id;
+    cursor_only = cursor_changed && !primary_changed &&
+        !state.damage_blob_id && !primary_plane_touched;
     if (state.mode_blob_id != previous.mode_blob_id &&
         state.mode_blob_id >= EDGE_DRM_BLOB_ID_BASE) {
         edge_drm_lock();
@@ -4222,23 +4519,24 @@ static int64_t edge_drm_ioctl_atomic(
         edge_drm_unlock();
     }
 
-    if (state.crtc_active &&
-        (requested_mode.hdisplay != current.width ||
-         requested_mode.vdisplay != current.height)) {
+    if (state.crtc_active) {
         display_mode_t requested;
-        memset(&requested, 0, sizeof(requested));
-        requested.width = requested_mode.hdisplay;
-        requested.height = requested_mode.vdisplay;
-        requested.refresh_millihz = requested_mode.vrefresh ?
-            requested_mode.vrefresh * 1000u : 60000u;
-        if (display_backend_set_mode(&requested) < 0) {
+        edge_drm_display_mode_from_modeinfo(&requested_mode, &requested);
+        if ((requested.width != current.width ||
+             requested.height != current.height ||
+             requested.refresh_millihz != current.refresh_millihz) &&
+            display_backend_set_mode(&requested) < 0) {
             result = -EDGE_LINUX_EINVAL;
             goto out;
         }
+        __atomic_store_n(&g_edge_drm_scanout_interval_us,
+                         display_mode_frame_interval_us(&requested),
+                         __ATOMIC_RELEASE);
     }
 
-    (void)edge_drm_cursor_restore(
-        &previous_cursor, previous.plane_fb_id);
+    if (!cursor_only)
+        (void)edge_drm_cursor_restore(
+            &previous_cursor, previous.plane_fb_id);
     edge_drm_lock();
     if (state.mode_blob_id != previous.mode_blob_id) {
         if (!mode_blob_referenced)
@@ -4271,7 +4569,11 @@ static int64_t edge_drm_ioctl_atomic(
             state.plane_fb_id, state.damage_blob_id);
         if (result < 0) goto out;
     }
-    if (next_cursor.fb_id) {
+    if (cursor_only) {
+        result = edge_drm_cursor_transition(
+            &previous_cursor, &next_cursor, previous.plane_fb_id);
+        if (result < 0) goto out;
+    } else if (next_cursor.fb_id) {
         result = edge_drm_cursor_draw(&next_cursor);
         if (result < 0) goto out;
     }

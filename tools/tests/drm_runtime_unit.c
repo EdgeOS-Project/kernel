@@ -264,13 +264,17 @@ typedef struct {
 
 typedef struct {
     display_mode_t mode;
+    display_mode_t modes[2];
+    uint32_t mode_count;
     uint32_t polls;
+    uint8_t edid[128];
 } test_display_t;
 
 fb_t fb;
 
 static uint8_t g_scanout[640u * 480u * 4u];
 static uint32_t g_flushes;
+static uint32_t g_last_flush_rect_count;
 static uint32_t g_writeprotect_calls;
 static uint64_t g_flush_advance_us;
 static uint64_t g_now_us = 1234567u;
@@ -338,18 +342,20 @@ void fb_flush_rect(int x, int y, int width, int height) {
     assert(x >= 0 && y >= 0);
     assert(width > 0 && height > 0);
     g_flushes++;
+    g_last_flush_rect_count = 1u;
     g_now_us += g_flush_advance_us;
     g_flush_advance_us = 0;
 }
 
 void fb_flush_rects(const display_rect_t *rects, uint32_t count) {
     assert(rects != NULL);
-    assert(count > 1u);
+    assert(count > 0u);
     for (uint32_t index = 0; index < count; ++index) {
         assert(rects[index].width > 0u);
         assert(rects[index].height > 0u);
     }
     g_flushes++;
+    g_last_flush_rect_count = count;
     g_now_us += g_flush_advance_us;
     g_flush_advance_us = 0;
 }
@@ -376,6 +382,28 @@ static int test_get_mode(void *context, display_mode_t *mode) {
     test_display_t *display = context;
     *mode = display->mode;
     return 0;
+}
+
+static uint32_t test_get_modes(void *context, display_mode_t *modes,
+                               uint32_t capacity) {
+    test_display_t *display = context;
+    uint32_t count = display->mode_count < capacity ?
+        display->mode_count : capacity;
+
+    for (uint32_t index = 0; modes && index < count; ++index)
+        modes[index] = display->modes[index];
+    return display->mode_count;
+}
+
+static uint32_t test_get_edid(void *context, uint8_t *edid,
+                              uint32_t capacity) {
+    test_display_t *display = context;
+    uint32_t count = capacity < sizeof(display->edid) ?
+        capacity : sizeof(display->edid);
+
+    if (edid && count)
+        memcpy(edid, display->edid, count);
+    return sizeof(display->edid);
 }
 
 static int test_set_mode(void *context, const display_mode_t *mode) {
@@ -435,6 +463,20 @@ int main(void) {
             .height = 480u,
             .refresh_millihz = 60000u,
         },
+        .modes = {
+            {
+                .width = 640u,
+                .height = 480u,
+                .refresh_millihz = 60000u,
+            },
+            {
+                .width = 7680u,
+                .height = 4320u,
+                .refresh_millihz = 1000000u,
+                .flags = DISPLAY_MODE_PREFERRED,
+            },
+        },
+        .mode_count = 2u,
     };
     int owner;
     display_backend_t backend = {
@@ -444,6 +486,8 @@ int main(void) {
         .flags = DISPLAY_BACKEND_DYNAMIC_MODE,
         .operations = {
             .get_mode = test_get_mode,
+            .get_modes = test_get_modes,
+            .get_edid = test_get_edid,
             .set_mode = test_set_mode,
             .poll = test_poll,
         },
@@ -469,14 +513,25 @@ int main(void) {
         .width = 2048u,
         .bpp = 24u,
     };
+    test_drm_create_dumb_t cursor_buffer = {
+        .height = 16u,
+        .width = 16u,
+        .bpp = 32u,
+    };
     test_drm_map_dumb_t first_map;
     test_drm_map_dumb_t second_map;
+    test_drm_map_dumb_t cursor_map;
     test_drm_fb_cmd2_t first_fb = {
         .width = 640u,
         .height = 480u,
         .pixel_format = DRM_FORMAT_XRGB8888,
     };
     test_drm_fb_cmd2_t second_fb = first_fb;
+    test_drm_fb_cmd2_t cursor_fb = {
+        .width = 16u,
+        .height = 16u,
+        .pixel_format = DRM_FORMAT_ARGB8888,
+    };
     test_drm_fb_cmd2_t cross_imported_fb = first_fb;
     uint32_t connector_id = 1u;
     test_drm_crtc_t crtc = {
@@ -531,6 +586,7 @@ int main(void) {
         .length = sizeof(modes[0]),
     };
     test_drm_get_blob_t get_blob;
+    uint8_t edid_blob[128];
     test_drm_destroy_blob_t destroy_blob;
     test_drm_obj_set_property_t wrong_type_property = {
         .value = 0u,
@@ -588,6 +644,23 @@ int main(void) {
     };
 
     memset(&fb, 0, sizeof(fb));
+    display.edid[0] = 0x00u;
+    memset(display.edid + 1u, 0xff, 6u);
+    display.edid[7] = 0x00u;
+    display.edid[18] = 1u;
+    display.edid[19] = 4u;
+    display.edid[21] = 60u;
+    display.edid[22] = 34u;
+    for (uint32_t index = 38u; index < 54u; index += 2u) {
+        display.edid[index] = 0x01u;
+        display.edid[index + 1u] = 0x01u;
+    }
+    {
+        uint8_t checksum = 0u;
+        for (uint32_t index = 0; index < 127u; ++index)
+            checksum = (uint8_t)(checksum + display.edid[index]);
+        display.edid[127] = (uint8_t)(0u - checksum);
+    }
     fb.addr = g_scanout;
     fb.width = 640u;
     fb.height = 480u;
@@ -624,13 +697,25 @@ int main(void) {
     assert(test_ioctl(client, DRM_IOCTL_MODE_GETCONNECTOR, &connector) == 0);
     assert(connector.connection == 1u);
     assert(connector.count_modes > 1u);
-    assert(connector.count_props == 1u);
+    assert(connector.count_props == 2u);
+    assert(connector.mm_width == 600u && connector.mm_height == 340u);
     assert(modes[0].hdisplay == 640u && modes[0].vdisplay == 480u);
+    assert(modes[1].hdisplay == 7680u && modes[1].vdisplay == 4320u);
+    assert(modes[1].vrefresh == 1000u);
     assert(test_ioctl(client, DRM_IOCTL_MODE_OBJ_GETPROPERTIES,
                       &legacy_connector_properties) == 0);
-    assert(legacy_connector_properties.count_props == 1u);
+    assert(legacy_connector_properties.count_props == 2u);
     assert(legacy_property_ids[0] == 12u);
     assert(legacy_property_values[0] == 0u);
+    assert(legacy_property_ids[1] == 13u);
+    assert(legacy_property_values[1] == 42u);
+    memset(&get_blob, 0, sizeof(get_blob));
+    get_blob.blob_id = 42u;
+    get_blob.length = sizeof(edid_blob);
+    get_blob.data = (uint64_t)(uintptr_t)edid_blob;
+    assert(test_ioctl(client, DRM_IOCTL_MODE_GETPROPBLOB, &get_blob) == 0);
+    assert(get_blob.length == sizeof(edid_blob));
+    assert(memcmp(edid_blob, display.edid, sizeof(edid_blob)) == 0);
     assert(test_ioctl(client, DRM_IOCTL_GET_CAP, &cursor_width) == 0);
     assert(test_ioctl(client, DRM_IOCTL_GET_CAP, &cursor_height) == 0);
     assert(cursor_width.value == 64u);
@@ -638,6 +723,8 @@ int main(void) {
 
     assert(test_ioctl(client, DRM_IOCTL_MODE_CREATE_DUMB, &first) == 0);
     assert(test_ioctl(client, DRM_IOCTL_MODE_CREATE_DUMB, &second) == 0);
+    assert(test_ioctl(client, DRM_IOCTL_MODE_CREATE_DUMB,
+                      &cursor_buffer) == 0);
     assert(test_ioctl(client, DRM_IOCTL_MODE_CREATE_DUMB,
                       &compatibility) == 0);
     assert(compatibility.pitch >= 2048u * 3u);
@@ -660,19 +747,25 @@ int main(void) {
     assert(cross_imported.handle != first.handle);
     first_map.handle = first.handle;
     second_map.handle = second.handle;
+    cursor_map.handle = cursor_buffer.handle;
     assert(test_ioctl(client, DRM_IOCTL_MODE_MAP_DUMB, &first_map) == 0);
     assert(test_ioctl(client, DRM_IOCTL_MODE_MAP_DUMB, &second_map) == 0);
+    assert(test_ioctl(client, DRM_IOCTL_MODE_MAP_DUMB, &cursor_map) == 0);
     test_fill_buffer(client, &first, &first_map, 0x00112233u);
     test_fill_buffer(client, &second, &second_map, 0x00445566u);
+    test_fill_buffer(client, &cursor_buffer, &cursor_map, 0xffff0000u);
 
     first_fb.handles[0] = first.handle;
     first_fb.pitches[0] = first.pitch;
     second_fb.handles[0] = second.handle;
     second_fb.pitches[0] = second.pitch;
+    cursor_fb.handles[0] = cursor_buffer.handle;
+    cursor_fb.pitches[0] = cursor_buffer.pitch;
     cross_imported_fb.handles[0] = cross_imported.handle;
     cross_imported_fb.pitches[0] = first.pitch;
     assert(test_ioctl(client, DRM_IOCTL_MODE_ADDFB2, &first_fb) == 0);
     assert(test_ioctl(client, DRM_IOCTL_MODE_ADDFB2, &second_fb) == 0);
+    assert(test_ioctl(client, DRM_IOCTL_MODE_ADDFB2, &cursor_fb) == 0);
     assert(test_ioctl(importing_client, DRM_IOCTL_MODE_ADDFB2,
                       &cross_imported_fb) == 0);
     crtc.fb_id = cross_imported_fb.fb_id;
@@ -842,6 +935,97 @@ int main(void) {
     assert(edge_drm_read(client, &event, sizeof(event)) ==
            (int64_t)sizeof(event));
     assert(event.user_data == atomic.user_data);
+
+    {
+        uint32_t cursor_object = 5u;
+        uint32_t cursor_count = 10u;
+        uint32_t cursor_properties_to_set[10] = {
+            30u, 31u, 32u, 33u, 34u,
+            35u, 36u, 37u, 38u, 39u,
+        };
+        uint64_t cursor_values_to_set[10] = {
+            cursor_fb.fb_id, 3u, 0u, 0u,
+            (uint64_t)16u << 16, (uint64_t)16u << 16,
+            10u, 10u, 16u, 16u,
+        };
+        test_drm_atomic_t cursor_enable = {
+            .count_objs = 1u,
+            .objs_ptr = (uint64_t)(uintptr_t)&cursor_object,
+            .count_props_ptr = (uint64_t)(uintptr_t)&cursor_count,
+            .props_ptr =
+                (uint64_t)(uintptr_t)cursor_properties_to_set,
+            .prop_values_ptr =
+                (uint64_t)(uintptr_t)cursor_values_to_set,
+        };
+        uint32_t move_count = 2u;
+        uint32_t move_properties[2] = { 36u, 37u };
+        uint64_t move_values[2] = { 100u, 100u };
+        test_drm_atomic_t cursor_move = {
+            .count_objs = 1u,
+            .objs_ptr = (uint64_t)(uintptr_t)&cursor_object,
+            .count_props_ptr = (uint64_t)(uintptr_t)&move_count,
+            .props_ptr = (uint64_t)(uintptr_t)move_properties,
+            .prop_values_ptr = (uint64_t)(uintptr_t)move_values,
+        };
+        uint32_t disable_count = 2u;
+        uint32_t disable_properties[2] = { 30u, 31u };
+        uint64_t disable_values[2] = { 0u, 0u };
+        test_drm_atomic_t cursor_disable = {
+            .count_objs = 1u,
+            .objs_ptr = (uint64_t)(uintptr_t)&cursor_object,
+            .count_props_ptr = (uint64_t)(uintptr_t)&disable_count,
+            .props_ptr = (uint64_t)(uintptr_t)disable_properties,
+            .prop_values_ptr = (uint64_t)(uintptr_t)disable_values,
+        };
+        uint32_t old_offset = (10u * 640u + 10u) * 4u;
+        uint32_t new_offset = (100u * 640u + 100u) * 4u;
+        uint32_t flushes_before_cursor;
+
+        flushes_before_cursor = g_flushes;
+        assert(test_ioctl(client, DRM_IOCTL_MODE_ATOMIC,
+                          &cursor_enable) == 0);
+        assert(g_flushes == flushes_before_cursor + 1u);
+        assert(g_last_flush_rect_count == 1u);
+        assert(g_scanout[old_offset + 2u] == 0xffu);
+
+        {
+            uint32_t pixel = 11u * 640u + 11u;
+            uint32_t page = pixel / (4096u / sizeof(uint32_t));
+            uint32_t index = pixel % (4096u / sizeof(uint32_t));
+            uint32_t *mapped_page = 0;
+
+            assert(edge_drm_mmap_page(
+                       client, second_map.offset, page,
+                       (void **)&mapped_page) == 0);
+            mapped_page[index] = 0x00010203u;
+            g_now_us += 20000u;
+            edge_drm_scanout_activity();
+            flushes_before_cursor = g_flushes;
+            edge_drm_pump_deferred();
+            assert(g_flushes == flushes_before_cursor + 1u);
+            assert(g_last_flush_rect_count == 2u);
+            assert(g_scanout[old_offset + 2u] == 0xffu);
+        }
+
+        flushes_before_cursor = g_flushes;
+        assert(test_ioctl(client, DRM_IOCTL_MODE_ATOMIC,
+                          &cursor_move) == 0);
+        assert(g_flushes == flushes_before_cursor + 1u);
+        assert(g_last_flush_rect_count == 2u);
+        assert(g_scanout[old_offset] == 0x66u);
+        assert(g_scanout[old_offset + 1u] == 0x55u);
+        assert(g_scanout[old_offset + 2u] == 0x44u);
+        assert(g_scanout[new_offset + 2u] == 0xffu);
+
+        flushes_before_cursor = g_flushes;
+        assert(test_ioctl(client, DRM_IOCTL_MODE_ATOMIC,
+                          &cursor_disable) == 0);
+        assert(g_flushes == flushes_before_cursor + 1u);
+        assert(g_last_flush_rect_count == 1u);
+        assert(g_scanout[new_offset] == 0x66u);
+        assert(g_scanout[new_offset + 1u] == 0x55u);
+        assert(g_scanout[new_offset + 2u] == 0x44u);
+    }
 
     {
         uint32_t primary_object = 4u;

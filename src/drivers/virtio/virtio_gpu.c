@@ -62,6 +62,7 @@
 #include "kernel/boot_command_line.h"
 #include "kernel/deferred_work.h"
 #include "kernel/virtgpu_runtime.h"
+#include "mm/arch_vm.h"
 
 #include "display.h"
 #include "fb.h"
@@ -166,9 +167,13 @@
 #define VIRTIO_GPU_QUEUE_SIZE 64u
 #define VIRTIO_GPU_RING_BYTES 16384u
 #define VIRTIO_GPU_RESOURCE_ID 1u
-#define VIRTIO_GPU_FB_MAX_WIDTH 1920u
-#define VIRTIO_GPU_FB_MAX_HEIGHT 1080u
-#define VIRTIO_GPU_FB_MAX_BYTES (VIRTIO_GPU_FB_MAX_WIDTH * VIRTIO_GPU_FB_MAX_HEIGHT * 4u)
+#define VIRTIO_GPU_FB_MAX_WIDTH 7680u
+#define VIRTIO_GPU_FB_MAX_HEIGHT 4320u
+#define VIRTIO_GPU_BOOT_FB_WIDTH 1920u
+#define VIRTIO_GPU_BOOT_FB_HEIGHT 1080u
+#define VIRTIO_GPU_BOOT_FB_BYTES \
+    (VIRTIO_GPU_BOOT_FB_WIDTH * VIRTIO_GPU_BOOT_FB_HEIGHT * 4u)
+#define VIRTIO_GPU_PAGE_SIZE 4096u
 #define VIRTIO_GPU_PRESENT_BATCH_RECTS 8u
 #define VIRTIO_GPU_PRESENT_INFLIGHT_SLOTS 2u
 #define VIRTIO_GPU_PRESENT_PENDING_SLOT 2u
@@ -189,6 +194,7 @@
 #define VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING 0x0107u
 #define VIRTIO_GPU_CMD_GET_CAPSET_INFO        0x0108u
 #define VIRTIO_GPU_CMD_GET_CAPSET             0x0109u
+#define VIRTIO_GPU_CMD_GET_EDID               0x010au
 #define VIRTIO_GPU_CMD_CTX_CREATE             0x0200u
 #define VIRTIO_GPU_CMD_CTX_DESTROY            0x0201u
 #define VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE    0x0202u
@@ -201,6 +207,7 @@
 #define VIRTIO_GPU_RESP_OK_DISPLAY_INFO       0x1101u
 #define VIRTIO_GPU_RESP_OK_CAPSET_INFO        0x1102u
 #define VIRTIO_GPU_RESP_OK_CAPSET             0x1103u
+#define VIRTIO_GPU_RESP_OK_EDID               0x1104u
 
 #define VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM 2u
 #define VIRTIO_GPU_MAX_SCANOUTS 16u
@@ -304,6 +311,19 @@ struct virtio_gpu_resp_display_info {
         uint32_t enabled;
         uint32_t flags;
     } pmodes[VIRTIO_GPU_MAX_SCANOUTS];
+} __attribute__((packed));
+
+struct virtio_gpu_get_edid {
+    struct virtio_gpu_ctrl_hdr hdr;
+    uint32_t scanout;
+    uint32_t padding;
+} __attribute__((packed));
+
+struct virtio_gpu_resp_edid {
+    struct virtio_gpu_ctrl_hdr hdr;
+    uint32_t size;
+    uint32_t padding;
+    uint8_t edid[DISPLAY_MODE_EDID_MAX_BYTES];
 } __attribute__((packed));
 
 struct virtio_gpu_get_capset_info {
@@ -429,6 +449,12 @@ typedef struct {
     uint32_t num_capsets;
     uint32_t width;
     uint32_t height;
+    uint32_t refresh_millihz;
+    uint32_t scanout_id;
+    uint32_t mode_count;
+    uint32_t width_mm;
+    uint32_t height_mm;
+    uint32_t edid_size;
     uint32_t scanout_resource_id;
     uint32_t scanout_width;
     uint32_t scanout_height;
@@ -437,6 +463,8 @@ typedef struct {
     uint64_t supported_capsets;
     uint32_t maximum_capset_size;
     uint64_t negotiated_features;
+    display_mode_t modes[DISPLAY_MODE_EDID_MAX_MODES];
+    uint8_t edid[DISPLAY_MODE_EDID_MAX_BYTES];
     virtio_gpu_capset_t capsets[VIRTIO_GPU_CAPSET_COUNT];
     virtio_gpu_queue_t ctrlq;
 } virtio_gpu_dev_t;
@@ -547,8 +575,58 @@ static void virtio_gpu_cpu_relax(void) {
 #else
 #define VIRTIO_GPU_FB_ALIGNMENT 4096u
 #endif
-static uint8_t g_vtgpu_fb[VIRTIO_GPU_FB_MAX_BYTES]
+static uint8_t g_vtgpu_boot_fb[VIRTIO_GPU_BOOT_FB_BYTES]
     __attribute__((aligned(VIRTIO_GPU_FB_ALIGNMENT)));
+static uint8_t *g_vtgpu_fb = g_vtgpu_boot_fb;
+static uint32_t g_vtgpu_fb_capacity = sizeof(g_vtgpu_boot_fb);
+static uint8_t *g_vtgpu_fb_allocation;
+static uint32_t g_vtgpu_fb_allocation_pages;
+
+static uint32_t
+virtio_gpu_framebuffer_bytes(uint32_t width, uint32_t height)
+{
+    uint64_t bytes = (uint64_t)width * height * 4u;
+
+    return bytes && bytes <= UINT32_MAX ? (uint32_t)bytes : 0u;
+}
+
+static uint8_t *
+virtio_gpu_framebuffer_allocate(uint32_t bytes, uint8_t **allocation_out,
+                                uint32_t *allocation_pages_out,
+                                uint32_t *capacity_out)
+{
+    uint32_t data_pages;
+    uint32_t alignment_pages;
+    uint32_t allocation_pages;
+    uint8_t *allocation;
+    uintptr_t aligned;
+
+    if (!bytes || !allocation_out || !allocation_pages_out || !capacity_out)
+        return 0;
+    data_pages =
+        (bytes + VIRTIO_GPU_PAGE_SIZE - 1u) / VIRTIO_GPU_PAGE_SIZE;
+    alignment_pages = VIRTIO_GPU_FB_ALIGNMENT / VIRTIO_GPU_PAGE_SIZE;
+    allocation_pages = data_pages + alignment_pages - 1u;
+    allocation = arch_vm_alloc_pages(allocation_pages);
+    if (!allocation)
+        return 0;
+    aligned = ((uintptr_t)allocation + VIRTIO_GPU_FB_ALIGNMENT - 1u) &
+        ~((uintptr_t)VIRTIO_GPU_FB_ALIGNMENT - 1u);
+    *allocation_out = allocation;
+    *allocation_pages_out = allocation_pages;
+    *capacity_out = data_pages * VIRTIO_GPU_PAGE_SIZE;
+    return (uint8_t *)aligned;
+}
+
+static void
+virtio_gpu_framebuffer_release(uint8_t *allocation, uint32_t pages)
+{
+    if (!allocation)
+        return;
+    for (uint32_t page = 0; page < pages; ++page)
+        arch_vm_free_page(
+            allocation + (uint64_t)page * VIRTIO_GPU_PAGE_SIZE);
+}
 
 static uint64_t virtio_gpu_dma_addr(const void *ptr) {
     uintptr_t va = (uintptr_t)ptr;
@@ -1403,7 +1481,7 @@ static int virtio_gpu_parse_u32(const char **sp, uint32_t *out) {
 
     while (virtio_gpu_digit(*s)) {
         uint32_t d = (uint32_t)(*s - '0');
-        if (v > 100000u) return -1;
+        if (v > (UINT32_MAX - d) / 10u) return -1;
         v = v * 10u + d;
         saw = 1;
         s++;
@@ -1414,9 +1492,12 @@ static int virtio_gpu_parse_u32(const char **sp, uint32_t *out) {
     return 0;
 }
 
-static int virtio_gpu_parse_mode(const char *s, uint32_t *width_out, uint32_t *height_out) {
+static int virtio_gpu_parse_mode(const char *s, uint32_t *width_out,
+                                 uint32_t *height_out,
+                                 uint32_t *refresh_out) {
     uint32_t w = 0;
     uint32_t h = 0;
+    uint32_t refresh = 0;
     const char *p = s;
 
     while (*p && !virtio_gpu_digit(*p)) p++;
@@ -1424,6 +1505,12 @@ static int virtio_gpu_parse_mode(const char *s, uint32_t *width_out, uint32_t *h
     if (*p != 'x' && *p != 'X') return -1;
     p++;
     if (virtio_gpu_parse_u32(&p, &h) < 0) return -1;
+    if (*p == '@') {
+        p++;
+        if (virtio_gpu_parse_u32(&p, &refresh) < 0 ||
+            !refresh || refresh > UINT32_MAX / 1000u)
+            return -1;
+    }
 
     if (w < 320u || h < 200u ||
         w > VIRTIO_GPU_FB_MAX_WIDTH || h > VIRTIO_GPU_FB_MAX_HEIGHT) {
@@ -1431,10 +1518,12 @@ static int virtio_gpu_parse_mode(const char *s, uint32_t *width_out, uint32_t *h
     }
     *width_out = w;
     *height_out = h;
+    if (refresh_out) *refresh_out = refresh * 1000u;
     return 0;
 }
 
-static int virtio_gpu_cmdline_mode(uint32_t *width_out, uint32_t *height_out) {
+static int virtio_gpu_cmdline_mode(uint32_t *width_out, uint32_t *height_out,
+                                   uint32_t *refresh_out) {
     const char *cmd = kernel_boot_command_line_get();
     const char *p = cmd;
 
@@ -1444,14 +1533,18 @@ static int virtio_gpu_cmdline_mode(uint32_t *width_out, uint32_t *height_out) {
         if (!*p) break;
 
         if (strncmp(p, "edgeos.video=", 13) == 0) {
-            if (virtio_gpu_parse_mode(p + 13, width_out, height_out) == 0) return 0;
+            if (virtio_gpu_parse_mode(
+                    p + 13, width_out, height_out, refresh_out) == 0)
+                return 0;
         } else if (strncmp(p, "video=", 6) == 0) {
             const char *mode = p + 6;
             const char *colon = mode;
 
             while (*colon && *colon != ' ' && *colon != ':') colon++;
             if (*colon == ':') mode = colon + 1;
-            if (virtio_gpu_parse_mode(mode, width_out, height_out) == 0) return 0;
+            if (virtio_gpu_parse_mode(
+                    mode, width_out, height_out, refresh_out) == 0)
+                return 0;
         }
 
         while (*p && *p != ' ') p++;
@@ -1462,11 +1555,16 @@ static int virtio_gpu_cmdline_mode(uint32_t *width_out, uint32_t *height_out) {
 static void virtio_gpu_apply_cmdline_mode(void) {
     uint32_t width = 0;
     uint32_t height = 0;
+    uint32_t refresh_millihz = 0;
 
-    if (virtio_gpu_cmdline_mode(&width, &height) < 0) return;
+    if (virtio_gpu_cmdline_mode(
+            &width, &height, &refresh_millihz) < 0) return;
     g_vtgpu.width = width;
     g_vtgpu.height = height;
-    printf("[virtio-gpu] cmdline mode %ux%u\n", width, height);
+    if (refresh_millihz)
+        g_vtgpu.refresh_millihz = refresh_millihz;
+    printf("[virtio-gpu] cmdline mode %ux%u@%u\n", width, height,
+           g_vtgpu.refresh_millihz / 1000u);
 }
 
 static int virtio_gpu_get_display_info(void) {
@@ -1484,6 +1582,7 @@ static int virtio_gpu_get_display_info(void) {
     }
     for (uint32_t i = 0; i < scanouts; ++i) {
         if (!resp.pmodes[i].enabled) continue;
+        g_vtgpu.scanout_id = i;
         g_vtgpu.width = resp.pmodes[i].r.width;
         g_vtgpu.height = resp.pmodes[i].r.height;
         if (g_vtgpu.width == 0 || g_vtgpu.height == 0) continue;
@@ -1499,6 +1598,66 @@ static int virtio_gpu_get_display_info(void) {
     g_vtgpu.width = 1024;
     g_vtgpu.height = 768;
     virtio_gpu_apply_cmdline_mode();
+    return 0;
+}
+
+static void
+virtio_gpu_select_edid_refresh(void)
+{
+    g_vtgpu.refresh_millihz = DISPLAY_MODE_DEFAULT_REFRESH_MILLIHZ;
+    for (uint32_t index = 0; index < g_vtgpu.mode_count; ++index) {
+        const display_mode_t *mode = &g_vtgpu.modes[index];
+
+        if (mode->width != g_vtgpu.width || mode->height != g_vtgpu.height)
+            continue;
+        g_vtgpu.refresh_millihz = mode->refresh_millihz;
+        if (mode->flags & DISPLAY_MODE_PREFERRED)
+            return;
+    }
+}
+
+static int
+virtio_gpu_get_edid(void)
+{
+    struct virtio_gpu_get_edid request;
+    struct virtio_gpu_resp_edid response;
+    int count;
+
+    g_vtgpu.mode_count = 0u;
+    g_vtgpu.width_mm = 0u;
+    g_vtgpu.height_mm = 0u;
+    g_vtgpu.edid_size = 0u;
+    if ((g_vtgpu.negotiated_features & VIRTIO_GPU_F_EDID) == 0) {
+        g_vtgpu.refresh_millihz = DISPLAY_MODE_DEFAULT_REFRESH_MILLIHZ;
+        return -1;
+    }
+    memset(&request, 0, sizeof(request));
+    memset(&response, 0, sizeof(response));
+    virtio_gpu_init_hdr(&request.hdr, VIRTIO_GPU_CMD_GET_EDID);
+    request.scanout = g_vtgpu.scanout_id;
+    if (virtio_gpu_req(&request, sizeof(request),
+                       &response, sizeof(response)) < 0 ||
+        response.hdr.type != VIRTIO_GPU_RESP_OK_EDID ||
+        response.size < 128u ||
+        response.size > sizeof(response.edid)) {
+        g_vtgpu.refresh_millihz = DISPLAY_MODE_DEFAULT_REFRESH_MILLIHZ;
+        return -1;
+    }
+    count = display_edid_parse(
+        response.edid, response.size, g_vtgpu.modes,
+        DISPLAY_MODE_EDID_MAX_MODES,
+        &g_vtgpu.width_mm, &g_vtgpu.height_mm);
+    if (count < 0) {
+        g_vtgpu.refresh_millihz = DISPLAY_MODE_DEFAULT_REFRESH_MILLIHZ;
+        return -1;
+    }
+    g_vtgpu.mode_count = (uint32_t)count;
+    g_vtgpu.edid_size = response.size;
+    memcpy(g_vtgpu.edid, response.edid, response.size);
+    virtio_gpu_select_edid_refresh();
+    printf("[virtio-gpu] EDID modes=%u preferred=%ux%u@%u\n",
+           g_vtgpu.mode_count, g_vtgpu.width, g_vtgpu.height,
+           g_vtgpu.refresh_millihz / 1000u);
     return 0;
 }
 
@@ -1536,9 +1695,13 @@ static int virtio_gpu_attach_resource_backing(
 }
 
 static int virtio_gpu_attach_backing(void) {
+    uint32_t bytes = virtio_gpu_framebuffer_bytes(
+        g_vtgpu.width, g_vtgpu.height);
+
+    if (!bytes || bytes > g_vtgpu_fb_capacity)
+        return -1;
     return virtio_gpu_attach_resource_backing(
-        VIRTIO_GPU_RESOURCE_ID, g_vtgpu_fb,
-        g_vtgpu.width * g_vtgpu.height * 4u);
+        VIRTIO_GPU_RESOURCE_ID, g_vtgpu_fb, bytes);
 }
 
 static int virtio_gpu_resource_reference_id(
@@ -2107,32 +2270,99 @@ virtio_gpu_display_get_mode(void *context, display_mode_t *mode)
     *mode = (display_mode_t) {
         .width = device->width,
         .height = device->height,
-        .refresh_millihz = 60000,
+        .refresh_millihz = device->refresh_millihz ?
+            device->refresh_millihz :
+            DISPLAY_MODE_DEFAULT_REFRESH_MILLIHZ,
     };
     return 0;
 }
 
+static uint32_t
+virtio_gpu_display_get_modes(void *context, display_mode_t *modes,
+                             uint32_t capacity)
+{
+    virtio_gpu_dev_t *device = context;
+    uint32_t count;
+
+    if (!device || !device->present)
+        return 0;
+    count = device->mode_count < capacity ? device->mode_count : capacity;
+    for (uint32_t index = 0; modes && index < count; ++index)
+        modes[index] = device->modes[index];
+    return device->mode_count;
+}
+
+static uint32_t
+virtio_gpu_display_get_edid(void *context, uint8_t *edid,
+                            uint32_t capacity)
+{
+    virtio_gpu_dev_t *device = context;
+    uint32_t count;
+
+    if (!device || !device->present || !device->edid_size)
+        return 0;
+    count = device->edid_size < capacity ? device->edid_size : capacity;
+    if (edid && count)
+        memcpy(edid, device->edid, count);
+    return device->edid_size;
+}
+
 static int
-virtio_gpu_rebuild_mode(uint32_t width, uint32_t height)
+virtio_gpu_rebuild_mode(const display_mode_t *requested)
 {
     uint32_t old_width = g_vtgpu.width;
     uint32_t old_height = g_vtgpu.height;
+    uint32_t old_refresh_millihz = g_vtgpu.refresh_millihz;
+    uint32_t width;
+    uint32_t height;
+    uint32_t required_bytes;
+    uint8_t *old_fb = g_vtgpu_fb;
+    uint32_t old_fb_capacity = g_vtgpu_fb_capacity;
+    uint8_t *old_fb_allocation = g_vtgpu_fb_allocation;
+    uint32_t old_fb_allocation_pages = g_vtgpu_fb_allocation_pages;
+    uint8_t *new_fb = old_fb;
+    uint32_t new_fb_capacity = old_fb_capacity;
+    uint8_t *new_fb_allocation = old_fb_allocation;
+    uint32_t new_fb_allocation_pages = old_fb_allocation_pages;
+    int allocated_fb = 0;
     int detached = 0;
     int old_unreferenced = 0;
     int new_created = 0;
     int error = -1;
 
+    if (!display_mode_valid(requested))
+        return -1;
+    width = requested->width;
+    height = requested->height;
     if (width < 320u || height < 200u ||
         width > VIRTIO_GPU_FB_MAX_WIDTH ||
         height > VIRTIO_GPU_FB_MAX_HEIGHT)
         return -1;
-    if (width == old_width && height == old_height)
+    required_bytes = virtio_gpu_framebuffer_bytes(width, height);
+    if (!required_bytes)
+        return -1;
+    if (width == old_width && height == old_height) {
+        g_vtgpu.refresh_millihz = requested->refresh_millihz;
         return 0;
+    }
     if (__atomic_test_and_set(&g_vtgpu_mode_guard, __ATOMIC_ACQUIRE))
         return -1;
+    if (required_bytes > old_fb_capacity) {
+        new_fb = virtio_gpu_framebuffer_allocate(
+            required_bytes, &new_fb_allocation,
+            &new_fb_allocation_pages, &new_fb_capacity);
+        if (!new_fb) {
+            __atomic_clear(&g_vtgpu_mode_guard, __ATOMIC_RELEASE);
+            return -1;
+        }
+        allocated_fb = 1;
+    }
     g_vtgpu_runtime_present_ready = 0u;
     if (virtio_gpu_present_drain() < 0) {
         g_vtgpu_runtime_present_ready = 1u;
+        if (allocated_fb)
+            virtio_gpu_framebuffer_release(
+                new_fb_allocation, new_fb_allocation_pages);
         __atomic_clear(&g_vtgpu_mode_guard, __ATOMIC_RELEASE);
         return -1;
     }
@@ -2153,7 +2383,12 @@ virtio_gpu_rebuild_mode(uint32_t width, uint32_t height)
 
     g_vtgpu.width = width;
     g_vtgpu.height = height;
-    memset(g_vtgpu_fb, 0, width * height * 4u);
+    g_vtgpu.refresh_millihz = requested->refresh_millihz;
+    g_vtgpu_fb = new_fb;
+    g_vtgpu_fb_capacity = new_fb_capacity;
+    g_vtgpu_fb_allocation = new_fb_allocation;
+    g_vtgpu_fb_allocation_pages = new_fb_allocation_pages;
+    memset(g_vtgpu_fb, 0, required_bytes);
     if (virtio_gpu_create_2d() < 0)
         goto restore;
     new_created = 1;
@@ -2166,6 +2401,11 @@ restore:
     if (error != 0) {
         g_vtgpu.width = old_width;
         g_vtgpu.height = old_height;
+        g_vtgpu.refresh_millihz = old_refresh_millihz;
+        g_vtgpu_fb = old_fb;
+        g_vtgpu_fb_capacity = old_fb_capacity;
+        g_vtgpu_fb_allocation = old_fb_allocation;
+        g_vtgpu_fb_allocation_pages = old_fb_allocation_pages;
         if (old_unreferenced) {
             if (new_created) {
                 (void)virtio_gpu_resource_reference(
@@ -2194,17 +2434,33 @@ restore:
     g_vtgpu.present = 1;
     if (virtio_gpu_register_display_backend() < 0) {
         g_vtgpu.present = 0;
-        goto failed;
+        __atomic_clear(&g_vtgpu_mode_guard, __ATOMIC_RELEASE);
+        return -1;
     }
     virtio_gpu_flush_rect(0, 0, g_vtgpu.width, g_vtgpu.height);
     g_vtgpu_runtime_present_ready = 1u;
+    if (error == 0 && allocated_fb)
+        virtio_gpu_framebuffer_release(
+            old_fb_allocation, old_fb_allocation_pages);
+    else if (error != 0 && allocated_fb)
+        virtio_gpu_framebuffer_release(
+            new_fb_allocation, new_fb_allocation_pages);
     if (error == 0)
-        printf("[virtio-gpu] live mode changed to %ux%u\n",
-               g_vtgpu.width, g_vtgpu.height);
+        printf("[virtio-gpu] live mode changed to %ux%u@%u\n",
+               g_vtgpu.width, g_vtgpu.height,
+               g_vtgpu.refresh_millihz / 1000u);
     __atomic_clear(&g_vtgpu_mode_guard, __ATOMIC_RELEASE);
     return error;
 
 failed:
+    if (allocated_fb) {
+        g_vtgpu_fb = old_fb;
+        g_vtgpu_fb_capacity = old_fb_capacity;
+        g_vtgpu_fb_allocation = old_fb_allocation;
+        g_vtgpu_fb_allocation_pages = old_fb_allocation_pages;
+        virtio_gpu_framebuffer_release(
+            new_fb_allocation, new_fb_allocation_pages);
+    }
     __atomic_clear(&g_vtgpu_mode_guard, __ATOMIC_RELEASE);
     return -1;
 }
@@ -2214,7 +2470,7 @@ virtio_gpu_display_set_mode(void *context, const display_mode_t *mode)
 {
     if (context != &g_vtgpu || !mode)
         return -1;
-    return virtio_gpu_rebuild_mode(mode->width, mode->height);
+    return virtio_gpu_rebuild_mode(mode);
 }
 
 static int
@@ -2227,6 +2483,8 @@ virtio_gpu_display_poll(void *context)
     uint32_t old_height;
     uint32_t requested_width;
     uint32_t requested_height;
+    uint32_t old_refresh_millihz;
+    display_mode_t requested_mode;
 
     if (device != &g_vtgpu || !device->present)
         return 0;
@@ -2241,20 +2499,29 @@ virtio_gpu_display_poll(void *context)
 
     old_width = device->width;
     old_height = device->height;
+    old_refresh_millihz = device->refresh_millihz;
     if (virtio_gpu_get_display_info() < 0) {
         device->width = old_width;
         device->height = old_height;
         virtio_device_config_write32(4, VIRTIO_GPU_EVENT_DISPLAY);
         return -1;
     }
+    (void)virtio_gpu_get_edid();
+    virtio_gpu_apply_cmdline_mode();
     requested_width = device->width;
     requested_height = device->height;
+    memset(&requested_mode, 0, sizeof(requested_mode));
+    requested_mode.width = requested_width;
+    requested_mode.height = requested_height;
+    requested_mode.refresh_millihz = device->refresh_millihz;
     device->width = old_width;
     device->height = old_height;
+    device->refresh_millihz = old_refresh_millihz;
     virtio_device_config_write32(4, VIRTIO_GPU_EVENT_DISPLAY);
-    if (requested_width == old_width && requested_height == old_height)
+    if (requested_width == old_width && requested_height == old_height &&
+        requested_mode.refresh_millihz == old_refresh_millihz)
         return 0;
-    return virtio_gpu_rebuild_mode(requested_width, requested_height);
+    return virtio_gpu_rebuild_mode(&requested_mode);
 }
 
 static int
@@ -2270,6 +2537,8 @@ virtio_gpu_register_display_backend(void)
             .present_rect = virtio_gpu_display_present,
             .present_rects = virtio_gpu_display_present_batch,
             .get_mode = virtio_gpu_display_get_mode,
+            .get_modes = virtio_gpu_display_get_modes,
+            .get_edid = virtio_gpu_display_get_edid,
             .set_mode = virtio_gpu_display_set_mode,
             .poll = virtio_gpu_display_poll,
         },
@@ -2282,6 +2551,7 @@ static int virtio_gpu_initialize_device(void) {
     uint64_t host_features;
     uint64_t guest_features;
 
+    g_vtgpu.refresh_millihz = DISPLAY_MODE_DEFAULT_REFRESH_MILLIHZ;
     virtio_status_set(VIRTIO_CONFIG_STATUS_RESET);
     for (uint32_t spin = 0; spin < 1000000u && virtio_status_get() != VIRTIO_CONFIG_STATUS_RESET; ++spin) {
         virtio_gpu_cpu_relax();
@@ -2329,8 +2599,26 @@ static int virtio_gpu_initialize_device(void) {
     virtio_gpu_present_initialize();
     g_vtgpu.next_fence = 1;
 
-    if (virtio_gpu_get_display_info() < 0 ||
-        virtio_gpu_create_2d() < 0 ||
+    if (virtio_gpu_get_display_info() < 0) {
+        virtio_gpu_fail();
+        return -1;
+    }
+    (void)virtio_gpu_get_edid();
+    virtio_gpu_apply_cmdline_mode();
+    {
+        uint32_t bytes = virtio_gpu_framebuffer_bytes(
+            g_vtgpu.width, g_vtgpu.height);
+
+        if (!bytes || bytes > g_vtgpu_fb_capacity) {
+            printf("[virtio-gpu] boot mode %ux%u needs runtime memory; "
+                   "starting at 1024x768\n",
+                   g_vtgpu.width, g_vtgpu.height);
+            g_vtgpu.width = 1024u;
+            g_vtgpu.height = 768u;
+            virtio_gpu_select_edid_refresh();
+        }
+    }
+    if (virtio_gpu_create_2d() < 0 ||
         virtio_gpu_attach_backing() < 0 ||
         virtio_gpu_set_scanout() < 0) {
         virtio_gpu_fail();

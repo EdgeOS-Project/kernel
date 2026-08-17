@@ -1031,17 +1031,20 @@ $(OBJ)/arm64-bsd/upstream/%.obj: \
 .PHONY: block-registry-unit netdev-registry-unit native-netdev-unit usb-handoff-unit xhci-capability-unit bsd-driver-build-plan-check bsd-driver-package-registry-check bsd-driver-manifest-check bsd-driver-dependency-report bsd-driver-interface-check bsd-driver-modules bsd-driver-modules-x86_64 bsd-driver-modules-arm64 bsd-bridge-acpica-runtime-compile bsd-bridge-arm64-abi-layout-unit bsd-bridge-arm64-handoff-unit bsd-bridge-x86_64-handoff-unit bsd-bridge-audio-unit bsd-bridge-base-headers-unit bsd-bridge-atomic-unit bsd-bridge-allocator-unit bsd-bridge-block-unit bsd-bridge-bootstrap-unit bsd-bridge-bus-dma-unit bsd-bridge-bus-space-unit bsd-bridge-callout-unit bsd-bridge-cam-unit bsd-bridge-cdev-unit bsd-bridge-config-intrhook-unit bsd-bridge-contigmalloc-unit bsd-bridge-device-property-unit bsd-bridge-driver-adapters-unit bsd-bridge-dwc-hdmi-compile bsd-bridge-environment-unit bsd-bridge-epoch-unit bsd-bridge-evdev-unit bsd-bridge-eventhandler-unit bsd-bridge-fdt-inventory-unit bsd-bridge-firmware-frontends-unit bsd-bridge-firmware-metadata-unit bsd-bridge-framebuffer-unit bsd-bridge-gtaskqueue-unit bsd-bridge-handoff-unit bsd-bridge-hash-unit bsd-bridge-interrupt-unit bsd-bridge-intrng-unit bsd-bridge-kernel-link bsd-bridge-kobj-unit bsd-bridge-kthread-unit bsd-bridge-led-unit bsd-bridge-libkern-sort-unit bsd-bridge-linker-unit bsd-bridge-malloc-unit bsd-bridge-module-unit bsd-bridge-network-unit bsd-bridge-newbus-unit bsd-bridge-ofw-unit bsd-bridge-package-unit bsd-bridge-pci-unit bsd-bridge-platform-unit bsd-bridge-pps-unit bsd-bridge-random-unit bsd-bridge-resource-unit bsd-bridge-rss-unit bsd-bridge-sbuf-sysctl-unit bsd-bridge-selinfo-unit bsd-bridge-sglist-unit bsd-bridge-source-gate bsd-bridge-systm-unit bsd-bridge-sync-unit bsd-bridge-taskqueue-unit bsd-bridge-time-unit bsd-bridge-tty-unit bsd-bridge-videomode-unit bsd-bridge-vmem-unit bsd-bridge-watchdog-unit bsd-bridge-virtio-balloon-compile bsd-bridge-virtio-block-compile bsd-bridge-virtio-console-compile bsd-bridge-virtio-core-compile bsd-bridge-virtio-gpu-compile bsd-bridge-virtio-network-compile bsd-bridge-virtio-pci-compile bsd-bridge-virtio-random-compile bsd-bridge-virtio-scmi-compile bsd-bridge-virtio-transport-compile bsd-bridge-virtqueue-compile bsd-bridge-vm-page-unit
 .PHONY: bsd-bridge-bitstring-unit
 
-display-backend-unit: tools/tests/display_backend_unit.c $(SRC)/display.c include/display.h
+display-backend-unit: tools/tests/display_backend_unit.c $(SRC)/display.c \
+		$(SRC)/display_edid.c include/display.h
 	@mkdir -p $(OUT)/tests
 	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror \
 		-iquote $(INC) \
 		tools/tests/display_backend_unit.c $(SRC)/display.c \
+		$(SRC)/display_edid.c \
 		-o $(OUT)/tests/display_backend_unit
 	@$(OUT)/tests/display_backend_unit
 	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror \
 		-fsanitize=address,undefined -fno-omit-frame-pointer \
 		-iquote $(INC) \
 		tools/tests/display_backend_unit.c $(SRC)/display.c \
+		$(SRC)/display_edid.c \
 		-o $(OUT)/tests/display_backend_sanitize
 	@ASAN_OPTIONS=detect_leaks=0 $(OUT)/tests/display_backend_sanitize
 
@@ -1062,7 +1065,8 @@ bsd-bridge-arm64-abi-layout-unit: \
 drm-runtime-unit: tools/tests/drm_runtime_unit.c \
 		$(SRC)/kernel/drm_runtime.c $(SRC)/kernel/virtgpu_runtime.c \
 		$(SRC)/kernel/deferred_work.c \
-		$(SRC)/display.c include/kernel/drm_runtime.h \
+		$(SRC)/display.c $(SRC)/display_edid.c \
+		include/kernel/drm_runtime.h \
 		include/kernel/virtgpu_runtime.h include/display.h include/fb.h
 	@mkdir -p $(OUT)/tests
 	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fno-builtin \
@@ -1071,7 +1075,7 @@ drm-runtime-unit: tools/tests/drm_runtime_unit.c \
 		tools/tests/drm_runtime_unit.c \
 		$(SRC)/kernel/drm_runtime.c $(SRC)/kernel/virtgpu_runtime.c \
 		$(SRC)/kernel/deferred_work.c \
-		$(SRC)/display.c \
+		$(SRC)/display.c $(SRC)/display_edid.c \
 		-o $(OUT)/tests/drm_runtime_unit
 	@$(OUT)/tests/drm_runtime_unit
 	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fno-builtin \
@@ -1081,7 +1085,7 @@ drm-runtime-unit: tools/tests/drm_runtime_unit.c \
 		tools/tests/drm_runtime_unit.c \
 		$(SRC)/kernel/drm_runtime.c $(SRC)/kernel/virtgpu_runtime.c \
 		$(SRC)/kernel/deferred_work.c \
-		$(SRC)/display.c \
+		$(SRC)/display.c $(SRC)/display_edid.c \
 		-o $(OUT)/tests/drm_runtime_sanitize
 	@ASAN_OPTIONS=detect_leaks=0 $(OUT)/tests/drm_runtime_sanitize
 

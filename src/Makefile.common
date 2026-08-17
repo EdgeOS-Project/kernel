@@ -150,6 +150,7 @@ EDGE_SHARED_SRCS := \
 	$(SRC)/drivers/usb/xhci_device_policy.c \
 	$(SRC)/console.c \
 	$(SRC)/display.c \
+	$(SRC)/display_edid.c \
 	$(SRC)/fb.c \
 	$(SRC)/fb_console.c \
 	$(SRC)/font8x8_basic.c \

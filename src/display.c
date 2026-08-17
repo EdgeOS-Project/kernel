@@ -2,6 +2,7 @@
 /* Architecture-independent display backend registry. */
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "display.h"
 #include "sys/spinlock.h"
@@ -56,6 +57,53 @@ display_backend_valid(const display_backend_t *backend)
         (!backend->operations.get_mode || !backend->operations.set_mode))
         return 0;
     return 1;
+}
+
+int
+display_mode_valid(const display_mode_t *mode)
+{
+    uint64_t clock_khz;
+
+    if (!mode || !mode->width || !mode->height ||
+        mode->width > DISPLAY_MODE_MAX_WIDTH ||
+        mode->height > DISPLAY_MODE_MAX_HEIGHT ||
+        !mode->refresh_millihz)
+        return 0;
+    if ((mode->hsync_start && mode->hsync_start < mode->width) ||
+        (mode->hsync_end && mode->hsync_end < mode->hsync_start) ||
+        (mode->htotal && mode->htotal < mode->hsync_end) ||
+        (mode->vsync_start && mode->vsync_start < mode->height) ||
+        (mode->vsync_end && mode->vsync_end < mode->vsync_start) ||
+        (mode->vtotal && mode->vtotal < mode->vsync_end))
+        return 0;
+    if (!mode->pixel_clock_khz && mode->htotal && mode->vtotal) {
+        clock_khz = (uint64_t)mode->htotal * mode->vtotal *
+            mode->refresh_millihz / 1000000ull;
+        if (!clock_khz || clock_khz > UINT32_MAX)
+            return 0;
+    }
+    return 1;
+}
+
+int
+display_mode_equal(const display_mode_t *left, const display_mode_t *right)
+{
+    if (!left || !right)
+        return 0;
+    return left->width == right->width &&
+        left->height == right->height &&
+        left->refresh_millihz == right->refresh_millihz &&
+        ((left->flags ^ right->flags) & DISPLAY_MODE_INTERLACE) == 0;
+}
+
+uint64_t
+display_mode_frame_interval_us(const display_mode_t *mode)
+{
+    uint32_t refresh = mode && mode->refresh_millihz ?
+        mode->refresh_millihz : DISPLAY_MODE_DEFAULT_REFRESH_MILLIHZ;
+    uint64_t interval = (1000000000ull + refresh / 2u) / refresh;
+
+    return interval ? interval : 1u;
 }
 
 int
@@ -189,13 +237,42 @@ display_backend_get_mode(display_mode_t *mode)
     return backend.operations.get_mode(backend.context, mode);
 }
 
+uint32_t
+display_backend_get_modes(display_mode_t *modes, uint32_t capacity)
+{
+    display_backend_t backend;
+    display_mode_t current;
+
+    if (!display_backend_snapshot(&backend, 0))
+        return 0;
+    if (backend.operations.get_modes)
+        return backend.operations.get_modes(backend.context, modes, capacity);
+    if (!backend.operations.get_mode ||
+        backend.operations.get_mode(backend.context, &current) < 0)
+        return 0;
+    if (modes && capacity)
+        modes[0] = current;
+    return 1;
+}
+
+uint32_t
+display_backend_get_edid(uint8_t *edid, uint32_t capacity)
+{
+    display_backend_t backend;
+
+    if (!display_backend_snapshot(&backend, 0) ||
+        !backend.operations.get_edid)
+        return 0;
+    return backend.operations.get_edid(backend.context, edid, capacity);
+}
+
 int
 display_backend_set_mode(const display_mode_t *mode)
 {
     display_backend_t backend;
     int result;
 
-    if (!mode || !mode->width || !mode->height ||
+    if (!display_mode_valid(mode) ||
         !display_backend_snapshot(&backend, 0) ||
         !backend.operations.set_mode)
         return -1;
