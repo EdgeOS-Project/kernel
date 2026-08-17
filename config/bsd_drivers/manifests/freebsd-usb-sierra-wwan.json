@@ -1,0 +1,69 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-usb-sierra-wwan",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Sierra Wireless USB mobile broadband and serial driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "__FreeBSD__=14",
+      "USB_VERBOSE"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/usb/net/if_usie.c",
+      "sys/dev/usb/net/if_usievar.h"
+    ],
+    "file_count": 2,
+    "tree_sha256": "507c16118cf118274d1db6d74c69b532de35a4cc392cc349e0fd96999011e47e"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "usb-sierra-wwan",
+      "sources": [
+        "sys/dev/usb/net/if_usie.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "usb"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

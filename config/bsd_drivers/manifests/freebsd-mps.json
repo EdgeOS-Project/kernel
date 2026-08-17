@@ -1,0 +1,84 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-mps",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Broadcom and LSI Fusion-MPT 2 SAS, SATA, and RAID storage driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "__FreeBSD__=16"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/mps",
+      "sys/dev/mps/mps.c",
+      "sys/dev/mps/mps_config.c",
+      "sys/dev/mps/mps_mapping.c",
+      "sys/dev/mps/mps_pci.c",
+      "sys/dev/mps/mps_sas.c",
+      "sys/dev/mps/mps_sas_lsi.c",
+      "sys/dev/mps/mps_table.c",
+      "sys/dev/mps/mps_user.c"
+    ],
+    "file_count": 25,
+    "tree_sha256": "bd9213a727598db141e2bd9bc286a166efef7f514ce1271e7a75af4d007191c7"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "mps",
+      "sources": [
+        "sys/dev/mps/mps.c",
+        "sys/dev/mps/mps_config.c",
+        "sys/dev/mps/mps_mapping.c",
+        "sys/dev/mps/mps_pci.c",
+        "sys/dev/mps/mps_sas.c",
+        "sys/dev/mps/mps_sas_lsi.c",
+        "sys/dev/mps/mps_table.c",
+        "sys/dev/mps/mps_user.c"
+      ],
+      "capabilities": [
+        "base",
+        "block",
+        "cam",
+        "character-device",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

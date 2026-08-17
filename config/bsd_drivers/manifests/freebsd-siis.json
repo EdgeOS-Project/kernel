@@ -1,0 +1,66 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-siis",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Silicon Image SiI3124 and SiI3132 SATA controller driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/siis",
+      "sys/dev/siis/siis.c"
+    ],
+    "file_count": 2,
+    "tree_sha256": "49f0f388d5e833a601aa2cd0b371f075fd4afbaa393271e076568281b46e122b"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "siis",
+      "sources": [
+        "sys/dev/siis/siis.c"
+      ],
+      "capabilities": [
+        "base",
+        "cam",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "taskqueue",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

@@ -1,0 +1,89 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-usb-template",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD USB device descriptor template subsystem and standard profiles.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "USB_VERBOSE"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/usb/template/usb_template.c",
+      "sys/dev/usb/template/usb_template.h",
+      "sys/dev/usb/template/usb_template_audio.c",
+      "sys/dev/usb/template/usb_template_cdce.c",
+      "sys/dev/usb/template/usb_template_cdceem.c",
+      "sys/dev/usb/template/usb_template_kbd.c",
+      "sys/dev/usb/template/usb_template_midi.c",
+      "sys/dev/usb/template/usb_template_modem.c",
+      "sys/dev/usb/template/usb_template_mouse.c",
+      "sys/dev/usb/template/usb_template_msc.c",
+      "sys/dev/usb/template/usb_template_mtp.c",
+      "sys/dev/usb/template/usb_template_multi.c",
+      "sys/dev/usb/template/usb_template_phone.c",
+      "sys/dev/usb/template/usb_template_serialnet.c"
+    ],
+    "file_count": 14,
+    "tree_sha256": "fcf4cd00ff20c34b2dddf47837f6f5ff1a5097342654ee4767eb6a4df5e31e73"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "usb-template",
+      "sources": [
+        "sys/dev/usb/template/usb_template.c",
+        "sys/dev/usb/template/usb_template_audio.c",
+        "sys/dev/usb/template/usb_template_cdce.c",
+        "sys/dev/usb/template/usb_template_cdceem.c",
+        "sys/dev/usb/template/usb_template_kbd.c",
+        "sys/dev/usb/template/usb_template_midi.c",
+        "sys/dev/usb/template/usb_template_modem.c",
+        "sys/dev/usb/template/usb_template_mouse.c",
+        "sys/dev/usb/template/usb_template_msc.c",
+        "sys/dev/usb/template/usb_template_mtp.c",
+        "sys/dev/usb/template/usb_template_multi.c",
+        "sys/dev/usb/template/usb_template_phone.c",
+        "sys/dev/usb/template/usb_template_serialnet.c"
+      ],
+      "capabilities": [
+        "base",
+        "callout",
+        "memory",
+        "module",
+        "newbus",
+        "synchronization",
+        "sysctl",
+        "usb"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

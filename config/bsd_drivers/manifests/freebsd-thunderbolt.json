@@ -1,0 +1,91 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-thunderbolt",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Thunderbolt NHI, router, host connection manager, and PCI bridge stack.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [
+      "THUNDERBOLT_DEBUG=1"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-2-Clause-FreeBSD",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/acpica/acpi_pcibvar.h",
+      "sys/dev/thunderbolt",
+      "sys/dev/thunderbolt/hcm.c",
+      "sys/dev/thunderbolt/nhi.c",
+      "sys/dev/thunderbolt/nhi_pci.c",
+      "sys/dev/thunderbolt/nhi_wmi.c",
+      "sys/dev/thunderbolt/router.c",
+      "sys/dev/thunderbolt/tb_acpi_pcib.c",
+      "sys/dev/thunderbolt/tb_debug.c",
+      "sys/dev/thunderbolt/tb_dev.c",
+      "sys/dev/thunderbolt/tb_if.m",
+      "sys/dev/thunderbolt/tb_pcib.c"
+    ],
+    "file_count": 22,
+    "tree_sha256": "a14023b2d48203cc2b49526b357e146f39716ce08389aead294468efd1302fe1"
+  },
+  "generated_interfaces": [
+    "sys/dev/thunderbolt/tb_if.m"
+  ],
+  "modules": [
+    {
+      "id": "thunderbolt",
+      "sources": [
+        "sys/dev/thunderbolt/hcm.c",
+        "sys/dev/thunderbolt/nhi.c",
+        "sys/dev/thunderbolt/nhi_pci.c",
+        "sys/dev/thunderbolt/nhi_wmi.c",
+        "sys/dev/thunderbolt/router.c",
+        "sys/dev/thunderbolt/tb_acpi_pcib.c",
+        "sys/dev/thunderbolt/tb_debug.c",
+        "sys/dev/thunderbolt/tb_dev.c",
+        "sys/dev/thunderbolt/tb_pcib.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "character-device",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

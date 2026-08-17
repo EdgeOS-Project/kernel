@@ -1,0 +1,66 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-cpufreq",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD shared CPU-frequency policy core.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": [],
+    "include_groups": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/kern/kern_cpu.c",
+      "sys/kern/cpufreq_if.m",
+      "sys/sys/cpu.h"
+    ],
+    "file_count": 3,
+    "tree_sha256": "5a9e2fcaeae99f7d1b498fc94715bca65538adbb7bafc4e888cee1655a8e5e40"
+  },
+  "generated_interfaces": [
+    "sys/kern/cpufreq_if.m"
+  ],
+  "modules": [
+    {
+      "id": "cpufreq-core",
+      "sources": [
+        "sys/kern/kern_cpu.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "memory",
+        "module",
+        "newbus",
+        "synchronization",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

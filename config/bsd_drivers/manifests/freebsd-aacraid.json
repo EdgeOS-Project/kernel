@@ -1,0 +1,75 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-aacraid",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Adaptec AACRAID storage driver with CAM, management, and PCI support.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/aacraid",
+      "sys/sys/aac_ioctl.h"
+    ],
+    "file_count": 11,
+    "tree_sha256": "387b4be719fe601c739634386e06590abb50bd960b291cd3ba348394f290884a"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "aacraid",
+      "sources": [
+        "sys/dev/aacraid/aacraid.c",
+        "sys/dev/aacraid/aacraid_pci.c",
+        "sys/dev/aacraid/aacraid_cam.c"
+      ],
+      "capabilities": [
+        "base",
+        "block",
+        "callout",
+        "cam",
+        "character-device",
+        "generated",
+        "geom-disk",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "scsi",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

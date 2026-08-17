@@ -1,0 +1,96 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-smbus-chipsets",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD SMBus core and Intel ICH and NVIDIA nForce PCI SMBus controller drivers.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "LicenseRef-Whistle-Permissive"
+    ],
+    "license_exceptions": {
+      "sys/dev/ichsmb/ichsmb.c": {
+        "license": "LicenseRef-Whistle-Permissive",
+        "evidence": "The retained source header permits source and object redistribution with or without modifications under two notice and trademark conditions."
+      },
+      "sys/dev/ichsmb/ichsmb_pci.c": {
+        "license": "LicenseRef-Whistle-Permissive",
+        "evidence": "The retained source header permits source and object redistribution with or without modifications under two notice and trademark conditions."
+      },
+      "sys/dev/ichsmb/ichsmb_reg.h": {
+        "license": "LicenseRef-Whistle-Permissive",
+        "evidence": "The retained source header permits source and object redistribution with or without modifications under two notice and trademark conditions."
+      },
+      "sys/dev/ichsmb/ichsmb_var.h": {
+        "license": "LicenseRef-Whistle-Permissive",
+        "evidence": "The retained source header permits source and object redistribution with or without modifications under two notice and trademark conditions."
+      }
+    }
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/ichsmb/ichsmb.c",
+      "sys/dev/ichsmb/ichsmb_pci.c",
+      "sys/dev/ichsmb/ichsmb_reg.h",
+      "sys/dev/ichsmb/ichsmb_var.h",
+      "sys/dev/nfsmb/nfsmb.c",
+      "sys/dev/smbus/smbconf.c",
+      "sys/dev/smbus/smbconf.h",
+      "sys/dev/smbus/smbus.c",
+      "sys/dev/smbus/smbus.h",
+      "sys/dev/smbus/smbus_if.m"
+    ],
+    "file_count": 10,
+    "tree_sha256": "0c3eaf6b38b618dccefd83b5568ed15c9a83a6dea0f0adc21b53e40a0e76a30a"
+  },
+  "generated_interfaces": [
+    "sys/dev/smbus/smbus_if.m"
+  ],
+  "modules": [
+    {
+      "id": "smbus-chipsets",
+      "sources": [
+        "sys/dev/ichsmb/ichsmb.c",
+        "sys/dev/ichsmb/ichsmb_pci.c",
+        "sys/dev/nfsmb/nfsmb.c",
+        "sys/dev/smbus/smbconf.c",
+        "sys/dev/smbus/smbus.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

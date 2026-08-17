@@ -1,0 +1,146 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-usb-core",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD USB core imported through the EdgeOS BSD Driver Bridge.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "USB_VERBOSE"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/usb/controller/usb_controller.c",
+      "sys/dev/usb/net/usb_ethernet.h",
+      "sys/dev/usb/quirk/usb_quirk.h",
+      "sys/dev/usb/usb.h",
+      "sys/dev/usb/usb_bus.h",
+      "sys/dev/usb/usb_busdma.c",
+      "sys/dev/usb/usb_busdma.h",
+      "sys/dev/usb/usb_controller.h",
+      "sys/dev/usb/usb_core.c",
+      "sys/dev/usb/usb_core.h",
+      "sys/dev/usb/usb_debug.c",
+      "sys/dev/usb/usb_debug.h",
+      "sys/dev/usb/usb_dev.c",
+      "sys/dev/usb/usb_dev.h",
+      "sys/dev/usb/usb_device.c",
+      "sys/dev/usb/usb_device.h",
+      "sys/dev/usb/usb_dynamic.c",
+      "sys/dev/usb/usb_dynamic.h",
+      "sys/dev/usb/usb_endian.h",
+      "sys/dev/usb/usb_error.c",
+      "sys/dev/usb/usb_fdt_support.c",
+      "sys/dev/usb/usb_fdt_support.h",
+      "sys/dev/usb/usb_freebsd.h",
+      "sys/dev/usb/usb_generic.c",
+      "sys/dev/usb/usb_generic.h",
+      "sys/dev/usb/usb_handle_request.c",
+      "sys/dev/usb/usb_hid.c",
+      "sys/dev/usb/usb_hub.c",
+      "sys/dev/usb/usb_hub.h",
+      "sys/dev/usb/usb_hub_private.h",
+      "sys/dev/usb/usb_if.m",
+      "sys/dev/usb/usb_ioctl.h",
+      "sys/dev/usb/usb_lookup.c",
+      "sys/dev/usb/usb_mbuf.c",
+      "sys/dev/usb/usb_mbuf.h",
+      "sys/dev/usb/usb_msctest.c",
+      "sys/dev/usb/usb_msctest.h",
+      "sys/dev/usb/usb_parse.c",
+      "sys/dev/usb/usb_pf.c",
+      "sys/dev/usb/usb_pf.h",
+      "sys/dev/usb/usb_process.c",
+      "sys/dev/usb/usb_process.h",
+      "sys/dev/usb/usb_request.c",
+      "sys/dev/usb/usb_request.h",
+      "sys/dev/usb/usb_transfer.c",
+      "sys/dev/usb/usb_transfer.h",
+      "sys/dev/usb/usb_util.c",
+      "sys/dev/usb/usb_util.h",
+      "sys/dev/usb/usbdevs",
+      "sys/dev/usb/usbdi.h",
+      "sys/dev/usb/usbdi_util.h",
+      "sys/dev/usb/usbhid.h"
+    ],
+    "file_count": 52,
+    "tree_sha256": "bf50e86560cd1b6301b19cf2e22aa20a01ed1f72bb66ed9e0798484485340b88"
+  },
+  "generated_interfaces": [
+    "sys/dev/usb/usb_if.m"
+  ],
+  "generated_databases": [
+    "usbdevs"
+  ],
+  "modules": [
+    {
+      "id": "usb-core",
+      "sources": [
+        "sys/dev/usb/usb_busdma.c",
+        "sys/dev/usb/controller/usb_controller.c",
+        "sys/dev/usb/usb_core.c",
+        "sys/dev/usb/usb_debug.c",
+        "sys/dev/usb/usb_dev.c",
+        "sys/dev/usb/usb_device.c",
+        "sys/dev/usb/usb_dynamic.c",
+        "sys/dev/usb/usb_error.c",
+        "sys/dev/usb/usb_generic.c",
+        "sys/dev/usb/usb_handle_request.c",
+        "sys/dev/usb/usb_hid.c",
+        "sys/dev/usb/usb_hub.c",
+        "sys/dev/usb/usb_lookup.c",
+        "sys/dev/usb/usb_mbuf.c",
+        "sys/dev/usb/usb_msctest.c",
+        "sys/dev/usb/usb_parse.c",
+        "sys/dev/usb/usb_pf.c",
+        "sys/dev/usb/usb_process.c",
+        "sys/dev/usb/usb_request.c",
+        "sys/dev/usb/usb_transfer.c",
+        "sys/dev/usb/usb_util.c",
+        "sys/dev/usb/usb_fdt_support.c"
+      ],
+      "capabilities": [
+        "base",
+        "callout",
+        "character-device",
+        "fdt",
+        "generated",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "synchronization",
+        "sysctl",
+        "tty",
+        "usb"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

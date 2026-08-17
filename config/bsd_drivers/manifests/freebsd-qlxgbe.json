@@ -1,0 +1,90 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-qlxgbe",
+  "provider": "freebsd",
+  "description": "Unmodified complete standard FreeBSD QLogic 8200 and 8300 Series PCIe Ethernet driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "QLA_LOCK_NO_SLEEP=1"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/qlxgbe",
+      "sys/dev/qlxgbe/ql_boot.c",
+      "sys/dev/qlxgbe/ql_dbg.c",
+      "sys/dev/qlxgbe/ql_fw.c",
+      "sys/dev/qlxgbe/ql_hw.c",
+      "sys/dev/qlxgbe/ql_ioctl.c",
+      "sys/dev/qlxgbe/ql_isr.c",
+      "sys/dev/qlxgbe/ql_minidump.c",
+      "sys/dev/qlxgbe/ql_misc.c",
+      "sys/dev/qlxgbe/ql_os.c",
+      "sys/dev/qlxgbe/ql_reset.c"
+    ],
+    "file_count": 20,
+    "tree_sha256": "68a216e023e878fbfdba2cb3a40c97ad7b05364d8af75a9de81b1e16bd8ea01d"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "qlxgbe",
+      "sources": [
+        "sys/dev/qlxgbe/ql_boot.c",
+        "sys/dev/qlxgbe/ql_dbg.c",
+        "sys/dev/qlxgbe/ql_fw.c",
+        "sys/dev/qlxgbe/ql_hw.c",
+        "sys/dev/qlxgbe/ql_ioctl.c",
+        "sys/dev/qlxgbe/ql_isr.c",
+        "sys/dev/qlxgbe/ql_minidump.c",
+        "sys/dev/qlxgbe/ql_misc.c",
+        "sys/dev/qlxgbe/ql_os.c",
+        "sys/dev/qlxgbe/ql_reset.c"
+      ],
+      "capabilities": [
+        "base",
+        "character-device",
+        "generated",
+        "interrupt",
+        "machine",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

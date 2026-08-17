@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>EdgeOS VirtGPU WebGL Runtime Test</title>
+  <style>
+    body {
+      background: #101820;
+      color: #f5f7fa;
+      font: 18px/1.4 sans-serif;
+      margin: 24px;
+    }
+    canvas {
+      border: 1px solid #7f8c8d;
+      display: block;
+      height: 360px;
+      margin-top: 16px;
+      width: 640px;
+    }
+    .pass { color: #2ecc71; }
+    .fail { color: #ff6b6b; }
+  </style>
+</head>
+<body>
+  <h1>EdgeOS VirtGPU WebGL Runtime Test</h1>
+  <pre id="result">Starting...</pre>
+  <canvas id="canvas" width="640" height="360"></canvas>
+  <script>
+    const result = document.getElementById("result");
+    const canvas = document.getElementById("canvas");
+    const gl = canvas.getContext("webgl2") || canvas.getContext("webgl");
+
+    function fail(message) {
+      result.className = "fail";
+      result.textContent = `FAIL: ${message}`;
+      document.body.dataset.edgeosWebgl = "fail";
+      document.title = "EDGEOS_WEBGL_FAIL";
+    }
+
+    function compileShader(type, source) {
+      const shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        throw new Error(gl.getShaderInfoLog(shader) || "shader compilation failed");
+      }
+      return shader;
+    }
+
+    if (!gl) {
+      fail("WebGL context creation failed");
+    } else {
+      try {
+        const vertexShader = compileShader(gl.VERTEX_SHADER, `
+          attribute vec2 position;
+          void main() {
+            gl_Position = vec4(position, 0.0, 1.0);
+          }
+        `);
+        const fragmentShader = compileShader(gl.FRAGMENT_SHADER, `
+          precision mediump float;
+          void main() {
+            gl_FragColor = vec4(0.125, 0.75, 0.375, 1.0);
+          }
+        `);
+        const program = gl.createProgram();
+        gl.attachShader(program, vertexShader);
+        gl.attachShader(program, fragmentShader);
+        gl.linkProgram(program);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+          throw new Error(gl.getProgramInfoLog(program) || "program link failed");
+        }
+        gl.useProgram(program);
+
+        const vertices = new Float32Array([-0.8, -0.8, 0.8, -0.8, 0.0, 0.8]);
+        const buffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+        gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+        const position = gl.getAttribLocation(program, "position");
+        gl.enableVertexAttribArray(position);
+        gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.clearColor(0.02, 0.04, 0.08, 1.0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+        const pixel = new Uint8Array(4);
+        gl.readPixels(canvas.width / 2, canvas.height / 2, 1, 1,
+                      gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+        if (gl.getError() !== gl.NO_ERROR || pixel[1] < 150 || pixel[3] !== 255) {
+          throw new Error(`render validation failed rgba=${Array.from(pixel).join(",")}`);
+        }
+
+        const debug = gl.getExtension("WEBGL_debug_renderer_info");
+        const vendor = debug ?
+          gl.getParameter(debug.UNMASKED_VENDOR_WEBGL) :
+          gl.getParameter(gl.VENDOR);
+        const renderer = debug ?
+          gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) :
+          gl.getParameter(gl.RENDERER);
+        result.className = "pass";
+        result.textContent = [
+          "PASS: WebGL context, shader pipeline, draw, and readback",
+          `Version: ${gl.getParameter(gl.VERSION)}`,
+          `Vendor: ${vendor}`,
+          `Renderer: ${renderer}`,
+          `RGBA: ${Array.from(pixel).join(",")}`,
+        ].join("\n");
+        document.body.dataset.edgeosWebgl = "pass";
+        document.title = "EDGEOS_WEBGL_PASS";
+      } catch (error) {
+        fail(error instanceof Error ? error.message : String(error));
+      }
+    }
+  </script>
+</body>
+</html>

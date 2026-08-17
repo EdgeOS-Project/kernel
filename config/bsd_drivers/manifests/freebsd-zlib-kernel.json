@@ -1,0 +1,75 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-zlib-kernel",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD kernel zlib allocation and module integration.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "(BSD-2-Clause AND ISC)",
+      "BSD-1-Clause",
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "ISC",
+      "MIT",
+      "OSF-Permissive",
+      "Public-Domain"
+    ],
+    "license_exceptions": {
+      "sys/dev/zlib/zcalloc.c": {
+        "license": "Public-Domain",
+        "evidence": "The file explicitly states that it is in the public domain."
+      },
+      "sys/dev/zlib/zcalloc.h": {
+        "license": "Public-Domain",
+        "evidence": "The file explicitly states that it is in the public domain."
+      }
+    }
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/zlib",
+      "sys/dev/zlib/zcalloc.c",
+      "sys/dev/zlib/zlib_mod.c"
+    ],
+    "file_count": 3,
+    "tree_sha256": "eb00f69815671e412b1997e8f98417a5a2d98872eabe0b77831e1743c8e52920"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "zlib-kernel",
+      "sources": [
+        "sys/dev/zlib/zcalloc.c",
+        "sys/dev/zlib/zlib_mod.c"
+      ],
+      "capabilities": [
+        "base",
+        "memory",
+        "module"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-bfe",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Broadcom BCM440x Ethernet driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "ISC"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/bfe",
+      "sys/dev/bfe/if_bfe.c"
+    ],
+    "file_count": 2,
+    "tree_sha256": "2d312a88140a8f80ef6a69bac1df3321b49628babf9476c16926bb5e0ed6de70"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "bfe",
+      "sources": [
+        "sys/dev/bfe/if_bfe.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+Kconfiglib 14.1.0 is vendored here as EdgeOS's Kconfig language engine and
+ncurses menuconfig frontend.
+
+Upstream: https://github.com/ulfalizer/Kconfiglib
+Release:  14.1.0
+License:  ISC (see LICENSE.txt)
+
+The EdgeOS copy changes a documentation heading underline to avoid Git's
+conflict-marker check and adds the centered Linux mconf/lxdialog frame, menu
+border, instructions, legend, buttons, and menu placement. EdgeOS-specific
+command handling lives in scripts/kconfig/conf.py. The UI uses only portable
+ncurses drawing and does not contain terminal-emulator or platform-specific
+color control.

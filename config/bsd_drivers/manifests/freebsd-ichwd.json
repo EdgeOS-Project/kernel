@@ -1,0 +1,83 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-ichwd",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Intel ICH, PCH, and 6300ESB watchdog timer drivers.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/ichwd/i6300esbwd.c",
+      "sys/dev/ichwd/i6300esbwd.h",
+      "sys/dev/ichwd/ichwd.c",
+      "sys/dev/ichwd/ichwd.h"
+    ],
+    "file_count": 4,
+    "tree_sha256": "6e2f2cb01fb26eadf0b474f3b907431c69d5acfe2cde44ebc5f83f657712d5d2"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "ichwd",
+      "sources": [
+        "sys/dev/ichwd/ichwd.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "i6300esbwd",
+      "sources": [
+        "sys/dev/ichwd/i6300esbwd.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

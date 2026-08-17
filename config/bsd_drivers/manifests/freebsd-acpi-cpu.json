@@ -1,0 +1,68 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-acpi-cpu",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD ACPI processor and idle-state driver.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [
+      "EDGEOS_BSD_FULL_ACPICA"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "acpica"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/acpica/acpi_cpu.c"
+    ],
+    "file_count": 1,
+    "tree_sha256": "47b780a3abbf31d7102c5bb7061521318f2246efda4abea12e21f94963362124"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "acpi-cpu",
+      "sources": [
+        "sys/dev/acpica/acpi_cpu.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

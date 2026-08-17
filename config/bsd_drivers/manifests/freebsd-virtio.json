@@ -1,0 +1,419 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-virtio",
+  "provider": "freebsd",
+  "description": "Unmodified FreeBSD VirtIO subsystem imported through the EdgeOS BSD Driver Bridge.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "SC_NO_CUTPASTE"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {
+      "sys/dev/fb/fb_if.m": {
+        "license": "BSD-2-Clause",
+        "evidence": "The FreeBSD top-level COPYRIGHT applies its compilation license."
+      }
+    }
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/virtio",
+      "sys/dev/fb/fb_if.m",
+      "sys/dev/vt/hw/fb/vt_fb.c",
+      "sys/dev/pci/pci_if.m",
+      "sys/kern/bus_if.m",
+      "sys/kern/device_if.m",
+      "sys/tools/makeobjops.awk"
+    ],
+    "file_count": 48,
+    "tree_sha256": "ca28f5e65bef8affe32347258296ee7765f81e37fdfa4876dc6a4e4ffb688edb"
+  },
+  "generated_interfaces": [
+    "sys/kern/bus_if.m",
+    "sys/kern/device_if.m",
+    "sys/dev/fb/fb_if.m",
+    "sys/dev/pci/pci_if.m",
+    "sys/dev/virtio/virtio_bus_if.m",
+    "sys/dev/virtio/virtio_if.m",
+    "sys/dev/virtio/pci/virtio_pci_if.m"
+  ],
+  "modules": [
+    {
+      "id": "virtio-core",
+      "sources": [
+        "sys/dev/virtio/virtio.c",
+        "sys/dev/virtio/virtqueue.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "virtio",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "virtio-pci",
+      "sources": [
+        "sys/dev/virtio/pci/virtio_pci.c",
+        "sys/dev/virtio/pci/virtio_pci_legacy.c",
+        "sys/dev/virtio/pci/virtio_pci_modern.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "virtio"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "virtio-mmio",
+      "sources": [
+        "sys/dev/virtio/mmio/virtio_mmio.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "mmio",
+        "module",
+        "newbus",
+        "resource",
+        "virtio"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "virtio-mmio-acpi",
+      "sources": [
+        "sys/dev/virtio/mmio/virtio_mmio_acpi.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "mmio",
+        "module",
+        "newbus",
+        "resource",
+        "virtio"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "virtio-mmio-cmdline",
+      "sources": [
+        "sys/dev/virtio/mmio/virtio_mmio_cmdline.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "mmio",
+        "module",
+        "newbus",
+        "resource",
+        "virtio"
+      ],
+      "build": {
+        "mode": "disabled",
+        "reason": "The FreeBSD command-line device attachment frontend is not wired."
+      }
+    },
+    {
+      "id": "virtio-mmio-fdt",
+      "sources": [
+        "sys/dev/virtio/mmio/virtio_mmio_fdt.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "mmio",
+        "module",
+        "newbus",
+        "resource",
+        "virtio"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "virtio-balloon",
+      "sources": [
+        "sys/dev/virtio/balloon/virtio_balloon.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "virtio",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "virtio-block",
+      "sources": [
+        "sys/dev/virtio/block/virtio_blk.c"
+      ],
+      "capabilities": [
+        "base",
+        "block",
+        "generated",
+        "geom-core",
+        "geom-disk",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "virtio"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "virtio-console",
+      "sources": [
+        "sys/dev/virtio/console/virtio_console.c"
+      ],
+      "capabilities": [
+        "base",
+        "character-device",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "tty",
+        "virtio"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "freebsd-vt-framebuffer",
+      "sources": [
+        "sys/dev/vt/hw/fb/vt_fb.c"
+      ],
+      "capabilities": [
+        "base",
+        "display",
+        "framebuffer",
+        "memory",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "virtio-gpu",
+      "sources": [
+        "sys/dev/virtio/gpu/virtio_gpu.c"
+      ],
+      "capabilities": [
+        "base",
+        "callout",
+        "display",
+        "framebuffer",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "virtio",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "virtio-network",
+      "sources": [
+        "sys/dev/virtio/network/if_vtnet.c"
+      ],
+      "capabilities": [
+        "base",
+        "callout",
+        "generated",
+        "ifnet",
+        "machine",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "random",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "virtio",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "virtio-p9fs",
+      "sources": [
+        "sys/dev/virtio/p9fs/virtio_p9fs.c"
+      ],
+      "capabilities": [
+        "base",
+        "character-device",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "synchronization",
+        "sysctl",
+        "virtio"
+      ],
+      "build": {
+        "mode": "disabled",
+        "reason": "The P9 character-device frontend is not connected to EdgeOS."
+      }
+    },
+    {
+      "id": "virtio-random",
+      "sources": [
+        "sys/dev/virtio/random/virtio_random.c"
+      ],
+      "capabilities": [
+        "base",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "random",
+        "virtio"
+      ],
+      "build": {
+        "mode": "module"
+      }
+    },
+    {
+      "id": "virtio-scmi",
+      "sources": [
+        "sys/dev/virtio/scmi/virtio_scmi.c"
+      ],
+      "capabilities": [
+        "base",
+        "firmware",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "scmi",
+        "synchronization",
+        "virtio"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "virtio-scsi",
+      "sources": [
+        "sys/dev/virtio/scsi/virtio_scsi.c"
+      ],
+      "capabilities": [
+        "base",
+        "callout",
+        "cam",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "scsi",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "virtio"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

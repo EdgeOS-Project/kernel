@@ -1,0 +1,179 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-mmc-core",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD MMC/SD bus core.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/cam/mmc/mmc_sim.h",
+      "sys/dev/mmc",
+      "sys/dev/mmc/mmc.c",
+      "sys/dev/mmc/mmc_subr.c",
+      "sys/dev/mmc/mmcbr_if.m",
+      "sys/dev/mmc/mmcbus_if.m"
+    ],
+    "file_count": 28,
+    "tree_sha256": "87ddbcc1aa3eb4734590860dbf1f79ad5306d2592da07c1c919bd5040d8d2686"
+  },
+  "generated_interfaces": [
+    "sys/dev/mmc/mmc_pwrseq_if.m",
+    "sys/dev/mmc/mmcbr_if.m",
+    "sys/dev/mmc/mmcbus_if.m"
+  ],
+  "modules": [
+    {
+      "id": "mmc-core",
+      "sources": [
+        "sys/dev/mmc/mmc.c",
+        "sys/dev/mmc/mmc_subr.c"
+      ],
+      "capabilities": [
+        "base",
+        "block",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "mmcsd",
+      "sources": [
+        "sys/dev/mmc/mmcsd.c"
+      ],
+      "capabilities": [
+        "base",
+        "block",
+        "character-device",
+        "generated",
+        "geom-core",
+        "geom-disk",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "synchronization",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "mmc-platform",
+      "sources": [
+        "sys/dev/mmc/mmc_fdt_helpers.c",
+        "sys/dev/mmc/mmc_helpers.c",
+        "sys/dev/mmc/mmc_pwrseq.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "mmc-spi",
+      "sources": [
+        "sys/dev/mmc/mmcspi.c"
+      ],
+      "capabilities": [
+        "base",
+        "character-device",
+        "fdt",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "dwmmc-platform",
+      "sources": [
+        "sys/dev/mmc/host/dwmmc.c",
+        "sys/dev/mmc/host/dwmmc_altera.c",
+        "sys/dev/mmc/host/dwmmc_hisi.c",
+        "sys/dev/mmc/host/dwmmc_rockchip.c",
+        "sys/dev/mmc/host/dwmmc_samsung.c",
+        "sys/dev/mmc/host/dwmmc_starfive.c"
+      ],
+      "capabilities": [
+        "base",
+        "cam",
+        "character-device",
+        "fdt",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

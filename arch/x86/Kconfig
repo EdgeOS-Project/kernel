@@ -1,0 +1,464 @@
+# EdgeOS x86 architecture configuration
+
+menu "Processor type and features"
+config APIC
+    bool "Local APIC support"
+    default n
+
+config IOAPIC
+    bool "IOAPIC support"
+    default n
+
+config CPUFREQ_INTEL_PSTATE
+    bool "Intel P-State CPU frequency scaling"
+    default y
+endmenu
+
+menu "Power management and ACPI options"
+config ACPI
+    bool "ACPI core support"
+    default y
+
+config ACPI_AC_ADAPTER
+    bool "ACPI AC adapter driver"
+    depends on BSD_DRIVER_ACPICA
+    default y
+    help
+      Enable the complete imported ACPI adapter driver and Linux-compatible
+      power-supply state reporting.
+
+config ACPI_BATTERY
+    bool "ACPI control-method battery driver"
+    depends on BSD_DRIVER_ACPICA
+    default y
+    help
+      Enable the complete imported control-method battery driver and publish
+      its live state through Linux-compatible power-supply attributes.
+
+config ACPI_EC
+    bool "ACPI embedded controller driver"
+    depends on BSD_DRIVER_ACPICA
+    default y
+    help
+      Enable the complete imported ACPI embedded-controller driver, including
+      ECDT discovery, GPE handling, address-space access, and burst transfers.
+
+config ACPI_DOCK
+    bool "ACPI docking station driver"
+    depends on BSD_DRIVER_ACPICA
+    default y
+    help
+      Enable the complete imported ACPI docking-station driver, including
+      dependency discovery, notifications, locking, and eject handling.
+
+config ACPI_POWER_RESOURCE
+    bool "ACPI power resource driver"
+    depends on BSD_DRIVER_ACPICA
+    default y
+    help
+      Enable the complete imported ACPI power-resource driver and its
+      dependency-aware reference counting.
+
+config ACPI_BUTTON
+    bool "ACPI power/sleep/lid button drivers (requires ACPICA event support)"
+    default n
+
+config HPET
+    bool "HPET timer support"
+    depends on ACPI
+    default y
+
+config RTC
+    bool "RTC driver"
+    default y
+
+config ACPI_THERMAL
+    bool "ACPI thermal zone driver"
+    depends on BSD_DRIVER_ACPICA
+    default y
+    help
+      Enable the complete imported ACPI thermal-zone driver, including
+      temperature polling, firmware notifications, active cooling devices,
+      critical-temperature handling, and passive CPU-frequency cooling.
+
+config FAN_CONTROLLER
+    bool "Fan controller support (requires ACPI/platform driver)"
+    default n
+endmenu
+
+menu "Bus options (PCI etc.)"
+config PCI
+    bool "PCI bus support"
+    default y
+
+config PCIE
+    bool "PCI Express support"
+    default n
+
+config PCI_DRIVER_PROBE
+    bool "PCI driver coverage probe"
+    default y
+
+config PCI_MSI
+    bool "PCI MSI interrupt support"
+    default n
+
+config PCI_MSIX
+    bool "PCI MSI-X interrupt support"
+    default n
+
+config SMBUS
+    bool "SMBus controller support"
+    depends on PCI
+    default y
+
+config I2C
+    bool "I2C controller support"
+    default n
+endmenu
+
+menu "Firmware Drivers"
+config DEVICE_TREE
+    bool "Flattened Device Tree support"
+    default y if ARCH_ARM64
+    default n
+    help
+      Validate and expose firmware Device Tree nodes, properties, register
+      ranges, and interrupts through the shared OFW model used by platform
+      drivers. ARM64 retains its minimal early boot parser when this is off.
+
+config EFI_RUNTIME
+    bool "EFI Runtime Services"
+    default n
+
+config EFI_GOP
+    bool "EFI GOP framebuffer handoff"
+    depends on EFI_RUNTIME
+    default n
+endmenu
+
+menu "Device Drivers"
+
+menu "Block devices"
+config LOOP_DEVICE
+    bool "Loopback block device support"
+    default y
+    help
+      Expose Linux-compatible /dev/loop-control and file-backed /dev/loopN
+      block devices for mounting filesystem images on both architectures.
+
+config DEVICE_MAPPER
+    bool "Linux-compatible device mapper"
+    default y
+    help
+      Provide /dev/mapper/control, dm-N block devices, atomic table switching,
+      and the shared linear, striped, zero, and error mapping targets used by
+      Linux storage-management tools.
+
+config VIRTIO_BLK
+    bool "VirtIO block driver"
+    default y
+
+config VIRTIO_SCSI
+    bool "VirtIO SCSI driver"
+    default y
+
+config NVME
+    bool "NVMe storage driver"
+    default y
+
+config AHCI
+    bool "AHCI SATA storage driver"
+    default y
+
+config ATA
+    bool "Legacy ATA PIO storage driver"
+    default y
+
+config VMWARE_PVSCSI
+    bool "VMware PVSCSI storage driver"
+    default y
+endmenu
+
+menuconfig NET
+    bool "Networking stack"
+    default y
+if NET
+config E1000
+    bool "Intel e1000 network driver"
+    default y
+
+config NET_INTEL_E1000E
+    bool "Intel e1000e/I219 Ethernet driver"
+    default n
+
+config NET_INTEL_IGC
+    bool "Intel I225/I226 igc Ethernet driver (requires full igc port)"
+    default n
+
+config NET_REALTEK_R8169
+    bool "Realtek RTL8111/8168/8125 Ethernet driver"
+    default n
+
+config VIRTIO_NET
+    bool "VirtIO network driver"
+    default y
+
+config WIFI_INTEL_IWLWIFI
+    bool "Intel iwlwifi probe/quiesce diagnostics (not a Wi-Fi driver)"
+    default n
+
+config VMWARE_VMXNET3
+    bool "VMware vmxnet3 probe/quiesce diagnostics (not a network driver)"
+    default n
+
+config HYPERV_NETVSC
+    bool "Hyper-V VMBus/NetVSC diagnostics (not a network driver)"
+    default n
+endif
+
+menuconfig USB
+    bool "USB support"
+    default y
+if USB
+config USB_HUB
+    bool "USB hub driver"
+    default y
+
+config USB_HID_KEYBOARD
+    bool "USB HID keyboard driver"
+    default y
+
+config USB_HID_MOUSE
+    bool "USB HID mouse driver"
+    default y
+
+config USB_AUDIO
+    bool "USB Audio Class driver"
+    default n
+
+config USB_UVC
+    bool "USB Video Class driver (requires streaming capture support)"
+    default n
+
+config USB_STORAGE
+    bool "USB Mass Storage driver"
+    default y
+
+config USB_UHCI
+    bool "UHCI USB host controller driver"
+    default y
+
+config USB_EHCI
+    bool "EHCI USB host controller driver"
+    default n
+
+config USB_OHCI
+    bool "OHCI USB host controller driver"
+    default n
+
+config USB_XHCI
+    bool "xHCI USB host controller driver"
+    default y
+
+config USB_ETH_ASIX
+    bool "ASIX AX88179 USB Ethernet driver (requires TX/RX data path)"
+    default n
+
+config USB_ETH_RTL8153
+    bool "Realtek RTL8153 USB Ethernet driver (requires TX/RX data path)"
+    default n
+endif
+
+menu "Input device support"
+config PS2_KEYBOARD
+    bool "PS/2 keyboard driver"
+    default y
+
+config PS2_MOUSE
+    bool "PS/2 mouse driver"
+    depends on PS2_KEYBOARD
+    default y
+
+config TOUCHPAD_SYNAPTICS
+    bool "Synaptics touchpad driver"
+    default n
+
+config TOUCHPAD_ELAN
+    bool "ELAN touchpad driver"
+    default n
+
+config VIRTIO_INPUT
+    bool "VirtIO input driver"
+    default y
+endmenu
+
+menu "Graphics support"
+config FB_CONSOLE
+    bool "Framebuffer console"
+    default y
+
+config GRAPHICS_BGA
+    bool "Bochs Graphics Adapter framebuffer"
+    default y
+
+config GRAPHICS_VBE
+    bool "VESA BIOS Extensions framebuffer"
+    default n
+
+config GRAPHICS_INTEL
+    bool "Intel UHD/Iris Xe graphics diagnostics (not a DRM driver)"
+    default n
+
+config VMWARE_SVGA
+    bool "VMware SVGA graphics driver"
+    default y
+
+config VIRTIO_GPU
+    bool "VirtIO GPU framebuffer driver"
+    default y
+endmenu
+
+menu "Sound card support"
+config AUDIO_HDA
+    bool "Intel HD Audio driver"
+    default n
+
+config AUDIO_AC97
+    bool "AC97 audio driver"
+    depends on PCI
+    default y
+endmenu
+
+menu "VirtIO drivers"
+config VIRTIO_RNG
+    bool "VirtIO RNG entropy driver"
+    default y
+
+config VIRTIO_BALLOON
+    bool "VirtIO balloon driver"
+    default n
+
+config VIRTIO_CONSOLE
+    bool "VirtIO console driver"
+    default n
+
+config VIRTIO_FS
+    bool "VirtIO filesystem driver (not implemented)"
+    default n
+endmenu
+
+menu "Character and platform devices"
+config SERIAL_16550
+    bool "16550 UART serial driver"
+    default y
+
+config TPM2
+    bool "TPM 2.0 driver"
+    default n
+
+config WATCHDOG
+    bool "Watchdog timer support"
+    depends on PCI
+    default y
+
+config GPIO
+    bool "GPIO framework and controller drivers (not implemented)"
+    default n
+
+config LED_CLASS
+    bool "LED class device support (not implemented)"
+    default n
+
+config HYPERV_STORVSC
+    bool "Hyper-V StorVSC storage driver (not implemented)"
+    default n
+endmenu
+
+endmenu
+
+menu "File systems"
+config FS_SWAP
+    bool "Linux-compatible swap pager"
+    default y
+
+config FS_EXT2
+    bool "ext2 filesystem support"
+    default y
+
+config FS_EXT4
+    bool "ext4 filesystem support"
+    default y
+
+config FS_FAT32
+    bool "FAT32 filesystem support"
+    default y
+
+config FS_EXFAT
+    bool "exFAT filesystem read-only support"
+    default y
+
+config FS_NTFS
+    bool "NTFS filesystem read-only support"
+    default y
+
+config FS_ISO9660
+    bool "ISO9660 filesystem read-only support"
+    default y
+
+config FS_UDF
+    bool "UDF filesystem read-only support"
+    default y
+
+config FS_SQUASHFS
+    bool "SquashFS 4 read-only filesystem support"
+    default y
+    help
+      Mount compressed SquashFS 4 images through the shared BSD-licensed
+      reader core. Gzip compression is built in on both architectures.
+
+config FS_EROFS
+    bool "EROFS read-only filesystem support"
+    default y
+    help
+      Mount Linux-compatible EROFS images through the architecture-neutral
+      reader, including flat, inline, chunk-based data and LZ4 compressed
+      compact or full indexes with standard or large physical clusters.
+
+config FS_XFS
+    bool "XFS v5 read-only filesystem support"
+    default y
+    help
+      Mount modern XFS v5 filesystems through the shared architecture-neutral
+      reader, including short and block directories, sparse and unwritten
+      extents, symbolic links, and direct or B-tree extent maps.
+
+config FS_BTRFS
+    bool "Btrfs read-only filesystem support"
+    default y
+    help
+      Mount Linux-compatible single-device Btrfs filesystems through the
+      shared architecture-neutral tree and extent reader. Inline and regular
+      uncompressed extents, sparse files, directories, and links are supported.
+
+config NFSD
+    bool "NFS version 3 server support"
+    depends on NET
+    default y
+    help
+      Serve VFS exports through the shared ONC RPC, mount protocol v3, and
+      NFSv3 implementation over both TCP and UDP. Enable an export at boot
+      with nfsd=1 nfsd.export=/absolute/path.
+
+config FUSE_FS
+    bool "FUSE userspace filesystem support"
+    default y
+    help
+      Provide the Linux-compatible /dev/fuse transport and shared VFS client.
+      This supports production userspace filesystems such as ceph-fuse without
+      placing their filesystem policy in the kernel.
+
+config OVERLAY_FS
+    bool "basic OverlayFS support (runtime whiteouts, no persistent xattr whiteouts yet)"
+    default n
+endmenu

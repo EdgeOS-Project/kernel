@@ -1,0 +1,65 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-qcom-mdio",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Qualcomm IPQ4018 MDIO controller driver.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/qcom_mdio",
+      "sys/dev/qcom_mdio/qcom_mdio_ipq4018.c"
+    ],
+    "file_count": 4,
+    "tree_sha256": "d6132c29b0deb8e4cd0c3bc8e1c653ab29314a494361f78a449023f0ee5c1abd"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "qcom_mdio",
+      "sources": [
+        "sys/dev/qcom_mdio/qcom_mdio_ipq4018.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

@@ -1,0 +1,73 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-rge",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Realtek 2.5 Gigabit Ethernet driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "ISC"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/rge",
+      "sys/dev/rge/if_rge.c",
+      "sys/dev/rge/if_rge_hw.c",
+      "sys/dev/rge/if_rge_stats.c",
+      "sys/dev/rge/if_rge_sysctl.c"
+    ],
+    "file_count": 12,
+    "tree_sha256": "1be9ad2a6083474b2598d167452d5852a6d5c8b72b936f5d7fe771c8c0ce4269"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "rge",
+      "sources": [
+        "sys/dev/rge/if_rge.c",
+        "sys/dev/rge/if_rge_hw.c",
+        "sys/dev/rge/if_rge_stats.c",
+        "sys/dev/rge/if_rge_sysctl.c"
+      ],
+      "capabilities": [
+        "base",
+        "machine",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

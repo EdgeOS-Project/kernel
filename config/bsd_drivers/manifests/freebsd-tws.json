@@ -1,0 +1,76 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-tws",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD LSI 3ware 9750 SAS2 and SATA-II RAID driver with CAM, management, and PCI support.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/tws"
+    ],
+    "file_count": 9,
+    "tree_sha256": "12417495ec057ac32db1b66890c6e34f89da4e943b384dccda3dd9c6d4312017"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "tws",
+      "sources": [
+        "sys/dev/tws/tws.c",
+        "sys/dev/tws/tws_services.c",
+        "sys/dev/tws/tws_cam.c",
+        "sys/dev/tws/tws_hdm.c",
+        "sys/dev/tws/tws_user.c"
+      ],
+      "capabilities": [
+        "base",
+        "block",
+        "callout",
+        "cam",
+        "character-device",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "scsi",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

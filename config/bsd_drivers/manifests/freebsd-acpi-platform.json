@@ -1,0 +1,66 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-acpi-platform",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD ACPI docking-station and power-resource drivers.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [
+      "EDGEOS_BSD_FULL_ACPICA"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "acpica"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/acpica/acpi_dock.c",
+      "sys/dev/acpica/acpi_powerres.c"
+    ],
+    "file_count": 2,
+    "tree_sha256": "3e7e64371ffc4aef6472b514b036b5abbb1ad6a80875451e0f2ad1323c534e25"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "acpi-platform",
+      "sources": [
+        "sys/dev/acpica/acpi_dock.c",
+        "sys/dev/acpica/acpi_powerres.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "generated",
+        "memory",
+        "module",
+        "newbus"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

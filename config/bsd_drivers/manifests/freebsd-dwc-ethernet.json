@@ -1,0 +1,78 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-dwc-ethernet",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Synopsys DesignWare 1000 Ethernet driver for ARM64 platforms.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/dwc",
+      "sys/dev/dwc/dwc1000_core.c",
+      "sys/dev/dwc/dwc1000_dma.c",
+      "sys/dev/dwc/if_dwc.c",
+      "sys/dev/dwc/if_dwc_if.m",
+      "sys/dev/dwc/if_dwc_rk.c",
+      "sys/dev/dwc/if_dwc_socfpga.c"
+    ],
+    "file_count": 12,
+    "tree_sha256": "60c81e2d39e5d54e38bd81ec0859b7858e7ef874db7631d6d969967260f18922"
+  },
+  "generated_interfaces": [
+    "sys/dev/dwc/if_dwc_if.m"
+  ],
+  "modules": [
+    {
+      "id": "dwc",
+      "sources": [
+        "sys/dev/dwc/dwc1000_core.c",
+        "sys/dev/dwc/dwc1000_dma.c",
+        "sys/dev/dwc/if_dwc.c",
+        "sys/dev/dwc/if_dwc_rk.c",
+        "sys/dev/dwc/if_dwc_socfpga.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "generated",
+        "machine",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "resource",
+        "synchronization"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

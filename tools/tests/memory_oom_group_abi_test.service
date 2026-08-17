@@ -1,0 +1,14 @@
+[Unit]
+Description=EdgeOS cgroup memory OOM group ABI acceptance probe
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/root/memory_oom_group_abi_test.sh /root/memory_oom_group_abi_probe
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/ttyS0
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

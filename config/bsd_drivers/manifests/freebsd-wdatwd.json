@@ -1,0 +1,68 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-wdatwd",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD ACPI Watchdog Action Table watchdog driver.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [
+      "EDGEOS_BSD_FULL_ACPICA"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "acpica"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/wdatwd",
+      "sys/dev/wdatwd/wdatwd.c"
+    ],
+    "file_count": 1,
+    "tree_sha256": "cfd497449bc61f9d1238fd2640e7839d05c4f15ccd7cba885fbced4d4c9a1972"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "wdatwd",
+      "sources": [
+        "sys/dev/wdatwd/wdatwd.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "callout",
+        "generated",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "sysctl",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

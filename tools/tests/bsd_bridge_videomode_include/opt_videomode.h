@@ -1,0 +1,6 @@
+/* SPDX-License-Identifier: MPL-2.0 */
+
+#ifndef EDGEOS_TEST_BSD_VIDEOMODE_OPTIONS_H
+#define EDGEOS_TEST_BSD_VIDEOMODE_OPTIONS_H
+
+#endif

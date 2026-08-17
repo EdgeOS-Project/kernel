@@ -1,0 +1,89 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-clock-core",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD clock domain, consumer core, and clock primitives with EdgeOS-owned fixed-clock provider glue.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/clk/clk.c",
+      "sys/dev/clk/clk.h",
+      "sys/dev/clk/clk_bus.c",
+      "sys/dev/clk/clk_div.c",
+      "sys/dev/clk/clk_div.h",
+      "sys/dev/clk/clk_fixed.h",
+      "sys/dev/clk/clk_gate.c",
+      "sys/dev/clk/clk_gate.h",
+      "sys/dev/clk/clk_link.c",
+      "sys/dev/clk/clk_link.h",
+      "sys/dev/clk/clk_mux.c",
+      "sys/dev/clk/clk_mux.h",
+      "sys/dev/clk/clkdev_if.m",
+      "sys/dev/clk/clknode_if.m",
+      "sys/dev/ofw/ofw_subr.h"
+    ],
+    "file_count": 15,
+    "tree_sha256": "0a5a09b02b2015f6310a52b46aad5f85120dba8b1c71cff81fe8855c3f0cb571"
+  },
+  "generated_interfaces": [
+    "sys/dev/clk/clkdev_if.m",
+    "sys/dev/clk/clknode_if.m"
+  ],
+  "modules": [
+    {
+      "id": "clock-core",
+      "sources": [
+        "sys/dev/clk/clk.c",
+        "sys/dev/clk/clk_bus.c",
+        "sys/dev/clk/clk_div.c",
+        "sys/dev/clk/clk_gate.c",
+        "sys/dev/clk/clk_link.c",
+        "sys/dev/clk/clk_mux.c"
+      ],
+      "capabilities": [
+        "base",
+        "character-device",
+        "fdt",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

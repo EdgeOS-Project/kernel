@@ -1,0 +1,39 @@
+#ifndef STRING_H
+#define STRING_H
+
+#include "types.h"
+
+void *memset(void *dst, char c, uint32 n);
+
+void *memcpy(void *dst, const void *src, uint32 n);
+void *memmove(void *dst, const void *src, uint32 n);
+
+int memcmp(const void *s1, const void *s2, uint32 n);
+void *memchr(const void *memory, int value, size_t length);
+
+int strlen(const char *s);
+size_t strnlen(const char *text, size_t maximum);
+char *strrchr(const char *text, int character);
+
+int strcmp(const char *s1, const char *s2);
+int strncmp(const char *s1, const char *s2, int c);
+
+int strcpy(char *dst, const char *src);
+
+void strcat(char *dest, const char *src);
+
+int isspace(char c);
+
+int isalpha(char c);
+char upper(char c);
+char lower(char c);
+
+void itoa(char *buf, int base, int d);
+
+char *strstr(const char *in, const char *str);
+
+char *strncpy(char *dest, const char *src, size_t n);
+int atoi(const char *s);
+
+
+#endif

@@ -1,0 +1,71 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-stge",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Sundance/Tamarack Gigabit Ethernet driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "ISC"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/mii/mii_bitbang.c",
+      "sys/dev/mii/mii_bitbang.h",
+      "sys/dev/stge",
+      "sys/dev/stge/if_stge.c"
+    ],
+    "file_count": 4,
+    "tree_sha256": "54f707fd6912dca6e90089ba077ae52b5fad087e79fedc3802b01133f0c4cb63"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "stge",
+      "sources": [
+        "sys/dev/mii/mii_bitbang.c",
+        "sys/dev/stge/if_stge.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

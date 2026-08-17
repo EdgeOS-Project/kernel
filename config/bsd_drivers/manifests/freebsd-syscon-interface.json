@@ -1,0 +1,48 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-syscon-interface",
+  "provider": "freebsd",
+  "package_type": "headers",
+  "description": "Unmodified FreeBSD syscon provider contract used by the original EdgeOS runtime.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/syscon/syscon.h",
+      "sys/dev/syscon/syscon_if.m"
+    ],
+    "file_count": 2,
+    "tree_sha256": "ce6014d6eff110fd4e8b5034c186e0ab5417769b0ded24b344308c74440383e0"
+  },
+  "generated_interfaces": [
+    "sys/dev/syscon/syscon_if.m"
+  ],
+  "generated_databases": [],
+  "modules": []
+}

@@ -1,0 +1,86 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-freescale-imx8",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD NXP/Freescale i.MX7 and i.MX8 clock, power, and interrupt-controller drivers.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT",
+      "INTRNG"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/arm64/freescale/imx",
+      "sys/arm64/freescale/imx/clk/imx_clk_composite.c",
+      "sys/arm64/freescale/imx/clk/imx_clk_frac_pll.c",
+      "sys/arm64/freescale/imx/clk/imx_clk_gate.c",
+      "sys/arm64/freescale/imx/clk/imx_clk_mux.c",
+      "sys/arm64/freescale/imx/clk/imx_clk_sscg_pll.c",
+      "sys/arm64/freescale/imx/imx7gpc.c",
+      "sys/arm64/freescale/imx/imx8mp_ccm.c",
+      "sys/arm64/freescale/imx/imx8mq_ccm.c",
+      "sys/arm64/freescale/imx/imx_ccm.c"
+    ],
+    "file_count": 17,
+    "tree_sha256": "9abf07f916bcbe87a4573844daccecce352907d0c44ac6cfab805328aa112888"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "freescale-imx8",
+      "sources": [
+        "sys/arm64/freescale/imx/clk/imx_clk_composite.c",
+        "sys/arm64/freescale/imx/clk/imx_clk_frac_pll.c",
+        "sys/arm64/freescale/imx/clk/imx_clk_gate.c",
+        "sys/arm64/freescale/imx/clk/imx_clk_mux.c",
+        "sys/arm64/freescale/imx/clk/imx_clk_sscg_pll.c",
+        "sys/arm64/freescale/imx/imx7gpc.c",
+        "sys/arm64/freescale/imx/imx8mp_ccm.c",
+        "sys/arm64/freescale/imx/imx8mq_ccm.c",
+        "sys/arm64/freescale/imx/imx_ccm.c"
+      ],
+      "capabilities": [
+        "base",
+        "character-device",
+        "fdt",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization",
+        "sysctl"
+      ],
+      "kconfig_requires": [
+        "DEVICE_TREE"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

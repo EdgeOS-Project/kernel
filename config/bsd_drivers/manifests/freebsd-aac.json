@@ -1,0 +1,75 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-aac",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Adaptec AAC RAID controller driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/aac",
+      "sys/dev/aac/aac.c",
+      "sys/dev/aac/aac_cam.c",
+      "sys/dev/aac/aac_disk.c",
+      "sys/dev/aac/aac_pci.c"
+    ],
+    "file_count": 9,
+    "tree_sha256": "2926c14e3256603fe8dcf5e2bfe266c8368c4c14b90b7612090c5c3f62272eef"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "aac",
+      "sources": [
+        "sys/dev/aac/aac.c",
+        "sys/dev/aac/aac_cam.c",
+        "sys/dev/aac/aac_disk.c",
+        "sys/dev/aac/aac_pci.c"
+      ],
+      "capabilities": [
+        "base",
+        "block",
+        "cam",
+        "character-device",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

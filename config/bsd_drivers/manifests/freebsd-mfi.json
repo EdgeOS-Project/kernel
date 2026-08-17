@@ -1,0 +1,102 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-mfi",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD MegaRAID Firmware Interface storage driver with logical-disk, system-disk, Thunderbolt, PCI, and CAM support.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/mfi"
+    ],
+    "file_count": 11,
+    "tree_sha256": "a46cf00bdbf50c168653403e4d3def19ced1d8def0caf388880c54578d813004"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "mfi",
+      "sources": [
+        "sys/dev/mfi/mfi.c",
+        "sys/dev/mfi/mfi_debug.c",
+        "sys/dev/mfi/mfi_disk.c",
+        "sys/dev/mfi/mfi_pci.c",
+        "sys/dev/mfi/mfi_syspd.c",
+        "sys/dev/mfi/mfi_tbolt.c"
+      ],
+      "capabilities": [
+        "base",
+        "block",
+        "callout",
+        "cam",
+        "character-device",
+        "generated",
+        "geom-core",
+        "geom-disk",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "scsi",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "mfip",
+      "sources": [
+        "sys/dev/mfi/mfi_cam.c"
+      ],
+      "capabilities": [
+        "base",
+        "block",
+        "cam",
+        "character-device",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "scsi",
+        "synchronization",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

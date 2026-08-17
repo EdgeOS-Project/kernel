@@ -1,0 +1,106 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-ice",
+  "provider": "freebsd",
+  "description": "Unmodified complete standard FreeBSD Intel E800 and E810 high-speed PCIe Ethernet physical-function driver with RDMA peer interface.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "RSS"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/ice",
+      "sys/dev/ice/ice_common.c",
+      "sys/dev/ice/ice_controlq.c",
+      "sys/dev/ice/ice_dcb.c",
+      "sys/dev/ice/ice_ddp_common.c",
+      "sys/dev/ice/ice_flex_pipe.c",
+      "sys/dev/ice/ice_flow.c",
+      "sys/dev/ice/ice_fw_logging.c",
+      "sys/dev/ice/ice_fwlog.c",
+      "sys/dev/ice/ice_iflib_recovery_txrx.c",
+      "sys/dev/ice/ice_iflib_txrx.c",
+      "sys/dev/ice/ice_lib.c",
+      "sys/dev/ice/ice_nvm.c",
+      "sys/dev/ice/ice_osdep.c",
+      "sys/dev/ice/ice_rdma.c",
+      "sys/dev/ice/ice_resmgr.c",
+      "sys/dev/ice/ice_sched.c",
+      "sys/dev/ice/ice_strings.c",
+      "sys/dev/ice/ice_switch.c",
+      "sys/dev/ice/ice_vlan_mode.c",
+      "sys/dev/ice/if_ice_iflib.c",
+      "sys/dev/ice/irdma_di_if.m",
+      "sys/dev/ice/irdma_if.m"
+    ],
+    "file_count": 63,
+    "tree_sha256": "fce9af01e156a76c50a60cb3c0e4aacaa2702da6df1ccbe1a3d5b3b6d4cdc8ad"
+  },
+  "generated_interfaces": [
+    "sys/dev/ice/irdma_di_if.m",
+    "sys/dev/ice/irdma_if.m"
+  ],
+  "modules": [
+    {
+      "id": "ice",
+      "sources": [
+        "sys/dev/ice/ice_common.c",
+        "sys/dev/ice/ice_controlq.c",
+        "sys/dev/ice/ice_dcb.c",
+        "sys/dev/ice/ice_ddp_common.c",
+        "sys/dev/ice/ice_flex_pipe.c",
+        "sys/dev/ice/ice_flow.c",
+        "sys/dev/ice/ice_fw_logging.c",
+        "sys/dev/ice/ice_fwlog.c",
+        "sys/dev/ice/ice_iflib_recovery_txrx.c",
+        "sys/dev/ice/ice_iflib_txrx.c",
+        "sys/dev/ice/ice_lib.c",
+        "sys/dev/ice/ice_nvm.c",
+        "sys/dev/ice/ice_osdep.c",
+        "sys/dev/ice/ice_rdma.c",
+        "sys/dev/ice/ice_resmgr.c",
+        "sys/dev/ice/ice_sched.c",
+        "sys/dev/ice/ice_strings.c",
+        "sys/dev/ice/ice_switch.c",
+        "sys/dev/ice/ice_vlan_mode.c",
+        "sys/dev/ice/if_ice_iflib.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "module",
+        "network",
+        "pci"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

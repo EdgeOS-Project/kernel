@@ -1,0 +1,71 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-mvs",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Marvell SATA controller driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/mvs",
+      "sys/dev/mvs/mvs.c",
+      "sys/dev/mvs/mvs_if.m",
+      "sys/dev/mvs/mvs_pci.c"
+    ],
+    "file_count": 5,
+    "tree_sha256": "2b4d130c52aa950c27972376f8fd7133322372ec538c5c58d37f63d904323c2f"
+  },
+  "generated_interfaces": [
+    "sys/dev/mvs/mvs_if.m"
+  ],
+  "modules": [
+    {
+      "id": "mvs",
+      "sources": [
+        "sys/dev/mvs/mvs.c",
+        "sys/dev/mvs/mvs_pci.c"
+      ],
+      "capabilities": [
+        "base",
+        "cam",
+        "character-device",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

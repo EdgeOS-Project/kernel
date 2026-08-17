@@ -1,0 +1,80 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-cfi",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Common Flash Interface NOR flash bus, character, and disk drivers.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/cfi",
+      "sys/dev/cfi/cfi_bus_fdt.c",
+      "sys/dev/cfi/cfi_bus_nexus.c",
+      "sys/dev/cfi/cfi_core.c",
+      "sys/dev/cfi/cfi_dev.c",
+      "sys/dev/cfi/cfi_disk.c",
+      "sys/sys/cfictl.h",
+      "sys/sys/kenv.h"
+    ],
+    "file_count": 9,
+    "tree_sha256": "be0c88126b5f2cb38997d6a94fce8d0cf5811c0211befe31f5513172cf5a2f45"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "cfi",
+      "sources": [
+        "sys/dev/cfi/cfi_bus_fdt.c",
+        "sys/dev/cfi/cfi_bus_nexus.c",
+        "sys/dev/cfi/cfi_core.c",
+        "sys/dev/cfi/cfi_dev.c",
+        "sys/dev/cfi/cfi_disk.c"
+      ],
+      "capabilities": [
+        "base",
+        "block",
+        "character-device",
+        "fdt",
+        "generated",
+        "geom-core",
+        "geom-disk",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

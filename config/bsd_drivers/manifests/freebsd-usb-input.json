@@ -1,0 +1,86 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-usb-input",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD USB keyboard and mouse drivers with HID parsing, device quirks, and keyboard framework.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "EVDEV_SUPPORT",
+      "USB_VERBOSE"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/evdev/evdev.h",
+      "sys/dev/evdev/evdev_utils.c",
+      "sys/dev/evdev/input-event-codes.h",
+      "sys/dev/evdev/input.h",
+      "sys/dev/hid/hid.c",
+      "sys/dev/hid/hid.h",
+      "sys/dev/hid/hid_if.m",
+      "sys/dev/hid/hidquirk.h",
+      "sys/dev/kbd/kbd.c",
+      "sys/dev/kbd/kbdreg.h",
+      "sys/dev/kbd/kbdtables.h",
+      "sys/dev/usb/input/ukbd.c",
+      "sys/dev/usb/input/ums.c",
+      "sys/dev/usb/quirk/usb_quirk.c"
+    ],
+    "file_count": 14,
+    "tree_sha256": "ecc0da703f8c844919f78375d32cbd3ecb47cb5f2e255b58c1662221bd0c302b"
+  },
+  "generated_interfaces": [
+    "sys/dev/hid/hid_if.m"
+  ],
+  "modules": [
+    {
+      "id": "usb-input-complete",
+      "sources": [
+        "sys/dev/evdev/evdev_utils.c",
+        "sys/dev/hid/hid.c",
+        "sys/dev/kbd/kbd.c",
+        "sys/dev/usb/input/ukbd.c",
+        "sys/dev/usb/input/ums.c",
+        "sys/dev/usb/quirk/usb_quirk.c"
+      ],
+      "capabilities": [
+        "base",
+        "callout",
+        "character-device",
+        "generated",
+        "memory",
+        "module",
+        "newbus",
+        "synchronization",
+        "sysctl",
+        "usb"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

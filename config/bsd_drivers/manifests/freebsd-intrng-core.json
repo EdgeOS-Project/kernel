@@ -1,0 +1,50 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-intrng-core",
+  "provider": "freebsd",
+  "package_type": "headers",
+  "description": "Unmodified FreeBSD architecture-neutral interrupt framework contract and generated programmable interrupt controller interface.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "INTRNG"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/kern/msi_if.m",
+      "sys/kern/pic_if.m",
+      "sys/sys/intr.h"
+    ],
+    "file_count": 3,
+    "tree_sha256": "e8f905f11268a292d70131091cc91fa5df77019081dd2879de9d7bda1156ae9f"
+  },
+  "generated_interfaces": [
+    "sys/kern/msi_if.m",
+    "sys/kern/pic_if.m"
+  ],
+  "generated_databases": [],
+  "modules": []
+}

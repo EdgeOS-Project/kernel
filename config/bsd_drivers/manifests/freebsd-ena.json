@@ -1,0 +1,89 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-ena",
+  "provider": "freebsd",
+  "description": "Unmodified complete standard FreeBSD Amazon Elastic Network Adapter PCIe Ethernet driver and ena-com hardware library.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": [],
+    "arm64_definitions": [
+      "STRIP_FBSDID"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {
+      "sys/contrib/ena-com/ena_defs/ena_includes.h": {
+        "license": "BSD-3-Clause",
+        "evidence": "This four-line aggregation header belongs to the BSD-3-Clause ena-com definition set imported intact by FreeBSD and contains only includes of the adjacent licensed definition headers."
+      }
+    }
+  },
+  "source_lock": {
+    "paths": [
+      "sys/contrib/ena-com",
+      "sys/contrib/ena-com/ena_com.c",
+      "sys/contrib/ena-com/ena_eth_com.c",
+      "sys/dev/ena",
+      "sys/dev/ena/ena.c",
+      "sys/dev/ena/ena_datapath.c",
+      "sys/dev/ena/ena_netmap.c",
+      "sys/dev/ena/ena_rss.c",
+      "sys/dev/ena/ena_sysctl.c"
+    ],
+    "file_count": 20,
+    "tree_sha256": "89ee58ab55efa278803e0174926117fb4d351cae8ce25629257cfad457df3f09"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "ena",
+      "sources": [
+        "sys/contrib/ena-com/ena_com.c",
+        "sys/contrib/ena-com/ena_eth_com.c",
+        "sys/dev/ena/ena.c",
+        "sys/dev/ena/ena_datapath.c",
+        "sys/dev/ena/ena_netmap.c",
+        "sys/dev/ena/ena_rss.c",
+        "sys/dev/ena/ena_sysctl.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "sysctl",
+        "taskqueue",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

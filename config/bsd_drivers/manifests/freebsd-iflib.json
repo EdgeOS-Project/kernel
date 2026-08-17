@@ -1,0 +1,78 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-iflib",
+  "provider": "freebsd",
+  "description": "Unmodified FreeBSD iflib framework imported through the EdgeOS BSD Driver Bridge.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "IFLIB_DEBUG_COUNTERS=1"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/net/ifdi_if.m",
+      "sys/net/iflib.c",
+      "sys/net/mp_ring.c"
+    ],
+    "file_count": 3,
+    "tree_sha256": "f541fdfd1ec69e65f5ad9f5dcd2452c0cfc49050ab771ffa75f6dd70b67535e3"
+  },
+  "generated_interfaces": [
+    "sys/net/ifdi_if.m"
+  ],
+  "modules": [
+    {
+      "id": "iflib-core",
+      "sources": [
+        "sys/net/iflib.c",
+        "sys/net/mp_ring.c"
+      ],
+      "capabilities": [
+        "base",
+        "callout",
+        "generated",
+        "ifnet",
+        "machine",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "random",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

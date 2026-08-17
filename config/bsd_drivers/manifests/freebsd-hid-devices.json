@@ -1,0 +1,82 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-hid-devices",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD HID device drivers for Apple IR receivers and touchpads, raw HID access, radio and system controls, PlayStation 4 and Xbox 360 gamepads, and U2F authenticators.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "EVDEV_SUPPORT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/hid/appleir.c",
+      "sys/dev/hid/bcm5974.c",
+      "sys/dev/hid/hidraw.c",
+      "sys/dev/hid/hidraw.h",
+      "sys/dev/hid/hrfkill.c",
+      "sys/dev/hid/hsctrl.c",
+      "sys/dev/hid/ps4dshock.c",
+      "sys/dev/hid/u2f.c",
+      "sys/dev/hid/xb360gp.c"
+    ],
+    "file_count": 9,
+    "tree_sha256": "d3beb22216d827e3b37a11c6c8d4914295edea245cb64d01cde5cdd88c76e085"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "hid-device-extras",
+      "sources": [
+        "sys/dev/hid/appleir.c",
+        "sys/dev/hid/bcm5974.c",
+        "sys/dev/hid/hidraw.c",
+        "sys/dev/hid/hrfkill.c",
+        "sys/dev/hid/hsctrl.c",
+        "sys/dev/hid/ps4dshock.c",
+        "sys/dev/hid/u2f.c",
+        "sys/dev/hid/xb360gp.c"
+      ],
+      "capabilities": [
+        "base",
+        "callout",
+        "character-device",
+        "generated",
+        "memory",
+        "module",
+        "newbus",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "tty",
+        "usb"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

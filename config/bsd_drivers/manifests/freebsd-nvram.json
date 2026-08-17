@@ -1,0 +1,58 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-nvram",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD legacy NVRAM character device driver.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/nvram",
+      "sys/dev/nvram/nvram.c"
+    ],
+    "file_count": 1,
+    "tree_sha256": "3f554799fc3d3245e7a64a04143fb27eb33b0cc7f0aa3691f9eb00d874a9e0e5"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "nvram",
+      "sources": [
+        "sys/dev/nvram/nvram.c"
+      ],
+      "capabilities": [
+        "base",
+        "character-device",
+        "module",
+        "synchronization"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

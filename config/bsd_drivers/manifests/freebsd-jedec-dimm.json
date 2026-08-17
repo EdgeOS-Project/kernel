@@ -1,0 +1,60 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-jedec-dimm",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD JEDEC SPD DIMM sensor and metadata driver.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/jedec_dimm/jedec_dimm.c",
+      "sys/dev/jedec_dimm/jedec_dimm.h"
+    ],
+    "file_count": 2,
+    "tree_sha256": "30856636f597622a25b1bdf0eb212c3ff0fab9ed1cb7c6e1e25b6dfcaf4e27c8"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "jedec-dimm",
+      "sources": [
+        "sys/dev/jedec_dimm/jedec_dimm.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "memory",
+        "module",
+        "newbus",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

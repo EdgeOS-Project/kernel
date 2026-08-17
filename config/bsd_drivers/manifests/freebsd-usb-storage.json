@@ -1,0 +1,67 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-usb-storage",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD USB mass-storage driver with CAM block-device integration.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "USB_VERBOSE"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/usb/storage/umass.c"
+    ],
+    "file_count": 1,
+    "tree_sha256": "ed3795b02fdb8b70aa8522f0a44ed8cb9aeb07fe477f7e524c29efb12ef96550"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "usb-mass-storage",
+      "sources": [
+        "sys/dev/usb/storage/umass.c"
+      ],
+      "capabilities": [
+        "base",
+        "block",
+        "callout",
+        "cam",
+        "memory",
+        "module",
+        "newbus",
+        "scsi",
+        "synchronization",
+        "sysctl",
+        "usb"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

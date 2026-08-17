@@ -1,0 +1,42 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-acpica-headers",
+  "provider": "freebsd",
+  "package_type": "headers",
+  "description": "Unmodified ACPICA public and internal runtime headers from the pinned FreeBSD source revision.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/contrib/dev/acpica/include"
+    ],
+    "file_count": 45,
+    "tree_sha256": "f5ced3b797d32ac9b3a9c6095f7d6fcfed718df4c4f8b2f89372699386ecd316"
+  },
+  "generated_interfaces": [],
+  "modules": []
+}

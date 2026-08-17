@@ -1,0 +1,13 @@
+[Unit]
+Description=EdgeOS proportional set size acceptance probe
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /root/pss_share_runtime_test.sh
+StandardOutput=journal+console
+StandardError=journal+console
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

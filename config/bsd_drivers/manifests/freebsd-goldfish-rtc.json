@@ -1,0 +1,36 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-goldfish-rtc",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Goldfish real-time clock driver.",
+  "architectures": ["x86_64", "arm64"],
+  "compile": {"definitions": ["FDT"], "undefinitions": []},
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": ["BSD-2-Clause"],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": ["sys/dev/goldfish"],
+    "file_count": 1,
+    "tree_sha256": "1a292dc85099f2dfed33f84b9dd88657115b8a25f5b03c6a33bf704823abce80"
+  },
+  "generated_interfaces": [],
+  "modules": [{
+    "id": "goldfish-rtc",
+    "sources": ["sys/dev/goldfish/goldfish_rtc.c"],
+    "capabilities": ["base", "fdt", "generated", "machine", "module", "newbus", "resource", "synchronization"],
+    "build": {"mode": "builtin"}
+  }]
+}

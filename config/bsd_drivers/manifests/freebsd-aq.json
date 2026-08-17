@@ -1,0 +1,92 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-aq",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Aquantia and Marvell multi-gigabit PCIe Ethernet driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "RSS"
+    ],
+    "undefinitions": [],
+    "arm64_definitions": [
+      "STRIP_FBSDID"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/aq",
+      "sys/dev/aq/aq_dbg.c",
+      "sys/dev/aq/aq_fw.c",
+      "sys/dev/aq/aq_fw1x.c",
+      "sys/dev/aq/aq_fw2x.c",
+      "sys/dev/aq/aq_hw.c",
+      "sys/dev/aq/aq_hw_llh.c",
+      "sys/dev/aq/aq_irq.c",
+      "sys/dev/aq/aq_main.c",
+      "sys/dev/aq/aq_media.c",
+      "sys/dev/aq/aq_ring.c"
+    ],
+    "file_count": 18,
+    "tree_sha256": "a6a48477067cd5a665d454f5ad9ac5fa28fb94c5ae3be8acc34b8ea7d1ab5486"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "aq",
+      "sources": [
+        "sys/dev/aq/aq_dbg.c",
+        "sys/dev/aq/aq_fw.c",
+        "sys/dev/aq/aq_fw1x.c",
+        "sys/dev/aq/aq_fw2x.c",
+        "sys/dev/aq/aq_hw.c",
+        "sys/dev/aq/aq_hw_llh.c",
+        "sys/dev/aq/aq_irq.c",
+        "sys/dev/aq/aq_main.c",
+        "sys/dev/aq/aq_media.c",
+        "sys/dev/aq/aq_ring.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "interrupt",
+        "machine",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

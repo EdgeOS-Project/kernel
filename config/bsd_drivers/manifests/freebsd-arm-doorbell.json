@@ -1,0 +1,68 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-arm-doorbell",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD ARM doorbell driver.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT",
+      "INTRNG"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/mailbox/arm/arm_doorbell.c",
+      "sys/dev/mailbox/arm/arm_doorbell.h"
+    ],
+    "file_count": 2,
+    "tree_sha256": "6091eafc54ca913ff57c908f5d2011a393db3f6c0fc79f08fa5d47dce2dfd9ed"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "arm-doorbell",
+      "sources": [
+        "sys/dev/mailbox/arm/arm_doorbell.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "interrupt",
+        "machine",
+        "memory",
+        "mmio",
+        "module",
+        "newbus",
+        "resource"
+      ],
+      "kconfig_requires": [
+        "DEVICE_TREE"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

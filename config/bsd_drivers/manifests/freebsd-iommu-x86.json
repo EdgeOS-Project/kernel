@@ -1,0 +1,111 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-iommu-x86",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD generic DMA remapping core with Intel VT-d and AMD-Vi IOMMU drivers.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [
+      "EDGEOS_BSD_FULL_IOMMU",
+      "EDGEOS_BSD_FULL_ACPICA"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "acpica"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/iommu",
+      "sys/dev/iommu/busdma_iommu.c",
+      "sys/dev/iommu/iommu_gas.c",
+      "sys/x86/iommu",
+      "sys/x86/iommu/amd_cmd.c",
+      "sys/x86/iommu/amd_ctx.c",
+      "sys/x86/iommu/amd_drv.c",
+      "sys/x86/iommu/amd_event.c",
+      "sys/x86/iommu/amd_idpgtbl.c",
+      "sys/x86/iommu/amd_intrmap.c",
+      "sys/x86/iommu/intel_ctx.c",
+      "sys/x86/iommu/intel_drv.c",
+      "sys/x86/iommu/intel_fault.c",
+      "sys/x86/iommu/intel_idpgtbl.c",
+      "sys/x86/iommu/intel_intrmap.c",
+      "sys/x86/iommu/intel_qi.c",
+      "sys/x86/iommu/intel_quirks.c",
+      "sys/x86/iommu/intel_utils.c",
+      "sys/x86/iommu/iommu_utils.c",
+      "sys/x86/include/busdma_impl.h"
+    ],
+    "file_count": 29,
+    "tree_sha256": "39e026d87fb7990c31b73aa3790973bbb6b987a2b291df093ab40d5e73814eb2"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "iommu-x86",
+      "sources": [
+        "sys/dev/iommu/busdma_iommu.c",
+        "sys/dev/iommu/iommu_gas.c",
+        "sys/x86/iommu/amd_cmd.c",
+        "sys/x86/iommu/amd_ctx.c",
+        "sys/x86/iommu/amd_drv.c",
+        "sys/x86/iommu/amd_event.c",
+        "sys/x86/iommu/amd_idpgtbl.c",
+        "sys/x86/iommu/amd_intrmap.c",
+        "sys/x86/iommu/intel_ctx.c",
+        "sys/x86/iommu/intel_drv.c",
+        "sys/x86/iommu/intel_fault.c",
+        "sys/x86/iommu/intel_idpgtbl.c",
+        "sys/x86/iommu/intel_intrmap.c",
+        "sys/x86/iommu/intel_qi.c",
+        "sys/x86/iommu/intel_quirks.c",
+        "sys/x86/iommu/intel_utils.c",
+        "sys/x86/iommu/iommu_utils.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "character-device",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "vm"
+      ],
+      "kconfig_requires": [
+        "ACPI"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

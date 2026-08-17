@@ -1,0 +1,75 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-malo",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Marvell Libertas 88W8335 wireless driver imported through the EdgeOS BSD Driver Bridge.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "MALO_DEBUG=1",
+      "__FreeBSD__=14"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "ISC",
+      "Public-Domain"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/malo",
+      "sys/dev/malo/if_malo.c",
+      "sys/dev/malo/if_malo_pci.c",
+      "sys/dev/malo/if_malohal.c"
+    ],
+    "file_count": 6,
+    "tree_sha256": "ce497065bc5840dbda866d61dda2942fb2568738f85a38fbe5f575f3d4d56318"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "malo",
+      "sources": [
+        "sys/dev/malo/if_malo.c",
+        "sys/dev/malo/if_malo_pci.c",
+        "sys/dev/malo/if_malohal.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

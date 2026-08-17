@@ -1,0 +1,86 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-nvme",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD NVMe controller and namespace driver with PCI and CAM integration.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/nvme",
+      "sys/sys/memdesc.h"
+    ],
+    "file_count": 17,
+    "tree_sha256": "03358acbc3720a23da8299f7ca494cdecb4e8c5d221752a0a45804a11a1bab90"
+  },
+  "generated_interfaces": [
+    "sys/dev/nvme/nvme_if.m"
+  ],
+  "modules": [
+    {
+      "id": "nvme",
+      "sources": [
+        "sys/dev/nvme/nvme.c",
+        "sys/dev/nvme/nvme_ahci.c",
+        "sys/dev/nvme/nvme_ctrlr.c",
+        "sys/dev/nvme/nvme_ctrlr_cmd.c",
+        "sys/dev/nvme/nvme_ns.c",
+        "sys/dev/nvme/nvme_ns_cmd.c",
+        "sys/dev/nvme/nvme_pci.c",
+        "sys/dev/nvme/nvme_qpair.c",
+        "sys/dev/nvme/nvme_sim.c",
+        "sys/dev/nvme/nvme_sysctl.c",
+        "sys/dev/nvme/nvme_test.c",
+        "sys/dev/nvme/nvme_util.c"
+      ],
+      "capabilities": [
+        "base",
+        "block",
+        "cam",
+        "character-device",
+        "generated",
+        "geom-core",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "scsi",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}
