@@ -2229,6 +2229,111 @@ static int extent_convert_inline_to_depth1(ext4_fs_t *fs, ext4_inode_t *in) {
     return 0;
 }
 
+static int extent_split_leaf_and_insert(ext4_fs_t *fs,
+                                        ext4_extent_header_t *root,
+                                        ext4_extent_idx_t *indexes,
+                                        uint16_t selected,
+                                        uint32_t lblock,
+                                        uint32_t pblock) {
+    ext4_extent_header_t *old_leaf;
+    ext4_extent_t *old_extents;
+    ext4_extent_t *ordered;
+    uint16_t old_entries;
+    uint16_t insert_at = 0;
+    uint16_t total;
+    uint16_t left_entries;
+    uint16_t right_entries;
+    uint16_t leaf_max;
+    uint16_t new_index;
+    uint32_t old_leaf_block;
+    int new_leaf_block;
+
+    if (!fs || !root || !indexes || selected >= root->eh_entries ||
+        root->eh_depth != 1 || root->eh_entries >= root->eh_max)
+        return -1;
+    old_leaf = (ext4_extent_header_t *)fs->block_work;
+    if (!extent_header_valid(old_leaf) || old_leaf->eh_depth != 0 ||
+        old_leaf->eh_entries != old_leaf->eh_max)
+        return -1;
+    old_entries = old_leaf->eh_entries;
+    total = (uint16_t)(old_entries + 1u);
+    if ((uint32_t)total * sizeof(ext4_extent_t) >
+        sizeof(fs->extent_scratch))
+        return -1;
+
+    old_extents = (ext4_extent_t *)(fs->block_work + sizeof(*old_leaf));
+    while (insert_at < old_entries &&
+           old_extents[insert_at].ee_block < lblock)
+        ++insert_at;
+    if ((insert_at > 0u &&
+         lblock - old_extents[insert_at - 1u].ee_block <
+             extent_actual_length(&old_extents[insert_at - 1u])) ||
+        (insert_at < old_entries &&
+         lblock >= old_extents[insert_at].ee_block &&
+         lblock - old_extents[insert_at].ee_block <
+             extent_actual_length(&old_extents[insert_at])))
+        return -1;
+    ordered = (ext4_extent_t *)(void *)fs->extent_scratch;
+    if (insert_at)
+        memcpy(ordered, old_extents,
+               (uint32_t)insert_at * sizeof(*ordered));
+    ordered[insert_at].ee_block = lblock;
+    ordered[insert_at].ee_len = 1u;
+    ordered[insert_at].ee_start_hi = 0u;
+    ordered[insert_at].ee_start_lo = pblock;
+    if (insert_at < old_entries)
+        memcpy(&ordered[insert_at + 1u], &old_extents[insert_at],
+               (uint32_t)(old_entries - insert_at) * sizeof(*ordered));
+
+    left_entries = (uint16_t)((total + 1u) / 2u);
+    right_entries = (uint16_t)(total - left_entries);
+    leaf_max = (uint16_t)((fs->block_size - sizeof(*old_leaf)) /
+                          sizeof(ext4_extent_t));
+    old_leaf_block = idx_leaf_phys(&indexes[selected]);
+    if (!old_leaf_block) return -1;
+    new_leaf_block = alloc_from_bitmap(
+        fs, fs->bg.block_bitmap_lo, fs->sb.blocks_per_group, 0);
+    if (new_leaf_block < 0) return -1;
+
+    /* Publish the new right leaf before shortening the existing left leaf. */
+    memset(fs->block_work, 0, fs->block_size);
+    old_leaf = (ext4_extent_header_t *)fs->block_work;
+    old_leaf->eh_magic = EXT4_EXT_MAGIC;
+    old_leaf->eh_entries = right_entries;
+    old_leaf->eh_max = leaf_max;
+    old_leaf->eh_depth = 0u;
+    memcpy(fs->block_work + sizeof(*old_leaf), &ordered[left_entries],
+           (uint32_t)right_entries * sizeof(*ordered));
+    if (write_block(fs, (uint32_t)new_leaf_block, fs->block_work) < 0) {
+        (void)ext4_free_block(fs, (uint32_t)new_leaf_block, 0);
+        return -1;
+    }
+
+    memset(fs->block_work, 0, fs->block_size);
+    old_leaf = (ext4_extent_header_t *)fs->block_work;
+    old_leaf->eh_magic = EXT4_EXT_MAGIC;
+    old_leaf->eh_entries = left_entries;
+    old_leaf->eh_max = leaf_max;
+    old_leaf->eh_depth = 0u;
+    memcpy(fs->block_work + sizeof(*old_leaf), ordered,
+           (uint32_t)left_entries * sizeof(*ordered));
+    if (write_block(fs, old_leaf_block, fs->block_work) < 0) {
+        (void)ext4_free_block(fs, (uint32_t)new_leaf_block, 0);
+        return -1;
+    }
+
+    indexes[selected].ei_block = ordered[0].ee_block;
+    new_index = (uint16_t)(selected + 1u);
+    for (uint16_t index = root->eh_entries; index > new_index; --index)
+        indexes[index] = indexes[index - 1u];
+    indexes[new_index].ei_block = ordered[left_entries].ee_block;
+    indexes[new_index].ei_leaf_lo = (uint32_t)new_leaf_block;
+    indexes[new_index].ei_leaf_hi = 0u;
+    indexes[new_index].ei_unused = 0u;
+    ++root->eh_entries;
+    return 0;
+}
+
 static int extent_map_insert_tree(ext4_fs_t *fs, ext4_inode_t *in, uint32_t lblock, uint32_t pblock) {
     ext4_extent_header_t *root;
     if (!fs || !in) return -1;
@@ -2253,38 +2358,8 @@ static int extent_map_insert_tree(ext4_fs_t *fs, ext4_inode_t *in, uint32_t lblo
         if (pick >= (int)root->eh_entries) return -1;
         if (read_block(fs, idx_leaf_phys(&idx[pick]), fs->block_work) < 0) return -1;
         if (extent_node_insert((ext4_extent_header_t *)fs->block_work, lblock, pblock) < 0) {
-            if (root->eh_entries >= root->eh_max) return -1;
-            {
-                int leaf_block = alloc_from_bitmap(fs, fs->bg.block_bitmap_lo, fs->sb.blocks_per_group, 0);
-                ext4_extent_header_t *leaf;
-                uint16_t position = 0;
-                if (leaf_block < 0) return -1;
-                memset(fs->block_work, 0, fs->block_size);
-                leaf = (ext4_extent_header_t *)fs->block_work;
-                leaf->eh_magic = EXT4_EXT_MAGIC;
-                leaf->eh_entries = 0;
-                leaf->eh_max = (uint16_t)((fs->block_size - sizeof(*leaf)) / sizeof(ext4_extent_t));
-                leaf->eh_depth = 0;
-                if (extent_node_insert(leaf, lblock, pblock) < 0) {
-                    (void)ext4_free_block(fs, (uint32_t)leaf_block, 0);
-                    return -1;
-                }
-                if (write_block(fs, (uint32_t)leaf_block, fs->block_work) < 0) {
-                    (void)ext4_free_block(fs, (uint32_t)leaf_block, 0);
-                    return -1;
-                }
-                while (position < root->eh_entries &&
-                       idx[position].ei_block < lblock)
-                    ++position;
-                for (uint16_t j = root->eh_entries; j > position; --j)
-                    idx[j] = idx[j - 1u];
-                idx[position].ei_block = lblock;
-                idx[position].ei_leaf_lo = (uint32_t)leaf_block;
-                idx[position].ei_leaf_hi = 0;
-                idx[position].ei_unused = 0;
-                ++root->eh_entries;
-                return 0;
-            }
+            return extent_split_leaf_and_insert(
+                fs, root, idx, (uint16_t)pick, lblock, pblock);
         }
         {
             ext4_extent_header_t *leaf = (ext4_extent_header_t *)fs->block_work;

@@ -6504,6 +6504,15 @@ static __attribute__((noreturn)) void task_resume_next(void) {
     uint16_t target_plus_one;
     task_scheduler_account_runtime(current, now_us);
     /*
+     * Every path into this function abandons the current exception stack.
+     * A blocked syscall is resumed from task->frame, not by returning through
+     * its old C call chain, so its live-frame pointer must not survive the
+     * handoff. The per-CPU resume stack is reused immediately and a later
+     * contention yield would otherwise copy that reused kernel stack over the
+     * saved EL0 registers, including SP_EL0 and LR.
+     */
+    if (current) current->active_syscall_frame = 0;
+    /*
      * A deferred syscall replay chain runs with architecture execution
      * ownership held, so the local timer interrupt cannot re-enter the
      * global timer service. Keep input, timeouts, and display work advancing
