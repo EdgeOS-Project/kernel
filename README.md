@@ -38,21 +38,40 @@ implemented in common code is built into both architecture targets.
 
 | Area | Present in the tree |
 | --- | --- |
-| Processes | Linux ELF64 loading, `fork`, `vfork`, `clone`, `clone3`, exec, signals, pidfds and process waiting |
-| Memory | VMAs, anonymous and file mappings, COW, `mmap`, `mprotect`, `mremap`, `madvise`, page cache and swap |
-| IPC and events | pipes, Unix sockets, futexes, epoll, eventfd, timerfd, signalfd and inotify |
-| VFS | path lookup, mounts, descriptors, permissions, procfs, sysfs, devtmpfs, devpts and OverlayFS |
-| Storage | block cache, partitions, loop devices, device mapper, VirtIO Block/SCSI, NVMe, AHCI and ATA |
-| Filesystems | ext2, ext4, FAT32, FUSE and readers for SquashFS, EROFS, XFS, Btrfs, exFAT, NTFS, ISO9660 and UDF |
-| Network | IPv4, IPv6, TCP, UDP, Unix sockets, packet sockets, netlink, TUN/TAP, bridge, macvlan and ipvlan |
-| Display | EFI GOP, framebuffer console, virtual terminals, DRM/KMS, fbdev, Bochs BGA, VMware SVGA and VirtIO GPU |
-| Input and audio | PS/2, USB HID, VirtIO Input, touchpad support, HDA, AC97 and USB audio |
-| Platform | ACPI/ACPICA, Device Tree, PCI/PCIe, MSI/MSI-X, SMP, timers, I2C, SMBus, TPM and watchdogs |
+| Boot | x86 Multiboot/Multiboot2, AArch64 UEFI, Linux-style kernel command line, block-root selection and cpio or gzip-compressed initramfs |
+| Linux ABI | Linux ELF64, architecture syscall tables, vDSO, Linux ioctls, socket interfaces and the procfs/sysfs/devtmpfs device model |
+| Processes | `fork`, `vfork`, `clone`, `clone3`, exec, signals, sessions, process groups, ptrace, pidfds, process waiting and resource accounting |
+| Credentials and limits | UIDs, GIDs, supplementary groups, Linux capabilities, securebits, `prctl`, resource limits and file permissions |
+| Namespaces and cgroups | Mount, PID, user, UTS, IPC, network, time and cgroup namespaces; cgroup v2 CPU, cpuset, memory, swap, PIDs, I/O and freezer controls |
+| Scheduling | SMP scheduling, affinity, nice levels, `SCHED_OTHER`, `BATCH`, `IDLE`, `FIFO`, `RR` and `DEADLINE`, CPU cgroup controls and utilization clamps |
+| Memory | VMAs, anonymous and file mappings, COW, `mmap`, `mprotect`, `mremap`, `madvise`, page cache, reclaim, OOM handling, pressure reporting and swap |
+| Synchronization | wait queues, futexes, robust futex lists, futex requeue and waitv, membarrier, mutexes, spinlocks, deferred work and BSD bridge epoch primitives |
+| IPC and events | pipes, PTYs, SysV shared memory, Unix sockets, epoll, eventfd, signalfd, inotify and descriptor passing with `SCM_RIGHTS` |
+| Time | POSIX clocks and timers, interval timers, timerfd, nanosleep, RTC, HPET and architecture timer backends |
+| VFS | path and inode caches, mount namespaces, modern mount API, descriptors, xattrs, file locks, sparse files, readahead and writeback |
+| Filesystems | tmpfs, initramfs, ext2, ext4, FAT32, FUSE, OverlayFS, cgroup2 and NFSv3 server; read-only SquashFS, EROFS, XFS, Btrfs, exFAT, NTFS, ISO9660 and UDF paths |
+| Storage | block cache, partition discovery, RAM disks, loop devices, device mapper, VirtIO Block/SCSI, NVMe, AHCI, ATA and VMware PVSCSI |
+| Network protocols | IPv4, IPv6, ARP, NDP, ICMP, TCP, UDP, IGMP/MLD multicast, Unix sockets and packet sockets |
+| Network control | rtnetlink, generic netlink, sock_diag, ethtool, IPv4/IPv6 routing, policy and multipath routes, qdiscs, nftables hooks, NAT and connection tracking |
+| Virtual networking | TUN/TAP, veth, bridge with FDB/MDB and VLAN filtering, VLAN, macvlan, ipvlan, bonding, dummy and VRF devices |
+| Native network devices | Intel e1000, Realtek r8169 and VirtIO Net; additional Ethernet, Wi-Fi and USB network families are provided through the BSD Driver Bridge |
+| Display | EFI GOP, framebuffer console, 63 virtual terminals, fbdev, DRM/KMS, EDID/DisplayID modes, Bochs BGA, VMware SVGA and VirtIO GPU 2D/3D paths |
+| Input | PS/2 keyboard and mouse, Synaptics and Elan touchpads, USB HID, VirtIO Input and Linux input/event device interfaces |
+| Audio | ALSA-facing PCM/control devices with HDA, AC97, USB audio and BSD bridge audio backends |
+| USB | Hub and device enumeration, UHCI, OHCI, EHCI and xHCI hosts, HID, mass storage and audio; bridge packages add further host, gadget and device classes |
+| Virtual machine devices | VirtIO PCI/MMIO block, SCSI, network, GPU, input, RNG, console and balloon devices, plus VMware storage and display devices |
+| Firmware and buses | ACPI/ACPICA, Device Tree, EFI runtime, PCI/PCIe, MSI/MSI-X, I2C, SMBus, GPIO, SD/MMC bridge packages and firmware loading |
+| Multiprocessing | x86 APIC/IOAPIC and AArch64 GICv3/PSCI bring-up, per-CPU state, reschedule IPIs, TLB shootdown and cross-CPU membarrier |
+| Hardware services | ACPI power, battery and thermal data, CPU frequency control, RTC, RNG, TPM 2.0, watchdogs and LED/GPIO bridge interfaces |
+| Board targets | Generic x86_64 PCs, generic AArch64 UEFI/virt systems, and build targets for Raspberry Pi 4 and Raspberry Pi 5 |
+| BSD Driver Bridge | Source-locked build packages for storage, Ethernet, Wi-Fi, USB, input, audio, firmware, platform, sensor and watchdog driver families |
 
 Linux ABI work is not finished. An inventory entry means that a route and
 implementation exist; it does not mean every corner case matches every Linux
 release. Hardware support has the same distinction: compiling a driver is not
-proof that it has been tested on every device it recognizes.
+proof that it has been tested on every device it recognizes. The default
+x86_64 and AArch64 configurations differ where the hardware requires different
+drivers.
 
 ## BSD Driver Bridge
 
