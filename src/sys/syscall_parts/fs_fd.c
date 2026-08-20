@@ -2012,6 +2012,10 @@ static uint32_t anonymous_fd_ready_events(edge_fd_t *descriptor) {
             poll_state.pending = state.readable;
             poll_state.writable = state.writable;
         }
+    } else if (descriptor->kind == FD_IO_URING) {
+        poll_state.kind = KERNEL_ANONYMOUS_FD_IO_URING;
+        poll_state.pending =
+            kernel_io_uring_completion_count(descriptor->pipe_id) != 0;
     } else {
         poll_state.valid = 0;
     }
@@ -2113,7 +2117,8 @@ static int poll_fd_revents(edge_fd_t *e, int16_t events) {
 
     if (e->kind == FD_EVENTFD || e->kind == FD_TIMERFD ||
         e->kind == FD_SIGNALFD || e->kind == FD_INOTIFY ||
-        e->kind == FD_PIDFD || e->kind == FD_MQUEUE) {
+        e->kind == FD_PIDFD || e->kind == FD_MQUEUE ||
+        e->kind == FD_IO_URING) {
         uint32_t anonymous_events = anonymous_fd_ready_events(e);
         rev |= (int16_t)anonymous_events;
     }
@@ -2196,7 +2201,8 @@ static int poll_fd_revents(edge_fd_t *e, int16_t events) {
             /* Socket readiness was normalized before the per-class branches. */
         } else if (e->kind == FD_EVENTFD || e->kind == FD_TIMERFD ||
                    e->kind == FD_SIGNALFD || e->kind == FD_INOTIFY ||
-                   e->kind == FD_PIDFD || e->kind == FD_MQUEUE) {
+                   e->kind == FD_PIDFD || e->kind == FD_MQUEUE ||
+                   e->kind == FD_IO_URING) {
             /* Anonymous descriptor readiness was normalized above. */
         } else if (e->kind == FD_EPOLL) {
             if (kernel_epoll_object_exists(e->pipe_id) &&
@@ -6503,7 +6509,7 @@ static int linux_fd_fill_kstat(edge_fd_t *e, int fd,
     } else if (e->kind == FD_EVENTFD || e->kind == FD_TIMERFD ||
                e->kind == FD_SIGNALFD || e->kind == FD_EPOLL ||
                e->kind == FD_PIDFD || e->kind == FD_DMA_BUF ||
-               e->kind == FD_MOUNT) {
+               e->kind == FD_MOUNT || e->kind == FD_IO_URING) {
         /* Linux anon_inode descriptors have permission bits but no file type. */
         fill_kstat_mode_size(0600, 0, st);
         st->st_ino = 0xE0000000u + (uint64_t)(uint32_t)(e->kind << 16) + (uint64_t)(uint32_t)(e->pipe_id & 0xFFFF);

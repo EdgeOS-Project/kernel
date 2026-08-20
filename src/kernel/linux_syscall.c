@@ -10,6 +10,7 @@
 #include "console.h"
 #include "fs/swap.h"
 #include "kernel/aio_runtime.h"
+#include "kernel/io_uring_runtime.h"
 #include "kernel/fd_runtime.h"
 #include "kernel/anonymous_fd.h"
 #include "kernel/event_runtime.h"
@@ -6823,6 +6824,351 @@ static int64_t edge_linux_sys_aio(
         return edge_linux_copy_to_user(
             context, context->arguments[2], &event, sizeof(event)) < 0 ?
             -EDGE_LINUX_EFAULT : 0;
+    default:
+        return -EDGE_LINUX_ENOSYS;
+    }
+#endif
+}
+
+#define EDGE_LINUX_IORING_OP_NOP       0u
+#define EDGE_LINUX_IORING_OP_READV     1u
+#define EDGE_LINUX_IORING_OP_WRITEV    2u
+#define EDGE_LINUX_IORING_OP_FSYNC     3u
+#define EDGE_LINUX_IORING_OP_READ      22u
+#define EDGE_LINUX_IORING_OP_WRITE     23u
+#define EDGE_LINUX_IORING_OP_LAST      65u
+
+#define EDGE_LINUX_IOSQE_FIXED_FILE       (1u << 0)
+#define EDGE_LINUX_IOSQE_IO_DRAIN         (1u << 1)
+#define EDGE_LINUX_IOSQE_IO_LINK          (1u << 2)
+#define EDGE_LINUX_IOSQE_IO_HARDLINK      (1u << 3)
+#define EDGE_LINUX_IOSQE_ASYNC            (1u << 4)
+#define EDGE_LINUX_IOSQE_BUFFER_SELECT    (1u << 5)
+#define EDGE_LINUX_IOSQE_CQE_SKIP_SUCCESS (1u << 6)
+#define EDGE_LINUX_IOSQE_KNOWN \
+    (EDGE_LINUX_IOSQE_FIXED_FILE | EDGE_LINUX_IOSQE_IO_DRAIN | \
+     EDGE_LINUX_IOSQE_IO_LINK | EDGE_LINUX_IOSQE_IO_HARDLINK | \
+     EDGE_LINUX_IOSQE_ASYNC | EDGE_LINUX_IOSQE_BUFFER_SELECT | \
+     EDGE_LINUX_IOSQE_CQE_SKIP_SUCCESS)
+
+#define EDGE_LINUX_IORING_ENTER_GETEVENTS (1u << 0)
+#define EDGE_LINUX_IORING_ENTER_SQ_WAKEUP (1u << 1)
+#define EDGE_LINUX_IORING_ENTER_SUPPORTED \
+    (EDGE_LINUX_IORING_ENTER_GETEVENTS | \
+     EDGE_LINUX_IORING_ENTER_SQ_WAKEUP)
+
+#define EDGE_LINUX_IORING_REGISTER_PROBE        8u
+#define EDGE_LINUX_IORING_REGISTER_ENABLE_RINGS 12u
+#define EDGE_LINUX_IO_URING_OP_SUPPORTED        1u
+#define EDGE_LINUX_IORING_FSYNC_DATASYNC        1u
+
+static int64_t edge_linux_io_uring_execute_rw(
+        edge_linux_syscall_context_t *context,
+        const struct edge_linux_io_uring_sqe *submission, int vector) {
+    kernel_io_vector_scratch_t scratch;
+    kernel_io_operation_t operation;
+    uint64_t current_offset;
+    uint64_t transferred = 0;
+    uint32_t runtime_flags;
+    uint32_t vector_count;
+    int positional;
+    int writing;
+    int result;
+
+    if (submission->descriptor < 0) return -EDGE_LINUX_EBADF;
+    result = edge_linux_aio_decode_rw_flags(
+        submission->operation_flags, &runtime_flags);
+    if (result < 0) return result;
+    writing = submission->opcode == EDGE_LINUX_IORING_OP_WRITE ||
+              submission->opcode == EDGE_LINUX_IORING_OP_WRITEV;
+    positional = submission->offset != UINT64_MAX;
+    operation = writing ?
+        (positional ? KERNEL_IO_WRITE_POSITIONAL : KERNEL_IO_WRITE_CURRENT) :
+        (positional ? KERNEL_IO_READ_POSITIONAL : KERNEL_IO_READ_CURRENT);
+    current_offset = positional ? submission->offset : 0;
+    if (!vector)
+        return kernel_io_user_transfer(
+            submission->descriptor, submission->address,
+            submission->length, current_offset, operation,
+            runtime_flags, context->user_registers);
+
+    vector_count = submission->length;
+    if (vector_count > EDGE_LINUX_IOV_MAX) return -EDGE_LINUX_EINVAL;
+    if (!vector_count) return 0;
+    if (!submission->address) return -EDGE_LINUX_EFAULT;
+    if (kernel_io_current_vector_scratch(&scratch) < 0 ||
+        !scratch.vectors || scratch.capacity < vector_count)
+        return -EDGE_LINUX_ENOMEM;
+    if (edge_linux_copy_from_user(
+            context, scratch.vectors, submission->address,
+            (uint64_t)vector_count * sizeof(scratch.vectors[0])) < 0)
+        return -EDGE_LINUX_EFAULT;
+    for (uint32_t index = 0; index < vector_count; ++index) {
+        uint64_t length = scratch.vectors[index].iov_len;
+        int64_t completed;
+        if (length > EDGE_LINUX_MAX_RW_COUNT - transferred)
+            length = EDGE_LINUX_MAX_RW_COUNT - transferred;
+        if (!length) continue;
+        completed = kernel_io_user_transfer(
+            submission->descriptor, scratch.vectors[index].iov_base,
+            length, current_offset, operation, runtime_flags,
+            context->user_registers);
+        if (completed < 0) return transferred ?
+            (int64_t)transferred : completed;
+        transferred += (uint64_t)completed;
+        if ((uint64_t)completed != length) break;
+        if (positional) current_offset += (uint64_t)completed;
+        if (transferred == EDGE_LINUX_MAX_RW_COUNT) break;
+    }
+    return (int64_t)transferred;
+}
+
+static int32_t edge_linux_io_uring_execute(
+        edge_linux_syscall_context_t *context,
+        const struct edge_linux_io_uring_sqe *submission) {
+    int64_t result;
+    if (submission->flags & ~EDGE_LINUX_IOSQE_KNOWN)
+        return -EDGE_LINUX_EINVAL;
+    if (submission->flags & EDGE_LINUX_IOSQE_FIXED_FILE)
+        return -EDGE_LINUX_EBADF;
+    if (submission->flags & EDGE_LINUX_IOSQE_BUFFER_SELECT)
+        return -EDGE_LINUX_ENOBUFS;
+    if (submission->personality || submission->address3 ||
+        submission->reserved2)
+        return -EDGE_LINUX_EINVAL;
+    switch (submission->opcode) {
+    case EDGE_LINUX_IORING_OP_NOP:
+        result = submission->operation_flags || submission->offset ||
+                 submission->address ||
+                 submission->length || submission->buffer_index ||
+                 submission->splice_descriptor ?
+                 -EDGE_LINUX_EINVAL : 0;
+        break;
+    case EDGE_LINUX_IORING_OP_READ:
+    case EDGE_LINUX_IORING_OP_WRITE:
+        if (submission->buffer_index || submission->splice_descriptor)
+            result = -EDGE_LINUX_EINVAL;
+        else
+            result = edge_linux_io_uring_execute_rw(
+                context, submission, 0);
+        break;
+    case EDGE_LINUX_IORING_OP_READV:
+    case EDGE_LINUX_IORING_OP_WRITEV:
+        if (submission->buffer_index || submission->splice_descriptor)
+            result = -EDGE_LINUX_EINVAL;
+        else
+            result = edge_linux_io_uring_execute_rw(
+                context, submission, 1);
+        break;
+    case EDGE_LINUX_IORING_OP_FSYNC:
+        if (submission->operation_flags &
+            ~EDGE_LINUX_IORING_FSYNC_DATASYNC)
+            result = -EDGE_LINUX_EINVAL;
+        else if (submission->offset || submission->address ||
+                 submission->length || submission->buffer_index ||
+                 submission->splice_descriptor)
+            result = -EDGE_LINUX_EINVAL;
+        else
+            result = kernel_vfs_sync_descriptor(
+                submission->descriptor,
+                (submission->operation_flags &
+                 EDGE_LINUX_IORING_FSYNC_DATASYNC) ?
+                    KERNEL_VFS_SYNC_DATA : KERNEL_VFS_SYNC_FILE);
+        break;
+    default:
+        result = -EDGE_LINUX_EINVAL;
+        break;
+    }
+    if (result < INT32_MIN) return INT32_MIN;
+    if (result > INT32_MAX) return INT32_MAX;
+    return (int32_t)result;
+}
+
+static int64_t edge_linux_sys_io_uring_setup(
+        edge_linux_syscall_context_t *context) {
+    struct edge_linux_io_uring_params parameters;
+    uint64_t destination = context->arguments[1];
+    uint64_t entries = context->arguments[0];
+    int32_t ring_id = -1;
+    int descriptor;
+    int result;
+
+    if (!destination) return -EDGE_LINUX_EFAULT;
+    if (entries > UINT32_MAX) return -EDGE_LINUX_EINVAL;
+    if (edge_linux_copy_from_user(
+            context, &parameters, destination,
+            sizeof(parameters)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    for (uint32_t index = 0; index < 3; ++index)
+        if (parameters.reserved[index]) return -EDGE_LINUX_EINVAL;
+    result = kernel_io_uring_create(
+        (uint32_t)entries, &parameters, &ring_id);
+    if (result < 0) return result;
+    descriptor = kernel_anonymous_fd_install_descriptor(
+        KERNEL_ANONYMOUS_FD_IO_URING, ring_id, 2u, 1u);
+    if (descriptor < 0) {
+        kernel_io_uring_release(ring_id);
+        return descriptor;
+    }
+    if (edge_linux_copy_to_user(
+            context, destination, &parameters,
+            sizeof(parameters)) < 0) {
+        (void)kernel_fd_close(descriptor);
+        return -EDGE_LINUX_EFAULT;
+    }
+    return descriptor;
+}
+
+static int64_t edge_linux_sys_io_uring_enter(
+        edge_linux_syscall_context_t *context) {
+    struct edge_linux_io_uring_sqe submission;
+    uint32_t to_submit = (uint32_t)context->arguments[1];
+    uint32_t minimum = (uint32_t)context->arguments[2];
+    uint32_t flags = (uint32_t)context->arguments[3];
+    int32_t descriptor = (int32_t)(uint32_t)context->arguments[0];
+    int32_t ring_id;
+    uint32_t submitted = 0;
+    int cancel_link = 0;
+
+    if (context->arguments[1] != to_submit ||
+        context->arguments[2] != minimum ||
+        context->arguments[3] != flags ||
+        (flags & ~EDGE_LINUX_IORING_ENTER_SUPPORTED))
+        return -EDGE_LINUX_EINVAL;
+    if (context->arguments[4] || context->arguments[5])
+        return -EDGE_LINUX_EOPNOTSUPP;
+    ring_id = kernel_anonymous_fd_descriptor_object_id(
+        descriptor, KERNEL_ANONYMOUS_FD_IO_URING);
+    if (ring_id < 0) return -EDGE_LINUX_EBADF;
+    if (kernel_io_uring_disabled(ring_id) != 0)
+        return -EDGE_LINUX_EBADFD;
+
+    while (submitted < to_submit) {
+        int take_result = kernel_io_uring_take_submission(
+            ring_id, &submission);
+        int32_t operation_result;
+        int linked;
+        int hard_linked;
+        if (take_result == -EDGE_LINUX_EAGAIN) break;
+        if (take_result < 0)
+            return submitted ? (int64_t)submitted : (int64_t)take_result;
+        linked = (submission.flags & EDGE_LINUX_IOSQE_IO_LINK) != 0;
+        hard_linked =
+            (submission.flags & EDGE_LINUX_IOSQE_IO_HARDLINK) != 0;
+        operation_result = cancel_link ? -EDGE_LINUX_ECANCELED :
+                           edge_linux_io_uring_execute(
+                               context, &submission);
+        if (!(submission.flags & EDGE_LINUX_IOSQE_CQE_SKIP_SUCCESS) ||
+            operation_result < 0)
+            (void)kernel_io_uring_completion_add(
+                ring_id, submission.user_data, operation_result, 0);
+        if (cancel_link) cancel_link = linked || hard_linked;
+        else if (operation_result < 0 && linked && !hard_linked)
+            cancel_link = 1;
+        ++submitted;
+    }
+    if ((flags & EDGE_LINUX_IORING_ENTER_GETEVENTS) && minimum) {
+        while (kernel_io_uring_completion_count(ring_id) < minimum) {
+            int released;
+            int yielded;
+            if (kernel_current_signal_wake_pending())
+                return submitted ? (int64_t)submitted :
+                                   -(int64_t)EDGE_LINUX_EINTR;
+            released = kernel_runtime_contention_begin();
+            yielded = kernel_runtime_yield();
+            kernel_runtime_contention_end(released);
+            if (!yielded) break;
+        }
+    }
+    return submitted;
+}
+
+static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
+    return opcode == EDGE_LINUX_IORING_OP_NOP ||
+           opcode == EDGE_LINUX_IORING_OP_READV ||
+           opcode == EDGE_LINUX_IORING_OP_WRITEV ||
+           opcode == EDGE_LINUX_IORING_OP_FSYNC ||
+           opcode == EDGE_LINUX_IORING_OP_READ ||
+           opcode == EDGE_LINUX_IORING_OP_WRITE;
+}
+
+static int64_t edge_linux_sys_io_uring_register(
+        edge_linux_syscall_context_t *context) {
+    struct edge_linux_io_uring_probe probe;
+    int32_t descriptor = (int32_t)(uint32_t)context->arguments[0];
+    uint32_t opcode = (uint32_t)context->arguments[1];
+    uint32_t operation_count = (uint32_t)context->arguments[3];
+    uint64_t argument = context->arguments[2];
+    int32_t ring_id;
+
+    if (context->arguments[1] != opcode ||
+        context->arguments[3] != operation_count ||
+        (opcode & (1u << 31)))
+        return -EDGE_LINUX_EINVAL;
+    ring_id = kernel_anonymous_fd_descriptor_object_id(
+        descriptor, KERNEL_ANONYMOUS_FD_IO_URING);
+    if (ring_id < 0) return -EDGE_LINUX_EBADF;
+    if (opcode == EDGE_LINUX_IORING_REGISTER_ENABLE_RINGS) {
+        if (argument || operation_count) return -EDGE_LINUX_EINVAL;
+        return kernel_io_uring_enable(ring_id);
+    }
+    if (opcode != EDGE_LINUX_IORING_REGISTER_PROBE)
+        return -EDGE_LINUX_EINVAL;
+    if (!argument || !operation_count) return -EDGE_LINUX_EINVAL;
+    if (operation_count > EDGE_LINUX_IORING_OP_LAST)
+        operation_count = EDGE_LINUX_IORING_OP_LAST;
+    if (edge_linux_copy_from_user(
+            context, &probe, argument, sizeof(probe)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    if (probe.reserved || probe.reserved2[0] || probe.reserved2[1] ||
+        probe.reserved2[2])
+        return -EDGE_LINUX_EINVAL;
+    for (uint32_t index = 0; index < operation_count; ++index) {
+        struct edge_linux_io_uring_probe_op operation;
+        if (edge_linux_copy_from_user(
+                context, &operation,
+                argument + sizeof(probe) +
+                    (uint64_t)index * sizeof(operation),
+                sizeof(operation)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (operation.opcode || operation.reserved || operation.flags ||
+            operation.reserved2)
+            return -EDGE_LINUX_EINVAL;
+    }
+    memset(&probe, 0, sizeof(probe));
+    probe.last_opcode = EDGE_LINUX_IORING_OP_LAST - 1u;
+    probe.operation_count = (uint8_t)operation_count;
+    if (edge_linux_copy_to_user(
+            context, argument, &probe, sizeof(probe)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    for (uint32_t index = 0; index < operation_count; ++index) {
+        struct edge_linux_io_uring_probe_op operation;
+        memset(&operation, 0, sizeof(operation));
+        operation.opcode = (uint8_t)index;
+        if (edge_linux_io_uring_probe_supported((uint8_t)index))
+            operation.flags = EDGE_LINUX_IO_URING_OP_SUPPORTED;
+        if (edge_linux_copy_to_user(
+                context, argument + sizeof(probe) +
+                    (uint64_t)index * sizeof(operation),
+                &operation, sizeof(operation)) < 0)
+            return -EDGE_LINUX_EFAULT;
+    }
+    return 0;
+}
+
+static int64_t edge_linux_sys_io_uring(
+        edge_linux_syscall_context_t *context) {
+#ifndef CONFIG_IO_URING
+    (void)context;
+    return -EDGE_LINUX_ENOSYS;
+#else
+    switch (context->id) {
+    case EDGE_LINUX_SYS_io_uring_setup:
+        return edge_linux_sys_io_uring_setup(context);
+    case EDGE_LINUX_SYS_io_uring_enter:
+        return edge_linux_sys_io_uring_enter(context);
+    case EDGE_LINUX_SYS_io_uring_register:
+        return edge_linux_sys_io_uring_register(context);
     default:
         return -EDGE_LINUX_ENOSYS;
     }

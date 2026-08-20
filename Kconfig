@@ -117,6 +117,13 @@ config AIO
       Enable Linux io_setup, io_submit, io_getevents, io_cancel, and
       io_destroy over the shared descriptor I/O runtime.
 
+config IO_URING
+    bool "Linux io_uring"
+    default y
+    help
+      Enable Linux io_uring setup, shared submission and completion rings,
+      registration, and asynchronous descriptor operations.
+
 config BSD_DRIVER_FDT_INVENTORY
     bool "Inventory Device Tree devices for BSD drivers"
     depends on BSD_DRIVER_BRIDGE && DEVICE_TREE

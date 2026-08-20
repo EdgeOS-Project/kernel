@@ -13,6 +13,41 @@ from typing import Iterable
 
 REFERENCE_COMMIT = "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
 
+EDGEOS_ASSESSMENTS = [
+    {
+        "domain": "io_uring",
+        "status": "partial",
+        "kconfig": ["IO_URING"],
+        "architectures": {
+            "x86_64": "runtime-verified",
+            "aarch64": "runtime-verified",
+            "ia32": "unimplemented",
+            "x32": "unimplemented",
+        },
+        "implemented": [
+            "setup and mapped submission/completion rings",
+            "NOP, READ, WRITE, READV, WRITEV and FSYNC operations",
+            "probe and disabled-ring registration",
+        ],
+        "missing": [
+            "asynchronous worker execution",
+            "fixed files and buffers",
+            "poll, timeout and cancellation operations",
+            "remaining supported VFS and socket operations",
+            "ia32 and x32 compatibility layouts",
+        ],
+        "runtime_tests": [
+            "tools/tests/io_uring_abi_probe.c",
+            "tools/tests/io_uring_runtime_unit.c",
+        ],
+        "linux_oracle": {
+            "status": "partial",
+            "reference": REFERENCE_COMMIT,
+            "scope": "setup, mmap, NOP completion and operation probe",
+        },
+    },
+]
+
 IOCTL_HEADERS = {
     "tty": ("include/uapi/asm-generic/ioctls.h", "include/uapi/linux/kd.h",
             "include/uapi/linux/tty.h", "include/uapi/linux/vt.h"),
@@ -252,6 +287,7 @@ def build_inventory(tree: Path) -> dict[str, object]:
             "boundary": "complete UAPI for EdgeOS-supported subsystems",
             "default_status": "unreviewed",
         },
+        "edgeos_assessments": EDGEOS_ASSESSMENTS,
         "domains": {
             "syscalls": {
                 "sources": [

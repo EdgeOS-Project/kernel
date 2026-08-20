@@ -18,6 +18,7 @@ typedef enum kernel_anonymous_fd_kind {
     KERNEL_ANONYMOUS_FD_PRIME,
     KERNEL_ANONYMOUS_FD_MOUNT,
     KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE,
+    KERNEL_ANONYMOUS_FD_IO_URING,
 } kernel_anonymous_fd_kind_t;
 
 typedef struct kernel_anonymous_fd_poll_state {

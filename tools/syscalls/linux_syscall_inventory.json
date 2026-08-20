@@ -3164,55 +3164,76 @@
     {
       "id": "io_uring_enter",
       "semantic_id": "io_uring_enter",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_io_uring",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/io_uring_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 426,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_io_uring",
+          "evidence_status": "oracle-verified"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 426,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_io_uring",
+          "evidence_status": "oracle-verified"
+        }
       }
     },
     {
       "id": "io_uring_register",
       "semantic_id": "io_uring_register",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_io_uring",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/io_uring_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 427,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_io_uring",
+          "evidence_status": "oracle-verified"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 427,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_io_uring",
+          "evidence_status": "oracle-verified"
+        }
       }
     },
     {
       "id": "io_uring_setup",
       "semantic_id": "io_uring_setup",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_io_uring",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/io_uring_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 425,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_io_uring",
+          "evidence_status": "oracle-verified"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 425,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_io_uring",
+          "evidence_status": "oracle-verified"
+        }
       }
     },
     {

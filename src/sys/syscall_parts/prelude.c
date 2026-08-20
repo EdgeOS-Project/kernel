@@ -83,6 +83,7 @@
 #include "kernel/process_runtime.h"
 #include "kernel/clone_runtime.h"
 #include "kernel/aio_runtime.h"
+#include "kernel/io_uring_runtime.h"
 #include "kernel/itimer_runtime.h"
 #include "kernel/posix_timer_runtime.h"
 #include "kernel/posix_mq_runtime.h"
@@ -1488,6 +1489,7 @@ typedef enum {
     FD_NAMESPACE,
     FD_MOUNT,
     FD_MQUEUE,
+    FD_IO_URING,
 } edge_fd_kind_t;
 
 typedef struct {

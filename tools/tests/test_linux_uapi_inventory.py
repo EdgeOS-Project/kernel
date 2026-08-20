@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from tools.uapi.linux_uapi_inventory import (
+    EDGEOS_ASSESSMENTS,
     define_symbols,
     enum_symbols,
     generic_syscalls,
@@ -84,6 +85,14 @@ class LinuxUapiInventoryTests(unittest.TestCase):
                 {"name": "statfs", "number": 43, "abi": "common"},
             ],
         )
+
+    def test_io_uring_is_not_overclaimed(self) -> None:
+        assessment = next(
+            item for item in EDGEOS_ASSESSMENTS
+            if item["domain"] == "io_uring"
+        )
+        self.assertEqual(assessment["status"], "partial")
+        self.assertIn("asynchronous worker execution", assessment["missing"])
 
 
 if __name__ == "__main__":

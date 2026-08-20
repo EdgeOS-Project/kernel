@@ -1,0 +1,55 @@
+/* SPDX-License-Identifier: MPL-2.0 */
+/* Architecture-independent Linux io_uring ring storage and lifetime. */
+
+#ifndef EDGEOS_KERNEL_IO_URING_RUNTIME_H
+#define EDGEOS_KERNEL_IO_URING_RUNTIME_H
+
+#include <stdint.h>
+
+#include "kernel/linux_abi.h"
+
+#define KERNEL_IO_URING_MAX_RINGS 64u
+#define KERNEL_IO_URING_MAX_SQ_ENTRIES 256u
+#define KERNEL_IO_URING_MAX_CQ_ENTRIES 512u
+#define KERNEL_IO_URING_PAGE_SIZE 4096u
+#define KERNEL_IO_URING_MAX_SQ_RING_PAGES 1u
+#define KERNEL_IO_URING_MAX_CQ_RING_PAGES 3u
+#define KERNEL_IO_URING_MAX_SQE_PAGES 4u
+
+#define KERNEL_IO_URING_OFF_SQ_RING 0x00000000ull
+#define KERNEL_IO_URING_OFF_CQ_RING 0x08000000ull
+#define KERNEL_IO_URING_OFF_SQES    0x10000000ull
+
+typedef struct kernel_io_uring_page {
+    void *address;
+    uint64_t cookie;
+} kernel_io_uring_page_t;
+
+typedef struct kernel_io_uring_page_allocator {
+    int (*allocate)(void *context, kernel_io_uring_page_t *page);
+    int (*retain)(void *context, const kernel_io_uring_page_t *page);
+    void (*release)(void *context, const kernel_io_uring_page_t *page);
+    void *context;
+} kernel_io_uring_page_allocator_t;
+
+int kernel_io_uring_page_allocator_register(
+    const kernel_io_uring_page_allocator_t *allocator);
+int kernel_io_uring_create(uint32_t entries,
+                           struct edge_linux_io_uring_params *parameters,
+                           int32_t *ring_id);
+int kernel_io_uring_retain(int32_t ring_id);
+void kernel_io_uring_release(int32_t ring_id);
+int kernel_io_uring_enable(int32_t ring_id);
+int kernel_io_uring_disabled(int32_t ring_id);
+int kernel_io_uring_mmap_info(int32_t ring_id, uint64_t offset,
+                              uint64_t length, uint32_t *page_count);
+int kernel_io_uring_mmap_page(int32_t ring_id, uint64_t offset,
+                              uint32_t page_index,
+                              kernel_io_uring_page_t *page);
+int kernel_io_uring_take_submission(
+    int32_t ring_id, struct edge_linux_io_uring_sqe *submission);
+int kernel_io_uring_completion_add(int32_t ring_id, uint64_t user_data,
+                                   int32_t result, uint32_t flags);
+uint32_t kernel_io_uring_completion_count(int32_t ring_id);
+
+#endif

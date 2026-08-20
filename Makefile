@@ -4155,6 +4155,17 @@ aio-runtime-unit: tools/tests/aio_runtime_unit.c \
 		-o $(OUT)/tests/aio_runtime_unit
 	@$(OUT)/tests/aio_runtime_unit
 
+io-uring-runtime-unit: tools/tests/io_uring_runtime_unit.c \
+		$(SRC)/kernel/io_uring_runtime.c \
+		include/kernel/io_uring_runtime.h
+	@mkdir -p $(OUT)/tests
+	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fno-builtin \
+		-DEDGEOS_HOST_TEST -iquote $(INC) \
+		tools/tests/io_uring_runtime_unit.c \
+		$(SRC)/kernel/io_uring_runtime.c \
+		-o $(OUT)/tests/io_uring_runtime_unit
+	@$(OUT)/tests/io_uring_runtime_unit
+
 pty-runtime-unit: tools/tests/pty_runtime_unit.c $(SRC)/kernel/pty_runtime.c include/kernel/pty_runtime.h
 	@mkdir -p $(OUT)/tests
 	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -iquote $(INC) \

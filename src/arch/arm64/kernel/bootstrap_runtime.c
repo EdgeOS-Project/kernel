@@ -13,6 +13,7 @@
 #include "block/loop.h"
 #include "kernel/process_runtime.h"
 #include "kernel/aio_runtime.h"
+#include "kernel/io_uring_runtime.h"
 #include "kernel/proc_maps.h"
 #include "kernel/posix_timer_runtime.h"
 #include "kernel/posix_mq_runtime.h"
@@ -874,6 +875,7 @@ static uint32_t g_fd_table_reserve_count;
 #define KERNEL_FD_NAMESPACE 19u
 #define KERNEL_FD_MOUNT 20u
 #define KERNEL_FD_MQUEUE 21u
+#define KERNEL_FD_IO_URING 22u
 
 #define ARM64_EPOLL_SOURCE_FILE_KMSG          0x00000001u
 #define ARM64_EPOLL_SOURCE_FILE_DRM_CARD      0x00000002u
@@ -8870,7 +8872,8 @@ int arch_vfs_describe_descriptor(int32_t descriptor,
         file->kind == KERNEL_FD_SIGNALFD ||
         file->kind == KERNEL_FD_DMA_BUF ||
         file->kind == KERNEL_FD_MOUNT ||
-        file->kind == KERNEL_FD_MQUEUE) {
+        file->kind == KERNEL_FD_MQUEUE ||
+        file->kind == KERNEL_FD_IO_URING) {
         description->kind = KERNEL_VFS_DESCRIPTOR_ANONYMOUS;
         return 0;
     }
@@ -9670,6 +9673,9 @@ static int arm64_anonymous_fd_install(
     case KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE:
         local_kind = KERNEL_FD_MQUEUE;
         break;
+    case KERNEL_ANONYMOUS_FD_IO_URING:
+        local_kind = KERNEL_FD_IO_URING;
+        break;
     default:
         return -LINUX_EINVAL;
     }
@@ -9735,6 +9741,9 @@ static int arm64_anonymous_fd_object_id(
         break;
     case KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE:
         expected = KERNEL_FD_MQUEUE;
+        break;
+    case KERNEL_ANONYMOUS_FD_IO_URING:
+        expected = KERNEL_FD_IO_URING;
         break;
     default:
         return -LINUX_EINVAL;
@@ -9919,6 +9928,10 @@ static int fd_retain_backing_object(const bootstrap_fd_t *fd) {
     }
     if (fd->kind == KERNEL_FD_MQUEUE) {
         result = kernel_posix_mq_retain((int32_t)fd->mount_id);
+        return result < 0 ? result : 0;
+    }
+    if (fd->kind == KERNEL_FD_IO_URING) {
+        result = kernel_io_uring_retain(fd->event_index);
         return result < 0 ? result : 0;
     }
     if (fd->kind == KERNEL_FD_SOCKET &&
@@ -10807,6 +10820,41 @@ static const struct edge_linux_packet_page_allocator
         .allocate = arm64_packet_page_allocate,
         .release = arm64_packet_page_release,
         .context = 0,
+    };
+
+static int arm64_io_uring_page_allocate(
+        void *context, kernel_io_uring_page_t *page) {
+    void *address;
+    (void)context;
+    if (!page) return -LINUX_EINVAL;
+    address = arch_vm_alloc_page();
+    if (!address) return -LINUX_ENOMEM;
+    page->address = address;
+    page->cookie = (uint64_t)(uintptr_t)address;
+    return 0;
+}
+
+static int arm64_io_uring_page_retain(
+        void *context, const kernel_io_uring_page_t *page) {
+    (void)context;
+    if (!page || !page->address ||
+        page->cookie != (uint64_t)(uintptr_t)page->address)
+        return -LINUX_EINVAL;
+    return arch_vm_retain_page(page->address) < 0 ?
+           -LINUX_ENOMEM : 0;
+}
+
+static void arm64_io_uring_page_release(
+        void *context, const kernel_io_uring_page_t *page) {
+    (void)context;
+    if (page && page->address) arch_vm_free_page(page->address);
+}
+
+static const kernel_io_uring_page_allocator_t
+    arm64_io_uring_page_allocator = {
+        .allocate = arm64_io_uring_page_allocate,
+        .retain = arm64_io_uring_page_retain,
+        .release = arm64_io_uring_page_release,
     };
 
 static err_t socket_tcp_accept(void *argument, struct tcp_pcb *new_pcb, err_t error) {
@@ -15422,6 +15470,8 @@ static void fd_drop_backing_object(bootstrap_fd_t *fd) {
         kernel_mount_api_release((int)fd->mount_id);
     if (fd->kind == KERNEL_FD_MQUEUE)
         kernel_posix_mq_release((int32_t)fd->mount_id);
+    if (fd->kind == KERNEL_FD_IO_URING)
+        kernel_io_uring_release(fd->event_index);
     if ((fd->kind == KERNEL_FD_PIPE_READ ||
          fd->kind == KERNEL_FD_PIPE_WRITE ||
          fd->kind == KERNEL_FD_PIPE_RW) &&
@@ -16188,7 +16238,7 @@ static int arm64_epoll_source_encode(
 
     if (!fd || !fd->used || !fd->open_description_id ||
         fd->open_description_id != expected_description_id ||
-        fd->kind > KERNEL_FD_NAMESPACE || !source ||
+        fd->kind > KERNEL_FD_IO_URING || !source ||
         kernel_file_description_snapshot(
             arm64_description_locator(fd->open_description_id),
             &description) < 0 ||
@@ -16301,7 +16351,7 @@ static int arm64_epoll_source_materialize(
     static char alsa_timer_path[] = EDGE_ALSA_PATH_TIMER;
 
     if (!source || !fd ||
-        source->kind > KERNEL_FD_NAMESPACE ||
+        source->kind > KERNEL_FD_IO_URING ||
         source->secondary_object_id <= 0 ||
         !source->cookie)
         return -LINUX_EBADF;
@@ -18762,6 +18812,10 @@ static uint32_t fd_anonymous_ready_mask(
             poll_state.pending = state.readable;
             poll_state.writable = state.writable;
         }
+    } else if (fd->kind == KERNEL_FD_IO_URING) {
+        poll_state.kind = KERNEL_ANONYMOUS_FD_IO_URING;
+        poll_state.pending =
+            kernel_io_uring_completion_count(fd->event_index) != 0;
     } else {
         poll_state.valid = 0;
     }
@@ -18811,7 +18865,8 @@ static uint32_t fd_ready_mask(kernel_task_t *task, bootstrap_fd_t *fd) {
                fd->kind == KERNEL_FD_INOTIFY ||
                fd->kind == KERNEL_FD_PIDFD ||
                fd->kind == KERNEL_FD_SIGNALFD ||
-               fd->kind == KERNEL_FD_MQUEUE) {
+               fd->kind == KERNEL_FD_MQUEUE ||
+               fd->kind == KERNEL_FD_IO_URING) {
         ready |= fd_anonymous_ready_mask(task, fd);
     } else if (fd->kind == KERNEL_FD_INPUT) {
         uint64_t cursor = 0;
@@ -21972,8 +22027,10 @@ int arch_vfs_metadata_fd(int32_t descriptor,
                file->kind == KERNEL_FD_PIDFD ||
                file->kind == KERNEL_FD_INOTIFY ||
                file->kind == KERNEL_FD_SIGNALFD ||
-        file->kind == KERNEL_FD_DMA_BUF ||
-        file->kind == KERNEL_FD_MOUNT) {
+               file->kind == KERNEL_FD_DMA_BUF ||
+               file->kind == KERNEL_FD_MOUNT ||
+               file->kind == KERNEL_FD_MQUEUE ||
+               file->kind == KERNEL_FD_IO_URING) {
         arm64_metadata_set_anonymous(file, metadata, 0600u);
     } else if (file->kind == KERNEL_FD_FILE) {
         if (file->sb)
@@ -31450,7 +31507,34 @@ int64_t arch_mm_map(const kernel_mm_map_request_t *request) {
             !fd_slot_is_open(task, (uint32_t)a4))
             return -LINUX_EBADF;
         fd = &task->fds[a4];
-        if (fd->kind == KERNEL_FD_SOCKET) {
+        if (fd->kind == KERNEL_FD_IO_URING) {
+            uint32_t page_count = 0;
+            int result;
+            if (!(a3 & LINUX_MAP_SHARED)) return -LINUX_EINVAL;
+            result = kernel_io_uring_mmap_info(
+                fd->event_index, a5, a1, &page_count);
+            if (result < 0) return result;
+            for (uint32_t page_index = 0;
+                 page_index < page_count; ++page_index) {
+                kernel_io_uring_page_t page = {0};
+                result = kernel_io_uring_mmap_page(
+                    fd->event_index, a5, page_index, &page);
+                if (result == 0)
+                    result = arch_vm_map_user_page(
+                        task->ttbr0,
+                        address + (uint64_t)page_index * PAGE_SIZE,
+                        page.cookie,
+                        vm_prot(a2) | ARCH_VM_PROT_SHARED);
+                if (result < 0) {
+                    if (page.address) arch_vm_free_page(page.address);
+                    (void)arch_vm_unmap_user_range(
+                        task->ttbr0, address,
+                        (uint64_t)page_index * PAGE_SIZE);
+                    return result < 0 ? result : -LINUX_ENOMEM;
+                }
+            }
+            map_result = 0;
+        } else if (fd->kind == KERNEL_FD_SOCKET) {
             kernel_socket_t *socket = fd_socket(fd);
             uint32_t page_count = 0;
             int result;
@@ -34421,6 +34505,9 @@ int kernel_process_runtime_init(const char *init_path, uint64_t ttbr0,
 
     if (kernel_anonymous_fd_backend_register(
             &arm64_anonymous_fd_backend_ops, 0) < 0)
+        return -1;
+    if (kernel_io_uring_page_allocator_register(
+            &arm64_io_uring_page_allocator) < 0)
         return -1;
     if (kernel_fd_backend_register(&arm64_fd_backend_ops, 0) < 0)
         return -1;

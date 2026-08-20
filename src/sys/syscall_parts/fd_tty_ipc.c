@@ -5410,6 +5410,7 @@ static int fd_file_lock_info_for_entry(
                 object_identity = (uint64_t)(uint32_t)entry->pipe_id;
                 break;
             case FD_DMA_BUF:
+            case FD_IO_URING:
                 object_class = EDGE_FILE_LOCK_OBJECT_ANONYMOUS;
                 object_identity = (uint64_t)(uint32_t)entry->pipe_id;
                 break;
@@ -5902,6 +5903,7 @@ static void fd_drop_backing_object(edge_fd_t *e) {
     if (e->kind == FD_DMA_BUF) edge_drm_prime_release(e->pipe_id);
     if (e->kind == FD_MOUNT) kernel_mount_api_release(e->pipe_id);
     if (e->kind == FD_MQUEUE) kernel_posix_mq_release(e->pipe_id);
+    if (e->kind == FD_IO_URING) kernel_io_uring_release(e->pipe_id);
     if (e->kind == FD_NAMESPACE)
         edge_namespace_handle_release(
             (edge_namespace_kind_t)e->namespace_kind, e->namespace_id);
@@ -5978,6 +5980,8 @@ static int fd_add_backing_object(edge_fd_t *e) {
         return kernel_mount_api_retain(e->pipe_id) == 0 ? 0 : -1;
     if (e->kind == FD_MQUEUE)
         return kernel_posix_mq_retain(e->pipe_id) == 0 ? 0 : -1;
+    if (e->kind == FD_IO_URING)
+        return kernel_io_uring_retain(e->pipe_id) == 0 ? 0 : -1;
     if (e->kind == FD_NAMESPACE) {
         if (e->namespace_kind >= EDGE_NAMESPACE_KIND_COUNT ||
             edge_namespace_handle_retain(
@@ -7177,6 +7181,7 @@ static const char *fd_kind_name(edge_fd_kind_t kind) {
         case FD_NAMESPACE: return "namespace";
         case FD_MOUNT: return "mount";
         case FD_MQUEUE: return "mqueue";
+        case FD_IO_URING: return "io_uring";
         default: return "none";
     }
 }

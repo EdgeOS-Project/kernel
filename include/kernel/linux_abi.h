@@ -564,6 +564,81 @@ struct edge_linux_aio_sigset {
     uint64_t signal_set_size;
 };
 
+/* Linux io_uring UAPI layouts shared by x86_64 and AArch64. */
+struct edge_linux_io_uring_sqe {
+    uint8_t opcode;
+    uint8_t flags;
+    uint16_t ioprio;
+    int32_t descriptor;
+    uint64_t offset;
+    uint64_t address;
+    uint32_t length;
+    uint32_t operation_flags;
+    uint64_t user_data;
+    uint16_t buffer_index;
+    uint16_t personality;
+    int32_t splice_descriptor;
+    uint64_t address3;
+    uint64_t reserved2;
+};
+
+struct edge_linux_io_uring_cqe {
+    uint64_t user_data;
+    int32_t result;
+    uint32_t flags;
+};
+
+struct edge_linux_io_sqring_offsets {
+    uint32_t head;
+    uint32_t tail;
+    uint32_t ring_mask;
+    uint32_t ring_entries;
+    uint32_t flags;
+    uint32_t dropped;
+    uint32_t array;
+    uint32_t reserved1;
+    uint64_t user_address;
+};
+
+struct edge_linux_io_cqring_offsets {
+    uint32_t head;
+    uint32_t tail;
+    uint32_t ring_mask;
+    uint32_t ring_entries;
+    uint32_t overflow;
+    uint32_t cqes;
+    uint32_t flags;
+    uint32_t reserved1;
+    uint64_t user_address;
+};
+
+struct edge_linux_io_uring_params {
+    uint32_t sq_entries;
+    uint32_t cq_entries;
+    uint32_t flags;
+    uint32_t sq_thread_cpu;
+    uint32_t sq_thread_idle;
+    uint32_t features;
+    uint32_t workqueue_descriptor;
+    uint32_t reserved[3];
+    struct edge_linux_io_sqring_offsets sq_off;
+    struct edge_linux_io_cqring_offsets cq_off;
+};
+
+struct edge_linux_io_uring_probe_op {
+    uint8_t opcode;
+    uint8_t reserved;
+    uint16_t flags;
+    uint32_t reserved2;
+};
+
+struct edge_linux_io_uring_probe {
+    uint8_t last_opcode;
+    uint8_t operation_count;
+    uint16_t reserved;
+    uint32_t reserved2[3];
+};
+
 _Static_assert(sizeof(struct edge_linux_ipc_perm64) == 48,
                "Linux ipc_perm size mismatch");
 _Static_assert(offsetof(struct edge_linux_ipc_perm64, mode) == 20,
@@ -604,6 +679,22 @@ _Static_assert(offsetof(struct edge_linux_iocb, flags) == 56,
                "Linux iocb flags offset mismatch");
 _Static_assert(sizeof(struct edge_linux_aio_sigset) == 16,
                "Linux aio sigset size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_uring_sqe) == 64,
+               "Linux io_uring SQE size mismatch");
+_Static_assert(offsetof(struct edge_linux_io_uring_sqe, user_data) == 32,
+               "Linux io_uring SQE user_data offset mismatch");
+_Static_assert(sizeof(struct edge_linux_io_uring_cqe) == 16,
+               "Linux io_uring CQE size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_sqring_offsets) == 40,
+               "Linux io_uring SQ offset size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_cqring_offsets) == 40,
+               "Linux io_uring CQ offset size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_uring_params) == 120,
+               "Linux io_uring params size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_uring_probe_op) == 8,
+               "Linux io_uring probe operation size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_uring_probe) == 16,
+               "Linux io_uring probe header size mismatch");
 
 /* statx is an architecture-independent Linux UAPI layout on 64-bit ports. */
 struct edge_linux_statx_timestamp {

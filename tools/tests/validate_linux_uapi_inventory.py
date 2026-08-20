@@ -108,6 +108,37 @@ def validate_symbol_domain(domain: object, name: str) -> None:
         identities.add(identity)
 
 
+def validate_assessments(assessments: object) -> None:
+    require(isinstance(assessments, list), "assessments must be a list")
+    domains: set[str] = set()
+    for assessment in assessments:
+        require(isinstance(assessment, dict), "invalid assessment")
+        domain = assessment.get("domain")
+        require(isinstance(domain, str) and domain,
+                "assessment lacks a domain")
+        require(domain not in domains, f"duplicate assessment {domain}")
+        require(assessment.get("status") in STATUSES,
+                f"{domain}: invalid assessment status")
+        architectures = assessment.get("architectures")
+        require(isinstance(architectures, dict) and
+                set(architectures) == ARCHITECTURES,
+                f"{domain}: incomplete architecture assessment")
+        tests = assessment.get("runtime_tests")
+        require(isinstance(tests, list),
+                f"{domain}: runtime tests must be a list")
+        oracle = assessment.get("linux_oracle")
+        require(isinstance(oracle, dict) and
+                oracle.get("reference") == REFERENCE_COMMIT,
+                f"{domain}: missing frozen Linux oracle")
+        if assessment.get("status") == "verified":
+            require(oracle.get("status") == "verified",
+                    f"{domain}: verified without a verified oracle")
+            require(all(value == "runtime-verified"
+                        for value in architectures.values()),
+                    f"{domain}: verified without every architecture")
+        domains.add(domain)
+
+
 def validate(document: object) -> None:
     require(isinstance(document, dict), "inventory must be an object")
     require(document.get("schema") == 1, "unsupported inventory schema")
@@ -126,6 +157,7 @@ def validate(document: object) -> None:
             "scope architecture set is incomplete")
     require(scope.get("default_status") == "unreviewed",
             "new UAPI entries must default to unreviewed")
+    validate_assessments(document.get("edgeos_assessments"))
     domains = document.get("domains")
     require(isinstance(domains, dict), "missing domains")
     require({"syscalls", "ioctl", "socket_options", "netlink",

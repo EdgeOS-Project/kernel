@@ -40,6 +40,7 @@ EDGE_SHARED_SRCS := \
 	$(SRC)/kernel/anonymous_fd.c \
 	$(SRC)/kernel/anonymous_fd_poll.c \
 	$(SRC)/kernel/aio_runtime.c \
+	$(SRC)/kernel/io_uring_runtime.c \
 	$(SRC)/kernel/abi_service_dispatch.c \
 	$(SRC)/kernel/console_device.c \
 	$(SRC)/kernel/credentials.c \

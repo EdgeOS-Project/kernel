@@ -784,7 +784,8 @@ int arch_vfs_describe_descriptor(int32_t descriptor,
     if (entry->kind == FD_EVENTFD || entry->kind == FD_TIMERFD ||
         entry->kind == FD_SIGNALFD || entry->kind == FD_EPOLL ||
         entry->kind == FD_PIDFD || entry->kind == FD_INOTIFY ||
-        entry->kind == FD_DMA_BUF || entry->kind == FD_MOUNT) {
+        entry->kind == FD_DMA_BUF || entry->kind == FD_MOUNT ||
+        entry->kind == FD_IO_URING) {
         description->kind = KERNEL_VFS_DESCRIPTOR_ANONYMOUS;
         return 0;
     }
@@ -7100,6 +7101,46 @@ static int64_t arch_mm_map_locked(
             user_mmap_build_inode_slot_path(inode_slot_path, sizeof(inode_slot_path), &e->inode);
             if (inode_slot_path[0]) file_path = inode_slot_path;
         }
+        if (e->kind == FD_IO_URING) {
+            uint32_t page_count = 0;
+            int result;
+            if (!(flags & LINUX_MAP_SHARED) || !sparse_mmap)
+                return (uint64_t)-EINVAL;
+            result = kernel_io_uring_mmap_info(
+                e->pipe_id, off, len, &page_count);
+            if (result < 0) return (uint64_t)(int64_t)result;
+            for (uint32_t page_index = 0;
+                 page_index < page_count; ++page_index) {
+                kernel_io_uring_page_t page = {0};
+                result = kernel_io_uring_mmap_page(
+                    e->pipe_id, off, page_index, &page);
+                if (result == 0) {
+                    if (page.cookie <= INT32_MAX)
+                        result = process_user_mmap_map_backing_page(
+                            mm, base + (uint64_t)page_index * PAGE_SIZE,
+                            (int)page.cookie,
+                            (prot & LINUX_PROT_WRITE) != 0);
+                    else
+                        result = -ENOMEM;
+                }
+                if (page.address && page.cookie <= INT32_MAX)
+                    process_user_mmap_release_backing_page(
+                        (int)page.cookie);
+                if (result < 0) {
+                    process_user_mmap_unmap(
+                        mm, base, (uint64_t)page_index * PAGE_SIZE);
+                    return (uint64_t)(int64_t)(
+                        result < 0 ? result : -ENOMEM);
+                }
+            }
+            if (user_vma_record_ex(
+                    mm, base, base + need, (uint32_t)prot,
+                    (uint32_t)flags, "[io_uring]", off, len) < 0) {
+                process_user_mmap_unmap(mm, base, need);
+                return (uint64_t)-ENOMEM;
+            }
+            return base;
+        }
         if (e->kind == FD_SOCKET) {
             edge_socket_t *socket;
             uint32_t page_count = 0;
@@ -10452,6 +10493,9 @@ static int x86_anonymous_fd_install(
     case KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE:
         local_kind = FD_MQUEUE;
         break;
+    case KERNEL_ANONYMOUS_FD_IO_URING:
+        local_kind = FD_IO_URING;
+        break;
     default:
         return -EINVAL;
     }
@@ -10489,6 +10533,9 @@ static int x86_anonymous_fd_object_id(
         break;
     case KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE:
         expected = FD_MQUEUE;
+        break;
+    case KERNEL_ANONYMOUS_FD_IO_URING:
+        expected = FD_IO_URING;
         break;
     default:
         return -EINVAL;
@@ -10538,6 +10585,47 @@ static const kernel_anonymous_fd_backend_ops_t
         .install = x86_anonymous_fd_install,
         .object_id = x86_anonymous_fd_object_id,
         .state_changed = x86_anonymous_fd_state_changed,
+    };
+
+static int x86_io_uring_page_allocate(
+        void *context, kernel_io_uring_page_t *page) {
+    int index;
+    (void)context;
+    if (!page) return -EINVAL;
+    index = process_user_mmap_alloc_backing_page();
+    if (index < 0) return -ENOMEM;
+    page->address = process_user_mmap_backing_page_ptr(index);
+    page->cookie = (uint32_t)index;
+    if (!page->address) {
+        process_user_mmap_release_backing_page(index);
+        return -ENOMEM;
+    }
+    return 0;
+}
+
+static int x86_io_uring_page_retain(
+        void *context, const kernel_io_uring_page_t *page) {
+    (void)context;
+    if (!page || page->cookie > INT32_MAX ||
+        process_user_mmap_backing_page_ptr((int)page->cookie) !=
+            page->address)
+        return -EINVAL;
+    process_user_mmap_retain_backing_page((int)page->cookie);
+    return 0;
+}
+
+static void x86_io_uring_page_release(
+        void *context, const kernel_io_uring_page_t *page) {
+    (void)context;
+    if (!page || page->cookie > INT32_MAX) return;
+    process_user_mmap_release_backing_page((int)page->cookie);
+}
+
+static const kernel_io_uring_page_allocator_t
+    x86_io_uring_page_allocator = {
+        .allocate = x86_io_uring_page_allocate,
+        .retain = x86_io_uring_page_retain,
+        .release = x86_io_uring_page_release,
     };
 
 static int x86_posix_timer_current_identity(

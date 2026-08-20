@@ -770,6 +770,8 @@ syscall_dispatch_complete:
 void syscall_init(void) {
     (void)kernel_anonymous_fd_backend_register(
         &x86_anonymous_fd_backend_ops, 0);
+    (void)kernel_io_uring_page_allocator_register(
+        &x86_io_uring_page_allocator);
     if (kernel_fd_backend_register(&x86_fd_backend_ops, 0) < 0) {
         printf("[syscall] ERROR fd backend registration failed\n");
         for (;;) __asm__ __volatile__("cli; hlt");
