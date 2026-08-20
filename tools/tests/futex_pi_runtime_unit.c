@@ -12,19 +12,24 @@
 typedef struct pi_backend {
     uint64_t address;
     uint32_t word;
+    uint64_t second_address;
+    uint32_t second_word;
     int32_t current_tid;
     int32_t wake_tid;
     int32_t wake_result;
     int32_t boosted_owner;
     int32_t boosted_donor;
     uint8_t owner_dies;
+    uint8_t requeue_signal;
     uint8_t waiting[4];
 } pi_backend_t;
 
 static int resolve_key(void *context, uint64_t address, int private_futex,
                        kernel_futex_key_t *key) {
     pi_backend_t *backend = context;
-    if (address != backend->address) return -EDGE_LINUX_EFAULT;
+    if (address != backend->address &&
+        address != backend->second_address)
+        return -EDGE_LINUX_EFAULT;
     key->value = address;
     key->scope = (uintptr_t)(private_futex != 0);
     return 0;
@@ -49,22 +54,32 @@ static void unlock_backend(void *context, uintptr_t state) {
 
 static int read_word(void *context, uint64_t address, uint32_t *value) {
     pi_backend_t *backend = context;
-    if (address != backend->address || !value)
+    if (!value) return -EDGE_LINUX_EFAULT;
+    if (address == backend->address)
+        *value = backend->word;
+    else if (address == backend->second_address)
+        *value = backend->second_word;
+    else
         return -EDGE_LINUX_EFAULT;
-    *value = backend->word;
     return 0;
 }
 
 static int compare_exchange_word(void *context, uint64_t address,
                                  uint32_t *expected, uint32_t desired) {
     pi_backend_t *backend = context;
-    if (address != backend->address || !expected)
+    uint32_t *word;
+    if (!expected) return -EDGE_LINUX_EFAULT;
+    if (address == backend->address)
+        word = &backend->word;
+    else if (address == backend->second_address)
+        word = &backend->second_word;
+    else
         return -EDGE_LINUX_EFAULT;
-    if (*expected != backend->word) {
-        *expected = backend->word;
+    if (*expected != *word) {
+        *expected = *word;
         return 1;
     }
-    backend->word = desired;
+    *word = desired;
     return 0;
 }
 
@@ -86,6 +101,15 @@ static int no_requeue(void *context, const kernel_futex_key_t *source,
     (void)maximum;
     (void)bitset;
     return 0;
+}
+
+static int requeue_tid(void *context, const kernel_futex_key_t *source,
+                       const kernel_futex_key_t *destination,
+                       int32_t tid) {
+    pi_backend_t *backend = context;
+    (void)source;
+    (void)destination;
+    return tid > 0 && tid < 4 && backend->waiting[tid] ? 1 : 0;
 }
 
 static int32_t current_tid(void *context) {
@@ -149,6 +173,23 @@ static int64_t block_pi_wait(
     (void)request;
 
     memset(&unlock, 0, sizeof(unlock));
+    if (backend->requeue_signal) {
+        kernel_futex_request_t requeue;
+        memset(&requeue, 0, sizeof(requeue));
+        requeue.operation = KERNEL_FUTEX_COMPARE_REQUEUE_PI;
+        requeue.address = backend->address;
+        requeue.secondary_address = backend->second_address;
+        requeue.private_futex = 1u;
+        requeue.secondary_private_futex = 1u;
+        requeue.wake_count = 1u;
+        requeue.comparison_value = backend->word;
+        backend->current_tid = 1;
+        result = kernel_futex_execute(&requeue);
+        assert(result == 1);
+        backend->current_tid = waiter;
+        assert(backend->wake_tid == waiter);
+        return backend->wake_result;
+    }
     if (backend->owner_dies) {
         result = kernel_futex_pi_owner_died_locked(
             backend->address, 1, backend->word);
@@ -193,6 +234,7 @@ int main(void) {
         .compare_exchange_word_locked = compare_exchange_word,
         .wake_locked = no_wake,
         .requeue_locked = no_requeue,
+        .requeue_tid_locked = requeue_tid,
         .current_tid = current_tid,
         .waiter_precedes_locked = waiter_precedes,
         .prepare_pi_wait_locked = prepare_pi_wait,
@@ -205,6 +247,7 @@ int main(void) {
 
     memset(&backend, 0, sizeof(backend));
     backend.address = UINT64_C(0x4000);
+    backend.second_address = UINT64_C(0x5000);
     backend.current_tid = 1;
     assert(kernel_futex_backend_register(&operations, &backend) == 0);
 
@@ -247,6 +290,27 @@ int main(void) {
     request.operation = KERNEL_FUTEX_UNLOCK_PI;
     assert(kernel_futex_execute(&request) == 0);
     assert(backend.word == 0u);
+
+    backend.word = 7u;
+    backend.second_word = 0u;
+    backend.current_tid = 2;
+    backend.wake_tid = 0;
+    backend.requeue_signal = 1u;
+    memset(&request, 0, sizeof(request));
+    request.operation = KERNEL_FUTEX_WAIT_REQUEUE_PI;
+    request.address = backend.address;
+    request.secondary_address = backend.second_address;
+    request.private_futex = 1u;
+    request.secondary_private_futex = 1u;
+    request.expected_value = 7u;
+    request.bitset = UINT32_MAX;
+    assert(kernel_futex_execute(&request) == 0);
+    assert(backend.second_word == 2u);
+    backend.requeue_signal = 0u;
+    request.operation = KERNEL_FUTEX_UNLOCK_PI;
+    request.address = backend.second_address;
+    assert(kernel_futex_execute(&request) == 0);
+    assert(backend.second_word == 0u);
     puts("futex PI runtime unit: ok");
     return 0;
 }

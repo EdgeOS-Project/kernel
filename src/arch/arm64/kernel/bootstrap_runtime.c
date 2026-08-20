@@ -4063,6 +4063,10 @@ static int task_copy(kernel_task_t *dst, const kernel_task_t *src,
     dst->vector_io_active = 0;
     dst->vector_io_replay_frame = 0;
     task_state_set(dst, KERNEL_TASK_EMBRYO);
+    if (src->futex_pi_boosted)
+        dst->scheduler = src->futex_pi_base_scheduler;
+    dst->futex_pi_base_scheduler = dst->scheduler;
+    dst->futex_pi_boosted = 0u;
     dst->scheduler_wakeup_placed = 0;
     dst->scheduler_wait_start_us = 0u;
     dst->scheduler_wait_us = 0u;
@@ -20561,6 +20565,14 @@ static int futex_wake_locked(uint64_t key, uint32_t maximum, uint32_t bitset) {
         if (task_state_shadow_at(index) == KERNEL_TASK_WAITING_FUTEX &&
             !waiter->futex_waitv_active && waiter->futex_key == key &&
             (waiter->futex_bitset & bitset)) {
+            kernel_futex_key_t runtime_key;
+            runtime_key.value = key;
+            runtime_key.scope = 0u;
+            if (kernel_futex_pi_requeue_waiter_locked(
+                    &runtime_key, waiter->pid)) {
+                link = next;
+                continue;
+            }
             waiter->frame.x[0] = 0u;
             futex_wait_state_clear(waiter);
             task_state_set(waiter, KERNEL_TASK_RUNNABLE);
@@ -32904,6 +32916,24 @@ static int arm64_futex_requeue_locked(
         source->value, destination->value, maximum);
 }
 
+static int arm64_futex_requeue_tid_locked(
+    void *context, const kernel_futex_key_t *source,
+    const kernel_futex_key_t *destination, int32_t tid) {
+    int slot = task_find_pid(tid);
+    kernel_task_t *waiter;
+    (void)context;
+    if (!source || !destination || slot < 0) return 0;
+    waiter = &g_tasks[slot];
+    if (task_state_shadow_at((uint32_t)slot) !=
+            KERNEL_TASK_WAITING_FUTEX ||
+        waiter->futex_waitv_active || waiter->futex_key != source->value)
+        return 0;
+    futex_wait_queue_remove(waiter);
+    waiter->futex_key = destination->value;
+    futex_wait_queue_add(waiter);
+    return 1;
+}
+
 static int32_t arm64_futex_current_tid(void *context) {
     kernel_task_t *task = current_task();
     (void)context;
@@ -33025,6 +33055,7 @@ static const kernel_futex_backend_ops_t arm64_futex_backend_ops = {
         arm64_futex_compare_exchange_word_locked,
     .wake_locked = arm64_futex_wake_locked,
     .requeue_locked = arm64_futex_requeue_locked,
+    .requeue_tid_locked = arm64_futex_requeue_tid_locked,
     .current_tid = arm64_futex_current_tid,
     .waiter_precedes_locked = arm64_futex_waiter_precedes_locked,
     .prepare_pi_wait_locked = arm64_futex_prepare_pi_wait_locked,

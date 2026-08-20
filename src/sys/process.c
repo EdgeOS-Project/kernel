@@ -860,9 +860,14 @@ static void task_copy_resource_limits(task_t *child, const task_t *parent) {
 }
 
 static void task_copy_process_control(task_t *child, const task_t *parent) {
+    const edge_linux_scheduler_state_t *scheduler;
     if (!child || !parent) return;
+    scheduler = parent->futex_pi_boosted ?
+        &parent->futex_pi_base_scheduler : &parent->scheduler;
     edge_linux_scheduler_state_inherit(&child->scheduler,
-                                       &parent->scheduler);
+                                       scheduler);
+    child->futex_pi_base_scheduler = child->scheduler;
+    child->futex_pi_boosted = 0u;
     edge_linux_scheduler_entity_inherit(
         &child->scheduler_entity, &child->scheduler,
         boottime_monotonic_us());

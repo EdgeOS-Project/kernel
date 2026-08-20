@@ -1953,6 +1953,7 @@
       "runtime_tests": [
         "tools/tests/futex_abi_probe.c",
         "tools/tests/futex_pi_abi_probe.c",
+        "tools/tests/futex_pi_requeue_abi_probe.c",
         "tools/tests/futex_runtime_probe.c",
         "tools/tests/futex_pingpong_probe.c"
       ],

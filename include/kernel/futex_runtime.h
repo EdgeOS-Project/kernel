@@ -108,6 +108,10 @@ typedef struct kernel_futex_backend_ops {
                           const kernel_futex_key_t *source,
                           const kernel_futex_key_t *destination,
                           uint32_t maximum, uint32_t bitset);
+    int (*requeue_tid_locked)(void *context,
+                              const kernel_futex_key_t *source,
+                              const kernel_futex_key_t *destination,
+                              int32_t tid);
     int32_t (*current_tid)(void *context);
     int (*waiter_precedes_locked)(void *context, int32_t candidate_tid,
                                   int32_t current_tid);
@@ -143,5 +147,7 @@ void kernel_futex_pi_waiter_cancel_locked(int32_t tid);
 int kernel_futex_pi_owner_died_locked(uint64_t address,
                                       int32_t owner_tid,
                                       uint32_t observed_word);
+int kernel_futex_pi_requeue_waiter_locked(
+    const kernel_futex_key_t *key, int32_t tid);
 
 #endif

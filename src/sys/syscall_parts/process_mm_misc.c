@@ -8756,6 +8756,21 @@ static int x86_futex_requeue_locked(
         maximum, bitset);
 }
 
+static int x86_futex_requeue_tid_locked(
+    void *context, const kernel_futex_key_t *source,
+    const kernel_futex_key_t *destination, int32_t tid) {
+    edge_futex_waiter_t *waiter = futex_waiter_find_slot_by_pid(tid);
+    (void)context;
+    if (!source || !destination || !waiter || !waiter->used ||
+        !waiter->waiting || waiter->waitv_count ||
+        waiter->uaddr != source->value ||
+        waiter->private_key != (int)(uint32_t)source->scope)
+        return 0;
+    waiter->uaddr = destination->value;
+    waiter->private_key = (int)(uint32_t)destination->scope;
+    return 1;
+}
+
 static int32_t x86_futex_current_tid(void *context) {
     task_t *current = process_current_task();
     (void)context;
@@ -8903,6 +8918,7 @@ static const kernel_futex_backend_ops_t x86_futex_backend_ops = {
         x86_futex_compare_exchange_word_locked,
     .wake_locked = x86_futex_wake_locked,
     .requeue_locked = x86_futex_requeue_locked,
+    .requeue_tid_locked = x86_futex_requeue_tid_locked,
     .current_tid = x86_futex_current_tid,
     .waiter_precedes_locked = x86_futex_waiter_precedes_locked,
     .prepare_pi_wait_locked = x86_futex_prepare_pi_wait_locked,

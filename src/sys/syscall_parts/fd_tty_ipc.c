@@ -1602,6 +1602,14 @@ static int futex_waiter_wake_matching_locked(uint64_t uaddr, int private_key,
             if (w->uaddr != uaddr || w->private_key != private_key ||
                 !(w->bitset & mask))
                 continue;
+            {
+                kernel_futex_key_t key;
+                key.value = uaddr;
+                key.scope = (uintptr_t)(uint32_t)private_key;
+                if (kernel_futex_pi_requeue_waiter_locked(
+                        &key, w->pid))
+                    continue;
+            }
         }
         t = (task_t *)(uintptr_t)process_get_task(w->pid);
         w->waiting = 0;

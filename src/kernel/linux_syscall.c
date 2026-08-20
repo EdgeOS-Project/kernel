@@ -9928,6 +9928,40 @@ static int64_t edge_linux_sys_futex_classic(
     case EDGE_LINUX_FUTEX_UNLOCK_PI:
         request->operation = KERNEL_FUTEX_UNLOCK_PI;
         break;
+    case EDGE_LINUX_FUTEX_WAIT_REQUEUE_PI:
+        request->operation = KERNEL_FUTEX_WAIT_REQUEUE_PI;
+        request->expected_value = (uint32_t)context->arguments[2];
+        request->secondary_address = context->arguments[4];
+        request->secondary_private_futex = request->private_futex;
+        request->bitset = EDGE_LINUX_FUTEX_BITSET_MATCH_ANY;
+        if (request->secondary_address == request->address)
+            return -EDGE_LINUX_EINVAL;
+        status = edge_linux_futex_word_access(
+            context, request->secondary_address);
+        if (status < 0) return status;
+        status = edge_linux_futex_timeout(
+            context, context->arguments[3],
+            operation & EDGE_LINUX_FUTEX_CLOCK_REALTIME ?
+                LINUX_CLOCK_REALTIME : LINUX_CLOCK_MONOTONIC,
+            1, request);
+        if (status < 0) return status;
+        break;
+    case EDGE_LINUX_FUTEX_CMP_REQUEUE_PI:
+        if ((int32_t)(uint32_t)context->arguments[2] < 0 ||
+            (int32_t)(uint32_t)context->arguments[3] < 0)
+            return -EDGE_LINUX_EINVAL;
+        request->operation = KERNEL_FUTEX_COMPARE_REQUEUE_PI;
+        request->wake_count = (uint32_t)context->arguments[2];
+        request->secondary_count = (uint32_t)context->arguments[3];
+        request->secondary_address = context->arguments[4];
+        request->secondary_private_futex = request->private_futex;
+        request->comparison_value = (uint32_t)context->arguments[5];
+        if (request->secondary_address == request->address)
+            return -EDGE_LINUX_EINVAL;
+        status = edge_linux_futex_word_access(
+            context, request->secondary_address);
+        if (status < 0) return status;
+        break;
     default:
         return -EDGE_LINUX_ENOSYS;
     }
