@@ -4078,6 +4078,16 @@ syscall-inventory-check: tools/syscalls/linux_syscall_inventory.json tools/sysca
 	@python3 tools/tests/validate_syscall_inventory.py
 	@python3 tools/syscalls/generate_linux_syscall_tables.py --check
 
+.PHONY: linux-uapi-inventory-check linux-uapi-reference-check
+linux-uapi-inventory-check: tools/uapi/linux_uapi_inventory.json tools/uapi/linux_uapi_inventory.py tools/tests/test_linux_uapi_inventory.py tools/tests/validate_linux_uapi_inventory.py
+	@python3 -m unittest tools.tests.test_linux_uapi_inventory
+	@python3 tools/tests/validate_linux_uapi_inventory.py
+
+linux-uapi-reference-check: linux-uapi-inventory-check
+	@test -n "$(LINUX_REFERENCE_TREE)" || { echo "LINUX_REFERENCE_TREE is required"; exit 1; }
+	@python3 tools/uapi/generate_linux_uapi_inventory.py \
+		--linux-tree "$(LINUX_REFERENCE_TREE)" --check
+
 cross-arch-unity-check: tools/tests/cross_arch_unity.py tools/tests/cross_arch_unity_inventory.json tools/tests/test_cross_arch_unity.py
 	@python3 -m unittest tools.tests.test_cross_arch_unity
 	@python3 tools/tests/cross_arch_unity.py

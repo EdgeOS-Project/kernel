@@ -13,6 +13,13 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 INVENTORY = ROOT / "tools/syscalls/linux_syscall_inventory.json"
 SHARED_SOURCE_DIRECTORY = ROOT / "src/kernel"
+LINUX_REFERENCE_COMMIT = "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
+EVIDENCE_STATUSES = {
+    "explicit-enosys",
+    "static-route-only",
+    "runtime-probe-listed",
+    "oracle-verified",
+}
 sys.path.insert(0, str(ROOT / "tools/tests"))
 
 from arch_syscall_parity import parse  # noqa: E402
@@ -45,6 +52,7 @@ def validate_architecture(
         number = mapping.get("number")
         status = mapping.get("status")
         route = mapping.get("route")
+        evidence_status = mapping.get("evidence_status")
         if not isinstance(number, int) or number < 0:
             fail(f"{architecture} {name} has an invalid syscall number")
         previous = number_owners.get(number)
@@ -63,6 +71,12 @@ def validate_architecture(
             fail(f"{architecture} {name} silently maps implemented to ENOSYS")
         if status == "enosys" and route != "enosys":
             fail(f"{architecture} {name} ENOSYS status has route {route!r}")
+        if evidence_status not in EVIDENCE_STATUSES:
+            fail(f"{architecture} {name} has invalid evidence status")
+        if status == "enosys" and evidence_status != "explicit-enosys":
+            fail(f"{architecture} {name} ENOSYS route has invalid evidence")
+        if status == "implemented" and evidence_status == "explicit-enosys":
+            fail(f"{architecture} {name} implemented route claims ENOSYS evidence")
 
     if inventory_numbers != source_numbers:
         missing = sorted(set(source_numbers) - set(inventory_numbers))
@@ -188,12 +202,34 @@ def validate_runtime_tests(entries: list[dict[str, Any]]) -> None:
                 fail(f"{entry['id']} has an invalid runtime test entry")
             if not (ROOT / test).exists():
                 fail(f"{entry['id']} runtime test does not exist: {test}")
+        if entry.get("linux_oracle") != "required":
+            fail(f"{entry['id']} must require a frozen Linux oracle")
+        if entry.get("oracle_status") not in {"not-run", "verified"}:
+            fail(f"{entry['id']} has an invalid oracle status")
+        for architecture, mapping in entry["architectures"].items():
+            if mapping is None or mapping["status"] == "enosys":
+                continue
+            expected = "runtime-probe-listed" if tests else "static-route-only"
+            if mapping["evidence_status"] == "oracle-verified":
+                if entry["oracle_status"] != "verified":
+                    fail(f"{architecture} {entry['id']} lacks oracle verification")
+            elif mapping["evidence_status"] != expected:
+                fail(
+                    f"{architecture} {entry['id']} evidence does not match "
+                    "its declared runtime probes"
+                )
 
 
 def validate() -> tuple[int, int, int]:
     document = json.loads(INVENTORY.read_text(encoding="utf-8"))
     if document.get("schema") != 1:
         fail("unsupported syscall inventory schema")
+    reference = document.get("linux_reference")
+    if not isinstance(reference, dict) or reference.get("commit") != LINUX_REFERENCE_COMMIT:
+        fail("syscall inventory has the wrong Linux reference commit")
+    evidence_semantics = document.get("evidence_semantics")
+    if not isinstance(evidence_semantics, dict) or set(evidence_semantics) != EVIDENCE_STATUSES:
+        fail("syscall inventory evidence semantics are incomplete")
     entries = document.get("syscalls")
     if not isinstance(entries, list):
         fail("syscall inventory has no syscall list")
