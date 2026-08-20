@@ -12,6 +12,7 @@ EDGE_SHARED_SRCS := \
 	$(SRC)/fs/proc_sysctl.c \
 	$(SRC)/vfs/append.c \
 	$(SRC)/vfs/fallocate.c \
+	$(SRC)/vfs/fileattr.c \
 	$(SRC)/vfs/fiemap.c \
 	$(SRC)/vfs/file_handle.c \
 	$(SRC)/vfs/filesystem_registry.c \

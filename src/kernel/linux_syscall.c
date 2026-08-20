@@ -98,6 +98,8 @@ static int64_t edge_linux_sys_xattr(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_xattrat(
     edge_linux_syscall_context_t *context);
+static int64_t edge_linux_sys_fileattr(
+    edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_truncate(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_mkdir(
@@ -5629,6 +5631,8 @@ static int64_t edge_linux_xattr_result(int result) {
             return -EDGE_LINUX_EINVAL;
         case VFS_XATTR_ERR_ACCESS:
             return -EDGE_LINUX_EACCES;
+        case VFS_XATTR_ERR_PERMISSION:
+            return -EDGE_LINUX_EPERM;
         default:
             return -EDGE_LINUX_EIO;
     }
@@ -12088,6 +12092,121 @@ static int64_t edge_linux_sys_xattrat(
     return status;
 }
 
+static int64_t edge_linux_fileattr_result(int result) {
+    if (result >= 0) return result;
+    switch (result) {
+        case VFS_FILEATTR_ERR_UNSUPPORTED:
+            return -EDGE_LINUX_EOPNOTSUPP;
+        case VFS_FILEATTR_ERR_INVALID:
+            return -EDGE_LINUX_EINVAL;
+        case VFS_FILEATTR_ERR_READ_ONLY:
+            return -EDGE_LINUX_EROFS;
+        case VFS_FILEATTR_ERR_PERMISSION:
+            return -EDGE_LINUX_EPERM;
+        default:
+            return -EDGE_LINUX_EIO;
+    }
+}
+
+static int64_t edge_linux_sys_fileattr(
+    edge_linux_syscall_context_t *context) {
+    const uint32_t valid_at_flags =
+        EDGE_LINUX_AT_SYMLINK_NOFOLLOW | EDGE_LINUX_AT_EMPTY_PATH;
+    struct edge_linux_file_attr user_attributes;
+    kernel_linux_identity_t identity;
+    kernel_vfs_xattr_scratch_t scratch;
+    edge_linux_path_workspace_t workspace;
+    kernel_vfs_target_t target;
+    vfs_fileattr_t attributes;
+    vfs_fileattr_t previous;
+    uint64_t user_size = context->arguments[3];
+    uint32_t at_flags = (uint32_t)context->arguments[4];
+    int setting = context->id == EDGE_LINUX_SYS_file_setattr;
+    int status;
+
+    if (context->id != EDGE_LINUX_SYS_file_getattr && !setting)
+        return -EDGE_LINUX_ENOSYS;
+    if (at_flags & ~valid_at_flags) return -EDGE_LINUX_EINVAL;
+    if (user_size > 4096u) return -EDGE_LINUX_E2BIG;
+    if (user_size < sizeof(user_attributes)) return -EDGE_LINUX_EINVAL;
+
+    memset(&user_attributes, 0, sizeof(user_attributes));
+    memset(&attributes, 0, sizeof(attributes));
+    if (setting) {
+        status = edge_linux_copy_struct_from_user(
+            &user_attributes, sizeof(user_attributes),
+            sizeof(user_attributes), context->arguments[2], user_size,
+            edge_linux_seccomp_copy_from_user, context);
+        if (status < 0) return status;
+        if (user_attributes.fa_xflags &
+            ~((uint64_t)VFS_FILE_XFLAG_ALL))
+            return -EDGE_LINUX_EINVAL;
+        attributes.xflags = user_attributes.fa_xflags &
+                            ~((uint64_t)VFS_FILE_XFLAG_READ_ONLY);
+        attributes.extsize = user_attributes.fa_extsize;
+        attributes.projid = user_attributes.fa_projid;
+        attributes.cowextsize = user_attributes.fa_cowextsize;
+    }
+
+    if (kernel_current_linux_identity(&identity) < 0)
+        return -EDGE_LINUX_ESRCH;
+    status = edge_linux_xattr_scratch_acquire(&scratch);
+    if (status < 0) return status;
+    status = edge_linux_path_workspace_initialize(&scratch, &workspace);
+    if (status < 0) return status;
+    status = edge_linux_xattr_resolve_at(
+        context, &identity, &scratch, &workspace,
+        (int32_t)(uint32_t)context->arguments[0], context->arguments[1],
+        at_flags, &target);
+    if (status < 0) return status;
+
+    if (setting) {
+        if ((target.superblock &&
+             (target.superblock->mount_flags & VFS_MOUNT_READONLY)) ||
+            (target.resolved_path &&
+             (vfs_mount_flags_for_path(target.resolved_path) &
+              VFS_MOUNT_READONLY)))
+            return -EDGE_LINUX_EROFS;
+        if (identity.fsuid != target.inode->uid &&
+            !(identity.effective_capabilities &
+              (1ULL << EDGE_LINUX_CAP_FOWNER)))
+            return -EDGE_LINUX_EPERM;
+        status = vfs_inode_fileattr_get(
+            target.superblock, target.inode, &previous);
+        if (status < 0) return edge_linux_fileattr_result(status);
+        attributes.xflags |= previous.xflags &
+                             ~((uint64_t)VFS_FILE_XFLAG_COMMON);
+        attributes.extsize = previous.extsize;
+        attributes.nextents = previous.nextents;
+        attributes.projid = previous.projid;
+        attributes.cowextsize = previous.cowextsize;
+        if (((previous.xflags ^ attributes.xflags) &
+             (VFS_FILE_XFLAG_IMMUTABLE | VFS_FILE_XFLAG_APPEND)) &&
+            !(identity.effective_capabilities &
+              (1ULL << EDGE_LINUX_CAP_LINUX_IMMUTABLE)))
+            return -EDGE_LINUX_EPERM;
+        status = vfs_inode_fileattr_set(
+            target.superblock, target.inode, &attributes);
+        if (status < 0) return edge_linux_fileattr_result(status);
+        kernel_vfs_notify_attrib(target.resolved_path);
+        return 0;
+    }
+
+    status = vfs_inode_fileattr_get(
+        target.superblock, target.inode, &attributes);
+    if (status < 0) return edge_linux_fileattr_result(status);
+    user_attributes.fa_xflags = attributes.xflags & VFS_FILE_XFLAG_ALL;
+    user_attributes.fa_extsize = attributes.extsize;
+    user_attributes.fa_nextents = attributes.nextents;
+    user_attributes.fa_projid = attributes.projid;
+    user_attributes.fa_cowextsize = attributes.cowextsize;
+    memset(scratch.path, 0, (uint32_t)user_size);
+    memcpy(scratch.path, &user_attributes, sizeof(user_attributes));
+    return edge_linux_copy_to_user(
+        context, context->arguments[2], scratch.path, user_size) < 0 ?
+        -EDGE_LINUX_EFAULT : 0;
+}
+
 static int64_t edge_linux_sys_access(
     edge_linux_syscall_context_t *context) {
     linux_credential_state_t credentials;
@@ -12275,6 +12394,9 @@ static int64_t edge_linux_sys_chmod(
         !(identity.effective_capabilities &
           (1ULL << EDGE_LINUX_CAP_FOWNER)))
         return -EDGE_LINUX_EPERM;
+    if (target.inode->metadata_flags &
+        (VFS_FILE_XFLAG_IMMUTABLE | VFS_FILE_XFLAG_APPEND))
+        return -EDGE_LINUX_EPERM;
     mode &= 07777u;
     if ((mode & 02000u) &&
         !(identity.effective_capabilities &
@@ -12408,6 +12530,9 @@ static int64_t edge_linux_sys_chown(
             !kernel_current_in_group(requested_gid))
             return -EDGE_LINUX_EPERM;
     }
+    if (target.inode->metadata_flags &
+        (VFS_FILE_XFLAG_IMMUTABLE | VFS_FILE_XFLAG_APPEND))
+        return -EDGE_LINUX_EPERM;
     if (requested_uid != UINT32_MAX) valid |= VFS_SETATTR_UID;
     if (requested_gid != UINT32_MAX) valid |= VFS_SETATTR_GID;
     mode = (uint16_t)(target.inode->mode & 07777u);
@@ -12621,6 +12746,10 @@ static int64_t edge_linux_sys_utimens(
             return -EDGE_LINUX_EACCES;
         }
     }
+    if ((update.set_atime || update.set_mtime) &&
+        (target.inode->metadata_flags &
+         (VFS_FILE_XFLAG_IMMUTABLE | VFS_FILE_XFLAG_APPEND)))
+        return -EDGE_LINUX_EPERM;
     if (vfs_inode_utimens(
             target.superblock, target.inode, update.atime, update.mtime,
             update.set_atime, update.set_mtime) < 0)
@@ -13941,6 +14070,13 @@ static int64_t edge_linux_sys_open_by_handle_at(
         if ((decoded.inode->mode & 0xf000u) == VFS_INODE_DIR &&
             (access_mask & 2))
             return -EDGE_LINUX_EISDIR;
+        if ((access_mask & 2) &&
+            (decoded.inode->metadata_flags & VFS_FILE_XFLAG_IMMUTABLE))
+            return -EDGE_LINUX_EPERM;
+        if ((access_mask & 2) &&
+            (decoded.inode->metadata_flags & VFS_FILE_XFLAG_APPEND) &&
+            !(flags & EDGE_LINUX_O_APPEND))
+            return -EDGE_LINUX_EPERM;
         if (access_mask && vfs_permission_check(
                 decoded.inode, access_mask) < 0)
             return -EDGE_LINUX_EACCES;
@@ -14337,8 +14473,9 @@ static int64_t edge_linux_sys_link(
     status = edge_linux_path_mutation_permission(
         destination_parent.inode, 0);
     if (status < 0) return status;
-    if (vfs_link_inode(source_superblock, &source, workspace.resolved) < 0)
-        return -EDGE_LINUX_EIO;
+    status = kernel_vfs_path_result(
+        vfs_link_inode(source_superblock, &source, workspace.resolved));
+    if (status < 0) return status;
     kernel_vfs_notify_link(source_path, workspace.resolved);
     return 0;
 }
@@ -14410,8 +14547,8 @@ static int64_t edge_linux_sys_unlink(
         status = kernel_vfs_path_result(
             vfs_rmdir(workspace.resolved));
     else
-        status = vfs_unlink(workspace.resolved) < 0 ?
-            -EDGE_LINUX_EIO : 0;
+        status = kernel_vfs_path_result(
+            vfs_unlink(workspace.resolved));
     if (status < 0) return status;
     kernel_vfs_notify_remove(workspace.resolved, remove_directory);
     return 0;

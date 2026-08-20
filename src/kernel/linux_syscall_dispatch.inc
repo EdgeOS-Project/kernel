@@ -99,6 +99,10 @@ case EDGE_LINUX_SYS_sync_file_range:
 case EDGE_LINUX_SYS_syncfs:
     context->result = edge_linux_sys_file_sync(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_file_getattr:
+case EDGE_LINUX_SYS_file_setattr:
+    context->result = edge_linux_sys_fileattr(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_flock:
     context->result = edge_linux_sys_flock(context);
     return EDGE_LINUX_SYSCALL_HANDLED;

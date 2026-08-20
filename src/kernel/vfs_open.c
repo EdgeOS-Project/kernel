@@ -532,6 +532,15 @@ int64_t kernel_vfs_open_at(const kernel_vfs_open_request_t *request) {
         target.superblock &&
         (vfs_mount_flags_for_path(path) & VFS_MOUNT_READONLY))
         return -EDGE_LINUX_EROFS;
+    if (!(request->flags & KERNEL_VFS_OPEN_PATH) &&
+        (target.inode->mode & 0xf000u) == VFS_INODE_FILE &&
+        request->access_mode != KERNEL_VFS_OPEN_READ_ONLY) {
+        if (target.inode->metadata_flags & VFS_FILE_XFLAG_IMMUTABLE)
+            return -EDGE_LINUX_EPERM;
+        if ((target.inode->metadata_flags & VFS_FILE_XFLAG_APPEND) &&
+            !(request->flags & KERNEL_VFS_OPEN_APPEND))
+            return -EDGE_LINUX_EPERM;
+    }
     status = kernel_vfs_open_access_mask(request, created);
     if (status && vfs_permission_check(target.inode, status) < 0)
         return -EDGE_LINUX_EACCES;

@@ -17,8 +17,12 @@ int vfs_truncate_inode(vfs_superblock_t *sb, vfs_inode_t *inode,
     if (!sb->ops || !sb->ops->truncate)
         return VFS_TRUNCATE_ERR_UNSUPPORTED;
     old_length = inode->size;
-    if (sb->ops->truncate(sb, inode, length) < 0)
-        return VFS_TRUNCATE_ERR_IO;
+    {
+        int result = sb->ops->truncate(sb, inode, length);
+        if (result == VFS_TRUNCATE_ERR_PERMISSION)
+            return result;
+        if (result < 0) return VFS_TRUNCATE_ERR_IO;
+    }
     inode->size = length;
     if (length < old_length) {
         discard_start = ((uint64_t)length +

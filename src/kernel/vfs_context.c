@@ -290,6 +290,8 @@ int kernel_vfs_pivot_root(const char *new_root, const char *put_old) {
 }
 
 int kernel_vfs_truncate_result(int result) {
+    if (result == VFS_TRUNCATE_ERR_PERMISSION)
+        return -EDGE_LINUX_EPERM;
     if (result == VFS_TRUNCATE_ERR_UNSUPPORTED ||
         result == VFS_TRUNCATE_ERR_INVALID)
         return -EDGE_LINUX_EINVAL;

@@ -60,6 +60,7 @@ typedef struct {
     uint32_t anonymous_references;
     uint32_t mapping_references;
     uint32_t seals;
+    uint32_t file_xflags;
     uint8_t is_memfd;
     tmpfs_xattr_t *xattrs;
     /* Nonzero directory-entry nodes reference the canonical inode index + 1. */
@@ -360,6 +361,24 @@ static uint32_t tmpfs_node_link_count(const tmpfs_state_t *state,
     return links;
 }
 
+static uint32_t tmpfs_node_xflags(const tmpfs_state_t *state,
+                                  uint32_t index) {
+    int canonical = tmpfs_canonical_index(state, index);
+    return canonical >= 0 ? state->nodes[canonical].file_xflags : 0u;
+}
+
+static int tmpfs_node_is_immutable(const tmpfs_state_t *state,
+                                   uint32_t index) {
+    return (tmpfs_node_xflags(state, index) &
+            VFS_FILE_XFLAG_IMMUTABLE) != 0;
+}
+
+static int tmpfs_node_blocks_removal(const tmpfs_state_t *state,
+                                     uint32_t index) {
+    return (tmpfs_node_xflags(state, index) &
+            (VFS_FILE_XFLAG_IMMUTABLE | VFS_FILE_XFLAG_APPEND)) != 0;
+}
+
 static void tmpfs_fill_inode(tmpfs_state_t *st, uint32_t idx, vfs_inode_t *out) {
     tmpfs_node_t *n;
     uint32_t links;
@@ -372,6 +391,7 @@ static void tmpfs_fill_inode(tmpfs_state_t *st, uint32_t idx, vfs_inode_t *out) 
     out->generation = n->generation;
     out->mode = (uint16_t)((n->kind ? n->kind : (n->is_dir ? VFS_INODE_DIR : VFS_INODE_FILE)) |
                            (n->mode & 07777u));
+    out->metadata_flags = (uint16_t)(n->file_xflags & 0xffffu);
     out->uid = n->uid;
     out->gid = n->gid;
     links = tmpfs_node_link_count(st, idx);
@@ -649,8 +669,10 @@ static int tmpfs_read(vfs_superblock_t *sb, vfs_inode_t *inode, uint32_t off, vo
         tmpfs_blocks_unlock();
         done += nbytes;
     }
-    n->atime = tmpfs_now_sec();
-    inode->atime = n->atime;
+    if (!(n->file_xflags & VFS_FILE_XFLAG_NOATIME)) {
+        n->atime = tmpfs_now_sec();
+        inode->atime = n->atime;
+    }
     return (int)done;
 }
 
@@ -665,6 +687,10 @@ static int tmpfs_write(vfs_superblock_t *sb, vfs_inode_t *inode, uint32_t off, c
     if (n->is_dir) return -EDGE_LINUX_EISDIR;
     if (n->kind != VFS_INODE_FILE && n->kind != VFS_INODE_LNK)
         return -EDGE_LINUX_EINVAL;
+    if (n->file_xflags & VFS_FILE_XFLAG_IMMUTABLE)
+        return -EDGE_LINUX_EPERM;
+    if ((n->file_xflags & VFS_FILE_XFLAG_APPEND) && off != n->size)
+        return -EDGE_LINUX_EPERM;
     if (len == 0) {
         if (off == 0) tmpfs_free_file_blocks(st, n);
         n->mtime = n->ctime = tmpfs_now_sec();
@@ -736,6 +762,9 @@ static int tmpfs_truncate(vfs_superblock_t *sb, vfs_inode_t *inode,
         st->nodes[index].is_dir)
         return -1;
     node = &st->nodes[index];
+    if (node->file_xflags &
+        (VFS_FILE_XFLAG_IMMUTABLE | VFS_FILE_XFLAG_APPEND))
+        return VFS_TRUNCATE_ERR_PERMISSION;
     first_free_block = (length + TMPFS_BLOCK_SIZE - 1u) / TMPFS_BLOCK_SIZE;
     tmpfs_blocks_lock();
     for (uint32_t block = 0; block < TMPFS_MAX_BLOCKS; ++block)
@@ -1085,6 +1114,8 @@ static int tmpfs_create_node(vfs_superblock_t *sb, vfs_inode_t *dir, const char 
     didx = tmpfs_inode_index(st, dir);
     if (didx < 0 || !st->nodes[didx].used || !st->nodes[didx].is_dir)
         return VFS_PATH_ERR_NOT_DIRECTORY;
+    if (tmpfs_node_is_immutable(st, (uint32_t)didx))
+        return VFS_PATH_ERR_PERMISSION;
     if (tmpfs_find_child(st, (uint32_t)didx, name) >= 0)
         return VFS_PATH_ERR_EXISTS;
     idx = tmpfs_alloc_node(st);
@@ -1101,6 +1132,8 @@ static int tmpfs_create_node(vfs_superblock_t *sb, vfs_inode_t *dir, const char 
         st->nodes[idx].gid = st->nodes[didx].gid;
         if (is_dir) st->nodes[idx].mode |= 02000u;
     }
+    st->nodes[idx].file_xflags = st->nodes[didx].file_xflags &
+        (VFS_FILE_XFLAG_NODUMP | VFS_FILE_XFLAG_NOATIME);
     st->nodes[idx].parent = (uint32_t)didx;
     st->nodes[idx].atime = st->nodes[idx].mtime = st->nodes[idx].ctime = tmpfs_now_sec();
     strncpy(st->nodes[idx].name, name, VFS_NAME_MAX - 1);
@@ -1227,6 +1260,9 @@ static int tmpfs_link(vfs_superblock_t *sb, vfs_inode_t *inode,
         !state->nodes[source].used || state->nodes[source].is_dir ||
         !state->nodes[parent].used || !state->nodes[parent].is_dir)
         return VFS_PATH_ERR_NOT_DIRECTORY;
+    if (tmpfs_node_blocks_removal(state, (uint32_t)source) ||
+        tmpfs_node_is_immutable(state, (uint32_t)parent))
+        return VFS_PATH_ERR_PERMISSION;
     if (tmpfs_find_child(state, (uint32_t)parent, name) >= 0)
         return VFS_PATH_ERR_EXISTS;
     if (tmpfs_node_link_count(state, (uint32_t)source) >= 0xffffu)
@@ -1248,11 +1284,15 @@ static int tmpfs_unlink(vfs_superblock_t *sb, vfs_inode_t *dir, const char *name
     tmpfs_state_t *st = tmpfs_state(sb);
     int didx;
     int idx;
-    if (!st || !dir || !name) return -1;
+    if (!st || !dir || !name) return VFS_PATH_ERR_INVALID;
     didx = tmpfs_inode_index(st, dir);
-    if (didx < 0 || !st->nodes[didx].used || !st->nodes[didx].is_dir) return -1;
+    if (didx < 0 || !st->nodes[didx].used || !st->nodes[didx].is_dir)
+        return VFS_PATH_ERR_NOT_DIRECTORY;
     idx = tmpfs_find_child(st, (uint32_t)didx, name);
-    if (idx <= 0) return -1;
+    if (idx <= 0) return VFS_PATH_ERR_NOT_FOUND;
+    if (tmpfs_node_blocks_removal(st, (uint32_t)didx) ||
+        tmpfs_node_blocks_removal(st, (uint32_t)idx))
+        return VFS_PATH_ERR_PERMISSION;
     tmpfs_unlink_node(st, (uint32_t)idx);
     st->nodes[didx].mtime = st->nodes[didx].ctime = tmpfs_now_sec();
     return 0;
@@ -1316,6 +1356,11 @@ static int tmpfs_rename(vfs_superblock_t *sb, vfs_inode_t *old_dir,
     if (source <= 0) return VFS_PATH_ERR_NOT_FOUND;
     source_canonical = tmpfs_canonical_index(state, (uint32_t)source);
     if (source_canonical <= 0) return VFS_PATH_ERR_NOT_FOUND;
+    if (tmpfs_node_blocks_removal(state, (uint32_t)old_parent) ||
+        tmpfs_node_blocks_removal(state, (uint32_t)source))
+        return VFS_PATH_ERR_PERMISSION;
+    if (tmpfs_node_is_immutable(state, (uint32_t)new_parent))
+        return VFS_PATH_ERR_PERMISSION;
     if (old_parent == new_parent && strcmp(old_name, new_name) == 0)
         return 0;
 
@@ -1331,6 +1376,9 @@ static int tmpfs_rename(vfs_superblock_t *sb, vfs_inode_t *old_dir,
         int target_is_directory;
         target_canonical = tmpfs_canonical_index(state, (uint32_t)target);
         if (target_canonical < 0) return VFS_PATH_ERR_NOT_FOUND;
+        if (tmpfs_node_blocks_removal(state, (uint32_t)new_parent) ||
+            tmpfs_node_blocks_removal(state, (uint32_t)target))
+            return VFS_PATH_ERR_PERMISSION;
         if (target_canonical == source_canonical) return 0;
         target_is_directory = state->nodes[target_canonical].is_dir != 0;
         if (source_is_directory && !target_is_directory)
@@ -1458,6 +1506,9 @@ static int tmpfs_rmdir(vfs_superblock_t *sb, vfs_inode_t *dir, const char *name)
     idx = tmpfs_find_child(st, (uint32_t)didx, name);
     if (idx <= 0) return VFS_PATH_ERR_NOT_FOUND;
     if (!st->nodes[idx].is_dir) return VFS_PATH_ERR_NOT_DIRECTORY;
+    if (tmpfs_node_blocks_removal(st, (uint32_t)didx) ||
+        tmpfs_node_blocks_removal(st, (uint32_t)idx))
+        return VFS_PATH_ERR_PERMISSION;
     for (uint32_t i = 1; i < st->node_scan_limit; ++i)
         if (st->nodes[i].used && st->nodes[i].parent == (uint32_t)idx)
             return VFS_PATH_ERR_NOT_EMPTY;
@@ -1564,6 +1615,9 @@ int tmpfs_settimes(vfs_superblock_t *sb, const vfs_inode_t *inode, uint32_t atim
     tmpfs_node_t *n;
     if (!st || idx < 0 || !st->nodes[idx].used) return -1;
     n = &st->nodes[idx];
+    if (n->file_xflags &
+        (VFS_FILE_XFLAG_IMMUTABLE | VFS_FILE_XFLAG_APPEND))
+        return -EDGE_LINUX_EPERM;
     /*
      * tmpfs is volatile, but Linux still reports stable per-inode timestamps.
      * OpenRC depends on utimensat(2) taking effect for /run/openrc/deptree;
@@ -1583,6 +1637,9 @@ int tmpfs_setattr(vfs_superblock_t *sb, const vfs_inode_t *inode,
     tmpfs_node_t *n;
     if (!st || idx < 0 || !st->nodes[idx].used) return -1;
     n = &st->nodes[idx];
+    if (n->file_xflags &
+        (VFS_FILE_XFLAG_IMMUTABLE | VFS_FILE_XFLAG_APPEND))
+        return -EDGE_LINUX_EPERM;
     if (mask & 1u) n->mode = (uint16_t)(mode & 07777u);
     if (mask & 2u) n->uid = uid;
     if (mask & 4u) n->gid = gid;
@@ -1677,6 +1734,11 @@ static int tmpfs_setxattr(vfs_superblock_t *sb, vfs_inode_t *inode,
         goto out;
     }
     node = &state->nodes[index];
+    if (node->file_xflags &
+        (VFS_FILE_XFLAG_IMMUTABLE | VFS_FILE_XFLAG_APPEND)) {
+        result = VFS_XATTR_ERR_PERMISSION;
+        goto out;
+    }
     old = tmpfs_find_xattr(node, name, &link);
     if (old && (flags & VFS_XATTR_CREATE)) {
         result = VFS_XATTR_ERR_EXISTS;
@@ -1822,6 +1884,11 @@ static int tmpfs_removexattr(vfs_superblock_t *sb, vfs_inode_t *inode,
         goto out;
     }
     node = &state->nodes[index];
+    if (node->file_xflags &
+        (VFS_FILE_XFLAG_IMMUTABLE | VFS_FILE_XFLAG_APPEND)) {
+        result = VFS_XATTR_ERR_PERMISSION;
+        goto out;
+    }
     attribute = tmpfs_find_xattr(node, name, &link);
     if (!attribute) {
         result = VFS_XATTR_ERR_NO_DATA;
@@ -1897,6 +1964,49 @@ static int tmpfs_getattr(vfs_superblock_t *sb, const vfs_inode_t *inode,
     return 0;
 }
 
+static int tmpfs_fileattr_get(vfs_superblock_t *sb,
+                              const vfs_inode_t *inode,
+                              vfs_fileattr_t *attributes) {
+    tmpfs_state_t *state = tmpfs_state(sb);
+    int index = tmpfs_inode_index(state, inode);
+    int canonical;
+    if (!state || !attributes || index < 0 || !state->nodes[index].used)
+        return VFS_FILEATTR_ERR_IO;
+    if ((inode->mode & 0xf000u) != VFS_INODE_FILE &&
+        (inode->mode & 0xf000u) != VFS_INODE_DIR)
+        return VFS_FILEATTR_ERR_UNSUPPORTED;
+    canonical = tmpfs_canonical_index(state, (uint32_t)index);
+    if (canonical < 0) return VFS_FILEATTR_ERR_IO;
+    memset(attributes, 0, sizeof(*attributes));
+    attributes->xflags = state->nodes[canonical].file_xflags;
+    return 0;
+}
+
+static int tmpfs_fileattr_set(vfs_superblock_t *sb, vfs_inode_t *inode,
+                              const vfs_fileattr_t *attributes) {
+    const uint32_t supported = VFS_FILE_XFLAG_IMMUTABLE |
+                               VFS_FILE_XFLAG_APPEND |
+                               VFS_FILE_XFLAG_NODUMP |
+                               VFS_FILE_XFLAG_NOATIME;
+    tmpfs_state_t *state = tmpfs_state(sb);
+    int index = tmpfs_inode_index(state, inode);
+    int canonical;
+    if (!state || !attributes || index < 0 || !state->nodes[index].used)
+        return VFS_FILEATTR_ERR_IO;
+    if ((inode->mode & 0xf000u) != VFS_INODE_FILE &&
+        (inode->mode & 0xf000u) != VFS_INODE_DIR)
+        return VFS_FILEATTR_ERR_UNSUPPORTED;
+    if ((attributes->xflags & ~supported) || attributes->extsize ||
+        attributes->projid || attributes->cowextsize)
+        return VFS_FILEATTR_ERR_UNSUPPORTED;
+    canonical = tmpfs_canonical_index(state, (uint32_t)index);
+    if (canonical < 0) return VFS_FILEATTR_ERR_IO;
+    state->nodes[canonical].file_xflags = (uint32_t)attributes->xflags;
+    state->nodes[canonical].ctime = tmpfs_now_sec();
+    tmpfs_fill_inode(state, (uint32_t)canonical, inode);
+    return 0;
+}
+
 static int tmpfs_inode_open(vfs_superblock_t *sb,
                             const vfs_inode_t *inode) {
     tmpfs_state_t *state = tmpfs_state(sb);
@@ -1956,6 +2066,8 @@ static filesystem_ops_t g_tmpfs_ops = {
     .getxattr = tmpfs_getxattr,
     .listxattr = tmpfs_listxattr,
     .removexattr = tmpfs_removexattr,
+    .fileattr_get = tmpfs_fileattr_get,
+    .fileattr_set = tmpfs_fileattr_set,
     .getattr = tmpfs_getattr,
     .settimes = tmpfs_settimes,
     .setattr = tmpfs_setattr,

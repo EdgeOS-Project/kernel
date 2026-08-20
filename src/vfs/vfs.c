@@ -3190,9 +3190,11 @@ int vfs_link_inode(vfs_superblock_t *source_sb, const vfs_inode_t *source,
         vfs_permission_check(&parent, 3) < 0)
         return -1;
     source_copy = *source;
-    if (destination_sb->ops->link(
-            destination_sb, &source_copy, &parent, leaf) < 0)
-        return -1;
+    {
+        int result = destination_sb->ops->link(
+            destination_sb, &source_copy, &parent, leaf);
+        if (result < 0) return result;
+    }
     if (vfs_sync_mutation_if_required(destination_sb, 1) < 0)
         return -1;
     vfs_path_cache_invalidate_all();

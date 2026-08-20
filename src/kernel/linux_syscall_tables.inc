@@ -383,8 +383,8 @@ static const edge_linux_syscall_number_t edge_linux_x86_64_numbers[] = {
     {465u, EDGE_LINUX_SYS_listxattrat, EDGE_LINUX_SYSCALL_IMPLEMENTED},
     {466u, EDGE_LINUX_SYS_removexattrat, EDGE_LINUX_SYSCALL_IMPLEMENTED},
     {467u, EDGE_LINUX_SYS_open_tree_attr, EDGE_LINUX_SYSCALL_IMPLEMENTED},
-    {468u, EDGE_LINUX_SYS_file_getattr, EDGE_LINUX_SYSCALL_ENOSYS},
-    {469u, EDGE_LINUX_SYS_file_setattr, EDGE_LINUX_SYSCALL_ENOSYS},
+    {468u, EDGE_LINUX_SYS_file_getattr, EDGE_LINUX_SYSCALL_IMPLEMENTED},
+    {469u, EDGE_LINUX_SYS_file_setattr, EDGE_LINUX_SYSCALL_IMPLEMENTED},
     {470u, EDGE_LINUX_SYS_listns, EDGE_LINUX_SYSCALL_ENOSYS},
     {471u, EDGE_LINUX_SYS_rseq_slice_yield, EDGE_LINUX_SYSCALL_ENOSYS},
 };
@@ -690,4 +690,6 @@ static const edge_linux_syscall_number_t edge_linux_aarch64_numbers[] = {
     {465u, EDGE_LINUX_SYS_listxattrat, EDGE_LINUX_SYSCALL_IMPLEMENTED},
     {466u, EDGE_LINUX_SYS_removexattrat, EDGE_LINUX_SYSCALL_IMPLEMENTED},
     {467u, EDGE_LINUX_SYS_open_tree_attr, EDGE_LINUX_SYSCALL_IMPLEMENTED},
+    {468u, EDGE_LINUX_SYS_file_getattr, EDGE_LINUX_SYSCALL_IMPLEMENTED},
+    {469u, EDGE_LINUX_SYS_file_setattr, EDGE_LINUX_SYSCALL_IMPLEMENTED},
 };

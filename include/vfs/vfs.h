@@ -69,6 +69,7 @@
 #define VFS_PATH_ERR_ACCESS           (-10)
 #define VFS_PATH_ERR_NO_SPACE         (-11)
 #define VFS_PATH_ERR_READ_ONLY        (-12)
+#define VFS_PATH_ERR_PERMISSION       (-13)
 
 /* Linux fallocate(2) mode bits used by filesystem allocation hooks. */
 #define VFS_FALLOC_FL_KEEP_SIZE      0x01u
@@ -88,6 +89,7 @@
 #define VFS_TRUNCATE_ERR_IO          (-1)
 #define VFS_TRUNCATE_ERR_UNSUPPORTED (-2)
 #define VFS_TRUNCATE_ERR_INVALID     (-3)
+#define VFS_TRUNCATE_ERR_PERMISSION  (-4)
 
 /* Sparse extent queries use these stable VFS result classes. */
 #define VFS_SEEK_DATA_HOLE_ERR_IO       (-1)
@@ -130,6 +132,59 @@ typedef struct vfs_extent {
 #define VFS_XATTR_ERR_UNSUPPORTED (-6)
 #define VFS_XATTR_ERR_INVALID     (-7)
 #define VFS_XATTR_ERR_ACCESS      (-8)
+#define VFS_XATTR_ERR_PERMISSION  (-9)
+
+/* Linux file attribute flags and architecture-neutral dispatch results. */
+#define VFS_FILE_XFLAG_REALTIME            0x00000001u
+#define VFS_FILE_XFLAG_PREALLOC            0x00000002u
+#define VFS_FILE_XFLAG_IMMUTABLE           0x00000008u
+#define VFS_FILE_XFLAG_APPEND              0x00000010u
+#define VFS_FILE_XFLAG_SYNC                0x00000020u
+#define VFS_FILE_XFLAG_NOATIME             0x00000040u
+#define VFS_FILE_XFLAG_NODUMP              0x00000080u
+#define VFS_FILE_XFLAG_RTINHERIT           0x00000100u
+#define VFS_FILE_XFLAG_PROJINHERIT         0x00000200u
+#define VFS_FILE_XFLAG_NOSYMLINKS          0x00000400u
+#define VFS_FILE_XFLAG_EXTSIZE             0x00000800u
+#define VFS_FILE_XFLAG_EXTSZINHERIT        0x00001000u
+#define VFS_FILE_XFLAG_NODEFRAG            0x00002000u
+#define VFS_FILE_XFLAG_FILESTREAM          0x00004000u
+#define VFS_FILE_XFLAG_DAX                 0x00008000u
+#define VFS_FILE_XFLAG_COWEXTSIZE          0x00010000u
+#define VFS_FILE_XFLAG_VERITY              0x00020000u
+#define VFS_FILE_XFLAG_CASEFOLD            0x00040000u
+#define VFS_FILE_XFLAG_CASENONPRESERVING   0x00080000u
+#define VFS_FILE_XFLAG_HASATTR             0x80000000u
+
+#define VFS_FILE_XFLAG_COMMON \
+    (VFS_FILE_XFLAG_SYNC | VFS_FILE_XFLAG_IMMUTABLE | \
+     VFS_FILE_XFLAG_APPEND | VFS_FILE_XFLAG_NODUMP | \
+     VFS_FILE_XFLAG_NOATIME | VFS_FILE_XFLAG_DAX | \
+     VFS_FILE_XFLAG_PROJINHERIT | VFS_FILE_XFLAG_VERITY)
+#define VFS_FILE_XFLAG_READ_ONLY \
+    (VFS_FILE_XFLAG_PREALLOC | VFS_FILE_XFLAG_HASATTR | \
+     VFS_FILE_XFLAG_VERITY | VFS_FILE_XFLAG_CASEFOLD | \
+     VFS_FILE_XFLAG_CASENONPRESERVING)
+#define VFS_FILE_XFLAG_ALL \
+    (VFS_FILE_XFLAG_COMMON | VFS_FILE_XFLAG_READ_ONLY | \
+     VFS_FILE_XFLAG_EXTSIZE | VFS_FILE_XFLAG_COWEXTSIZE | \
+     VFS_FILE_XFLAG_RTINHERIT | VFS_FILE_XFLAG_NOSYMLINKS | \
+     VFS_FILE_XFLAG_EXTSZINHERIT | VFS_FILE_XFLAG_REALTIME | \
+     VFS_FILE_XFLAG_NODEFRAG | VFS_FILE_XFLAG_FILESTREAM)
+
+#define VFS_FILEATTR_ERR_IO          (-1)
+#define VFS_FILEATTR_ERR_UNSUPPORTED (-2)
+#define VFS_FILEATTR_ERR_INVALID     (-3)
+#define VFS_FILEATTR_ERR_READ_ONLY   (-4)
+#define VFS_FILEATTR_ERR_PERMISSION  (-5)
+
+typedef struct vfs_fileattr {
+    uint64_t xflags;
+    uint32_t extsize;
+    uint32_t nextents;
+    uint32_t projid;
+    uint32_t cowextsize;
+} vfs_fileattr_t;
 
 typedef struct vfs_inode vfs_inode_t;
 typedef struct vfs_superblock vfs_superblock_t;
@@ -190,6 +245,10 @@ typedef struct {
                      char *list, uint32_t size);
     int (*removexattr)(vfs_superblock_t *sb, vfs_inode_t *inode,
                        const char *name);
+    int (*fileattr_get)(vfs_superblock_t *sb, const vfs_inode_t *inode,
+                        vfs_fileattr_t *attributes);
+    int (*fileattr_set)(vfs_superblock_t *sb, vfs_inode_t *inode,
+                        const vfs_fileattr_t *attributes);
     /* Refresh mutable inode metadata by identity, including link count. */
     int (*getattr)(vfs_superblock_t *sb, const vfs_inode_t *inode,
                    vfs_inode_t *out);
@@ -420,6 +479,10 @@ int vfs_inode_listxattr(vfs_superblock_t *sb, const vfs_inode_t *inode,
                         char *list, uint32_t size);
 int vfs_inode_removexattr(vfs_superblock_t *sb, vfs_inode_t *inode,
                           const char *name);
+int vfs_inode_fileattr_get(vfs_superblock_t *sb, const vfs_inode_t *inode,
+                           vfs_fileattr_t *attributes);
+int vfs_inode_fileattr_set(vfs_superblock_t *sb, vfs_inode_t *inode,
+                           const vfs_fileattr_t *attributes);
 int vfs_mount_id_for_superblock(const vfs_superblock_t *sb,
                                 uint64_t *mount_id_out);
 vfs_superblock_t *vfs_superblock_for_mount_id(uint64_t mount_id);

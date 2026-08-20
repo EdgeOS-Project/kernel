@@ -22,6 +22,7 @@ int kernel_vfs_path_result(int result) {
         case VFS_PATH_ERR_ACCESS: return -EDGE_LINUX_EACCES;
         case VFS_PATH_ERR_NO_SPACE: return -EDGE_LINUX_ENOSPC;
         case VFS_PATH_ERR_READ_ONLY: return -EDGE_LINUX_EROFS;
+        case VFS_PATH_ERR_PERMISSION: return -EDGE_LINUX_EPERM;
         case VFS_PATH_ERR_IO:
         default: return -EDGE_LINUX_EIO;
     }

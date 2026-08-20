@@ -24835,6 +24835,7 @@ static int64_t arm64_fd_operation_file_range(
             information->filesystem =
                 (uint64_t)(uintptr_t)file->sb;
             information->file = file->inode.ino;
+            information->metadata_flags = file->inode.metadata_flags;
             inode_kind = file->inode.mode & 0xf000u;
             if (inode_kind == VFS_INODE_FILE)
                 information->kind = KERNEL_IO_FILE_REGULAR;

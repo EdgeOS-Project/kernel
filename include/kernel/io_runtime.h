@@ -61,6 +61,8 @@ typedef struct kernel_io_file_range_info {
     uint8_t writable;
     uint8_t append;
     uint8_t reserved;
+    uint16_t metadata_flags;
+    uint16_t metadata_padding;
 } kernel_io_file_range_info_t;
 
 typedef enum kernel_io_file_range_operation {

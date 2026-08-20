@@ -1195,7 +1195,10 @@ int vfs_link(const char *old_path, const char *new_path, int follow_source) {
         !vfs_superblock_same_filesystem(old_sb, new_sb) ||
         !new_sb || !new_sb->ops || !new_sb->ops->link)
         return -1;
-    if (new_sb->ops->link(new_sb, &inode, &parent, leaf) < 0) return -1;
+    {
+        int result = new_sb->ops->link(new_sb, &inode, &parent, leaf);
+        if (result < 0) return result;
+    }
     if (vfs_sync_mutation_if_required(new_sb, 1) < 0) return -1;
     vfs_path_cache_invalidate_all();
     return 0;
@@ -1212,9 +1215,13 @@ int vfs_link_inode(vfs_superblock_t *source_sb, const vfs_inode_t *source,
         vfs_resolve(new_path, &existing, 0, 0, 0) == 0 ||
         vfs_parent_lookup(new_path, &parent, &new_sb, leaf) < 0 || !leaf[0] ||
         !vfs_superblock_same_filesystem(source_sb, new_sb) ||
-        !new_sb->ops || !new_sb->ops->link ||
-        new_sb->ops->link(new_sb, (vfs_inode_t *)source, &parent, leaf) < 0)
+        !new_sb->ops || !new_sb->ops->link)
         return -1;
+    {
+        int result = new_sb->ops->link(
+            new_sb, (vfs_inode_t *)source, &parent, leaf);
+        if (result < 0) return result;
+    }
     if (vfs_sync_mutation_if_required(new_sb, 1) < 0) return -1;
     vfs_path_cache_invalidate_all();
     return 0;
@@ -1265,9 +1272,12 @@ int vfs_unlink(const char *path) {
         vfs_parent_lookup(path, &parent, &sb, leaf) < 0 ||
         !leaf[0] || !sb || !sb->ops || !sb->ops->unlink) return -1;
     if (vfs_inode_open(sb, &inode) < 0) return -1;
-    if (sb->ops->unlink(sb, &parent, leaf) < 0) {
-        vfs_inode_close(sb, &inode);
-        return -1;
+    {
+        int result = sb->ops->unlink(sb, &parent, leaf);
+        if (result < 0) {
+            vfs_inode_close(sb, &inode);
+            return result;
+        }
     }
     vfs_inode_lifetime_orphan_inode(sb, &inode);
     vfs_inode_close(sb, &inode);

@@ -227,6 +227,9 @@ static void test_path_error_policy(void) {
     expect_true("path access",
                 kernel_vfs_path_result(VFS_PATH_ERR_ACCESS) ==
                     -EDGE_LINUX_EACCES);
+    expect_true("path permission",
+                kernel_vfs_path_result(VFS_PATH_ERR_PERMISSION) ==
+                    -EDGE_LINUX_EPERM);
     expect_true("path no space",
                 kernel_vfs_path_result(VFS_PATH_ERR_NO_SPACE) ==
                     -EDGE_LINUX_ENOSPC);
@@ -465,6 +468,10 @@ static void test_pivot_and_truncate_policy(void) {
     expect_true("truncate unsupported",
                 kernel_vfs_truncate_target(&target, 1u) ==
                     -EDGE_LINUX_EINVAL);
+    g_truncate_result = VFS_TRUNCATE_ERR_PERMISSION;
+    expect_true("truncate permission",
+                kernel_vfs_truncate_target(&target, 1u) ==
+                    -EDGE_LINUX_EPERM);
     g_truncate_result = -1;
     expect_true("truncate io error",
                 kernel_vfs_truncate_target(&target, 1u) ==

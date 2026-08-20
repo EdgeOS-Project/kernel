@@ -48,6 +48,9 @@
 #define EDGE_LINUX_RENAME_WHITEOUT 0x04u
 
 #define EDGE_LINUX_STATX_RESERVED 0x80000000u
+#define EDGE_LINUX_STATX_ATTR_IMMUTABLE 0x00000010u
+#define EDGE_LINUX_STATX_ATTR_APPEND    0x00000020u
+#define EDGE_LINUX_STATX_ATTR_NODUMP    0x00000040u
 
 struct edge_linux_mount_attr {
     uint64_t attr_set;
@@ -1357,6 +1360,14 @@ struct edge_linux_xattr_args {
     uint32_t flags;
 };
 
+struct edge_linux_file_attr {
+    uint64_t fa_xflags;
+    uint32_t fa_extsize;
+    uint32_t fa_nextents;
+    uint32_t fa_projid;
+    uint32_t fa_cowextsize;
+};
+
 /* Variable-length getdents64 record prefix shared by every 64-bit ABI. */
 struct edge_linux_dirent64 {
     uint64_t d_ino;
@@ -1514,6 +1525,8 @@ _Static_assert(sizeof(struct edge_linux_open_how) == 24,
                "Linux open_how ABI layout");
 _Static_assert(sizeof(struct edge_linux_xattr_args) == 16,
                "Linux xattr_args ABI layout");
+_Static_assert(sizeof(struct edge_linux_file_attr) == 24,
+               "Linux file_attr ABI layout");
 _Static_assert(offsetof(struct edge_linux_dirent64, d_name) == 19,
                "Linux dirent64 name offset");
 _Static_assert(offsetof(struct edge_linux_dirent, d_name) == 18,
