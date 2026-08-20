@@ -34,6 +34,14 @@
 #define TMPFS_BLOCK_SIZE 4096
 #define TMPFS_BLOCK_HASH_SIZE 524288
 
+typedef struct tmpfs_xattr {
+    struct tmpfs_xattr *next;
+    uint32_t allocation_pages;
+    uint32_t name_length;
+    uint32_t value_length;
+    uint8_t data[];
+} tmpfs_xattr_t;
+
 typedef struct {
     uint8_t used;
     uint8_t is_dir;
@@ -53,6 +61,7 @@ typedef struct {
     uint32_t mapping_references;
     uint32_t seals;
     uint8_t is_memfd;
+    tmpfs_xattr_t *xattrs;
     /* Nonzero directory-entry nodes reference the canonical inode index + 1. */
     uint32_t hardlink_target;
     uint32_t directory_hash_next;
@@ -81,6 +90,7 @@ typedef struct tmpfs_state {
     uint32_t max_blocks;
     uint32_t allocated_blocks;
     uint32_t resident_blocks;
+    uint32_t xattr_pages;
     tmpfs_node_t *nodes;
     uint32_t *node_hash;
     tmpfs_node_t inline_nodes[TMPFS_INLINE_NODES];
@@ -98,11 +108,50 @@ static uint32_t g_tmpfs_block_free_head;
 static uint32_t g_tmpfs_block_next_unused;
 static volatile uint32_t g_tmpfs_block_lock;
 static volatile uint32_t g_tmpfs_state_lock;
+static volatile uint32_t g_tmpfs_xattr_lock;
 
 static void tmpfs_free_file_blocks(tmpfs_state_t *st, tmpfs_node_t *node);
 static void tmpfs_states_lock(void);
 static void tmpfs_states_unlock(void);
 static void tmpfs_unlink_node(tmpfs_state_t *state, uint32_t index);
+
+static void tmpfs_xattrs_lock(void) {
+    while (__sync_lock_test_and_set(&g_tmpfs_xattr_lock, 1u)) {
+        while (g_tmpfs_xattr_lock) __asm__ volatile("" ::: "memory");
+    }
+}
+
+static void tmpfs_xattrs_unlock(void) {
+    __sync_lock_release(&g_tmpfs_xattr_lock);
+}
+
+static void tmpfs_free_xattr_allocation(tmpfs_xattr_t *attribute) {
+    uint32_t pages;
+    if (!attribute) return;
+    pages = attribute->allocation_pages;
+    for (uint32_t page = 0; page < pages; ++page)
+        arch_vm_free_page((uint8_t *)attribute +
+                          (uint64_t)page * TMPFS_BLOCK_SIZE);
+}
+
+static void tmpfs_free_node_xattrs(tmpfs_state_t *state,
+                                   tmpfs_node_t *node) {
+    tmpfs_xattr_t *attribute;
+    if (!state || !node) return;
+    tmpfs_xattrs_lock();
+    attribute = node->xattrs;
+    node->xattrs = 0;
+    while (attribute) {
+        tmpfs_xattr_t *next = attribute->next;
+        if (state->xattr_pages >= attribute->allocation_pages)
+            state->xattr_pages -= attribute->allocation_pages;
+        else
+            state->xattr_pages = 0;
+        tmpfs_free_xattr_allocation(attribute);
+        attribute = next;
+    }
+    tmpfs_xattrs_unlock();
+}
 
 static uint32_t tmpfs_node_hash_value(uint32_t parent, const char *name) {
     uint32_t hash = 2166136261u ^ parent;
@@ -165,6 +214,7 @@ static void tmpfs_clear_node(tmpfs_state_t *st, uint32_t index) {
         !st->nodes[index].used)
         return;
     tmpfs_node_hash_remove(st, index);
+    tmpfs_free_node_xattrs(st, &st->nodes[index]);
     memset(&st->nodes[index], 0, sizeof(st->nodes[index]));
     if (st->node_allocation_hint < 1u ||
         st->node_allocation_hint >= st->max_nodes ||
@@ -269,8 +319,11 @@ static void tmpfs_release(void *private_data) {
             return;
         }
         for (uint32_t node = 0; node < st->node_scan_limit; ++node)
-            if (st->nodes[node].used && !st->nodes[node].is_dir)
-                tmpfs_free_file_blocks(st, &st->nodes[node]);
+            if (st->nodes[node].used) {
+                if (!st->nodes[node].is_dir)
+                    tmpfs_free_file_blocks(st, &st->nodes[node]);
+                tmpfs_free_node_xattrs(st, &st->nodes[node]);
+            }
         tmpfs_release_node_storage(st);
         tmpfs_states_unlock();
     }
@@ -1445,7 +1498,8 @@ static int tmpfs_statfs(vfs_superblock_t *sb, uint32_t *total_kb, uint32_t *used
     tmpfs_state_t *st = tmpfs_state(sb);
     if (!st || !total_kb || !used_kb) return -1;
     *total_kb = (st->max_blocks * TMPFS_BLOCK_SIZE) / 1024;
-    *used_kb = (st->allocated_blocks * TMPFS_BLOCK_SIZE) / 1024;
+    *used_kb = ((st->allocated_blocks + st->xattr_pages) *
+                TMPFS_BLOCK_SIZE) / 1024;
     return 0;
 }
 
@@ -1534,6 +1588,255 @@ int tmpfs_setattr(vfs_superblock_t *sb, const vfs_inode_t *inode,
     if (mask & 4u) n->gid = gid;
     n->ctime = tmpfs_now_sec();
     return 0;
+}
+
+static char *tmpfs_xattr_name(tmpfs_xattr_t *attribute) {
+    return attribute ? (char *)attribute->data : 0;
+}
+
+static const char *tmpfs_xattr_const_name(const tmpfs_xattr_t *attribute) {
+    return attribute ? (const char *)attribute->data : 0;
+}
+
+static void *tmpfs_xattr_value(tmpfs_xattr_t *attribute) {
+    return attribute ? attribute->data + attribute->name_length + 1u : 0;
+}
+
+static const void *tmpfs_xattr_const_value(
+    const tmpfs_xattr_t *attribute) {
+    return attribute ? attribute->data + attribute->name_length + 1u : 0;
+}
+
+static tmpfs_xattr_t *tmpfs_find_xattr(tmpfs_node_t *node,
+                                       const char *name,
+                                       tmpfs_xattr_t ***link_out) {
+    tmpfs_xattr_t **link;
+    if (!node || !name) return 0;
+    link = &node->xattrs;
+    while (*link) {
+        if (strcmp(tmpfs_xattr_const_name(*link), name) == 0) {
+            if (link_out) *link_out = link;
+            return *link;
+        }
+        link = &(*link)->next;
+    }
+    if (link_out) *link_out = link;
+    return 0;
+}
+
+static tmpfs_xattr_t *tmpfs_allocate_xattr(const char *name,
+                                            const void *value,
+                                            uint32_t value_length) {
+    tmpfs_xattr_t *attribute;
+    uint32_t name_length;
+    uint32_t pages;
+    uint64_t bytes;
+    if (!name || (value_length && !value)) return 0;
+    name_length = (uint32_t)strlen(name);
+    bytes = sizeof(*attribute) + (uint64_t)name_length + 1u + value_length;
+    pages = (uint32_t)((bytes + TMPFS_BLOCK_SIZE - 1u) /
+                       TMPFS_BLOCK_SIZE);
+    attribute = (tmpfs_xattr_t *)arch_vm_alloc_pages(pages);
+    if (!attribute) return 0;
+    memset(attribute, 0, (uint64_t)pages * TMPFS_BLOCK_SIZE);
+    attribute->allocation_pages = pages;
+    attribute->name_length = name_length;
+    attribute->value_length = value_length;
+    memcpy(tmpfs_xattr_name(attribute), name, name_length + 1u);
+    if (value_length)
+        memcpy(tmpfs_xattr_value(attribute), value, value_length);
+    return attribute;
+}
+
+static int tmpfs_setxattr(vfs_superblock_t *sb, vfs_inode_t *inode,
+                          const char *name, const void *value, uint32_t size,
+                          uint32_t flags) {
+    tmpfs_state_t *state = tmpfs_state(sb);
+    tmpfs_xattr_t *replacement;
+    tmpfs_xattr_t *old;
+    tmpfs_xattr_t **link = 0;
+    tmpfs_node_t *node;
+    int index;
+    int result = 0;
+
+    if (!state || !inode || !name || !name[0] ||
+        (size && !value) || size > VFS_XATTR_VALUE_MAX)
+        return VFS_XATTR_ERR_INVALID;
+    replacement = tmpfs_allocate_xattr(name, value, size);
+    if (!replacement) return VFS_XATTR_ERR_NOSPC;
+
+    tmpfs_xattrs_lock();
+    index = tmpfs_inode_index(state, inode);
+    if (index < 0 || !state->nodes[index].used) {
+        result = VFS_XATTR_ERR_IO;
+        goto out;
+    }
+    index = tmpfs_canonical_index(state, (uint32_t)index);
+    if (index < 0) {
+        result = VFS_XATTR_ERR_IO;
+        goto out;
+    }
+    node = &state->nodes[index];
+    old = tmpfs_find_xattr(node, name, &link);
+    if (old && (flags & VFS_XATTR_CREATE)) {
+        result = VFS_XATTR_ERR_EXISTS;
+        goto out;
+    }
+    if (!old && (flags & VFS_XATTR_REPLACE)) {
+        result = VFS_XATTR_ERR_NO_DATA;
+        goto out;
+    }
+    if ((uint64_t)state->allocated_blocks + state->xattr_pages -
+            (old ? old->allocation_pages : 0u) +
+            replacement->allocation_pages > state->max_blocks) {
+        result = VFS_XATTR_ERR_NOSPC;
+        goto out;
+    }
+    replacement->next = old ? old->next : 0;
+    *link = replacement;
+    state->xattr_pages += replacement->allocation_pages;
+    if (old) {
+        state->xattr_pages -= old->allocation_pages;
+        tmpfs_free_xattr_allocation(old);
+    }
+    node->ctime = tmpfs_now_sec();
+    replacement = 0;
+out:
+    tmpfs_xattrs_unlock();
+    tmpfs_free_xattr_allocation(replacement);
+    return result;
+}
+
+static int tmpfs_getxattr(vfs_superblock_t *sb, const vfs_inode_t *inode,
+                          const char *name, void *value, uint32_t size) {
+    tmpfs_state_t *state = tmpfs_state(sb);
+    tmpfs_xattr_t *attribute;
+    int index;
+    int result;
+
+    if (!state || !inode || !name || !name[0] || (size && !value))
+        return VFS_XATTR_ERR_INVALID;
+    tmpfs_xattrs_lock();
+    index = tmpfs_inode_index(state, inode);
+    if (index < 0 || !state->nodes[index].used) {
+        result = VFS_XATTR_ERR_IO;
+        goto out;
+    }
+    index = tmpfs_canonical_index(state, (uint32_t)index);
+    if (index < 0) {
+        result = VFS_XATTR_ERR_IO;
+        goto out;
+    }
+    attribute = tmpfs_find_xattr(&state->nodes[index], name, 0);
+    if (!attribute) {
+        result = VFS_XATTR_ERR_NO_DATA;
+        goto out;
+    }
+    if (!value && !size) {
+        result = (int)attribute->value_length;
+        goto out;
+    }
+    if (size < attribute->value_length) {
+        result = VFS_XATTR_ERR_RANGE;
+        goto out;
+    }
+    if (attribute->value_length)
+        memcpy(value, tmpfs_xattr_const_value(attribute),
+               attribute->value_length);
+    result = (int)attribute->value_length;
+out:
+    tmpfs_xattrs_unlock();
+    return result;
+}
+
+static int tmpfs_listxattr(vfs_superblock_t *sb, const vfs_inode_t *inode,
+                           char *list, uint32_t size) {
+    tmpfs_state_t *state = tmpfs_state(sb);
+    tmpfs_xattr_t *attribute;
+    uint32_t required = 0;
+    uint32_t written = 0;
+    int index;
+    int result;
+
+    if (!state || !inode || (size && !list))
+        return VFS_XATTR_ERR_INVALID;
+    tmpfs_xattrs_lock();
+    index = tmpfs_inode_index(state, inode);
+    if (index < 0 || !state->nodes[index].used) {
+        result = VFS_XATTR_ERR_IO;
+        goto out;
+    }
+    index = tmpfs_canonical_index(state, (uint32_t)index);
+    if (index < 0) {
+        result = VFS_XATTR_ERR_IO;
+        goto out;
+    }
+    for (attribute = state->nodes[index].xattrs; attribute;
+         attribute = attribute->next) {
+        if (required > VFS_XATTR_VALUE_MAX - attribute->name_length - 1u) {
+            result = VFS_XATTR_ERR_RANGE;
+            goto out;
+        }
+        required += attribute->name_length + 1u;
+    }
+    if (!list && !size) {
+        result = (int)required;
+        goto out;
+    }
+    if (size < required) {
+        result = VFS_XATTR_ERR_RANGE;
+        goto out;
+    }
+    for (attribute = state->nodes[index].xattrs; attribute;
+         attribute = attribute->next) {
+        memcpy(list + written, tmpfs_xattr_const_name(attribute),
+               attribute->name_length + 1u);
+        written += attribute->name_length + 1u;
+    }
+    result = (int)written;
+out:
+    tmpfs_xattrs_unlock();
+    return result;
+}
+
+static int tmpfs_removexattr(vfs_superblock_t *sb, vfs_inode_t *inode,
+                             const char *name) {
+    tmpfs_state_t *state = tmpfs_state(sb);
+    tmpfs_xattr_t *attribute;
+    tmpfs_xattr_t **link = 0;
+    tmpfs_node_t *node;
+    int index;
+    int result = 0;
+
+    if (!state || !inode || !name || !name[0])
+        return VFS_XATTR_ERR_INVALID;
+    tmpfs_xattrs_lock();
+    index = tmpfs_inode_index(state, inode);
+    if (index < 0 || !state->nodes[index].used) {
+        result = VFS_XATTR_ERR_IO;
+        goto out;
+    }
+    index = tmpfs_canonical_index(state, (uint32_t)index);
+    if (index < 0) {
+        result = VFS_XATTR_ERR_IO;
+        goto out;
+    }
+    node = &state->nodes[index];
+    attribute = tmpfs_find_xattr(node, name, &link);
+    if (!attribute) {
+        result = VFS_XATTR_ERR_NO_DATA;
+        goto out;
+    }
+    *link = attribute->next;
+    if (state->xattr_pages >= attribute->allocation_pages)
+        state->xattr_pages -= attribute->allocation_pages;
+    else
+        state->xattr_pages = 0;
+    tmpfs_free_xattr_allocation(attribute);
+    node->ctime = tmpfs_now_sec();
+out:
+    tmpfs_xattrs_unlock();
+    return result;
 }
 
 typedef struct {
@@ -1649,6 +1952,10 @@ static filesystem_ops_t g_tmpfs_ops = {
     .inode_open = tmpfs_inode_open,
     .inode_close = tmpfs_inode_close,
     .append = tmpfs_append,
+    .setxattr = tmpfs_setxattr,
+    .getxattr = tmpfs_getxattr,
+    .listxattr = tmpfs_listxattr,
+    .removexattr = tmpfs_removexattr,
     .getattr = tmpfs_getattr,
     .settimes = tmpfs_settimes,
     .setattr = tmpfs_setattr,
