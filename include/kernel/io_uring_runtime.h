@@ -41,6 +41,9 @@ int kernel_io_uring_retain(int32_t ring_id);
 void kernel_io_uring_release(int32_t ring_id);
 int kernel_io_uring_enable(int32_t ring_id);
 int kernel_io_uring_disabled(int32_t ring_id);
+int kernel_io_uring_eventfd_register(int32_t ring_id, int32_t event_id,
+                                     int asynchronous_only);
+int kernel_io_uring_eventfd_unregister(int32_t ring_id);
 int kernel_io_uring_mmap_info(int32_t ring_id, uint64_t offset,
                               uint64_t length, uint32_t *page_count);
 int kernel_io_uring_mmap_page(int32_t ring_id, uint64_t offset,

@@ -28,6 +28,7 @@ EDGEOS_ASSESSMENTS = [
             "setup and mapped submission/completion rings",
             "NOP, READ, WRITE, READV, WRITEV and FSYNC operations",
             "probe and disabled-ring registration",
+            "completion eventfd registration and notification",
         ],
         "missing": [
             "asynchronous worker execution",

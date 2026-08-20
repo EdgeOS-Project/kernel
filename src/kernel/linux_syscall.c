@@ -6857,6 +6857,9 @@ static int64_t edge_linux_sys_aio(
     (EDGE_LINUX_IORING_ENTER_GETEVENTS | \
      EDGE_LINUX_IORING_ENTER_SQ_WAKEUP)
 
+#define EDGE_LINUX_IORING_REGISTER_EVENTFD      4u
+#define EDGE_LINUX_IORING_UNREGISTER_EVENTFD    5u
+#define EDGE_LINUX_IORING_REGISTER_EVENTFD_ASYNC 7u
 #define EDGE_LINUX_IORING_REGISTER_PROBE        8u
 #define EDGE_LINUX_IORING_REGISTER_ENABLE_RINGS 12u
 #define EDGE_LINUX_IO_URING_OP_SUPPORTED        1u
@@ -7108,6 +7111,28 @@ static int64_t edge_linux_sys_io_uring_register(
     ring_id = kernel_anonymous_fd_descriptor_object_id(
         descriptor, KERNEL_ANONYMOUS_FD_IO_URING);
     if (ring_id < 0) return -EDGE_LINUX_EBADF;
+    if (opcode == EDGE_LINUX_IORING_REGISTER_EVENTFD ||
+        opcode == EDGE_LINUX_IORING_REGISTER_EVENTFD_ASYNC) {
+        uint32_t event_descriptor;
+        int32_t event_id;
+        if (!argument || operation_count != 1u)
+            return -EDGE_LINUX_EINVAL;
+        if (edge_linux_copy_from_user(
+                context, &event_descriptor, argument,
+                sizeof(event_descriptor)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (event_descriptor > INT32_MAX) return -EDGE_LINUX_EBADF;
+        event_id = kernel_anonymous_fd_descriptor_object_id(
+            (int32_t)event_descriptor, KERNEL_ANONYMOUS_FD_EVENT);
+        if (event_id < 0) return -EDGE_LINUX_EBADF;
+        return kernel_io_uring_eventfd_register(
+            ring_id, event_id,
+            opcode == EDGE_LINUX_IORING_REGISTER_EVENTFD_ASYNC);
+    }
+    if (opcode == EDGE_LINUX_IORING_UNREGISTER_EVENTFD) {
+        if (argument || operation_count) return -EDGE_LINUX_EINVAL;
+        return kernel_io_uring_eventfd_unregister(ring_id);
+    }
     if (opcode == EDGE_LINUX_IORING_REGISTER_ENABLE_RINGS) {
         if (argument || operation_count) return -EDGE_LINUX_EINVAL;
         return kernel_io_uring_enable(ring_id);

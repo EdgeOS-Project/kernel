@@ -14,6 +14,23 @@ static uint8_t g_pages[TEST_PAGE_COUNT][KERNEL_IO_URING_PAGE_SIZE]
     __attribute__((aligned(KERNEL_IO_URING_PAGE_SIZE)));
 static uint32_t g_references[TEST_PAGE_COUNT];
 
+int kernel_eventfd_retain(int event_id) {
+    (void)event_id;
+    return -EDGE_LINUX_EBADF;
+}
+
+void kernel_eventfd_release(int event_id) {
+    (void)event_id;
+}
+
+int64_t kernel_eventfd_write_value(int event_id, int nonblocking,
+                                   uint64_t value) {
+    (void)event_id;
+    (void)nonblocking;
+    (void)value;
+    return -EDGE_LINUX_EBADF;
+}
+
 static int test_page_allocate(void *context, kernel_io_uring_page_t *page) {
     (void)context;
     for (uint32_t index = 0; index < TEST_PAGE_COUNT; ++index) {

@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "kernel/io_uring_runtime.h"
+#include "kernel/eventfd.h"
 #include "kernel/linux_errno.h"
 #include "string.h"
 #include "sys/spinlock.h"
@@ -55,6 +56,8 @@ typedef struct kernel_io_uring {
     uint32_t sq_ring_pages;
     uint32_t cq_ring_pages;
     uint32_t sqe_pages;
+    int32_t event_id;
+    uint8_t event_async_only;
     kernel_io_uring_page_t
         sq_ring[KERNEL_IO_URING_MAX_SQ_RING_PAGES];
     kernel_io_uring_page_t
@@ -125,6 +128,8 @@ static void io_uring_release_pages(kernel_io_uring_page_t *pages,
 }
 
 static void io_uring_release_storage(kernel_io_uring_t *ring) {
+    if (ring->event_id >= 0)
+        kernel_eventfd_release(ring->event_id);
     io_uring_release_pages(ring->sq_ring, ring->sq_ring_pages);
     io_uring_release_pages(ring->cq_ring, ring->cq_ring_pages);
     io_uring_release_pages(ring->sqes, ring->sqe_pages);
@@ -200,6 +205,7 @@ int kernel_io_uring_create(uint32_t entries,
     ring = &g_io_urings[slot];
     memset(ring, 0, sizeof(*ring));
     ring->used = 1u;
+    ring->event_id = -1;
     ring->references = 1u;
     ring->disabled =
         (parameters->flags & IORING_SETUP_R_DISABLED) != 0;
@@ -306,6 +312,48 @@ int kernel_io_uring_disabled(int32_t ring_id) {
     ring = io_uring_lookup_locked(ring_id);
     result = ring ? ring->disabled != 0 : -EDGE_LINUX_EBADF;
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_eventfd_register(int32_t ring_id, int32_t event_id,
+                                     int asynchronous_only) {
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    int result;
+
+    if (event_id < 0) return -EDGE_LINUX_EBADF;
+    result = kernel_eventfd_retain(event_id);
+    if (result < 0) return result;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) result = -EDGE_LINUX_EBADF;
+    else if (ring->event_id >= 0) result = -EDGE_LINUX_EBUSY;
+    else {
+        ring->event_id = event_id;
+        ring->event_async_only = asynchronous_only != 0;
+        result = 0;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (result < 0) kernel_eventfd_release(event_id);
+    return result;
+}
+
+int kernel_io_uring_eventfd_unregister(int32_t ring_id) {
+    kernel_io_uring_t *ring;
+    int32_t event_id = -1;
+    uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
+    int result = 0;
+
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) result = -EDGE_LINUX_EBADF;
+    else if (ring->event_id < 0) result = -EDGE_LINUX_ENXIO;
+    else {
+        event_id = ring->event_id;
+        ring->event_id = -1;
+        ring->event_async_only = 0;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (event_id >= 0) kernel_eventfd_release(event_id);
     return result;
 }
 
@@ -449,6 +497,7 @@ int kernel_io_uring_completion_add(int32_t ring_id, uint64_t user_data,
     uint32_t head;
     uint32_t tail;
     uint32_t offset;
+    int32_t event_id = -1;
     uint64_t flags;
     flags = spin_lock_irqsave(&g_io_uring_lock);
     ring = io_uring_lookup_locked(ring_id);
@@ -475,7 +524,14 @@ int kernel_io_uring_completion_add(int32_t ring_id, uint64_t user_data,
     completion->result = result;
     completion->flags = cqe_flags;
     __atomic_store_n(tail_pointer, tail + 1u, __ATOMIC_RELEASE);
+    if (ring->event_id >= 0 && !ring->event_async_only &&
+        kernel_eventfd_retain(ring->event_id) == 0)
+        event_id = ring->event_id;
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (event_id >= 0) {
+        (void)kernel_eventfd_write_value(event_id, 1, 1u);
+        kernel_eventfd_release(event_id);
+    }
     return 0;
 }
 

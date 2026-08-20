@@ -22,6 +22,13 @@
 #define SYS_io_uring_setup 425
 #define SYS_io_uring_enter 426
 #define SYS_io_uring_register 427
+#if defined(__x86_64__)
+#define SYS_read 0
+#define SYS_eventfd2 290
+#elif defined(__aarch64__)
+#define SYS_read 63
+#define SYS_eventfd2 19
+#endif
 
 #define PROT_READ 1
 #define PROT_WRITE 2
@@ -30,6 +37,8 @@
 #define EINVAL 22
 #define IORING_ENTER_GETEVENTS 1u
 #define IORING_REGISTER_PROBE 8u
+#define IORING_REGISTER_EVENTFD 4u
+#define IORING_UNREGISTER_EVENTFD 5u
 #define IO_URING_OP_SUPPORTED 1u
 #define IORING_OP_NOP 0u
 #define IORING_OP_READ 22u
@@ -197,6 +206,8 @@ static int run_tests(void) {
     void *sq_ring;
     void *cq_ring;
     long descriptor;
+    long event_descriptor;
+    uint64_t event_value = 0;
     int failures = 0;
 
     memset(&parameters, 0, sizeof(parameters));
@@ -268,6 +279,33 @@ static int run_tests(void) {
          IO_URING_OP_SUPPORTED) != 0 &&
         (probe.operations[IORING_OP_WRITE].flags &
          IO_URING_OP_SUPPORTED) != 0);
+
+    event_descriptor = raw_syscall6(
+        SYS_eventfd2, 0, 0, 0, 0, 0, 0);
+    failures += expect_true("eventfd", event_descriptor >= 0);
+    if (event_descriptor >= 0) {
+        uint32_t event_fd_argument = (uint32_t)event_descriptor;
+        failures += expect("register eventfd", raw_syscall6(
+            SYS_io_uring_register, descriptor, IORING_REGISTER_EVENTFD,
+            (long)&event_fd_argument, 1, 0, 0), 0);
+        memset(&sqes[1], 0, sizeof(sqes[1]));
+        sqes[1].opcode = IORING_OP_NOP;
+        sqes[1].user_data = 0x4556454e544644ull;
+        sq_array[1] = 1;
+        __atomic_store_n(sq_tail, 2u, __ATOMIC_RELEASE);
+        failures += expect("submit eventfd NOP", raw_syscall6(
+            SYS_io_uring_enter, descriptor, 1, 1,
+            IORING_ENTER_GETEVENTS, 0, 0), 1);
+        failures += expect("read eventfd", raw_syscall6(
+            SYS_read, event_descriptor, (long)&event_value,
+            sizeof(event_value), 0, 0, 0), sizeof(event_value));
+        failures += expect_true("eventfd count", event_value == 1);
+        failures += expect("unregister eventfd", raw_syscall6(
+            SYS_io_uring_register, descriptor,
+            IORING_UNREGISTER_EVENTFD, 0, 0, 0, 0), 0);
+        (void)raw_syscall6(SYS_close, event_descriptor, 0, 0, 0, 0, 0);
+        __atomic_store_n(cq_head, 2u, __ATOMIC_RELEASE);
+    }
 
     (void)raw_syscall6(SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
     (void)raw_syscall6(SYS_munmap, (long)cq_ring, PAGE_SIZE, 0, 0, 0, 0);
