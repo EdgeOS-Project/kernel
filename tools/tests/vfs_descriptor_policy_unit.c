@@ -17,6 +17,7 @@ static int g_resolve_calls;
 static int g_install_calls;
 static int g_metadata_calls;
 static int g_sync_calls;
+static int g_sync_range_calls;
 static int g_describe_calls;
 static int g_fallocate_calls;
 static int g_fallocate_inode_calls;
@@ -27,6 +28,10 @@ static int g_truncate_calls;
 static int g_seek_calls;
 static int g_target_was_zero;
 static int g_description_was_zero;
+static uint64_t g_sync_range_offset;
+static uint64_t g_sync_range_length;
+static vfs_superblock_t g_sync_superblock;
+static vfs_inode_t g_sync_inode;
 
 static void expect_true(const char *name, int condition) {
     if (condition) return;
@@ -77,7 +82,64 @@ int arch_vfs_describe_descriptor(
     g_description_was_zero =
         bytes_are_zero(description, sizeof(*description));
     description->identity = (uint64_t)descriptor;
+    if (descriptor == 17) {
+        g_sync_inode.mode = VFS_INODE_FILE;
+        description->kind = KERNEL_VFS_DESCRIPTOR_REGULAR;
+        description->superblock = &g_sync_superblock;
+        description->inode = &g_sync_inode;
+    } else if (descriptor == 18) {
+        description->kind = KERNEL_VFS_DESCRIPTOR_PIPE;
+    }
     return 15;
+}
+
+int vfs_page_writeback_sync_range(
+    vfs_superblock_t *superblock, const vfs_inode_t *inode,
+    uint64_t offset, uint64_t length) {
+    ++g_sync_range_calls;
+    g_sync_range_offset = offset;
+    g_sync_range_length = length;
+    return superblock == &g_sync_superblock && inode == &g_sync_inode ?
+           0 : -1;
+}
+
+int arch_vfs_cachestat(int32_t descriptor, uint64_t offset,
+                       uint64_t length,
+                       kernel_vfs_cache_stats_t *statistics) {
+    (void)descriptor;
+    (void)offset;
+    (void)length;
+    (void)statistics;
+    return 0;
+}
+
+void vfs_page_writeback_stat_range(
+    vfs_superblock_t *superblock, const vfs_inode_t *inode,
+    uint64_t offset, uint64_t length,
+    uint64_t *dirty_pages, uint64_t *writeback_pages) {
+    (void)superblock;
+    (void)inode;
+    (void)offset;
+    (void)length;
+    *dirty_pages = 0;
+    *writeback_pages = 0;
+}
+
+void kernel_mm_file_cache_shadow_stat_range(
+    uint64_t mapping_identity, uint64_t inode_number,
+    uint32_t inode_generation, uint64_t offset, uint64_t length,
+    uint64_t *evicted_pages, uint64_t *recently_evicted_pages) {
+    (void)mapping_identity;
+    (void)inode_number;
+    (void)inode_generation;
+    (void)offset;
+    (void)length;
+    *evicted_pages = 0;
+    *recently_evicted_pages = 0;
+}
+
+const void *vfs_superblock_identity(const vfs_superblock_t *superblock) {
+    return superblock;
 }
 
 int arch_vfs_fallocate_descriptor(
@@ -184,19 +246,43 @@ static void test_descriptor_contracts(void) {
                 kernel_vfs_sync_descriptor(
                     5, KERNEL_VFS_SYNC_RANGE) == 14 &&
                 g_sync_calls == 1);
+    expect_true("sync range invalid flags",
+                kernel_vfs_sync_descriptor_range(17, 0, 1, 8) ==
+                    -EDGE_LINUX_EINVAL &&
+                g_describe_calls == 1 && g_sync_range_calls == 0);
+    expect_true("sync range rejects signed overflow",
+                kernel_vfs_sync_descriptor_range(
+                    17, INT64_MAX, 1, 2) == -EDGE_LINUX_EINVAL &&
+                g_describe_calls == 2 && g_sync_range_calls == 0);
+    expect_true("sync range validates pipe type",
+                kernel_vfs_sync_descriptor_range(18, 0, 1, 2) ==
+                    -EDGE_LINUX_ESPIPE &&
+                g_describe_calls == 3 && g_sync_range_calls == 0);
+    expect_true("sync range zero flags are a no-op",
+                kernel_vfs_sync_descriptor_range(17, 3, 4, 0) == 0 &&
+                g_describe_calls == 4 && g_sync_range_calls == 0);
+    expect_true("sync range preserves bounds",
+                kernel_vfs_sync_descriptor_range(17, 3, 4, 7) == 0 &&
+                g_describe_calls == 5 && g_sync_range_calls == 1 &&
+                g_sync_range_offset == 3 && g_sync_range_length == 4);
+    expect_true("sync range zero length reaches EOF",
+                kernel_vfs_sync_descriptor_range(17, 9, 0, 2) == 0 &&
+                g_describe_calls == 6 && g_sync_range_calls == 2 &&
+                g_sync_range_offset == 9 &&
+                g_sync_range_length == UINT64_MAX);
 
     memset(&description, 0xa5, sizeof(description));
     expect_true("describe null output",
                 kernel_vfs_describe_descriptor(6, 0) ==
                     -EDGE_LINUX_EBADF &&
-                g_describe_calls == 0);
+                g_describe_calls == 6);
     expect_true("describe negative descriptor",
                 kernel_vfs_describe_descriptor(-1, &description) ==
                     -EDGE_LINUX_EBADF &&
-                g_describe_calls == 0);
+                g_describe_calls == 6);
     expect_true("describe dispatch and initialize",
                 kernel_vfs_describe_descriptor(6, &description) == 15 &&
-                g_describe_calls == 1 && g_description_was_zero &&
+                g_describe_calls == 7 && g_description_was_zero &&
                 description.identity == 6u);
 }
 

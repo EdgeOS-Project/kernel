@@ -187,6 +187,8 @@ int kernel_vfs_metadata_fd(int32_t descriptor,
                            kernel_file_metadata_t *metadata);
 int kernel_vfs_sync_descriptor(int32_t descriptor,
                                kernel_vfs_sync_operation_t operation);
+int kernel_vfs_sync_descriptor_range(int32_t descriptor, uint64_t offset,
+                                     uint64_t length, uint32_t flags);
 int kernel_vfs_describe_descriptor(int32_t descriptor,
                                    kernel_vfs_descriptor_t *description);
 int kernel_vfs_cachestat(int32_t descriptor, uint64_t offset,

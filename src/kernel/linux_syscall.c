@@ -5894,11 +5894,9 @@ static int64_t edge_linux_sys_file_sync(
     } else if (context->id == EDGE_LINUX_SYS_syncfs) {
         operation = KERNEL_VFS_SYNC_FILESYSTEM;
     } else if (context->id == EDGE_LINUX_SYS_sync_file_range) {
-        if ((int64_t)context->arguments[1] < 0 ||
-            (int64_t)context->arguments[2] < 0 ||
-            (context->arguments[3] & ~7ULL))
-            return -EDGE_LINUX_EINVAL;
-        operation = KERNEL_VFS_SYNC_RANGE;
+        return kernel_vfs_sync_descriptor_range(
+            (int32_t)context->arguments[0], context->arguments[1],
+            context->arguments[2], (uint32_t)context->arguments[3]);
     } else {
         return -EDGE_LINUX_ENOSYS;
     }

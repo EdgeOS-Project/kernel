@@ -50,6 +50,34 @@ int kernel_vfs_sync_descriptor(
     return arch_vfs_sync_descriptor(descriptor, operation);
 }
 
+int kernel_vfs_sync_descriptor_range(int32_t descriptor, uint64_t offset,
+                                     uint64_t length, uint32_t flags) {
+    kernel_vfs_descriptor_t description;
+    uint16_t kind;
+    int result;
+
+    if (descriptor < 0) return -EDGE_LINUX_EBADF;
+    result = kernel_vfs_describe_descriptor(descriptor, &description);
+    if (result < 0) return result;
+    if (flags & ~7u) return -EDGE_LINUX_EINVAL;
+    if (offset > INT64_MAX || length > INT64_MAX ||
+        (length && offset > (uint64_t)INT64_MAX - length))
+        return -EDGE_LINUX_EINVAL;
+    if (!description.superblock || !description.inode)
+        return description.kind == KERNEL_VFS_DESCRIPTOR_MEMORY ? 0 :
+               -EDGE_LINUX_ESPIPE;
+    kind = (uint16_t)(description.inode->mode & 0xf000u);
+    if (kind != VFS_INODE_FILE && kind != VFS_INODE_DIR &&
+        kind != VFS_INODE_BLK)
+        return -EDGE_LINUX_ESPIPE;
+    if (!flags) return 0;
+    if (vfs_page_writeback_sync_range(
+            description.superblock, description.inode, offset,
+            length ? length : UINT64_MAX) < 0)
+        return -EDGE_LINUX_EIO;
+    return 0;
+}
+
 int kernel_vfs_describe_descriptor(
     int32_t descriptor, kernel_vfs_descriptor_t *description) {
     if (!description || descriptor < 0)
