@@ -6019,19 +6019,26 @@
     {
       "id": "restart_syscall",
       "semantic_id": "restart_syscall",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_restart_syscall",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/restart_syscall_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 219,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_restart_syscall",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 128,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_restart_syscall",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {

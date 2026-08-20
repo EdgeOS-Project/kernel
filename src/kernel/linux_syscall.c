@@ -424,6 +424,8 @@ static int64_t edge_linux_sys_nanosleep(
     int32_t clock_id = LINUX_CLOCK_MONOTONIC;
     int absolute = 0;
     int status;
+    int64_t result;
+    kernel_linux_thread_state_t *thread_state = 0;
 
     if (context->id == EDGE_LINUX_SYS_clock_nanosleep) {
         clock_id = (int32_t)context->arguments[0];
@@ -460,9 +462,33 @@ static int64_t edge_linux_sys_nanosleep(
     }
     deadline = duration > UINT64_MAX - monotonic_now ?
         UINT64_MAX : monotonic_now + duration;
-    return kernel_current_sleep_until(
+    if (!absolute &&
+        kernel_arch_current_linux_thread_state(&thread_state) == 0 &&
+        thread_state) {
+        kernel_restart_block_prepare_nanosleep(
+            &thread_state->restart_block, deadline, remaining_user,
+            remaining_user != 0);
+        return kernel_restart_block_execute(
+            &thread_state->restart_block, monotonic_now,
+            kernel_current_sleep_until, context->user_registers);
+    }
+    result = kernel_current_sleep_until(
         deadline, remaining_user, !absolute && remaining_user != 0,
         context->user_registers);
+    return result;
+}
+
+static int64_t edge_linux_sys_restart_syscall(
+    edge_linux_syscall_context_t *context) {
+    kernel_linux_thread_state_t *thread_state = 0;
+
+    if (!context ||
+        kernel_arch_current_linux_thread_state(&thread_state) < 0 ||
+        !thread_state)
+        return -EDGE_LINUX_EINTR;
+    return kernel_restart_block_execute(
+        &thread_state->restart_block, boottime_monotonic_us(),
+        kernel_current_sleep_until, context->user_registers);
 }
 
 static int edge_linux_posix_timer_clock_supported(int32_t clock_id) {

@@ -351,6 +351,9 @@ case EDGE_LINUX_SYS_prlimit64:
 case EDGE_LINUX_SYS_setrlimit:
     context->result = edge_linux_sys_resource_limit(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_restart_syscall:
+    context->result = edge_linux_sys_restart_syscall(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_get_robust_list:
 case EDGE_LINUX_SYS_set_robust_list:
     context->result = edge_linux_sys_robust_list(context);

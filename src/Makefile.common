@@ -61,6 +61,7 @@ EDGE_SHARED_SRCS := \
 	$(SRC)/kernel/file_metadata.c \
 	$(SRC)/kernel/file_lock.c \
 	$(SRC)/kernel/futex_runtime.c \
+	$(SRC)/kernel/restart_block.c \
 	$(SRC)/kernel/groups.c \
 	$(SRC)/kernel/inotify.c \
 	$(SRC)/kernel/io_buffer.c \
