@@ -67,6 +67,8 @@ struct vfs_mount_chunk {
 typedef struct vfs_mount_namespace_slot {
     vfs_mount_table_t table;
     uint32_t releasing;
+    uint64_t list_id;
+    uint32_t owner_user_namespace;
 } vfs_mount_namespace_slot_t;
 
 typedef struct vfs_mount_namespace_chunk {
@@ -652,6 +654,8 @@ void vfs_mount_namespace_bootstrap(void) {
     g_mount_namespaces_inline[0].table.next_peer_group = 1u;
     g_mount_namespaces_inline[0].table.next_mount_id = 1u;
     g_mount_namespaces_inline[0].table.event_generation = 1u;
+    g_mount_namespaces_inline[0].list_id = 8u;
+    g_mount_namespaces_inline[0].owner_user_namespace = 0u;
     /* The initial kernel task owns this reference. */
     g_mount_namespaces_inline[0].table.references = 1u;
     __atomic_store_n(&g_mount_namespace_lock, 0u, __ATOMIC_RELEASE);
@@ -720,6 +724,9 @@ int vfs_mount_namespace_clone(uint32_t parent_namespace,
         destination->event_generation = parent->event_generation;
         destination->next_mount_id = parent->next_mount_id;
         destination->references = 1u;
+        destination_slot->list_id = 0;
+        destination_slot->owner_user_namespace =
+            parent_slot->owner_user_namespace;
         for (int mount = 0;
              mount < destination->mount_count; ++mount) {
             vfs_superblock_t *sb =
@@ -831,6 +838,8 @@ void vfs_mount_namespace_release(uint32_t namespace_id) {
         }
         vfs_mount_table_release_storage(table);
         memset(table, 0, sizeof(*table));
+        slot->list_id = 0;
+        slot->owner_user_namespace = 0;
         slot->releasing = 0;
     }
     mount_namespace_unlock();
@@ -874,6 +883,76 @@ int vfs_mount_namespace_exists(uint32_t namespace_id) {
     return slot &&
         !__atomic_load_n(&slot->releasing, __ATOMIC_ACQUIRE) &&
         __atomic_load_n(&slot->table.references, __ATOMIC_ACQUIRE);
+}
+
+int vfs_mount_namespace_metadata_set(uint32_t namespace_id,
+                                     uint64_t list_id,
+                                     uint32_t owner_user_namespace) {
+    vfs_mount_namespace_slot_t *slot;
+
+    if (!list_id) return -1;
+    mount_namespace_lock();
+    slot = mount_namespace_slot_at(namespace_id);
+    if (!slot || slot->releasing || !slot->table.references) {
+        mount_namespace_unlock();
+        return -1;
+    }
+    slot->list_id = list_id;
+    slot->owner_user_namespace = owner_user_namespace;
+    mount_namespace_unlock();
+    return 0;
+}
+
+int vfs_mount_namespace_metadata_get(uint32_t namespace_id,
+                                     uint64_t *list_id_out,
+                                     uint32_t *owner_user_namespace_out) {
+    vfs_mount_namespace_slot_t *slot;
+
+    if (!list_id_out) return -1;
+    mount_namespace_lock();
+    slot = mount_namespace_slot_at(namespace_id);
+    if (!slot || slot->releasing || !slot->table.references ||
+        !slot->list_id) {
+        mount_namespace_unlock();
+        return -1;
+    }
+    *list_id_out = slot->list_id;
+    if (owner_user_namespace_out)
+        *owner_user_namespace_out = slot->owner_user_namespace;
+    mount_namespace_unlock();
+    return 0;
+}
+
+int vfs_mount_namespace_list_next(uint64_t after_list_id,
+                                  uint64_t *list_id_out,
+                                  uint32_t *namespace_id_out,
+                                  uint32_t *owner_user_namespace_out) {
+    uint64_t best_id = UINT64_MAX;
+    uint32_t best_namespace = 0;
+    uint32_t best_owner = 0;
+    uint32_t capacity;
+
+    if (!list_id_out || !namespace_id_out) return -1;
+    mount_namespace_lock();
+    capacity = mount_namespace_capacity();
+    for (uint32_t namespace_id = 0; namespace_id < capacity;
+         ++namespace_id) {
+        vfs_mount_namespace_slot_t *slot =
+            mount_namespace_slot_at(namespace_id);
+        if (!slot || slot->releasing || !slot->table.references ||
+            slot->list_id <= after_list_id || slot->list_id >= best_id)
+            continue;
+        best_id = slot->list_id;
+        best_namespace = namespace_id;
+        best_owner = slot->owner_user_namespace;
+    }
+    mount_namespace_unlock();
+    if (best_id == UINT64_MAX) return 0;
+    *list_id_out = best_id;
+    *namespace_id_out = best_namespace;
+    if (owner_user_namespace_out)
+        *owner_user_namespace_out = best_owner;
+    return 1;
 }
 
 void vfs_mount_namespace_note_change(void) {

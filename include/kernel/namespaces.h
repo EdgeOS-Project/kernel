@@ -85,6 +85,7 @@ uint32_t edge_namespace_id(const edge_namespace_set_t *set,
 uint64_t edge_namespace_inode(const edge_namespace_set_t *set,
                               edge_namespace_kind_t kind);
 uint64_t edge_namespace_handle_inode(edge_namespace_kind_t kind, uint32_t id);
+uint64_t edge_namespace_list_id(edge_namespace_kind_t kind, uint32_t id);
 int edge_namespace_handle_acquire(const edge_namespace_set_t *set,
                                   edge_namespace_kind_t kind,
                                   uint32_t *id_out);
@@ -95,6 +96,13 @@ int edge_namespace_handle_acquire_inode(edge_namespace_kind_t kind,
                                         uint32_t *id_out);
 int edge_namespace_owner_uid(edge_namespace_kind_t kind, uint32_t id,
                              uint32_t *uid_out);
+int edge_namespace_list_next(const edge_namespace_set_t *current,
+                             uint64_t after_list_id,
+                             uint64_t owner_user_list_id,
+                             uint32_t type_mask,
+                             int may_see_all,
+                             uint64_t *next_list_id_out,
+                             int *any_matching_after_out);
 
 const char *edge_uts_hostname(const edge_namespace_set_t *set);
 const char *edge_uts_domainname(const edge_namespace_set_t *set);

@@ -412,6 +412,16 @@ int vfs_mount_namespace_activate(uint32_t namespace_id);
 uint32_t vfs_mount_namespace_current(void);
 int vfs_mount_namespace_exists(uint32_t namespace_id);
 uint32_t vfs_mount_namespace_event_generation(uint32_t namespace_id);
+int vfs_mount_namespace_metadata_set(uint32_t namespace_id,
+                                     uint64_t list_id,
+                                     uint32_t owner_user_namespace);
+int vfs_mount_namespace_metadata_get(uint32_t namespace_id,
+                                     uint64_t *list_id_out,
+                                     uint32_t *owner_user_namespace_out);
+int vfs_mount_namespace_list_next(uint64_t after_list_id,
+                                  uint64_t *list_id_out,
+                                  uint32_t *namespace_id_out,
+                                  uint32_t *owner_user_namespace_out);
 void vfs_mount_namespace_note_change(void);
 typedef void (*vfs_mount_namespace_change_notifier_t)(uint32_t namespace_id);
 void vfs_mount_namespace_set_change_notifier(

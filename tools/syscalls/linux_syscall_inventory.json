@@ -3679,19 +3679,26 @@
     {
       "id": "listns",
       "semantic_id": "listns",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_listns",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/listns_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 470,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_listns",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 470,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_listns",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {

@@ -195,6 +195,9 @@ case EDGE_LINUX_SYS_link:
 case EDGE_LINUX_SYS_linkat:
     context->result = edge_linux_sys_link(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_listns:
+    context->result = edge_linux_sys_listns(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_lseek:
     context->result = edge_linux_sys_lseek(context);
     return EDGE_LINUX_SYSCALL_HANDLED;

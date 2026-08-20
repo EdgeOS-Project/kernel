@@ -51,7 +51,9 @@ typedef struct edge_userns_extent {
 typedef struct edge_namespace_object {
     uint32_t references;
     uint32_t serial;
+    uint64_t list_id;
     uint32_t parent;
+    uint32_t owner_user_namespace;
     uint32_t owner_uid;
     uint32_t owner_gid;
     uint32_t next_pid;
@@ -82,6 +84,7 @@ typedef struct edge_pid_task_mapping {
 static edge_namespace_object_t
     g_namespace_objects[EDGE_NS_POOL_COUNT][EDGE_NAMESPACE_MAX];
 static uint32_t g_namespace_next_serial;
+static uint64_t g_namespace_next_list_id;
 static volatile uint32_t g_namespace_lock;
 static edge_pid_task_mapping_t g_pid_task_mappings[EDGE_RUNTIME_MAX_TASKS];
 
@@ -159,6 +162,19 @@ static uint32_t namespace_initial_inode(int pool) {
         case EDGE_NS_POOL_TIME: return EDGE_NAMESPACE_INIT_TIME_INODE;
         case EDGE_NS_POOL_USER: return EDGE_NAMESPACE_INIT_USER_INODE;
         case EDGE_NS_POOL_UTS: return EDGE_NAMESPACE_INIT_UTS_INODE;
+        default: return 0;
+    }
+}
+
+static uint64_t namespace_initial_list_id(int pool) {
+    switch (pool) {
+        case EDGE_NS_POOL_IPC: return 1u;
+        case EDGE_NS_POOL_UTS: return 2u;
+        case EDGE_NS_POOL_USER: return 3u;
+        case EDGE_NS_POOL_PID: return 4u;
+        case EDGE_NS_POOL_CGROUP: return 5u;
+        case EDGE_NS_POOL_TIME: return 6u;
+        case EDGE_NS_POOL_NET: return 7u;
         default: return 0;
     }
 }
@@ -260,6 +276,7 @@ static void namespace_release(int pool, uint32_t id) {
 
 static int namespace_clone_object(int pool, uint32_t parent,
                                   uint32_t owner_uid, uint32_t owner_gid,
+                                  uint32_t owner_user_namespace,
                                   int fresh_user_map, uint32_t *id_out) {
     edge_namespace_object_t *parent_object;
     uint32_t id;
@@ -277,7 +294,10 @@ static int namespace_clone_object(int pool, uint32_t parent,
         object->references = 1u;
         object->serial = g_namespace_next_serial++;
         if (!object->serial) object->serial = g_namespace_next_serial++;
+        object->list_id = g_namespace_next_list_id++;
+        if (!object->list_id) object->list_id = g_namespace_next_list_id++;
         object->parent = parent;
+        object->owner_user_namespace = owner_user_namespace;
         object->owner_uid = owner_uid;
         object->owner_gid = owner_gid;
         if (pool == EDGE_NS_POOL_PID) object->next_pid = 1u;
@@ -308,11 +328,14 @@ void edge_namespaces_bootstrap(edge_namespace_set_t *initial,
     memset(g_namespace_objects, 0, sizeof(g_namespace_objects));
     memset(g_pid_task_mappings, 0, sizeof(g_pid_task_mappings));
     g_namespace_next_serial = EDGE_NAMESPACE_DYNAMIC_INODE;
+    g_namespace_next_list_id = 9u;
     __atomic_store_n(&g_namespace_lock, 0u, __ATOMIC_RELEASE);
     for (int pool = 0; pool < EDGE_NS_POOL_COUNT; ++pool) {
         edge_namespace_object_t *object = &g_namespace_objects[pool][0];
         object->references = 1u;
         object->serial = namespace_initial_inode(pool);
+        object->list_id = namespace_initial_list_id(pool);
+        object->owner_user_namespace = 0u;
         object->setgroups_allowed = 1;
         object->uid_map_written = 1;
         object->gid_map_written = 1;
@@ -321,6 +344,8 @@ void edge_namespaces_bootstrap(edge_namespace_set_t *initial,
         object->uid_map[0].count = UINT32_MAX;
         object->gid_map[0].count = UINT32_MAX;
     }
+    g_namespace_objects[EDGE_NS_POOL_USER][0].owner_user_namespace =
+        UINT32_MAX;
     g_namespace_objects[EDGE_NS_POOL_PID][0].next_pid = 2u;
     namespace_text_set(g_namespace_objects[EDGE_NS_POOL_UTS][0].hostname,
                        hostname && hostname[0] ? hostname : "edgeos", 64u);
@@ -440,9 +465,11 @@ int edge_pid_namespace_visible_to_global(uint32_t namespace_id,
 
 static int namespace_assign(uint32_t *out, int pool, uint32_t parent,
                             int create, uint32_t owner_uid,
-                            uint32_t owner_gid) {
+                            uint32_t owner_gid,
+                            uint32_t owner_user_namespace) {
     if (create)
         return namespace_clone_object(pool, parent, owner_uid, owner_gid,
+                                      owner_user_namespace,
                                       pool == EDGE_NS_POOL_USER, out);
     if (namespace_retain(pool, parent) < 0) return -1;
     *out = parent;
@@ -485,37 +512,47 @@ int edge_namespaces_clone(edge_namespace_set_t *child,
         vfs_mount_namespace_clone(parent->mount, &child->mount) < 0 :
         (child->mount = parent->mount,
          vfs_mount_namespace_retain(child->mount) < 0)) goto fail;
+    if (namespace_assign(&child->user, EDGE_NS_POOL_USER, parent->user,
+                         (clone_flags & EDGE_CLONE_NEWUSER) != 0,
+                         owner_uid, owner_gid, parent->user) < 0) goto fail;
+    if ((clone_flags & EDGE_CLONE_NEWNS) != 0) {
+        uint64_t list_id;
+        namespace_lock();
+        list_id = g_namespace_next_list_id++;
+        if (!list_id) list_id = g_namespace_next_list_id++;
+        namespace_unlock();
+        if (vfs_mount_namespace_metadata_set(
+                child->mount, list_id, child->user) < 0)
+            goto fail;
+    }
     if (namespace_assign(&child->cgroup, EDGE_NS_POOL_CGROUP,
                          parent->cgroup,
                          (clone_flags & EDGE_CLONE_NEWCGROUP) != 0,
-                         owner_uid, owner_gid) < 0) goto fail;
+                         owner_uid, owner_gid, child->user) < 0) goto fail;
     if (namespace_assign(&child->ipc, EDGE_NS_POOL_IPC, parent->ipc,
                          (clone_flags & EDGE_CLONE_NEWIPC) != 0,
-                         owner_uid, owner_gid) < 0) goto fail;
+                         owner_uid, owner_gid, child->user) < 0) goto fail;
     if (namespace_assign(&child->net, EDGE_NS_POOL_NET, parent->net,
                          (clone_flags & EDGE_CLONE_NEWNET) != 0,
-                         owner_uid, owner_gid) < 0) goto fail;
+                         owner_uid, owner_gid, child->user) < 0) goto fail;
     if (namespace_assign(&child->pid, EDGE_NS_POOL_PID,
                          (clone_flags & EDGE_CLONE_NEWPID) ? parent->pid :
                                                             parent->pid_children,
                          (clone_flags & EDGE_CLONE_NEWPID) != 0,
-                         owner_uid, owner_gid) < 0) goto fail;
+                         owner_uid, owner_gid, child->user) < 0) goto fail;
     child->pid_children = child->pid;
     if (namespace_retain(EDGE_NS_POOL_PID, child->pid_children) < 0)
         goto fail;
     if (namespace_assign(&child->time, EDGE_NS_POOL_TIME,
                          parent->time_children,
                          (clone_flags & EDGE_CLONE_NEWTIME) != 0,
-                         owner_uid, owner_gid) < 0) goto fail;
+                         owner_uid, owner_gid, child->user) < 0) goto fail;
     child->time_children = child->time;
     if (namespace_retain(EDGE_NS_POOL_TIME, child->time_children) < 0)
         goto fail;
-    if (namespace_assign(&child->user, EDGE_NS_POOL_USER, parent->user,
-                         (clone_flags & EDGE_CLONE_NEWUSER) != 0,
-                         owner_uid, owner_gid) < 0) goto fail;
     if (namespace_assign(&child->uts, EDGE_NS_POOL_UTS, parent->uts,
                          (clone_flags & EDGE_CLONE_NEWUTS) != 0,
-                         owner_uid, owner_gid) < 0) goto fail;
+                         owner_uid, owner_gid, child->user) < 0) goto fail;
     return 0;
 fail:
     edge_namespaces_release(child);
@@ -643,6 +680,132 @@ uint64_t edge_namespace_handle_inode(edge_namespace_kind_t kind, uint32_t id) {
         edge_namespace_object_t *object = namespace_object(pool, id);
         return object ? object->serial : 0;
     }
+}
+
+uint64_t edge_namespace_list_id(edge_namespace_kind_t kind, uint32_t id) {
+    edge_namespace_object_t *object;
+    uint64_t list_id = 0;
+    int pool;
+
+    if (kind == EDGE_NAMESPACE_PID_FOR_CHILDREN)
+        kind = EDGE_NAMESPACE_PID;
+    else if (kind == EDGE_NAMESPACE_TIME_FOR_CHILDREN)
+        kind = EDGE_NAMESPACE_TIME;
+    if (kind == EDGE_NAMESPACE_MNT) {
+        if (vfs_mount_namespace_metadata_get(id, &list_id, 0) < 0)
+            return 0;
+        return list_id;
+    }
+    pool = namespace_pool_for_kind(kind);
+    if (pool < 0) return 0;
+    namespace_lock();
+    object = namespace_object(pool, id);
+    if (object) list_id = object->list_id;
+    namespace_unlock();
+    return list_id;
+}
+
+static edge_namespace_kind_t namespace_kind_for_pool(int pool) {
+    switch (pool) {
+        case EDGE_NS_POOL_CGROUP: return EDGE_NAMESPACE_CGROUP;
+        case EDGE_NS_POOL_IPC: return EDGE_NAMESPACE_IPC;
+        case EDGE_NS_POOL_NET: return EDGE_NAMESPACE_NET;
+        case EDGE_NS_POOL_PID: return EDGE_NAMESPACE_PID;
+        case EDGE_NS_POOL_TIME: return EDGE_NAMESPACE_TIME;
+        case EDGE_NS_POOL_USER: return EDGE_NAMESPACE_USER;
+        case EDGE_NS_POOL_UTS: return EDGE_NAMESPACE_UTS;
+        default: return EDGE_NAMESPACE_KIND_COUNT;
+    }
+}
+
+static int namespace_current_matches(const edge_namespace_set_t *current,
+                                     edge_namespace_kind_t kind,
+                                     uint32_t id) {
+    return current && current->owned &&
+           edge_namespace_id(current, kind) == id;
+}
+
+int edge_namespace_list_next(const edge_namespace_set_t *current,
+                             uint64_t after_list_id,
+                             uint64_t owner_user_list_id,
+                             uint32_t type_mask,
+                             int may_see_all,
+                             uint64_t *next_list_id_out,
+                             int *any_matching_after_out) {
+    uint64_t best = UINT64_MAX;
+    uint32_t owner_user_namespace = UINT32_MAX;
+    int filter_owner = owner_user_list_id != 0;
+    int any_matching = 0;
+    int single_type = type_mask && !(type_mask & (type_mask - 1u));
+
+    if (!current || !current->owned || !next_list_id_out ||
+        !any_matching_after_out)
+        return -EDGE_LINUX_EINVAL;
+
+    namespace_lock();
+    if (filter_owner) {
+        if (owner_user_list_id == UINT64_MAX) {
+            owner_user_namespace = current->user;
+        } else {
+            for (uint32_t id = 0; id < EDGE_NAMESPACE_MAX; ++id) {
+                edge_namespace_object_t *object =
+                    namespace_object(EDGE_NS_POOL_USER, id);
+                if (object && object->list_id == owner_user_list_id) {
+                    owner_user_namespace = id;
+                    break;
+                }
+            }
+            if (owner_user_namespace == UINT32_MAX) {
+                namespace_unlock();
+                return -EDGE_LINUX_EINVAL;
+            }
+        }
+    }
+
+    for (int pool = 0; pool < EDGE_NS_POOL_COUNT; ++pool) {
+        edge_namespace_kind_t kind = namespace_kind_for_pool(pool);
+        uint32_t clone_flag = (uint32_t)edge_namespace_clone_flag(kind);
+        for (uint32_t id = 0; id < EDGE_NAMESPACE_MAX; ++id) {
+            edge_namespace_object_t *object = namespace_object(pool, id);
+            if (!object || object->list_id <= after_list_id) continue;
+            if (filter_owner &&
+                object->owner_user_namespace != owner_user_namespace)
+                continue;
+            if (filter_owner || !single_type || (type_mask & clone_flag))
+                any_matching = 1;
+            if (type_mask && !(type_mask & clone_flag)) continue;
+            if (!may_see_all &&
+                !namespace_current_matches(current, kind, id))
+                continue;
+            if (object->list_id < best) best = object->list_id;
+        }
+    }
+    namespace_unlock();
+
+    {
+        uint64_t cursor = after_list_id;
+        for (;;) {
+            uint64_t list_id;
+            uint32_t namespace_id;
+            uint32_t owner;
+            int result = vfs_mount_namespace_list_next(
+                cursor, &list_id, &namespace_id, &owner);
+            if (result <= 0) break;
+            cursor = list_id;
+            if (filter_owner && owner != owner_user_namespace) continue;
+            if (filter_owner || !single_type ||
+                (type_mask & EDGE_CLONE_NEWNS))
+                any_matching = 1;
+            if (type_mask && !(type_mask & EDGE_CLONE_NEWNS)) continue;
+            if (!may_see_all && current->mount != namespace_id) continue;
+            if (list_id < best) best = list_id;
+        }
+    }
+
+    *any_matching_after_out = any_matching;
+    if (best == UINT64_MAX) return 0;
+    *next_list_id_out = best;
+    return 1;
 }
 
 int edge_namespace_handle_retain(edge_namespace_kind_t kind, uint32_t id) {

@@ -21,6 +21,10 @@ uint32_t scheduler_cpu_id(void) {
     return 0;
 }
 
+uint32_t edge_smp_current_cpu(void) {
+    return 0;
+}
+
 int main(void) {
     vfs_mount_table_t table;
     vfs_superblock_t *stable_inline;
@@ -28,6 +32,10 @@ int main(void) {
     vfs_superblock_t *instance_sources;
     vfs_superblock_t **instance_handles;
     uint32_t namespace_ids[130];
+    uint64_t list_id;
+    uint64_t next_list_id;
+    uint32_t listed_namespace;
+    uint32_t owner_user_namespace;
     uint32_t workspace_pages = 0;
     char *workspace;
 
@@ -56,11 +64,22 @@ int main(void) {
     vfs_mount_path_workspace_release(workspace, workspace_pages);
 
     vfs_mount_namespace_bootstrap();
+    assert(vfs_mount_namespace_metadata_get(
+               0u, &list_id, &owner_user_namespace) == 0);
+    assert(list_id == 8u && owner_user_namespace == 0u);
     for (uint32_t index = 0; index < 130u; ++index) {
         assert(vfs_mount_namespace_clone(0u, &namespace_ids[index]) == 0);
         assert(namespace_ids[index] == index + 1u);
         assert(vfs_mount_namespace_exists(namespace_ids[index]));
+        assert(vfs_mount_namespace_metadata_set(
+                   namespace_ids[index], 100u + index,
+                   10u + index) == 0);
     }
+    assert(vfs_mount_namespace_list_next(
+               120u, &next_list_id, &listed_namespace,
+               &owner_user_namespace) == 1);
+    assert(next_list_id == 121u && listed_namespace == 22u &&
+           owner_user_namespace == 31u);
     assert(vfs_mount_namespace_activate(namespace_ids[129]) == 0);
     assert(vfs_mount_namespace_current() == namespace_ids[129]);
     assert(vfs_mount_namespace_active_table() != 0);

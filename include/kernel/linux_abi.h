@@ -97,6 +97,22 @@ _Static_assert(sizeof(struct edge_linux_mount_attr) == 32,
      EDGE_LINUX_CLONE_NEWIPC | EDGE_LINUX_CLONE_NEWUSER | \
      EDGE_LINUX_CLONE_NEWPID | EDGE_LINUX_CLONE_NEWNET)
 
+#define EDGE_LINUX_LISTNS_CURRENT_USER UINT64_MAX
+#define EDGE_LINUX_NS_ID_REQ_SIZE_VER0 32u
+
+struct edge_linux_ns_id_req {
+    uint32_t size;
+    uint32_t spare;
+    uint64_t ns_id;
+    uint32_t ns_type;
+    uint32_t spare2;
+    uint64_t user_ns_id;
+};
+
+_Static_assert(sizeof(struct edge_linux_ns_id_req) ==
+                   EDGE_LINUX_NS_ID_REQ_SIZE_VER0,
+               "Linux ns_id_req ABI size mismatch");
+
 #define EDGE_LINUX_CLONE_SUPPORTED_FLAGS \
     (EDGE_LINUX_CLONE_VM | EDGE_LINUX_CLONE_FS | \
      EDGE_LINUX_CLONE_FILES | EDGE_LINUX_CLONE_SIGHAND | \

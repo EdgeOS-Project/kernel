@@ -100,6 +100,8 @@ static int64_t edge_linux_sys_xattrat(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_fileattr(
     edge_linux_syscall_context_t *context);
+static int64_t edge_linux_sys_listns(
+    edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_truncate(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_mkdir(
@@ -293,6 +295,76 @@ static int64_t edge_linux_sys_identity(
                 visible_id : 65534u;
         default:
             return -EDGE_LINUX_ENOSYS;
+    }
+}
+
+static int64_t edge_linux_sys_listns(
+    edge_linux_syscall_context_t *context) {
+    struct edge_linux_ns_id_req request;
+    kernel_linux_identity_t identity;
+    edge_namespace_set_t *namespaces;
+    uint64_t next_id = 0;
+    uint64_t output_count = context->arguments[2];
+    uint64_t written = 0;
+    uint32_t request_size;
+    int any_after = 0;
+    int may_see_all;
+    int status;
+
+    if (context->arguments[3]) return -EDGE_LINUX_EINVAL;
+    if (output_count > 1000000u) return -EDGE_LINUX_EOVERFLOW;
+    if (output_count &&
+        edge_linux_validate_user_range(
+            context, context->arguments[1],
+            output_count * sizeof(uint64_t), 1) < 0)
+        return -EDGE_LINUX_EFAULT;
+    if (!context->arguments[0] ||
+        edge_linux_copy_from_user(
+            context, &request_size, context->arguments[0],
+            sizeof(request_size)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    if (request_size > 4096u) return -EDGE_LINUX_E2BIG;
+    if (request_size < EDGE_LINUX_NS_ID_REQ_SIZE_VER0)
+        return -EDGE_LINUX_EINVAL;
+    status = edge_linux_copy_struct_from_user(
+        &request, sizeof(request), EDGE_LINUX_NS_ID_REQ_SIZE_VER0,
+        context->arguments[0], request_size,
+        edge_linux_seccomp_copy_from_user, context);
+    if (status < 0) return status;
+    if (request.spare) return -EDGE_LINUX_EINVAL;
+    if (request.ns_type &
+        ~((uint32_t)EDGE_LINUX_CLONE_NAMESPACE_FLAGS))
+        return -EDGE_LINUX_EOPNOTSUPP;
+    namespaces = kernel_arch_current_namespace_set();
+    if (!namespaces || kernel_current_linux_identity(&identity) < 0)
+        return -EDGE_LINUX_ESRCH;
+    may_see_all = identity.pid_namespace_id == 0 &&
+        (identity.effective_capabilities &
+         (1ULL << EDGE_LINUX_CAP_SYS_ADMIN));
+
+    status = edge_namespace_list_next(
+        namespaces, request.ns_id, request.user_ns_id, request.ns_type,
+        may_see_all, &next_id, &any_after);
+    if (status < 0) return status;
+    if (!status) {
+        if (request.ns_id && !any_after) return -EDGE_LINUX_ENOENT;
+        return 0;
+    }
+    if (!output_count) return 0;
+
+    for (;;) {
+        if (edge_linux_copy_to_user(
+                context,
+                context->arguments[1] + written * sizeof(uint64_t),
+                &next_id, sizeof(next_id)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        ++written;
+        if (written == output_count) return (int64_t)written;
+        status = edge_namespace_list_next(
+            namespaces, next_id, request.user_ns_id, request.ns_type,
+            may_see_all, &next_id, &any_after);
+        if (status < 0) return status;
+        if (!status) return (int64_t)written;
     }
 }
 

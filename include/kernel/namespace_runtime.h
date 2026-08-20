@@ -60,8 +60,9 @@ static inline int kernel_namespace_ioctl_prepare(
          descriptor->kind == EDGE_NAMESPACE_MNT)) {
         if (!has_user_output) return -EDGE_LINUX_EFAULT;
         output->kind = KERNEL_NAMESPACE_IOCTL_COPY_ID;
-        output->namespace_id = edge_namespace_handle_inode(
+        output->namespace_id = edge_namespace_list_id(
             descriptor->kind, descriptor->id);
+        if (!output->namespace_id) return -EDGE_LINUX_EINVAL;
         return 0;
     }
     if (command == KERNEL_NS_GET_OWNER_UID &&

@@ -24,6 +24,12 @@ uint64_t edge_namespace_handle_inode(
            ((uint64_t)(uint32_t)kind << 32) | id;
 }
 
+uint64_t edge_namespace_list_id(
+    edge_namespace_kind_t kind, uint32_t id) {
+    return UINT64_C(0x4c53000000000000) |
+           ((uint64_t)(uint32_t)kind << 32) | id;
+}
+
 int edge_namespace_owner_uid(
     edge_namespace_kind_t kind, uint32_t id, uint32_t *uid_out) {
     (void)kind;
@@ -66,7 +72,7 @@ static void test_namespace_identifiers(void) {
         .id = 41u,
     };
     kernel_namespace_ioctl_output_t output;
-    uint64_t expected = edge_namespace_handle_inode(
+    uint64_t expected = edge_namespace_list_id(
         descriptor.kind, descriptor.id);
 
     expect(kernel_namespace_ioctl_prepare(
@@ -78,7 +84,7 @@ static void test_namespace_identifiers(void) {
 
     descriptor.kind = EDGE_NAMESPACE_MNT;
     descriptor.id = 73u;
-    expected = edge_namespace_handle_inode(
+    expected = edge_namespace_list_id(
         descriptor.kind, descriptor.id);
     expect(kernel_namespace_ioctl_prepare(
                &descriptor, KERNEL_NS_GET_MNTNS_ID, 1, &output) == 0,
