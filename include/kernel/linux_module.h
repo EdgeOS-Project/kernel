@@ -12,5 +12,6 @@
 int kernel_linux_module_load(const void *image, uint32_t image_size,
                              const char *parameters);
 int kernel_linux_module_unload(const char *name, uint32_t flags);
+int kernel_linux_modules_render(char *buffer, uint32_t capacity);
 
 #endif

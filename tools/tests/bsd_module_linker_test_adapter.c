@@ -51,6 +51,12 @@ bsd_linker_image_base(const bsd_linker_image_t *image)
 }
 
 size_t
+bsd_linker_image_size(const bsd_linker_image_t *image)
+{
+    return image ? sizeof(*image) : 0u;
+}
+
+size_t
 bsd_test_linker_image_release_count(void)
 {
     return g_release_count;

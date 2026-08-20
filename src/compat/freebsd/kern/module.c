@@ -1244,6 +1244,43 @@ bsd_module_deactivate_name(const char *name)
     return error;
 }
 
+int
+bsd_module_loaded_snapshot_at(uint32_t index,
+    bsd_module_loaded_snapshot_t *snapshot)
+{
+    uint32_t ordinal = 0;
+    int result = BSD_MODULE_ENOENT;
+
+    if (!snapshot)
+        return BSD_MODULE_EINVAL;
+    bsd_memset(snapshot, 0, sizeof(*snapshot));
+    linker_guard_lock();
+    module_guard_lock();
+    for (module_t module = g_modules; module; module = module->next) {
+        size_t length;
+
+        if (!module->loaded || !module->container ||
+            !module->container->image)
+            continue;
+        if (ordinal++ != index)
+            continue;
+        length = bsd_strlen(module->data->name);
+        if (length >= sizeof(snapshot->name))
+            length = sizeof(snapshot->name) - 1u;
+        bsd_memcpy(snapshot->name, module->data->name, length);
+        snapshot->name[length] = 0;
+        snapshot->size = bsd_linker_image_size(module->container->image);
+        snapshot->address = (uint64_t)(uintptr_t)
+            bsd_linker_image_base(module->container->image);
+        snapshot->references = module->refs > 1u ? module->refs - 1u : 0u;
+        result = 0;
+        break;
+    }
+    module_guard_unlock();
+    linker_guard_unlock();
+    return result;
+}
+
 void *
 linker_hwpmc_list_objects(void)
 {

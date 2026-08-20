@@ -13,6 +13,7 @@
 #include "kernel/boot_command_line.h"
 #include "kernel/console_device.h"
 #include "kernel/fd_runtime.h"
+#include "kernel/linux_module.h"
 #include "kernel/namespaces.h"
 #include "kernel/namespace_runtime.h"
 #include "kernel/proc_platform.h"
@@ -155,7 +156,8 @@ enum {
     PROC_OSRELEASE,
     PROC_KERNEL_VERSION,
     PROC_SYS_KERNEL_KEYS,
-    PROC_ROOT_MAXKEYS
+    PROC_ROOT_MAXKEYS,
+    PROC_MODULES
 };
 
 static const char *const g_namespace_names[] = {
@@ -561,6 +563,7 @@ static int proc_lookup(vfs_superblock_t *sb, vfs_inode_t *dir,
         else if (text_eq(name, "swaps")) inode_set(out, PROC_SWAPS, VFS_INODE_FILE | 0444);
         else if (text_eq(name, "kmsg")) inode_set(out, PROC_KMSG, VFS_INODE_FILE | 0400);
         else if (text_eq(name, "ioports")) inode_set(out, PROC_IOPORTS, VFS_INODE_FILE | 0444);
+        else if (text_eq(name, "modules")) inode_set(out, PROC_MODULES, VFS_INODE_FILE | 0444);
         else if (text_eq(name, "net")) inode_set(out, PROC_NET_DIR, VFS_INODE_DIR | 0555);
         else if (text_eq(name, "tty")) inode_set(out, PROC_TTY, VFS_INODE_DIR | 0555);
         else if (text_eq(name, "asound") && arch_proc_sound_available())
@@ -1063,6 +1066,8 @@ static int proc_generate(uint32_t node, int32_t pid, uint32_t auxiliary,
         return arch_proc_sound_read(sound_snapshot, buffer, capacity);
     if (node == PROC_PID_MAPS)
         return kernel_proc_maps_render(pid, buffer, capacity);
+    if (node == PROC_MODULES)
+        return kernel_linux_modules_render(buffer, capacity);
     if (node == PROC_PID_SCHED)
         return kernel_scheduler_proc_task_render(pid, buffer, capacity);
     if (node == PROC_PID_SCHEDSTAT)
@@ -1924,7 +1929,7 @@ static int proc_readdir(vfs_superblock_t *sb, vfs_inode_t *dir, uint32_t index,
         "mounts", "mountinfo", "filesystems", "devices", "cmdline", "version",
         "cgroups", "uptime", "meminfo", "vmstat", "zoneinfo", "buddyinfo",
         "pagetypeinfo", "pressure", "cpuinfo", "stat", "schedstat", "loadavg", "swaps", "kmsg",
-        "ioports", "net", "tty", "sys", "self"
+        "ioports", "modules", "net", "tty", "sys", "self"
     };
     (void)sb;
     if (!dir || !name || !out) return -1;

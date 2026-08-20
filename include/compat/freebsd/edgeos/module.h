@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #define BSD_BRIDGE_FREEBSD_VERSION 1600019
+#define BSD_MODULE_SNAPSHOT_NAME_MAX 64u
 
 struct sysinit;
 struct moduledata;
@@ -39,6 +40,13 @@ struct bsd_module_static_record {
     int maximum;
     int metadata_type;
 };
+
+typedef struct {
+    char name[BSD_MODULE_SNAPSHOT_NAME_MAX];
+    uint64_t size;
+    uint64_t address;
+    uint32_t references;
+} bsd_module_loaded_snapshot_t;
 
 void bsd_static_record_register(enum bsd_static_record_kind kind,
     const void *record);
@@ -109,6 +117,8 @@ int bsd_module_activate_image(bsd_linker_image_t *image, const char *name,
     struct linker_file **file_out);
 int bsd_module_deactivate_file(struct linker_file *file);
 int bsd_module_deactivate_name(const char *name);
+int bsd_module_loaded_snapshot_at(
+    uint32_t index, bsd_module_loaded_snapshot_t *snapshot);
 size_t bsd_module_linked_file_count(void);
 
 void bsd_module_lock(void);
