@@ -35,6 +35,7 @@ EDGEOS_ASSESSMENTS = [
             "timeout removal and user-data cancellation",
             "classic and extended temporary signal-mask enter arguments",
             "OPENAT, OPENAT2, CLOSE, STATX and FALLOCATE through shared VFS handlers",
+            "SEND, RECV, SENDMSG, RECVMSG and SHUTDOWN through shared socket handlers",
         ],
         "missing": [
             "asynchronous worker execution",
@@ -42,7 +43,7 @@ EDGEOS_ASSESSMENTS = [
             "multishot poll and timeout update operations",
             "fully interruptible enter suspension and extended wait deadlines",
             "descriptor leases across close and reuse",
-            "remaining supported VFS and socket operations",
+            "remaining supported VFS and socket operations, including connect and accept",
             "ia32 and x32 compatibility layouts",
         ],
         "runtime_tests": [
@@ -54,7 +55,8 @@ EDGEOS_ASSESSMENTS = [
             "reference": REFERENCE_COMMIT,
             "scope": (
                 "setup, mmap, NOP, eventfd, poll, timeout, cancellation, "
-                "openat, openat2, close, statx, fallocate and operation probe"
+                "openat, openat2, close, statx, fallocate, send, recv, "
+                "sendmsg, recvmsg, shutdown and operation probe"
             ),
         },
     },

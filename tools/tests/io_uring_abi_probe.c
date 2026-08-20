@@ -25,9 +25,11 @@
 #if defined(__x86_64__)
 #define SYS_read 0
 #define SYS_eventfd2 290
+#define SYS_socketpair 53
 #elif defined(__aarch64__)
 #define SYS_read 63
 #define SYS_eventfd2 19
+#define SYS_socketpair 199
 #endif
 
 #define PROT_READ 1
@@ -50,6 +52,8 @@
 #define IORING_OP_READ 22u
 #define IORING_OP_WRITE 23u
 #define IORING_OP_POLL_ADD 6u
+#define IORING_OP_SENDMSG 9u
+#define IORING_OP_RECVMSG 10u
 #define IORING_OP_TIMEOUT 11u
 #define IORING_OP_TIMEOUT_REMOVE 12u
 #define IORING_OP_FALLOCATE 17u
@@ -57,6 +61,9 @@
 #define IORING_OP_CLOSE 19u
 #define IORING_OP_STATX 21u
 #define IORING_OP_OPENAT2 28u
+#define IORING_OP_SEND 26u
+#define IORING_OP_RECV 27u
+#define IORING_OP_SHUTDOWN 34u
 #define IORING_OFF_SQ_RING 0x00000000ull
 #define IORING_OFF_CQ_RING 0x08000000ull
 #define IORING_OFF_SQES 0x10000000ull
@@ -81,6 +88,23 @@ struct open_how {
     uint64_t flags;
     uint64_t mode;
     uint64_t resolve;
+};
+
+struct user_iovec {
+    uint64_t base;
+    uint64_t length;
+};
+
+struct user_msghdr {
+    uint64_t name;
+    uint32_t name_length;
+    uint32_t padding1;
+    uint64_t vectors;
+    uint64_t vector_count;
+    uint64_t control;
+    uint64_t control_length;
+    uint32_t flags;
+    uint32_t padding2;
 };
 
 struct io_uring_sqe {
@@ -278,6 +302,19 @@ static int run_tests(void) {
     uint8_t statx_buffer[256];
     static const char null_path[] = "/dev/null";
     static const char data_path[] = "/tmp/edgeos-io-uring-probe";
+    static const char send_data[] = "edgeos-send";
+    static const char message_data[] = "edgeos-message";
+    char receive_data[sizeof(send_data)] = {0};
+    char receive_message_data[sizeof(message_data)] = {0};
+    struct user_iovec send_vector = {
+        (uint64_t)(uintptr_t)message_data, sizeof(message_data),
+    };
+    struct user_iovec receive_vector = {
+        (uint64_t)(uintptr_t)receive_message_data, sizeof(message_data),
+    };
+    struct user_msghdr send_message = {0};
+    struct user_msghdr receive_message = {0};
+    int32_t socket_descriptors[2] = {-1, -1};
     uint64_t temporary_signal_mask = 0;
     int failures = 0;
 
@@ -376,6 +413,17 @@ static int run_tests(void) {
         (probe.operations[IORING_OP_STATX].flags &
          IO_URING_OP_SUPPORTED) != 0 &&
         (probe.operations[IORING_OP_FALLOCATE].flags &
+         IO_URING_OP_SUPPORTED) != 0);
+    failures += expect_true("probe socket operations",
+        (probe.operations[IORING_OP_SEND].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_RECV].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_SENDMSG].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_RECVMSG].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_SHUTDOWN].flags &
          IO_URING_OP_SUPPORTED) != 0);
 
     event_descriptor = raw_syscall6(
@@ -621,6 +669,93 @@ static int run_tests(void) {
             cqes[14u & *cq_mask].result == 0);
     }
     __atomic_store_n(cq_head, 15u, __ATOMIC_RELEASE);
+
+    failures += expect("socketpair", raw_syscall6(
+        SYS_socketpair, 1, 1, 0, (long)socket_descriptors, 0, 0), 0);
+    if (socket_descriptors[0] >= 0 && socket_descriptors[1] >= 0) {
+        memset(&sqes[7], 0, sizeof(sqes[7]));
+        sqes[7].opcode = IORING_OP_SEND;
+        sqes[7].descriptor = socket_descriptors[0];
+        sqes[7].address = (uint64_t)(uintptr_t)send_data;
+        sqes[7].length = sizeof(send_data);
+        sqes[7].user_data = 0x53454e4430303031ull;
+        memset(&sqes[0], 0, sizeof(sqes[0]));
+        sqes[0].opcode = IORING_OP_RECV;
+        sqes[0].descriptor = socket_descriptors[1];
+        sqes[0].address = (uint64_t)(uintptr_t)receive_data;
+        sqes[0].length = sizeof(receive_data);
+        sqes[0].user_data = 0x5245435630303031ull;
+        sq_array[7] = 7;
+        sq_array[0] = 0;
+        __atomic_store_n(sq_tail, 17u, __ATOMIC_RELEASE);
+        failures += expect("submit send receive", raw_syscall6(
+            SYS_io_uring_enter, descriptor, 2, 2,
+            IORING_ENTER_GETEVENTS, 0, 0), 2);
+        failures += expect_true("send completion",
+            __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == 17u &&
+            cqes[15u & *cq_mask].user_data == 0x53454e4430303031ull &&
+            cqes[15u & *cq_mask].result == (int32_t)sizeof(send_data));
+        failures += expect_true("receive completion",
+            cqes[16u & *cq_mask].user_data == 0x5245435630303031ull &&
+            cqes[16u & *cq_mask].result == (int32_t)sizeof(receive_data) &&
+            receive_data[0] == send_data[0] &&
+            receive_data[sizeof(receive_data) - 1u] == 0);
+        __atomic_store_n(cq_head, 17u, __ATOMIC_RELEASE);
+
+        send_message.vectors = (uint64_t)(uintptr_t)&send_vector;
+        send_message.vector_count = 1;
+        receive_message.vectors = (uint64_t)(uintptr_t)&receive_vector;
+        receive_message.vector_count = 1;
+        memset(&sqes[1], 0, sizeof(sqes[1]));
+        sqes[1].opcode = IORING_OP_SENDMSG;
+        sqes[1].descriptor = socket_descriptors[0];
+        sqes[1].address = (uint64_t)(uintptr_t)&send_message;
+        sqes[1].length = 1;
+        sqes[1].user_data = 0x53454e444d534731ull;
+        memset(&sqes[2], 0, sizeof(sqes[2]));
+        sqes[2].opcode = IORING_OP_RECVMSG;
+        sqes[2].descriptor = socket_descriptors[1];
+        sqes[2].address = (uint64_t)(uintptr_t)&receive_message;
+        sqes[2].length = 1;
+        sqes[2].user_data = 0x524543564d534731ull;
+        sq_array[1] = 1;
+        sq_array[2] = 2;
+        __atomic_store_n(sq_tail, 19u, __ATOMIC_RELEASE);
+        failures += expect("submit sendmsg recvmsg", raw_syscall6(
+            SYS_io_uring_enter, descriptor, 2, 2,
+            IORING_ENTER_GETEVENTS, 0, 0), 2);
+        failures += expect_true("sendmsg completion",
+            __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == 19u &&
+            cqes[17u & *cq_mask].user_data == 0x53454e444d534731ull &&
+            cqes[17u & *cq_mask].result == (int32_t)sizeof(message_data));
+        failures += expect_true("recvmsg completion",
+            cqes[18u & *cq_mask].user_data == 0x524543564d534731ull &&
+            cqes[18u & *cq_mask].result ==
+                (int32_t)sizeof(receive_message_data) &&
+            receive_message_data[0] == message_data[0] &&
+            receive_message_data[sizeof(receive_message_data) - 1u] == 0);
+        __atomic_store_n(cq_head, 19u, __ATOMIC_RELEASE);
+
+        memset(&sqes[3], 0, sizeof(sqes[3]));
+        sqes[3].opcode = IORING_OP_SHUTDOWN;
+        sqes[3].descriptor = socket_descriptors[0];
+        sqes[3].length = 2;
+        sqes[3].user_data = 0x53485554444f574eull;
+        sq_array[3] = 3;
+        __atomic_store_n(sq_tail, 20u, __ATOMIC_RELEASE);
+        failures += expect("submit shutdown", raw_syscall6(
+            SYS_io_uring_enter, descriptor, 1, 1,
+            IORING_ENTER_GETEVENTS, 0, 0), 1);
+        failures += expect_true("shutdown completion",
+            __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == 20u &&
+            cqes[19u & *cq_mask].user_data == 0x53485554444f574eull &&
+            cqes[19u & *cq_mask].result == 0);
+        __atomic_store_n(cq_head, 20u, __ATOMIC_RELEASE);
+        (void)raw_syscall6(
+            SYS_close, socket_descriptors[0], 0, 0, 0, 0, 0);
+        (void)raw_syscall6(
+            SYS_close, socket_descriptors[1], 0, 0, 0, 0, 0);
+    }
 
     (void)raw_syscall6(SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
     (void)raw_syscall6(SYS_munmap, (long)cq_ring, PAGE_SIZE, 0, 0, 0, 0);

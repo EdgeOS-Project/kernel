@@ -88,6 +88,12 @@ static int64_t edge_linux_sys_fd_control(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_statx(
     edge_linux_syscall_context_t *context);
+static int64_t edge_linux_sys_socket_buffer(
+    edge_linux_syscall_context_t *context);
+static int64_t edge_linux_sys_socket_core(
+    edge_linux_syscall_context_t *context);
+static int64_t edge_linux_sys_socket_message(
+    edge_linux_syscall_context_t *context);
 
 static int edge_linux_pid_to_global(
     const kernel_linux_identity_t *caller, int32_t visible_pid,
@@ -6841,6 +6847,8 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_OP_FSYNC     3u
 #define EDGE_LINUX_IORING_OP_POLL_ADD  6u
 #define EDGE_LINUX_IORING_OP_POLL_REMOVE 7u
+#define EDGE_LINUX_IORING_OP_SENDMSG   9u
+#define EDGE_LINUX_IORING_OP_RECVMSG   10u
 #define EDGE_LINUX_IORING_OP_TIMEOUT   11u
 #define EDGE_LINUX_IORING_OP_TIMEOUT_REMOVE 12u
 #define EDGE_LINUX_IORING_OP_ASYNC_CANCEL 14u
@@ -6850,7 +6858,10 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_OP_STATX     21u
 #define EDGE_LINUX_IORING_OP_READ      22u
 #define EDGE_LINUX_IORING_OP_WRITE     23u
+#define EDGE_LINUX_IORING_OP_SEND      26u
+#define EDGE_LINUX_IORING_OP_RECV      27u
 #define EDGE_LINUX_IORING_OP_OPENAT2   28u
+#define EDGE_LINUX_IORING_OP_SHUTDOWN  34u
 #define EDGE_LINUX_IORING_OP_LAST      65u
 
 #define EDGE_LINUX_IOSQE_FIXED_FILE       (1u << 0)
@@ -7089,6 +7100,56 @@ static int64_t edge_linux_io_uring_execute_vfs(
     }
 }
 
+static int64_t edge_linux_io_uring_execute_socket(
+        edge_linux_syscall_context_t *context,
+        const struct edge_linux_io_uring_sqe *submission) {
+    edge_linux_syscall_context_t nested = *context;
+    int receiving;
+
+    memset(nested.arguments, 0, sizeof(nested.arguments));
+    nested.route_status = EDGE_LINUX_SYSCALL_IMPLEMENTED;
+    switch (submission->opcode) {
+    case EDGE_LINUX_IORING_OP_SEND:
+    case EDGE_LINUX_IORING_OP_RECV:
+        if (submission->ioprio || submission->offset ||
+            submission->buffer_index || submission->splice_descriptor)
+            return -EDGE_LINUX_EINVAL;
+        receiving = submission->opcode == EDGE_LINUX_IORING_OP_RECV;
+        nested.id = receiving ? EDGE_LINUX_SYS_recvfrom :
+                                EDGE_LINUX_SYS_sendto;
+        nested.arguments[0] = (uint32_t)submission->descriptor;
+        nested.arguments[1] = submission->address;
+        nested.arguments[2] = submission->length;
+        nested.arguments[3] = submission->operation_flags |
+            (receiving ? 0u : EDGE_LINUX_MSG_NOSIGNAL);
+        return edge_linux_sys_socket_buffer(&nested);
+    case EDGE_LINUX_IORING_OP_SENDMSG:
+    case EDGE_LINUX_IORING_OP_RECVMSG:
+        if (submission->ioprio || submission->offset ||
+            submission->buffer_index || submission->splice_descriptor)
+            return -EDGE_LINUX_EINVAL;
+        receiving = submission->opcode == EDGE_LINUX_IORING_OP_RECVMSG;
+        nested.id = receiving ? EDGE_LINUX_SYS_recvmsg :
+                                EDGE_LINUX_SYS_sendmsg;
+        nested.arguments[0] = (uint32_t)submission->descriptor;
+        nested.arguments[1] = submission->address;
+        nested.arguments[2] = submission->operation_flags |
+            (receiving ? 0u : EDGE_LINUX_MSG_NOSIGNAL);
+        return edge_linux_sys_socket_message(&nested);
+    case EDGE_LINUX_IORING_OP_SHUTDOWN:
+        if (submission->ioprio || submission->offset ||
+            submission->address || submission->operation_flags ||
+            submission->buffer_index || submission->splice_descriptor)
+            return -EDGE_LINUX_EINVAL;
+        nested.id = EDGE_LINUX_SYS_shutdown;
+        nested.arguments[0] = (uint32_t)submission->descriptor;
+        nested.arguments[1] = submission->length;
+        return edge_linux_sys_socket_core(&nested);
+    default:
+        return -EDGE_LINUX_EINVAL;
+    }
+}
+
 static int32_t edge_linux_io_uring_execute(
         edge_linux_syscall_context_t *context,
         int32_t ring_id,
@@ -7167,6 +7228,14 @@ static int32_t edge_linux_io_uring_execute(
     case EDGE_LINUX_IORING_OP_OPENAT2:
         result = edge_linux_io_uring_execute_vfs(
             context, ring_id, submission);
+        break;
+    case EDGE_LINUX_IORING_OP_SENDMSG:
+    case EDGE_LINUX_IORING_OP_RECVMSG:
+    case EDGE_LINUX_IORING_OP_SEND:
+    case EDGE_LINUX_IORING_OP_RECV:
+    case EDGE_LINUX_IORING_OP_SHUTDOWN:
+        result = edge_linux_io_uring_execute_socket(
+            context, submission);
         break;
     default:
         result = -EDGE_LINUX_EINVAL;
@@ -7377,6 +7446,8 @@ static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
            opcode == EDGE_LINUX_IORING_OP_FSYNC ||
            opcode == EDGE_LINUX_IORING_OP_POLL_ADD ||
            opcode == EDGE_LINUX_IORING_OP_POLL_REMOVE ||
+           opcode == EDGE_LINUX_IORING_OP_SENDMSG ||
+           opcode == EDGE_LINUX_IORING_OP_RECVMSG ||
            opcode == EDGE_LINUX_IORING_OP_TIMEOUT ||
            opcode == EDGE_LINUX_IORING_OP_TIMEOUT_REMOVE ||
            opcode == EDGE_LINUX_IORING_OP_ASYNC_CANCEL ||
@@ -7386,7 +7457,10 @@ static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
            opcode == EDGE_LINUX_IORING_OP_STATX ||
            opcode == EDGE_LINUX_IORING_OP_READ ||
            opcode == EDGE_LINUX_IORING_OP_WRITE ||
-           opcode == EDGE_LINUX_IORING_OP_OPENAT2;
+           opcode == EDGE_LINUX_IORING_OP_SEND ||
+           opcode == EDGE_LINUX_IORING_OP_RECV ||
+           opcode == EDGE_LINUX_IORING_OP_OPENAT2 ||
+           opcode == EDGE_LINUX_IORING_OP_SHUTDOWN;
 }
 
 static int64_t edge_linux_sys_io_uring_register(
