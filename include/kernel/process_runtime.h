@@ -386,6 +386,7 @@ typedef struct kernel_linux_thread_state {
 
 typedef struct kernel_linux_rseq_binding {
     kernel_linux_thread_state_t *thread_state;
+    edge_linux_copy_from_user_fn copy_from_user;
     edge_linux_copy_to_user_fn copy_to_user;
     void *copy_context;
     uint32_t cpu_id;
@@ -501,6 +502,14 @@ int kernel_process_robust_list_get(int32_t pid, uint64_t *head,
                                    uint64_t *length);
 int kernel_current_rseq_register(uint64_t address, uint64_t length,
                                  uint64_t flags, uint64_t signature);
+int kernel_current_rseq_slice_prctl(uint64_t operation, uint64_t value);
+int kernel_current_rseq_slice_syscall_enter(int slice_yield_syscall,
+                                            int *force_reschedule);
+int kernel_current_rseq_slice_yield(void);
+int kernel_current_rseq_slice_interrupt(uint64_t now_us);
+int kernel_arch_current_request_reschedule(void);
+int kernel_arch_current_rseq_slice_timer_arm(uint32_t microseconds);
+void kernel_arch_current_rseq_slice_timer_cancel(void);
 int kernel_arch_current_linux_thread_state(
     kernel_linux_thread_state_t **state);
 int kernel_arch_process_linux_thread_state(

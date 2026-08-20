@@ -124,6 +124,21 @@ config IO_URING
       Enable Linux io_uring setup, shared submission and completion rings,
       registration, and asynchronous descriptor operations.
 
+config RSEQ
+    bool "Linux restartable sequences"
+    default y
+    help
+      Enable per-thread restartable-sequence registration, CPU and memory
+      concurrency identifiers, critical-section aborts, and Linux rseq UAPI.
+
+config RSEQ_SLICE_EXTENSION
+    bool "Restartable-sequence time-slice extension"
+    depends on RSEQ
+    default y
+    help
+      Enable Linux rseq v2 time-slice requests, PR_RSEQ_SLICE_EXTENSION,
+      and rseq_slice_yield over the shared scheduler integration.
+
 config BSD_DRIVER_FDT_INVENTORY
     bool "Inventory Device Tree devices for BSD drivers"
     depends on BSD_DRIVER_BRIDGE && DEVICE_TREE

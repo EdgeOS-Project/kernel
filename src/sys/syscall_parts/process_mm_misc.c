@@ -248,12 +248,36 @@ int edge_process_runtime_current_rseq_binding(
     task_t *task = process_current_task();
     if (!task || task->is_idle || !binding) return -EINVAL;
     binding->thread_state = &task->linux_thread;
+    binding->copy_from_user = x86_rseq_copy_from_user;
     binding->copy_to_user = x86_rseq_copy_to_user;
     binding->copy_context = task;
     binding->cpu_id = scheduler_cpu_id();
     binding->node_id = 0u;
     binding->mm_cid = 0u;
     return 0;
+}
+
+int kernel_arch_current_request_reschedule(void) {
+    task_t *task = process_current_task();
+
+    if (!task || task->is_idle) return -EINVAL;
+    task->need_resched = 1;
+    return 0;
+}
+
+int kernel_arch_current_rseq_slice_timer_arm(uint32_t microseconds) {
+#ifdef CONFIG_APIC
+    return apic_timer_arm_oneshot_us(microseconds);
+#else
+    (void)microseconds;
+    return -ENOTSUP;
+#endif
+}
+
+void kernel_arch_current_rseq_slice_timer_cancel(void) {
+#ifdef CONFIG_APIC
+    apic_timer_cancel_oneshot();
+#endif
 }
 
 void syscall_rseq_prepare_user_return(uint64_t *instruction_pointer) {

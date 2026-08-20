@@ -230,7 +230,17 @@ static void pit_set_rate(uint32_t hz) {
 static void timer_handler(REGISTERS *r) {
     uint32_t cpu = x86_smp_current_cpu_id();
 
+#ifdef CONFIG_APIC
+    if (r && r->int_no == APIC_TIMER_VECTOR &&
+        apic_timer_consume_oneshot()) {
+        task_t *task = process_current_task();
+
+        if (task && !task->is_idle) task->need_resched = 1;
+        return;
+    }
+#else
     (void)r;
+#endif
     if (edge_kernel_timer_runs_global_work(cpu)) {
         boottime_timer_tick(EDGE_KERNEL_TIMER_HZ);
 #ifdef CONFIG_BSD_DRIVER_BRIDGE

@@ -13,6 +13,9 @@
 #include "drivers/apic.h"
 #include "drivers/acpi.h"
 #include "drivers/pci.h"
+#include "arch/x86_64/smp.h"
+#include "kernel/smp.h"
+#include "kernel/timer_policy.h"
 #include "sys/boottime.h"
 #include "stdio.h"
 #include "sys/mmio.h"
@@ -71,6 +74,9 @@ static uint32_t g_lapic_id;
 static uint16_t g_allocated_vectors;
 static volatile uint32_t g_performance_interrupt_users;
 static volatile uint32_t g_apic_timer_initial;
+static volatile uint8_t g_apic_timer_oneshot[EDGE_SMP_MAX_CPUS];
+static volatile uint32_t g_apic_timer_oneshot_count[EDGE_SMP_MAX_CPUS];
+static volatile uint32_t g_apic_timer_period_saved[EDGE_SMP_MAX_CPUS];
 
 static uint64_t apic_read_tsc(void) {
     uint32_t low;
@@ -283,6 +289,77 @@ void apic_timer_resume_periodic(void) {
     lapic_write(APIC_REG_LVT_TIMER,
                 APIC_LVT_TIMER_PERIODIC | APIC_TIMER_VECTOR);
     lapic_write(APIC_REG_TIMER_INITIAL, initial);
+}
+
+int apic_timer_arm_oneshot_us(uint32_t microseconds) {
+    uint64_t scaled;
+    uint32_t count;
+    uint32_t cpu = x86_smp_current_cpu_id();
+    uint32_t initial = __atomic_load_n(
+        &g_apic_timer_initial, __ATOMIC_ACQUIRE);
+
+    if (!g_lapic || !initial || !microseconds ||
+        cpu >= EDGE_SMP_MAX_CPUS)
+        return -1;
+    scaled = (uint64_t)initial * microseconds * EDGE_KERNEL_TIMER_HZ;
+    count = (uint32_t)((scaled + 999999u) / 1000000u);
+    if (!count) count = 1u;
+    g_apic_timer_oneshot_count[cpu] = count;
+    g_apic_timer_period_saved[cpu] =
+        lapic_read(APIC_REG_TIMER_CURRENT);
+    if (!g_apic_timer_period_saved[cpu])
+        g_apic_timer_period_saved[cpu] = initial;
+    __atomic_store_n(&g_apic_timer_oneshot[cpu], 1u, __ATOMIC_RELEASE);
+    lapic_write(APIC_REG_LVT_TIMER, APIC_TIMER_VECTOR);
+    lapic_write(APIC_REG_TIMER_INITIAL, count);
+    return 0;
+}
+
+void apic_timer_cancel_oneshot(void) {
+    uint32_t cpu = x86_smp_current_cpu_id();
+    uint8_t state;
+    uint32_t current;
+    uint32_t elapsed;
+    uint32_t periodic_remaining;
+
+    if (cpu >= EDGE_SMP_MAX_CPUS) return;
+    state = __atomic_exchange_n(&g_apic_timer_oneshot[cpu], 0u,
+                                __ATOMIC_ACQ_REL);
+    if (state != 1u) return;
+    current = lapic_read(APIC_REG_TIMER_CURRENT);
+    elapsed = current < g_apic_timer_oneshot_count[cpu] ?
+              g_apic_timer_oneshot_count[cpu] - current :
+              g_apic_timer_oneshot_count[cpu];
+    periodic_remaining = g_apic_timer_period_saved[cpu];
+    periodic_remaining = periodic_remaining > elapsed ?
+                         periodic_remaining - elapsed : 1u;
+    __atomic_store_n(&g_apic_timer_oneshot[cpu], 2u, __ATOMIC_RELEASE);
+    lapic_write(APIC_REG_LVT_TIMER, APIC_TIMER_VECTOR);
+    lapic_write(APIC_REG_TIMER_INITIAL, periodic_remaining);
+}
+
+int apic_timer_consume_oneshot(void) {
+    uint32_t cpu = x86_smp_current_cpu_id();
+    uint8_t state;
+    uint32_t elapsed;
+    uint32_t periodic_remaining;
+
+    if (cpu >= EDGE_SMP_MAX_CPUS) return 0;
+    state = __atomic_exchange_n(&g_apic_timer_oneshot[cpu], 0u,
+                                __ATOMIC_ACQ_REL);
+    if (!state) return 0;
+    if (state == 2u) {
+        apic_timer_resume_periodic();
+        return 0;
+    }
+    elapsed = g_apic_timer_oneshot_count[cpu];
+    periodic_remaining = g_apic_timer_period_saved[cpu];
+    periodic_remaining = periodic_remaining > elapsed ?
+                         periodic_remaining - elapsed : 1u;
+    __atomic_store_n(&g_apic_timer_oneshot[cpu], 2u, __ATOMIC_RELEASE);
+    lapic_write(APIC_REG_LVT_TIMER, APIC_TIMER_VECTOR);
+    lapic_write(APIC_REG_TIMER_INITIAL, periodic_remaining);
+    return 1;
 }
 
 int apic_available(void) {

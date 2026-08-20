@@ -33,6 +33,18 @@
       "category": "clock source",
       "reason": "Snapshots the architecture counter state used by the shared vDSO time conversion."
     },
+    "kernel_arch_current_request_reschedule": {
+      "category": "scheduler entry mechanics",
+      "reason": "Marks the native current task or per-CPU target so each architecture schedules after the shared syscall policy completes."
+    },
+    "kernel_arch_current_rseq_slice_timer_arm": {
+      "category": "scheduler entry mechanics",
+      "reason": "Programs the native per-CPU high-resolution timer after the shared rseq state machine grants a bounded slice."
+    },
+    "kernel_arch_current_rseq_slice_timer_cancel": {
+      "category": "scheduler entry mechanics",
+      "reason": "Restores the native periodic timer after shared rseq syscall entry or revocation ends a slice grant."
+    },
     "kernel_arch_scheduler_cpu_stats": {
       "category": "CPU topology",
       "reason": "Snapshots counters owned by each architecture scheduler while common code defines their Linux-visible format."

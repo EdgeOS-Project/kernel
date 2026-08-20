@@ -54,6 +54,7 @@ MECHANISM_CATEGORIES = {
     "console hardware",
     "CPU topology",
     "register ABI conversion",
+    "scheduler entry mechanics",
     "signal frame mechanics",
 }
 

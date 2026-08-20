@@ -1245,9 +1245,19 @@ struct edge_linux_netdev_info {
 
 #define EDGE_LINUX_AT_RSEQ_FEATURE_SIZE 27u
 #define EDGE_LINUX_AT_RSEQ_ALIGN 28u
-#define EDGE_LINUX_RSEQ_FEATURE_SIZE 28u
+#define EDGE_LINUX_RSEQ_LEGACY_SIZE 32u
+#define EDGE_LINUX_RSEQ_FEATURE_SIZE 33u
 #define EDGE_LINUX_RSEQ_ALIGN 32u
 #define EDGE_LINUX_RSEQ_FLAG_UNREGISTER 1u
+#define EDGE_LINUX_RSEQ_FLAG_SLICE_EXT_DEFAULT_ON 2u
+#define EDGE_LINUX_RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE (1u << 4)
+#define EDGE_LINUX_RSEQ_CS_FLAG_SLICE_EXT_ENABLED (1u << 5)
+
+#define EDGE_LINUX_PR_RSEQ_SLICE_EXTENSION 79u
+#define EDGE_LINUX_PR_RSEQ_SLICE_EXTENSION_GET 1u
+#define EDGE_LINUX_PR_RSEQ_SLICE_EXTENSION_SET 2u
+#define EDGE_LINUX_PR_RSEQ_SLICE_EXT_ENABLE 1u
+#define EDGE_LINUX_RSEQ_SLICE_EXTENSION_US 5u
 
 struct edge_linux_sched_param {
     int32_t sched_priority;
@@ -1508,7 +1518,8 @@ struct edge_linux_rseq {
     uint32_t flags;
     uint32_t node_id;
     uint32_t mm_cid;
-    uint32_t reserved;
+    uint32_t slice_ctrl;
+    uint8_t reserved;
 } __attribute__((aligned(32)));
 
 struct edge_linux_rseq_state {
@@ -1518,7 +1529,12 @@ struct edge_linux_rseq_state {
     uint32_t cpu_id;
     uint32_t node_id;
     uint32_t mm_cid;
+    uint64_t slice_expires_us;
     uint8_t ids_valid;
+    uint8_t version;
+    uint8_t slice_enabled;
+    uint8_t slice_granted;
+    uint8_t slice_yielded;
 };
 
 _Static_assert(sizeof(struct edge_linux_clone_args) == 88,
@@ -1614,8 +1630,8 @@ _Static_assert(offsetof(struct edge_futex_waitv, flags) == 16,
                "Linux futex_waitv flags offset");
 _Static_assert(sizeof(struct edge_linux_rseq_cs) == 32,
                "Linux rseq_cs ABI layout");
-_Static_assert(sizeof(struct edge_linux_rseq) == 32,
-               "Linux legacy rseq ABI layout");
+_Static_assert(sizeof(struct edge_linux_rseq) == 64,
+               "Linux extensible rseq ABI allocation layout");
 _Static_assert(offsetof(struct edge_linux_rseq, cpu_id) == 4,
                "Linux rseq cpu_id offset");
 _Static_assert(offsetof(struct edge_linux_rseq, rseq_cs) == 8,
@@ -1624,6 +1640,8 @@ _Static_assert(offsetof(struct edge_linux_rseq, flags) == 16,
                "Linux rseq flags offset");
 _Static_assert(offsetof(struct edge_linux_rseq, mm_cid) == 24,
                "Linux rseq mm_cid offset");
+_Static_assert(offsetof(struct edge_linux_rseq, slice_ctrl) == 28,
+               "Linux rseq slice control offset");
 _Static_assert(sizeof(struct edge_linux_ethtool_value) == 8,
                "Linux ethtool_value ABI layout");
 _Static_assert(sizeof(struct edge_linux_ethtool_cmd) == 44,
@@ -1696,7 +1714,8 @@ _Static_assert(sizeof(struct edge_linux_sock_fprog) == 16,
                "Linux sock_fprog ABI layout");
 _Static_assert(sizeof(struct edge_linux_linger) == 8,
                "Linux linger ABI layout");
-_Static_assert(offsetof(struct edge_linux_rseq, reserved) ==
+_Static_assert(offsetof(struct edge_linux_rseq, reserved) +
+                   sizeof(((struct edge_linux_rseq *)0)->reserved) ==
                    EDGE_LINUX_RSEQ_FEATURE_SIZE,
                "Linux rseq feature size");
 
@@ -1731,6 +1750,19 @@ int edge_linux_rseq_prepare_user_return(
     uint32_t cpu_id, uint32_t node_id, uint32_t mm_cid,
     edge_linux_copy_from_user_fn copy_from_user,
     edge_linux_copy_to_user_fn copy_to_user, void *copy_context);
+int edge_linux_rseq_slice_prctl(
+    struct edge_linux_rseq_state *state, uint64_t operation,
+    uint64_t value, edge_linux_copy_from_user_fn copy_from_user,
+    edge_linux_copy_to_user_fn copy_to_user, void *copy_context);
+int edge_linux_rseq_slice_interrupt(
+    struct edge_linux_rseq_state *state, uint64_t now_us,
+    edge_linux_copy_from_user_fn copy_from_user,
+    edge_linux_copy_to_user_fn copy_to_user, void *copy_context);
+int edge_linux_rseq_slice_syscall_enter(
+    struct edge_linux_rseq_state *state, int slice_yield_syscall,
+    int *force_reschedule, edge_linux_copy_from_user_fn copy_from_user,
+    edge_linux_copy_to_user_fn copy_to_user, void *copy_context);
+int edge_linux_rseq_slice_yield(struct edge_linux_rseq_state *state);
 
 /*
  * Handle the architecture-independent, read-only ethtool queries used by

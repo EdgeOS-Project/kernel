@@ -22,6 +22,7 @@
 #include "kernel/timer_policy.h"
 #include "kernel/smp.h"
 #include "arch/arm64/smp.h"
+#include "arch/arm64/interrupt.h"
 #include "arch/arm64/platform.h"
 #include "kernel/arch_cpu.h"
 #include "kernel/arch_user.h"
@@ -6015,6 +6016,8 @@ void arch_syslog_notify_data(void) {
     }
 }
 
+static int task_find_runnable(void);
+
 int edge_process_runtime_current_rseq_binding(
     kernel_linux_rseq_binding_t *binding) {
     kernel_task_t *task = current_task();
@@ -6022,12 +6025,29 @@ int edge_process_runtime_current_rseq_binding(
     if (!task || !binding) return -LINUX_EINVAL;
     cpu_id = edgeos_arm64_smp_current_cpu();
     binding->thread_state = &task->linux_thread;
+    binding->copy_from_user = task_rseq_copy_from_user;
     binding->copy_to_user = task_rseq_copy_to_user;
     binding->copy_context = task;
     binding->cpu_id = cpu_id;
     binding->node_id = 0u;
     binding->mm_cid = cpu_id;
     return 0;
+}
+
+int kernel_arch_current_request_reschedule(void) {
+    int next = task_find_runnable();
+
+    if (next >= 0)
+        g_reschedule_target_plus_one = (uint16_t)((uint32_t)next + 1u);
+    return 0;
+}
+
+int kernel_arch_current_rseq_slice_timer_arm(uint32_t microseconds) {
+    return edgeos_arm64_timer_arm_rseq_slice(microseconds);
+}
+
+void kernel_arch_current_rseq_slice_timer_cancel(void) {
+    edgeos_arm64_timer_cancel_rseq_slice();
 }
 
 static void task_rseq_prepare_resume(kernel_task_t *task,
@@ -21416,6 +21436,13 @@ void kernel_preempt(arch_user_frame_t *frame) {
                              __ATOMIC_RELEASE);
         next = task_find_runnable();
     }
+    if (task->linux_thread.rseq.slice_granted &&
+        now_us >= task->linux_thread.rseq.slice_expires_us) {
+        int slice_status = kernel_current_rseq_slice_interrupt(UINT64_MAX);
+
+        if (slice_status < 0)
+            (void)task_signal_send_thread(task->pid, EDGE_LINUX_SIGSEGV);
+    }
     if (next < 0 && current_runnable && !deferred_due) return;
     if (!deferred_due && next >= 0 && current_runnable &&
         next < (int)KERNEL_BOOTSTRAP_MAX_TASKS) {
@@ -21456,6 +21483,22 @@ void kernel_preempt(arch_user_frame_t *frame) {
                        0u, now_us)) {
             return;
         }
+    }
+    if (task->linux_thread.rseq.slice_granted &&
+        (deferred_due || !current_runnable ||
+         task_signal_return_work_pending(task))) {
+        int slice_status = kernel_current_rseq_slice_interrupt(UINT64_MAX);
+        if (slice_status < 0)
+            (void)task_signal_send_thread(task->pid, EDGE_LINUX_SIGSEGV);
+    } else if (!deferred_due && current_runnable && next >= 0 &&
+               !task_signal_return_work_pending(task)) {
+        int slice_status = kernel_current_rseq_slice_interrupt(now_us);
+        if (slice_status > 0) {
+            g_reschedule_target_plus_one = 0;
+            return;
+        }
+        if (slice_status < 0)
+            (void)task_signal_send_thread(task->pid, EDGE_LINUX_SIGSEGV);
     }
     g_reschedule_target_plus_one = 0;
     arch_copy_frame(&task->frame, frame);

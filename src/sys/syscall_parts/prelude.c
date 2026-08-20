@@ -126,6 +126,7 @@
 #include "vfs/readahead.h"
 #include "vfs/vfs.h"
 #include "block/block.h"
+#include "drivers/apic.h"
 #include "lwip/udp.h"
 #include "lwip/tcp.h"
 #include "lwip/priv/tcp_priv.h"

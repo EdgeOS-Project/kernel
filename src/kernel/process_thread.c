@@ -11,6 +11,7 @@
 int kernel_arch_current_rseq_binding(kernel_linux_rseq_binding_t *binding) {
     if (!binding) return -EDGE_LINUX_EINVAL;
     binding->thread_state = 0;
+    binding->copy_from_user = 0;
     binding->copy_to_user = 0;
     binding->copy_context = 0;
     binding->cpu_id = 0;
@@ -103,4 +104,70 @@ int kernel_current_rseq_register(uint64_t address, uint64_t length,
         &binding.thread_state->rseq, address, length, flags, signature,
         binding.cpu_id, binding.node_id, binding.mm_cid,
         binding.copy_to_user, binding.copy_context);
+}
+
+int kernel_current_rseq_slice_prctl(uint64_t operation, uint64_t value) {
+    kernel_linux_rseq_binding_t binding;
+
+    if (kernel_arch_current_rseq_binding(&binding) < 0 ||
+        !binding.thread_state)
+        return -EDGE_LINUX_EINVAL;
+    return edge_linux_rseq_slice_prctl(
+        &binding.thread_state->rseq, operation, value,
+        binding.copy_from_user, binding.copy_to_user,
+        binding.copy_context);
+}
+
+int kernel_current_rseq_slice_syscall_enter(int slice_yield_syscall,
+                                            int *force_reschedule) {
+    kernel_linux_rseq_binding_t binding;
+
+    if (kernel_arch_current_rseq_binding(&binding) < 0 ||
+        !binding.thread_state) {
+        if (force_reschedule) *force_reschedule = 0;
+        return 0;
+    }
+    if (binding.thread_state->rseq.slice_granted)
+        kernel_arch_current_rseq_slice_timer_cancel();
+    return edge_linux_rseq_slice_syscall_enter(
+        &binding.thread_state->rseq, slice_yield_syscall,
+        force_reschedule, binding.copy_from_user, binding.copy_to_user,
+        binding.copy_context);
+}
+
+int kernel_current_rseq_slice_yield(void) {
+    kernel_linux_rseq_binding_t binding;
+
+    if (kernel_arch_current_rseq_binding(&binding) < 0 ||
+        !binding.thread_state)
+        return 0;
+    return edge_linux_rseq_slice_yield(&binding.thread_state->rseq);
+}
+
+int kernel_current_rseq_slice_interrupt(uint64_t now_us) {
+    kernel_linux_rseq_binding_t binding;
+    int was_granted;
+    int status;
+
+    if (kernel_arch_current_rseq_binding(&binding) < 0 ||
+        !binding.thread_state)
+        return 0;
+    was_granted = binding.thread_state->rseq.slice_granted ? 1 : 0;
+    status = edge_linux_rseq_slice_interrupt(
+        &binding.thread_state->rseq, now_us,
+        binding.copy_from_user, binding.copy_to_user,
+        binding.copy_context);
+    if (status > 0 && !was_granted) {
+        if (kernel_arch_current_rseq_slice_timer_arm(
+                EDGE_LINUX_RSEQ_SLICE_EXTENSION_US) < 0) {
+            (void)edge_linux_rseq_slice_interrupt(
+                &binding.thread_state->rseq, UINT64_MAX,
+                binding.copy_from_user, binding.copy_to_user,
+                binding.copy_context);
+            return 0;
+        }
+    } else if (was_granted && status <= 0) {
+        kernel_arch_current_rseq_slice_timer_cancel();
+    }
+    return status;
 }

@@ -72,6 +72,10 @@
 #define ARM64_MPIDR_USER_SAFE (1ULL << 31)
 
 extern char edgeos_arm64_vectors[];
+static volatile uint8_t g_rseq_slice_timer_armed[EDGE_SMP_MAX_CPUS];
+static volatile uint64_t g_rseq_slice_timer_ticks[EDGE_SMP_MAX_CPUS];
+static volatile uint64_t g_rseq_period_saved_ticks[EDGE_SMP_MAX_CPUS];
+static volatile uint64_t g_rseq_period_resume_ticks[EDGE_SMP_MAX_CPUS];
 
 #ifndef EDGEOS_ARM64_SHARED_OFW
 typedef struct {
@@ -631,6 +635,70 @@ void edgeos_arm64_timer_leave_idle(void) {
         :: "r"(first_interval), "r"(control));
 }
 
+int edgeos_arm64_timer_arm_rseq_slice(uint32_t microseconds) {
+    uint64_t frequency;
+    uint64_t ticks;
+    int64_t periodic_remaining;
+    uint64_t control = 1u;
+    uint32_t cpu = edgeos_arm64_smp_current_cpu();
+
+    if (!microseconds || cpu >= EDGE_SMP_MAX_CPUS) return -1;
+    __asm__ __volatile__("mrs %0, cntfrq_el0" : "=r"(frequency));
+    ticks = (frequency * microseconds + 999999u) / 1000000u;
+    if (!ticks) ticks = 1u;
+    __asm__ __volatile__("mrs %0, cntv_tval_el0" : "=r"(periodic_remaining));
+    if (periodic_remaining <= 0)
+        periodic_remaining = (int64_t)(frequency / EDGE_KERNEL_TIMER_HZ);
+    g_rseq_slice_timer_ticks[cpu] = ticks;
+    g_rseq_period_saved_ticks[cpu] = (uint64_t)periodic_remaining;
+    __atomic_store_n(&g_rseq_slice_timer_armed[cpu], 1u,
+                     __ATOMIC_RELEASE);
+    __asm__ __volatile__(
+        "msr cntv_tval_el0, %0\n\t"
+        "msr cntv_ctl_el0, %1\n\t"
+        "isb"
+        :: "r"(ticks), "r"(control));
+    return 0;
+}
+
+void edgeos_arm64_timer_cancel_rseq_slice(void) {
+    int64_t slice_remaining;
+    uint64_t slice_ticks;
+    uint64_t elapsed;
+    uint64_t periodic_remaining;
+    uint32_t cpu = edgeos_arm64_smp_current_cpu();
+
+    if (cpu >= EDGE_SMP_MAX_CPUS ||
+        !__atomic_exchange_n(&g_rseq_slice_timer_armed[cpu], 0u,
+                             __ATOMIC_ACQ_REL))
+        return;
+    __asm__ __volatile__("mrs %0, cntv_tval_el0" : "=r"(slice_remaining));
+    slice_ticks = g_rseq_slice_timer_ticks[cpu];
+    elapsed = slice_remaining > 0 && (uint64_t)slice_remaining < slice_ticks ?
+              slice_ticks - (uint64_t)slice_remaining : slice_ticks;
+    periodic_remaining = g_rseq_period_saved_ticks[cpu];
+    periodic_remaining = periodic_remaining > elapsed ?
+                         periodic_remaining - elapsed : 1u;
+    __asm__ __volatile__("msr cntv_tval_el0, %0\n\tisb" ::
+                         "r"(periodic_remaining));
+}
+
+int edgeos_arm64_timer_consume_rseq_slice(void) {
+    uint32_t cpu = edgeos_arm64_smp_current_cpu();
+    uint64_t elapsed;
+    uint64_t periodic_remaining;
+
+    if (cpu >= EDGE_SMP_MAX_CPUS) return 0;
+    if (!__atomic_exchange_n(&g_rseq_slice_timer_armed[cpu], 0u,
+                             __ATOMIC_ACQ_REL))
+        return 0;
+    elapsed = g_rseq_slice_timer_ticks[cpu];
+    periodic_remaining = g_rseq_period_saved_ticks[cpu];
+    g_rseq_period_resume_ticks[cpu] = periodic_remaining > elapsed ?
+                                      periodic_remaining - elapsed : 1u;
+    return 1;
+}
+
 void edgeos_arm64_exceptions_init(void) {
     uint64_t vectors = (uint64_t)(uintptr_t)edgeos_arm64_vectors;
     __asm__ __volatile__("msr vbar_el1, %0\n\tisb" :: "r"(vectors) : "memory");
@@ -1177,6 +1245,7 @@ void edgeos_arm64_irq_handler(edgeos_arm64_exception_frame_t *frame) {
     uint64_t freq;
     uint64_t tval;
     int execution_locked = 0;
+    int rseq_slice_expired = 0;
 
     if (frame && (frame->spsr & 0xfu) == 0u) kernel_save_current_fp();
     if (g_gic_version == 2u)
@@ -1187,6 +1256,7 @@ void edgeos_arm64_irq_handler(edgeos_arm64_exception_frame_t *frame) {
     if (intid != ARM64_VIRTUAL_TIMER_PPI)
         edgeos_arm64_timer_leave_idle();
     if (intid == ARM64_VIRTUAL_TIMER_PPI) {
+        rseq_slice_expired = edgeos_arm64_timer_consume_rseq_slice();
         execution_locked = edgeos_arm64_kernel_execution_try_enter();
         /*
          * CPU 0 advances the global timeout queues, but every CPU owns its
@@ -1209,7 +1279,7 @@ void edgeos_arm64_irq_handler(edgeos_arm64_exception_frame_t *frame) {
                 edgeos_arm64_kernel_execution_enter();
             execution_locked = 1;
         }
-        if (execution_locked) {
+        if (execution_locked && !rseq_slice_expired) {
             if (edgeos_arm64_smp_current_cpu() == 0u) {
                 ++g_timer_ticks;
                 fb_console_request_tick_from_irq((uint32_t)g_timer_ticks);
@@ -1219,7 +1289,13 @@ void edgeos_arm64_irq_handler(edgeos_arm64_exception_frame_t *frame) {
                 frame && (frame->spsr & 0xfu) == 0u);
         }
         __asm__ __volatile__("mrs %0, cntfrq_el0" : "=r"(freq));
-        tval = freq / EDGE_KERNEL_TIMER_HZ;
+        if (rseq_slice_expired)
+            tval = __atomic_exchange_n(
+                &g_rseq_period_resume_ticks[
+                    edgeos_arm64_smp_current_cpu()], 0u,
+                __ATOMIC_ACQ_REL);
+        else
+            tval = freq / EDGE_KERNEL_TIMER_HZ;
         if (!tval) tval = 1;
         __asm__ __volatile__("msr cntv_tval_el0, %0" :: "r"(tval));
     } else if (intid == ARM64_RESCHEDULE_SGI) {

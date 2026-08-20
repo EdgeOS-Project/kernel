@@ -37,6 +37,7 @@
 #include "kernel/linux_prctl.h"
 #include "kernel/linux_seek.h"
 #include "kernel/linux_syscall.h"
+#include "sys/boottime.h"
 #include "kernel/memfd_runtime.h"
 #include "kernel/linux_time.h"
 #include "kernel/linux_utsname.h"
@@ -1684,9 +1685,35 @@ static int64_t edge_linux_sys_robust_list(
 
 static int64_t edge_linux_sys_rseq(
     edge_linux_syscall_context_t *context) {
+#ifndef CONFIG_RSEQ
+    (void)context;
+    return -EDGE_LINUX_ENOSYS;
+#else
     return kernel_current_rseq_register(
         context->arguments[0], context->arguments[1],
         context->arguments[2], context->arguments[3]);
+#endif
+}
+
+static int64_t edge_linux_sys_rseq_slice_yield(
+    edge_linux_syscall_context_t *context) {
+    (void)context;
+#ifndef CONFIG_RSEQ_SLICE_EXTENSION
+    return -EDGE_LINUX_ENOSYS;
+#else
+    return kernel_current_rseq_slice_yield();
+#endif
+}
+
+static void edge_linux_rseq_force_sigsegv(void) {
+    uint8_t information[KERNEL_SIGNAL_INFO_SIZE];
+    int32_t pid = kernel_current_pid();
+
+    if (pid <= 0) return;
+    kernel_signal_info_build_sender(
+        information, EDGE_LINUX_SIGSEGV, 128, 0, 0u, 0u);
+    (void)kernel_linux_signal_send(
+        pid, EDGE_LINUX_SIGSEGV, 1, information);
 }
 
 static int64_t edge_linux_sys_membarrier(
@@ -3668,6 +3695,14 @@ static int64_t edge_linux_sys_prctl(
             if (argument2 || argument3 || argument4 || argument5)
                 return -EDGE_LINUX_EINVAL;
             return state.thp_disabled;
+        case EDGE_LINUX_PR_RSEQ_SLICE_EXTENSION: {
+            if (argument4 || argument5) return -EDGE_LINUX_EINVAL;
+            int result = kernel_current_rseq_slice_prctl(
+                argument2, argument3);
+            if (result == -EDGE_LINUX_EFAULT)
+                edge_linux_rseq_force_sigsegv();
+            return result;
+        }
         case EDGE_LINUX_PR_SET_VMA:
             /* VMA naming is not reported as successful until it is retained. */
             return -EDGE_LINUX_EINVAL;
@@ -14828,10 +14863,23 @@ static int64_t edge_linux_sys_sched_priority_limit(
 }
 
 int edge_linux_syscall_dispatch(edge_linux_syscall_context_t *context) {
+    int force_reschedule;
+    int rseq_status;
+
     if (!context) return EDGE_LINUX_SYSCALL_NOT_HANDLED;
     if (edge_linux_syscall_map(context->architecture, context->raw_number,
                                &context->id, &context->route_status) < 0)
         return EDGE_LINUX_SYSCALL_NOT_HANDLED;
+    rseq_status = kernel_current_rseq_slice_syscall_enter(
+        context->id == EDGE_LINUX_SYS_rseq_slice_yield,
+        &force_reschedule);
+    if (rseq_status < 0) {
+        edge_linux_rseq_force_sigsegv();
+        context->result = rseq_status;
+        return EDGE_LINUX_SYSCALL_HANDLED;
+    }
+    if (force_reschedule)
+        (void)kernel_arch_current_request_reschedule();
     if (context->route_status == EDGE_LINUX_SYSCALL_ENOSYS) {
         context->result = -EDGE_LINUX_ENOSYS;
         return EDGE_LINUX_SYSCALL_HANDLED;

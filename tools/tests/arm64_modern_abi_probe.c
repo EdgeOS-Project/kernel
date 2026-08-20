@@ -675,9 +675,9 @@ static void test_pkeys_and_rseq(void) {
           "pkey_free rejects an unallocated key");
     if (page != MAP_FAILED) munmap(page, 4096);
 
-    check(getauxval(AT_RSEQ_FEATURE_SIZE) == 28 &&
+    check(getauxval(AT_RSEQ_FEATURE_SIZE) == 33 &&
               getauxval(AT_RSEQ_ALIGN) == 32,
-          "ELF auxv advertises the supported legacy rseq ABI");
+          "ELF auxv advertises the supported extensible rseq ABI");
     child = fork();
     if (child == 0) {
         struct rseq_abi area;

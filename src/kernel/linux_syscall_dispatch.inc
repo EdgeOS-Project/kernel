@@ -399,6 +399,9 @@ case EDGE_LINUX_SYS_set_robust_list:
 case EDGE_LINUX_SYS_rseq:
     context->result = edge_linux_sys_rseq(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_rseq_slice_yield:
+    context->result = edge_linux_sys_rseq_slice_yield(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_sched_get_priority_max:
 case EDGE_LINUX_SYS_sched_get_priority_min:
     context->result = edge_linux_sys_sched_priority_limit(context);

@@ -10,6 +10,7 @@
 #include "fb.h"
 #include "serial_console.h"
 #include "sys/process.h"
+#include "sys/boottime.h"
 #include "sys/scheduler.h"
 #include "sys/syscall.h"
 #include "kernel/linux_abi.h"
@@ -369,21 +370,38 @@ void isr_irq_handler(REGISTERS *reg) {
                    g_user_timer_seen_log_budget);
         }
         if (t && !t->is_idle && t->need_resched) {
-            if (isr_preempt_trace_task(t) &&
-                g_user_timer_preempt_log_budget > 0) {
-                --g_user_timer_preempt_log_budget;
-                printf("[irq-preempt] cpu=%u pid=%d cmd=%s rip=0x%x in_sys=%u budget=%u\n",
-                       x86_smp_current_cpu_id(),
-                       t->pid, t->name, (uint32_t)reg->rip,
-                       (unsigned)t->in_syscall, g_user_timer_preempt_log_budget);
+            uint64_t pending = 0;
+            int signal_work =
+                kernel_current_signal_pending(&pending) == 0 && pending;
+            int slice_status = signal_work ?
+                (t->linux_thread.rseq.slice_granted ?
+                    kernel_current_rseq_slice_interrupt(UINT64_MAX) : 0) :
+                kernel_current_rseq_slice_interrupt(
+                    boottime_monotonic_us());
+
+            if (slice_status > 0) {
+                t->need_resched = 0;
+            } else {
+                if (slice_status < 0)
+                    (void)process_send_signal(t->pid, EDGE_LINUX_SIGSEGV);
+                if (isr_preempt_trace_task(t) &&
+                    g_user_timer_preempt_log_budget > 0) {
+                    --g_user_timer_preempt_log_budget;
+                    printf("[irq-preempt] cpu=%u pid=%d cmd=%s rip=0x%x in_sys=%u budget=%u\n",
+                           x86_smp_current_cpu_id(),
+                           t->pid, t->name, (uint32_t)reg->rip,
+                           (unsigned)t->in_syscall,
+                           g_user_timer_preempt_log_budget);
+                }
+                scheduler_yield_from_irq();
+                /*
+                 * The IRQ continuation resumes on the interrupted task's
+                 * original kernel stack and still owns its userspace frame.
+                 * Apply Linux rseq abort semantics before iret returns to the
+                 * critical section.
+                 */
+                syscall_rseq_prepare_user_return(&reg->rip);
             }
-            scheduler_yield_from_irq();
-            /*
-             * The IRQ continuation resumes on the interrupted task's original
-             * kernel stack and still owns its userspace frame.  Apply Linux
-             * rseq abort semantics before iret returns to the critical section.
-             */
-            syscall_rseq_prepare_user_return(&reg->rip);
         }
     }
     /*

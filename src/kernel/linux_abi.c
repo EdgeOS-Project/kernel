@@ -8,6 +8,7 @@
 #include "string.h"
 
 #define EDGE_LINUX_E2BIG 7
+#define EDGE_LINUX_ENXIO 6
 #define EDGE_LINUX_EFAULT 14
 #define EDGE_LINUX_EBUSY 16
 #define EDGE_LINUX_EINVAL 22
@@ -62,7 +63,12 @@ void edge_linux_rseq_state_reset(struct edge_linux_rseq_state *state) {
     state->cpu_id = 0;
     state->node_id = 0;
     state->mm_cid = 0;
+    state->slice_expires_us = 0;
     state->ids_valid = 0;
+    state->version = 0;
+    state->slice_enabled = 0;
+    state->slice_granted = 0;
+    state->slice_yielded = 0;
 }
 
 static int edge_linux_rseq_write_u32(
@@ -107,11 +113,11 @@ int edge_linux_rseq_register(
     edge_linux_copy_to_user_fn copy_to_user, void *copy_context) {
     uint32_t zero32 = 0;
     uint32_t uninitialized = UINT32_MAX;
+    uint32_t rseq_flags = 0;
     uint64_t zero64 = 0;
+    uint8_t version;
 
     if (!state || !copy_to_user) return -EDGE_LINUX_EINVAL;
-    if (flags & ~EDGE_LINUX_RSEQ_FLAG_UNREGISTER)
-        return -EDGE_LINUX_EINVAL;
     if (flags & EDGE_LINUX_RSEQ_FLAG_UNREGISTER) {
         if (flags != EDGE_LINUX_RSEQ_FLAG_UNREGISTER || !state->address ||
             state->address != user_address || state->length != user_length)
@@ -133,23 +139,41 @@ int edge_linux_rseq_register(
             return -EDGE_LINUX_EPERM;
         return -EDGE_LINUX_EBUSY;
     }
+    if (flags & ~EDGE_LINUX_RSEQ_FLAG_SLICE_EXT_DEFAULT_ON)
+        return -EDGE_LINUX_EINVAL;
     if (!user_address) return -EDGE_LINUX_EFAULT;
-    if (user_length != sizeof(struct edge_linux_rseq) ||
+    if (user_length < EDGE_LINUX_RSEQ_LEGACY_SIZE ||
+        (user_length != EDGE_LINUX_RSEQ_LEGACY_SIZE &&
+         user_length < EDGE_LINUX_RSEQ_FEATURE_SIZE) ||
         (user_address & (EDGE_LINUX_RSEQ_ALIGN - 1u)))
         return -EDGE_LINUX_EINVAL;
+    version = user_length == EDGE_LINUX_RSEQ_LEGACY_SIZE ? 1u : 2u;
+#ifdef CONFIG_RSEQ_SLICE_EXTENSION
+    if (version > 1u) {
+        rseq_flags = EDGE_LINUX_RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE;
+        if (flags & EDGE_LINUX_RSEQ_FLAG_SLICE_EXT_DEFAULT_ON)
+            rseq_flags |= EDGE_LINUX_RSEQ_CS_FLAG_SLICE_EXT_ENABLED;
+    }
+#endif
     if (copy_to_user(copy_context, user_address + 8u, &zero64,
                      sizeof(zero64)) < 0 ||
-        copy_to_user(copy_context, user_address + 16u, &zero32,
-                     sizeof(zero32)) < 0 ||
+        copy_to_user(copy_context, user_address + 16u, &rseq_flags,
+                     sizeof(rseq_flags)) < 0 ||
         copy_to_user(copy_context, user_address + 20u, &zero32,
                      sizeof(zero32)) < 0 ||
         copy_to_user(copy_context, user_address + 24u, &zero32,
-                     sizeof(zero32)) < 0)
+                     sizeof(zero32)) < 0 ||
+        (version > 1u &&
+         copy_to_user(copy_context, user_address + 28u, &zero32,
+                      sizeof(zero32)) < 0))
         return -EDGE_LINUX_EFAULT;
 
     state->address = user_address;
     state->length = (uint32_t)user_length;
     state->signature = (uint32_t)signature;
+    state->version = version;
+    state->slice_enabled =
+        (rseq_flags & EDGE_LINUX_RSEQ_CS_FLAG_SLICE_EXT_ENABLED) != 0u;
     if (edge_linux_rseq_update_ids(state, cpu_id, node_id, mm_cid,
                                    copy_to_user, copy_context) < 0) {
         edge_linux_rseq_state_reset(state);
@@ -201,6 +225,131 @@ int edge_linux_rseq_prepare_user_return(
         return -EDGE_LINUX_EINVAL;
     *instruction_pointer = critical.abort_ip;
     return 0;
+}
+
+int edge_linux_rseq_slice_prctl(
+    struct edge_linux_rseq_state *state, uint64_t operation,
+    uint64_t value, edge_linux_copy_from_user_fn copy_from_user,
+    edge_linux_copy_to_user_fn copy_to_user, void *copy_context) {
+#ifndef CONFIG_RSEQ_SLICE_EXTENSION
+    (void)state;
+    (void)operation;
+    (void)value;
+    (void)copy_from_user;
+    (void)copy_to_user;
+    (void)copy_context;
+    return -EDGE_LINUX_EOPNOTSUPP;
+#else
+    uint32_t user_flags;
+    uint32_t expected_flags;
+    int enable;
+
+    if (!state) return -EDGE_LINUX_EINVAL;
+    if (operation == EDGE_LINUX_PR_RSEQ_SLICE_EXTENSION_GET)
+        return value ? -EDGE_LINUX_EINVAL : (state->slice_enabled ? 1 : 0);
+    if (operation != EDGE_LINUX_PR_RSEQ_SLICE_EXTENSION_SET)
+        return -EDGE_LINUX_EINVAL;
+    if (value & ~EDGE_LINUX_PR_RSEQ_SLICE_EXT_ENABLE)
+        return -EDGE_LINUX_EINVAL;
+    if (!state->address) return -EDGE_LINUX_ENXIO;
+    if (state->version < 2u) return -EDGE_LINUX_EOPNOTSUPP;
+    enable = (value & EDGE_LINUX_PR_RSEQ_SLICE_EXT_ENABLE) != 0u;
+    if (enable == !!state->slice_enabled) return 0;
+    if (!copy_from_user || !copy_to_user)
+        return -EDGE_LINUX_EFAULT;
+    if (copy_from_user(copy_context, &user_flags, state->address + 16u,
+                       sizeof(user_flags)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    expected_flags = EDGE_LINUX_RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE;
+    if (state->slice_enabled)
+        expected_flags |= EDGE_LINUX_RSEQ_CS_FLAG_SLICE_EXT_ENABLED;
+    if ((user_flags & expected_flags) != expected_flags)
+        return -EDGE_LINUX_EFAULT;
+    user_flags &= ~EDGE_LINUX_RSEQ_CS_FLAG_SLICE_EXT_ENABLED;
+    user_flags |= EDGE_LINUX_RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE;
+    if (enable)
+        user_flags |= EDGE_LINUX_RSEQ_CS_FLAG_SLICE_EXT_ENABLED;
+    if (copy_to_user(copy_context, state->address + 16u, &user_flags,
+                     sizeof(user_flags)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    state->slice_enabled = enable ? 1u : 0u;
+    return 0;
+#endif
+}
+
+static int edge_linux_rseq_slice_clear(
+    struct edge_linux_rseq_state *state,
+    edge_linux_copy_to_user_fn copy_to_user, void *copy_context) {
+    uint32_t zero = 0;
+
+    if (!state || !state->slice_granted) return 0;
+    state->slice_granted = 0;
+    state->slice_expires_us = 0;
+    if (!state->address || state->version < 2u || !copy_to_user ||
+        copy_to_user(copy_context, state->address + 28u, &zero,
+                     sizeof(zero)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    return 0;
+}
+
+int edge_linux_rseq_slice_interrupt(
+    struct edge_linux_rseq_state *state, uint64_t now_us,
+    edge_linux_copy_from_user_fn copy_from_user,
+    edge_linux_copy_to_user_fn copy_to_user, void *copy_context) {
+    uint32_t control;
+
+#ifndef CONFIG_RSEQ_SLICE_EXTENSION
+    (void)now_us;
+    (void)copy_from_user;
+    (void)copy_to_user;
+    (void)copy_context;
+    return 0;
+#endif
+    if (!state || !state->address || state->version < 2u ||
+        !state->slice_enabled)
+        return 0;
+    if (state->slice_granted) {
+        if (now_us < state->slice_expires_us) return 1;
+        return edge_linux_rseq_slice_clear(
+            state, copy_to_user, copy_context) < 0 ?
+            -EDGE_LINUX_EFAULT : 0;
+    }
+    if (!copy_from_user || !copy_to_user ||
+        copy_from_user(copy_context, &control, state->address + 28u,
+                       sizeof(control)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    if (!(control & 0xffu)) return 0;
+    control = (control & 0xffff0000u) | 0x00000100u;
+    if (copy_to_user(copy_context, state->address + 28u, &control,
+                     sizeof(control)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    state->slice_granted = 1;
+    state->slice_expires_us = now_us + EDGE_LINUX_RSEQ_SLICE_EXTENSION_US;
+    return 1;
+}
+
+int edge_linux_rseq_slice_syscall_enter(
+    struct edge_linux_rseq_state *state, int slice_yield_syscall,
+    int *force_reschedule, edge_linux_copy_from_user_fn copy_from_user,
+    edge_linux_copy_to_user_fn copy_to_user, void *copy_context) {
+    if (!force_reschedule) return -EDGE_LINUX_EINVAL;
+    *force_reschedule = 0;
+    if (!state || !state->slice_granted) return 0;
+    (void)copy_from_user;
+    if (edge_linux_rseq_slice_clear(state, copy_to_user, copy_context) < 0)
+        return -EDGE_LINUX_EFAULT;
+    state->slice_yielded = slice_yield_syscall ? 1u : 0u;
+    *force_reschedule = 1;
+    return 0;
+}
+
+int edge_linux_rseq_slice_yield(struct edge_linux_rseq_state *state) {
+    int yielded;
+
+    if (!state) return 0;
+    yielded = state->slice_yielded ? 1 : 0;
+    state->slice_yielded = 0;
+    return yielded;
 }
 
 static void edge_linux_ethtool_copy_string(char *destination,

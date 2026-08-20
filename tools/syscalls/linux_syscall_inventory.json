@@ -6303,19 +6303,26 @@
     {
       "id": "rseq_slice_yield",
       "semantic_id": "rseq_slice_yield",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_rseq_slice_yield",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/rseq_slice_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 471,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_rseq_slice_yield",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 471,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_rseq_slice_yield",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {
