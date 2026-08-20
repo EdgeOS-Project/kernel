@@ -12,6 +12,7 @@
   },
   "evidence_semantics": {
     "explicit-enosys": "The dispatch route explicitly returns Linux ENOSYS.",
+    "oracle-verified-enosys": "The ENOSYS result was compared with the frozen Linux oracle.",
     "static-route-only": "A non-ENOSYS route exists, but no runtime probe is listed.",
     "runtime-probe-listed": "A runtime probe is listed. This does not assert that it passed.",
     "oracle-verified": "The EdgeOS result and frozen Linux oracle result were compared."
@@ -23,15 +24,17 @@
       "semantic_id": "_sysctl",
       "shared_handler": null,
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/linux_reserved_syscalls_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 156,
           "status": "enosys",
           "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "evidence_status": "oracle-verified-enosys"
         },
         "aarch64": null
       }
@@ -186,15 +189,17 @@
       "semantic_id": "afs_syscall",
       "shared_handler": null,
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/linux_reserved_syscalls_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 183,
           "status": "enosys",
           "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "evidence_status": "oracle-verified-enosys"
         },
         "aarch64": null
       }
@@ -781,15 +786,17 @@
       "semantic_id": "create_module",
       "shared_handler": null,
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/linux_reserved_syscalls_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 174,
           "status": "enosys",
           "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "evidence_status": "oracle-verified-enosys"
         },
         "aarch64": null
       }
@@ -967,15 +974,17 @@
       "semantic_id": "epoll_ctl_old",
       "shared_handler": null,
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/linux_reserved_syscalls_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 214,
           "status": "enosys",
           "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "evidence_status": "oracle-verified-enosys"
         },
         "aarch64": null
       }
@@ -1059,15 +1068,17 @@
       "semantic_id": "epoll_wait_old",
       "shared_handler": null,
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/linux_reserved_syscalls_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 215,
           "status": "enosys",
           "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "evidence_status": "oracle-verified-enosys"
         },
         "aarch64": null
       }
@@ -2149,15 +2160,17 @@
       "semantic_id": "get_kernel_syms",
       "shared_handler": null,
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/linux_reserved_syscalls_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 177,
           "status": "enosys",
           "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "evidence_status": "oracle-verified-enosys"
         },
         "aarch64": null
       }
@@ -2552,15 +2565,17 @@
       "semantic_id": "getpmsg",
       "shared_handler": null,
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/linux_reserved_syscalls_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 181,
           "status": "enosys",
           "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "evidence_status": "oracle-verified-enosys"
         },
         "aarch64": null
       }
@@ -5017,15 +5032,17 @@
       "semantic_id": "nfsservctl",
       "shared_handler": null,
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/linux_reserved_syscalls_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 180,
           "status": "enosys",
           "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "evidence_status": "oracle-verified-enosys"
         },
         "aarch64": null
       }
@@ -5796,15 +5813,17 @@
       "semantic_id": "putpmsg",
       "shared_handler": null,
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/linux_reserved_syscalls_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 182,
           "status": "enosys",
           "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "evidence_status": "oracle-verified-enosys"
         },
         "aarch64": null
       }
@@ -5889,15 +5908,17 @@
       "semantic_id": "query_module",
       "shared_handler": null,
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/linux_reserved_syscalls_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 178,
           "status": "enosys",
           "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "evidence_status": "oracle-verified-enosys"
         },
         "aarch64": null
       }
@@ -6973,15 +6994,17 @@
       "semantic_id": "security",
       "shared_handler": null,
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/linux_reserved_syscalls_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 185,
           "status": "enosys",
           "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "evidence_status": "oracle-verified-enosys"
         },
         "aarch64": null
       }
@@ -8803,15 +8826,17 @@
       "semantic_id": "tuxcall",
       "shared_handler": null,
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/linux_reserved_syscalls_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 184,
           "status": "enosys",
           "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "evidence_status": "oracle-verified-enosys"
         },
         "aarch64": null
       }
@@ -9002,15 +9027,17 @@
       "semantic_id": "uselib",
       "shared_handler": null,
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/linux_reserved_syscalls_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 134,
           "status": "enosys",
           "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "evidence_status": "oracle-verified-enosys"
         },
         "aarch64": null
       }
@@ -9200,15 +9227,17 @@
       "semantic_id": "vserver",
       "shared_handler": null,
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/linux_reserved_syscalls_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 236,
           "status": "enosys",
           "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "evidence_status": "oracle-verified-enosys"
         },
         "aarch64": null
       }

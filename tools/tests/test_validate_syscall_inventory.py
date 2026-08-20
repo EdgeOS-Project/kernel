@@ -7,6 +7,7 @@ import unittest
 
 from tools.tests.validate_syscall_inventory import (
     InventoryError,
+    validate_runtime_tests,
     validate_shared_policy,
 )
 
@@ -96,6 +97,50 @@ class SharedPolicyValidationTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(InventoryError, "without declaring shared_handler"):
             validate_shared_policy([entry])
+
+
+class RuntimeEvidenceValidationTests(unittest.TestCase):
+    def entry(self, evidence_status: str, oracle_status: str,
+              tests: list[str]) -> dict[str, object]:
+        return {
+            "id": "example",
+            "runtime_tests": tests,
+            "linux_oracle": "required",
+            "oracle_status": oracle_status,
+            "architectures": {
+                "x86_64": {
+                    "number": 1,
+                    "status": "enosys",
+                    "route": "enosys",
+                    "evidence_status": evidence_status,
+                },
+                "aarch64": None,
+            },
+        }
+
+    def test_verified_enosys_requires_verified_oracle_and_probe(self) -> None:
+        validate_runtime_tests([
+            self.entry(
+                "oracle-verified-enosys", "verified",
+                ["tools/tests/test_validate_syscall_inventory.py"],
+            )
+        ])
+
+    def test_verified_enosys_rejects_missing_oracle(self) -> None:
+        with self.assertRaisesRegex(
+            InventoryError, "ENOSYS evidence does not match"
+        ):
+            validate_runtime_tests([
+                self.entry(
+                    "oracle-verified-enosys", "not-run",
+                    ["tools/tests/test_validate_syscall_inventory.py"],
+                )
+            ])
+
+    def test_unverified_enosys_remains_explicit(self) -> None:
+        validate_runtime_tests([
+            self.entry("explicit-enosys", "not-run", [])
+        ])
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ SHARED_SOURCE_DIRECTORY = ROOT / "src/kernel"
 LINUX_REFERENCE_COMMIT = "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
 EVIDENCE_STATUSES = {
     "explicit-enosys",
+    "oracle-verified-enosys",
     "static-route-only",
     "runtime-probe-listed",
     "oracle-verified",
@@ -73,9 +74,13 @@ def validate_architecture(
             fail(f"{architecture} {name} ENOSYS status has route {route!r}")
         if evidence_status not in EVIDENCE_STATUSES:
             fail(f"{architecture} {name} has invalid evidence status")
-        if status == "enosys" and evidence_status != "explicit-enosys":
+        if status == "enosys" and evidence_status not in {
+            "explicit-enosys", "oracle-verified-enosys"
+        }:
             fail(f"{architecture} {name} ENOSYS route has invalid evidence")
-        if status == "implemented" and evidence_status == "explicit-enosys":
+        if status == "implemented" and evidence_status in {
+            "explicit-enosys", "oracle-verified-enosys"
+        }:
             fail(f"{architecture} {name} implemented route claims ENOSYS evidence")
 
     if inventory_numbers != source_numbers:
@@ -207,7 +212,19 @@ def validate_runtime_tests(entries: list[dict[str, Any]]) -> None:
         if entry.get("oracle_status") not in {"not-run", "verified"}:
             fail(f"{entry['id']} has an invalid oracle status")
         for architecture, mapping in entry["architectures"].items():
-            if mapping is None or mapping["status"] == "enosys":
+            if mapping is None:
+                continue
+            if mapping["status"] == "enosys":
+                expected = (
+                    "oracle-verified-enosys"
+                    if tests and entry["oracle_status"] == "verified"
+                    else "explicit-enosys"
+                )
+                if mapping["evidence_status"] != expected:
+                    fail(
+                        f"{architecture} {entry['id']} ENOSYS evidence does not "
+                        "match its Linux oracle status"
+                    )
                 continue
             expected = "runtime-probe-listed" if tests else "static-route-only"
             if mapping["evidence_status"] == "oracle-verified":

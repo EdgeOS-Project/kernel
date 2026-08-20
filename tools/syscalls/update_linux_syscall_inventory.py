@@ -31,6 +31,26 @@ ARCHITECTURE_EXCEPTIONS = {
     "set_thread_area": ["legacy x86_64 TLS descriptor ABI"],
 }
 
+LINUX_RESERVED_ENOSYS_X86_64 = {
+    "_sysctl",
+    "afs_syscall",
+    "create_module",
+    "epoll_ctl_old",
+    "epoll_wait_old",
+    "get_kernel_syms",
+    "getpmsg",
+    "nfsservctl",
+    "putpmsg",
+    "query_module",
+    "security",
+    "tuxcall",
+    "uselib",
+    "vserver",
+}
+LINUX_RESERVED_SYSCALL_PROBE = (
+    "tools/tests/linux_reserved_syscalls_abi_probe.c"
+)
+
 
 def load_existing() -> dict[str, dict[str, Any]]:
     if not INVENTORY.exists():
@@ -55,6 +75,8 @@ def architecture_entry(
         "status": "enosys" if is_enosys else "implemented",
         "route": route,
         "evidence_status": (
+            "oracle-verified-enosys" if is_enosys and
+            oracle_status == "verified" and runtime_tests else
             "explicit-enosys" if is_enosys else
             "oracle-verified" if oracle_status == "verified" else
             "runtime-probe-listed" if runtime_tests else
@@ -74,6 +96,14 @@ def build_document() -> dict[str, Any]:
         old = existing.get(name, {})
         runtime_tests = old.get("runtime_tests", [])
         oracle_status = old.get("oracle_status", "not-run")
+        if name in LINUX_RESERVED_ENOSYS_X86_64:
+            if report["x86_64"]["routes"].get(name) != "enosys":
+                raise ValueError(
+                    f"x86_64 Linux-reserved syscall {name} no longer routes "
+                    "to ENOSYS"
+                )
+            runtime_tests = [LINUX_RESERVED_SYSCALL_PROBE]
+            oracle_status = "verified"
         syscalls.append(
             {
                 "id": name,
@@ -110,6 +140,9 @@ def build_document() -> dict[str, Any]:
         },
         "evidence_semantics": {
             "explicit-enosys": "The dispatch route explicitly returns Linux ENOSYS.",
+            "oracle-verified-enosys": (
+                "The ENOSYS result was compared with the frozen Linux oracle."
+            ),
             "static-route-only": (
                 "A non-ENOSYS route exists, but no runtime probe is listed."
             ),
