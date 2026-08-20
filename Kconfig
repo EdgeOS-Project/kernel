@@ -96,6 +96,13 @@ config SYSVIPC
       queues with IPC namespace isolation and common cross-architecture
       policy.
 
+config CHECKPOINT_RESTORE
+    bool "Checkpoint and restore support"
+    default y
+    help
+      Enable Linux checkpoint and restore UAPI details implemented by
+      supported subsystems, including nondestructive SysV message reads.
+
 config BSD_DRIVER_FDT_INVENTORY
     bool "Inventory Device Tree devices for BSD drivers"
     depends on BSD_DRIVER_BRIDGE && DEVICE_TREE

@@ -128,6 +128,7 @@ EDGE_SHARED_SRCS := \
 	$(SRC)/kernel/socket_unix_policy.c \
 	$(SRC)/kernel/sysv_shm.c \
 	$(SRC)/kernel/sysv_sem.c \
+	$(SRC)/kernel/sysv_msg.c \
 	$(SRC)/kernel/syslog_runtime.c \
 	$(SRC)/kernel/system_information.c \
 	$(SRC)/kernel/task_scratch.c \

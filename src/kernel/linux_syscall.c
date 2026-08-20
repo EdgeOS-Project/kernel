@@ -54,6 +54,7 @@
 #include "kernel/socket_runtime.h"
 #include "kernel/socket_message.h"
 #include "kernel/system_runtime.h"
+#include "kernel/sysv_msg_runtime.h"
 #include "kernel/sysv_shm_runtime.h"
 #include "kernel/sysv_sem_runtime.h"
 #include "kernel/syslog_runtime.h"
@@ -2802,6 +2803,195 @@ static int64_t edge_linux_sys_sysv_sem(
         return edge_linux_sys_semop(context);
     case EDGE_LINUX_SYS_semctl:
         return edge_linux_sys_semctl(context);
+    default:
+        return -EDGE_LINUX_ENOSYS;
+    }
+#endif
+}
+
+static void edge_linux_sysv_msg_free_buffer(void *buffer, uint32_t pages) {
+    uint8_t *base = buffer;
+    for (uint32_t page = 0; page < pages; ++page)
+        arch_vm_free_page(base + (uint64_t)page * 4096u);
+}
+
+static int64_t edge_linux_sys_msgsnd(
+        edge_linux_syscall_context_t *context) {
+    uint64_t message_size = context->arguments[2];
+    uint32_t flags = (uint32_t)context->arguments[3];
+    uint32_t pages = 0;
+    void *payload = 0;
+    int64_t message_type;
+    int64_t result;
+    int waited = 0;
+
+    if (!context->arguments[1]) return -EDGE_LINUX_EFAULT;
+    if (edge_linux_copy_from_user(
+            context, &message_type, context->arguments[1],
+            sizeof(message_type)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    if (message_size > KERNEL_SYSV_MSG_MAX_BYTES)
+        return -EDGE_LINUX_EINVAL;
+    if (message_size) {
+        pages = (uint32_t)((message_size + 4095u) / 4096u);
+        payload = arch_vm_alloc_pages(pages);
+        if (!payload) return -EDGE_LINUX_ENOMEM;
+        if (edge_linux_copy_from_user(
+                context, payload,
+                context->arguments[1] + sizeof(message_type),
+                message_size) < 0) {
+            edge_linux_sysv_msg_free_buffer(payload, pages);
+            return -EDGE_LINUX_EFAULT;
+        }
+    }
+    for (;;) {
+        result = kernel_sysv_msg_send(
+            edge_linux_current_ipc_namespace(),
+            (int32_t)context->arguments[0], message_type, payload,
+            (uint32_t)message_size, flags);
+        if (waited && result == -EDGE_LINUX_EINVAL) {
+            result = -EDGE_LINUX_EIDRM;
+            break;
+        }
+        if (result != -EDGE_LINUX_EAGAIN ||
+            (flags & KERNEL_SYSV_IPC_NOWAIT))
+            break;
+        if (kernel_current_signal_wake_pending()) {
+            result = -EDGE_LINUX_EINTR;
+            break;
+        }
+        waited = 1;
+        {
+            int released = kernel_runtime_contention_begin();
+            if (!kernel_runtime_yield()) result = -EDGE_LINUX_EAGAIN;
+            kernel_runtime_contention_end(released);
+        }
+        if (result != -EDGE_LINUX_EAGAIN) continue;
+    }
+    if (payload) edge_linux_sysv_msg_free_buffer(payload, pages);
+    return result;
+}
+
+static int64_t edge_linux_sys_msgrcv(
+        edge_linux_syscall_context_t *context) {
+    uint64_t requested_size = context->arguments[2];
+    uint32_t flags = (uint32_t)context->arguments[4];
+    uint32_t capacity;
+    uint32_t pages = 0;
+    void *payload = 0;
+    int64_t message_type = 0;
+    int64_t result;
+    int waited = 0;
+
+#ifndef CONFIG_CHECKPOINT_RESTORE
+    if (flags & KERNEL_SYSV_MSG_COPY) return -EDGE_LINUX_ENOSYS;
+#endif
+    if (requested_size > INT64_MAX) return -EDGE_LINUX_EINVAL;
+    capacity = requested_size > KERNEL_SYSV_MSG_MAX_BYTES ?
+        KERNEL_SYSV_MSG_MAX_BYTES : (uint32_t)requested_size;
+    if (capacity) {
+        pages = (capacity + 4095u) / 4096u;
+        payload = arch_vm_alloc_pages(pages);
+        if (!payload) return -EDGE_LINUX_ENOMEM;
+    }
+    for (;;) {
+        result = kernel_sysv_msg_receive(
+            edge_linux_current_ipc_namespace(),
+            (int32_t)context->arguments[0],
+            (int64_t)context->arguments[3], payload, capacity,
+            flags, &message_type);
+        if (waited && result == -EDGE_LINUX_EINVAL) {
+            result = -EDGE_LINUX_EIDRM;
+            break;
+        }
+        if (result != -EDGE_LINUX_ENOMSG ||
+            (flags & KERNEL_SYSV_IPC_NOWAIT))
+            break;
+        if (kernel_current_signal_wake_pending()) {
+            result = -EDGE_LINUX_EINTR;
+            break;
+        }
+        waited = 1;
+        {
+            int released = kernel_runtime_contention_begin();
+            if (!kernel_runtime_yield()) result = -EDGE_LINUX_ENOMSG;
+            kernel_runtime_contention_end(released);
+        }
+        if (result != -EDGE_LINUX_ENOMSG) continue;
+    }
+    if (result >= 0) {
+        if (!context->arguments[1] || edge_linux_copy_to_user(
+                context, context->arguments[1], &message_type,
+                sizeof(message_type)) < 0 ||
+            (result && edge_linux_copy_to_user(
+                context, context->arguments[1] + sizeof(message_type),
+                payload, (uint64_t)result) < 0))
+            result = -EDGE_LINUX_EFAULT;
+    }
+    if (payload) edge_linux_sysv_msg_free_buffer(payload, pages);
+    return result;
+}
+
+static int64_t edge_linux_sys_msgctl(
+        edge_linux_syscall_context_t *context) {
+    struct edge_linux_msqid_ds64 status;
+    struct edge_linux_msginfo information;
+    uint32_t command;
+    uint32_t operation;
+    uint64_t user_address = context->arguments[2];
+    int64_t result;
+
+    if (context->arguments[1] > UINT32_MAX)
+        return -EDGE_LINUX_EINVAL;
+    command = (uint32_t)context->arguments[1];
+    operation = command & 0xffu;
+    memset(&status, 0, sizeof(status));
+    memset(&information, 0, sizeof(information));
+    if (operation == KERNEL_SYSV_IPC_SET) {
+        if (!user_address || edge_linux_copy_from_user(
+                context, &status, user_address, sizeof(status)) < 0)
+            return -EDGE_LINUX_EFAULT;
+    }
+    result = kernel_sysv_msg_control(
+        edge_linux_current_ipc_namespace(),
+        (int32_t)context->arguments[0], command, &status, &information);
+    if (result < 0) return result;
+    if (operation == KERNEL_SYSV_IPC_STAT ||
+        operation == KERNEL_SYSV_MSG_STAT ||
+        operation == KERNEL_SYSV_MSG_STAT_ANY) {
+        if (!user_address || edge_linux_copy_to_user(
+                context, user_address, &status, sizeof(status)) < 0)
+            return -EDGE_LINUX_EFAULT;
+    } else if (operation == KERNEL_SYSV_IPC_INFO ||
+               operation == KERNEL_SYSV_MSG_INFO) {
+        if (!user_address || edge_linux_copy_to_user(
+                context, user_address, &information,
+                sizeof(information)) < 0)
+            return -EDGE_LINUX_EFAULT;
+    }
+    return result;
+}
+
+static int64_t edge_linux_sys_sysv_msg(
+        edge_linux_syscall_context_t *context) {
+#ifndef CONFIG_SYSVIPC
+    (void)context;
+    return -EDGE_LINUX_ENOSYS;
+#else
+    switch (context->id) {
+    case EDGE_LINUX_SYS_msgget:
+        if (context->arguments[1] > UINT32_MAX)
+            return -EDGE_LINUX_EINVAL;
+        return kernel_sysv_msg_get(
+            edge_linux_current_ipc_namespace(),
+            (int32_t)context->arguments[0],
+            (uint32_t)context->arguments[1]);
+    case EDGE_LINUX_SYS_msgsnd:
+        return edge_linux_sys_msgsnd(context);
+    case EDGE_LINUX_SYS_msgrcv:
+        return edge_linux_sys_msgrcv(context);
+    case EDGE_LINUX_SYS_msgctl:
+        return edge_linux_sys_msgctl(context);
     default:
         return -EDGE_LINUX_ENOSYS;
     }

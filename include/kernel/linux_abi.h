@@ -491,6 +491,32 @@ struct edge_linux_seminfo {
     int32_t semaem;
 };
 
+struct edge_linux_msqid_ds64 {
+    struct edge_linux_ipc_perm64 msg_perm;
+    int64_t msg_stime;
+    int64_t msg_rtime;
+    int64_t msg_ctime;
+    uint64_t msg_cbytes;
+    uint64_t msg_qnum;
+    uint64_t msg_qbytes;
+    int32_t msg_lspid;
+    int32_t msg_lrpid;
+    uint64_t unused4;
+    uint64_t unused5;
+};
+
+struct edge_linux_msginfo {
+    int32_t msgpool;
+    int32_t msgmap;
+    int32_t msgmax;
+    int32_t msgmnb;
+    int32_t msgmni;
+    int32_t msgssz;
+    int32_t msgtql;
+    uint16_t msgseg;
+    uint16_t padding;
+};
+
 _Static_assert(sizeof(struct edge_linux_ipc_perm64) == 48,
                "Linux ipc_perm size mismatch");
 _Static_assert(offsetof(struct edge_linux_ipc_perm64, mode) == 20,
@@ -511,6 +537,12 @@ _Static_assert(sizeof(struct edge_linux_semid_ds_aarch64) == 88,
                "Linux AArch64 semid_ds size mismatch");
 _Static_assert(sizeof(struct edge_linux_seminfo) == 40,
                "Linux seminfo size mismatch");
+_Static_assert(sizeof(struct edge_linux_msqid_ds64) == 120,
+               "Linux 64-bit msqid_ds size mismatch");
+_Static_assert(offsetof(struct edge_linux_msqid_ds64, msg_cbytes) == 72,
+               "Linux msqid_ds byte-count offset mismatch");
+_Static_assert(sizeof(struct edge_linux_msginfo) == 32,
+               "Linux msginfo size mismatch");
 
 /* statx is an architecture-independent Linux UAPI layout on 64-bit ports. */
 struct edge_linux_statx_timestamp {
