@@ -8,6 +8,7 @@
 
 #include "kernel/credentials.h"
 #include "kernel/linux_errno.h"
+#include "kernel/namespace_runtime.h"
 #include "kernel/process_runtime.h"
 #include "kernel/sysv_shm_runtime.h"
 #include "string.h"
@@ -38,6 +39,7 @@ typedef struct kernel_sysv_shm_segment {
     uint32_t cuid;
     uint32_t cgid;
     uint32_t sequence;
+    uint32_t ipc_namespace_id;
     uint32_t page_count;
     uint64_t size;
     uint64_t atime_us;
@@ -76,21 +78,32 @@ static uint64_t kernel_sysv_shm_page_align(uint64_t value) {
            ~(uint64_t)(KERNEL_SYSV_SHM_PAGE_SIZE - 1u);
 }
 
-static int kernel_sysv_shm_segment_by_identifier_locked(int32_t identifier) {
+static uint32_t kernel_sysv_shm_current_namespace(void) {
+    const edge_namespace_set_t *namespaces =
+        kernel_arch_current_namespace_set();
+
+    return namespaces ? namespaces->ipc : 0u;
+}
+
+static int kernel_sysv_shm_segment_by_identifier_locked(
+        int32_t identifier, uint32_t ipc_namespace_id) {
     for (uint32_t index = 0; index < KERNEL_SYSV_SHM_SEGMENT_MAX; ++index) {
         const kernel_sysv_shm_segment_t *segment = &g_sysv_shm_segments[index];
         if (segment->state == KERNEL_SYSV_SHM_ACTIVE &&
-            segment->identifier == identifier)
+            segment->identifier == identifier &&
+            segment->ipc_namespace_id == ipc_namespace_id)
             return (int)index;
     }
     return -1;
 }
 
-static int kernel_sysv_shm_segment_by_key_locked(int32_t key) {
+static int kernel_sysv_shm_segment_by_key_locked(
+        int32_t key, uint32_t ipc_namespace_id) {
     for (uint32_t index = 0; index < KERNEL_SYSV_SHM_SEGMENT_MAX; ++index) {
         const kernel_sysv_shm_segment_t *segment = &g_sysv_shm_segments[index];
         if (segment->state == KERNEL_SYSV_SHM_ACTIVE && !segment->removed &&
-            segment->key == key)
+            segment->key == key &&
+            segment->ipc_namespace_id == ipc_namespace_id)
             return (int)index;
     }
     return -1;
@@ -169,17 +182,20 @@ int64_t kernel_sysv_shm_get(int32_t key, uint64_t size, uint32_t flags) {
     uint64_t rounded_size;
     uint64_t lock_flags;
     uint32_t page_count;
+    uint32_t ipc_namespace_id;
     int segment_index;
 
     if (kernel_current_linux_identity(&identity) < 0)
         return -EDGE_LINUX_ESRCH;
+    ipc_namespace_id = kernel_sysv_shm_current_namespace();
     if (flags & ~(0777u | KERNEL_SYSV_IPC_CREAT | KERNEL_SYSV_IPC_EXCL |
                   KERNEL_SYSV_SHM_NORESERVE))
         return -EDGE_LINUX_EINVAL;
 
     lock_flags = spin_lock_irqsave(&g_sysv_shm_lock);
     if (key != KERNEL_SYSV_IPC_PRIVATE) {
-        segment_index = kernel_sysv_shm_segment_by_key_locked(key);
+        segment_index = kernel_sysv_shm_segment_by_key_locked(
+            key, ipc_namespace_id);
         if (segment_index >= 0) {
             uint32_t requested = ((flags & 0444u) ? 4u : 0u) |
                                  ((flags & 0222u) ? 2u : 0u);
@@ -229,6 +245,7 @@ int64_t kernel_sysv_shm_get(int32_t key, uint64_t size, uint32_t flags) {
     segment->sequence = g_sysv_shm_next_sequence++;
     if (!g_sysv_shm_next_sequence) g_sysv_shm_next_sequence = 1u;
     segment->key = key;
+    segment->ipc_namespace_id = ipc_namespace_id;
     segment->mode = flags & 0777u;
     segment->uid = identity.euid;
     segment->gid = identity.egid;
@@ -270,6 +287,7 @@ int64_t kernel_sysv_shm_attach(int32_t identifier, uint64_t address,
     uint64_t lock_flags;
     uint64_t replacement_end = 0;
     uint32_t requested_access;
+    uint32_t ipc_namespace_id;
     uint16_t replacement_attachments[KERNEL_SYSV_SHM_ATTACHMENT_MAX];
     uint16_t reserved_attachments[KERNEL_SYSV_SHM_ATTACHMENT_MAX];
     uint8_t destroy_segments[KERNEL_SYSV_SHM_SEGMENT_MAX];
@@ -292,12 +310,14 @@ int64_t kernel_sysv_shm_attach(int32_t identifier, uint64_t address,
         return -EDGE_LINUX_EINVAL;
     if (kernel_current_linux_identity(&identity) < 0)
         return -EDGE_LINUX_ESRCH;
+    ipc_namespace_id = kernel_sysv_shm_current_namespace();
     address_space = kernel_sysv_shm_arch_current_address_space();
     if (!address_space) return -EDGE_LINUX_ESRCH;
     memset(destroy_segments, 0, sizeof(destroy_segments));
 
     lock_flags = spin_lock_irqsave(&g_sysv_shm_lock);
-    segment_index = kernel_sysv_shm_segment_by_identifier_locked(identifier);
+    segment_index = kernel_sysv_shm_segment_by_identifier_locked(
+        identifier, ipc_namespace_id);
     if (segment_index < 0) {
         spin_unlock_irqrestore(&g_sysv_shm_lock, lock_flags);
         return -EDGE_LINUX_EINVAL;
@@ -562,16 +582,19 @@ int kernel_sysv_shm_control(int32_t identifier, uint32_t command,
     kernel_sysv_shm_segment_t *segment;
     uint64_t lock_flags;
     uint32_t operation = command & 0xffu;
+    uint32_t ipc_namespace_id;
     int segment_index;
     int result = 0;
 
     if (kernel_current_linux_identity(&identity) < 0)
         return -EDGE_LINUX_ESRCH;
+    ipc_namespace_id = kernel_sysv_shm_current_namespace();
     if (command & ~(KERNEL_SYSV_IPC_64 | 0xffu))
         return -EDGE_LINUX_EINVAL;
 
     lock_flags = spin_lock_irqsave(&g_sysv_shm_lock);
-    segment_index = kernel_sysv_shm_segment_by_identifier_locked(identifier);
+    segment_index = kernel_sysv_shm_segment_by_identifier_locked(
+        identifier, ipc_namespace_id);
     if (segment_index < 0) {
         spin_unlock_irqrestore(&g_sysv_shm_lock, lock_flags);
         return -EDGE_LINUX_EINVAL;
