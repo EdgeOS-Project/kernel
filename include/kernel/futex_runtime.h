@@ -23,6 +23,11 @@ typedef enum kernel_futex_operation {
     KERNEL_FUTEX_COMPARE_REQUEUE,
     KERNEL_FUTEX_WAKE_OPERATION,
     KERNEL_FUTEX_WAIT_VECTOR,
+    KERNEL_FUTEX_LOCK_PI,
+    KERNEL_FUTEX_TRYLOCK_PI,
+    KERNEL_FUTEX_UNLOCK_PI,
+    KERNEL_FUTEX_WAIT_REQUEUE_PI,
+    KERNEL_FUTEX_COMPARE_REQUEUE_PI,
 } kernel_futex_operation_t;
 
 typedef enum kernel_futex_atomic_operation {
@@ -68,7 +73,8 @@ typedef struct kernel_futex_request {
     uint8_t private_futex;
     uint8_t secondary_private_futex;
     uint8_t has_timeout;
-    uint8_t padding[3];
+    uint8_t robust_unlock;
+    uint8_t padding[2];
     void *user_registers;
     kernel_futex_wait_entry_t waiters[KERNEL_FUTEX_WAITV_MAX];
 } kernel_futex_request_t;
@@ -102,6 +108,22 @@ typedef struct kernel_futex_backend_ops {
                           const kernel_futex_key_t *source,
                           const kernel_futex_key_t *destination,
                           uint32_t maximum, uint32_t bitset);
+    int32_t (*current_tid)(void *context);
+    int (*waiter_precedes_locked)(void *context, int32_t candidate_tid,
+                                  int32_t current_tid);
+    int (*prepare_pi_wait_locked)(
+        void *context, const kernel_futex_request_t *request,
+        const kernel_futex_key_t *key);
+    int64_t (*block_pi_wait)(void *context,
+                             const kernel_futex_request_t *request);
+    int (*wake_tid_locked)(void *context, const kernel_futex_key_t *key,
+                           int32_t tid, int result);
+    int (*waiter_active_locked)(void *context,
+                                const kernel_futex_key_t *key,
+                                int32_t tid);
+    int (*task_exists_locked)(void *context, int32_t tid);
+    void (*recompute_pi_owner_locked)(void *context, int32_t owner_tid,
+                                      int32_t donor_tid);
     void (*record_request)(void *context,
                            const kernel_futex_request_t *request);
     void (*record_result)(void *context,
@@ -117,5 +139,9 @@ int32_t kernel_futex_atomic_apply(const kernel_futex_request_t *request,
                                   int32_t old_value);
 int kernel_futex_atomic_compare(const kernel_futex_request_t *request,
                                 int32_t old_value);
+void kernel_futex_pi_waiter_cancel_locked(int32_t tid);
+int kernel_futex_pi_owner_died_locked(uint64_t address,
+                                      int32_t owner_tid,
+                                      uint32_t observed_word);
 
 #endif

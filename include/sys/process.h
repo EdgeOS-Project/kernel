@@ -274,7 +274,9 @@ typedef struct task_struct {
     kernel_linux_thread_state_t linux_thread;
     uint32_t membarrier_registrations;
     edge_linux_scheduler_state_t scheduler;
+    edge_linux_scheduler_state_t futex_pi_base_scheduler;
     edge_linux_scheduler_entity_t scheduler_entity;
+    uint8_t futex_pi_boosted;
     uint64_t scheduler_vruntime_us;
     uint64_t scheduler_wait_start_us;
     uint64_t scheduler_wait_us;

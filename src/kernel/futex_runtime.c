@@ -7,10 +7,29 @@
 #include <stdint.h>
 
 #include "kernel/futex_runtime.h"
+#include "kernel/linux_abi.h"
 #include "kernel/linux_errno.h"
 
 static const kernel_futex_backend_ops_t *g_backend_ops;
 static void *g_backend_context;
+
+#define KERNEL_FUTEX_PI_MAX_WAITERS 256u
+
+typedef struct kernel_futex_pi_waiter {
+    uint8_t used;
+    kernel_futex_key_t key;
+    uint64_t address;
+    int32_t tid;
+    int32_t owner_tid;
+    uint64_t sequence;
+} kernel_futex_pi_waiter_t;
+
+static kernel_futex_pi_waiter_t
+    g_pi_waiters[KERNEL_FUTEX_PI_MAX_WAITERS];
+static uint64_t g_pi_sequence;
+
+static int futex_resolve_key(uint64_t address, int private_futex,
+                             kernel_futex_key_t *key);
 
 int kernel_futex_backend_register(
     const kernel_futex_backend_ops_t *ops, void *context) {
@@ -27,6 +46,344 @@ int kernel_futex_backend_register(
 static int futex_key_equal(const kernel_futex_key_t *left,
                            const kernel_futex_key_t *right) {
     return left->value == right->value && left->scope == right->scope;
+}
+
+static int futex_pi_supported(void) {
+    return g_backend_ops && g_backend_ops->current_tid &&
+           g_backend_ops->waiter_precedes_locked &&
+           g_backend_ops->prepare_pi_wait_locked &&
+           g_backend_ops->block_pi_wait &&
+           g_backend_ops->wake_tid_locked &&
+           g_backend_ops->waiter_active_locked &&
+           g_backend_ops->task_exists_locked &&
+           g_backend_ops->recompute_pi_owner_locked;
+}
+
+static int futex_pi_waiter_active_locked(
+        const kernel_futex_pi_waiter_t *waiter) {
+    return waiter && waiter->used &&
+           g_backend_ops->waiter_active_locked(
+               g_backend_context, &waiter->key, waiter->tid);
+}
+
+static int futex_pi_best_waiter_locked(const kernel_futex_key_t *key,
+                                       int32_t owner_tid) {
+    int best = -1;
+    for (uint32_t index = 0; index < KERNEL_FUTEX_PI_MAX_WAITERS;
+         ++index) {
+        kernel_futex_pi_waiter_t *waiter = &g_pi_waiters[index];
+        if (!waiter->used || !futex_key_equal(&waiter->key, key))
+            continue;
+        if (!futex_pi_waiter_active_locked(waiter)) {
+            waiter->used = 0u;
+            continue;
+        }
+        waiter->owner_tid = owner_tid;
+        if (best < 0 || g_backend_ops->waiter_precedes_locked(
+                g_backend_context, waiter->tid,
+                g_pi_waiters[best].tid) > 0 ||
+            (g_backend_ops->waiter_precedes_locked(
+                 g_backend_context, waiter->tid,
+                 g_pi_waiters[best].tid) == 0 &&
+             waiter->sequence < g_pi_waiters[best].sequence))
+            best = (int)index;
+    }
+    return best;
+}
+
+static int32_t futex_pi_best_donor_locked(int32_t owner_tid) {
+    int best = -1;
+    for (uint32_t index = 0; index < KERNEL_FUTEX_PI_MAX_WAITERS;
+         ++index) {
+        kernel_futex_pi_waiter_t *waiter = &g_pi_waiters[index];
+        if (!waiter->used || waiter->owner_tid != owner_tid)
+            continue;
+        if (!futex_pi_waiter_active_locked(waiter)) {
+            waiter->used = 0u;
+            continue;
+        }
+        if (best < 0 || g_backend_ops->waiter_precedes_locked(
+                g_backend_context, waiter->tid,
+                g_pi_waiters[best].tid) > 0)
+            best = (int)index;
+    }
+    return best < 0 ? 0 : g_pi_waiters[best].tid;
+}
+
+static void futex_pi_recompute_owner_locked(int32_t owner_tid) {
+    if (owner_tid <= 0 || !futex_pi_supported()) return;
+    g_backend_ops->recompute_pi_owner_locked(
+        g_backend_context, owner_tid,
+        futex_pi_best_donor_locked(owner_tid));
+}
+
+void kernel_futex_pi_waiter_cancel_locked(int32_t tid) {
+    int32_t owners[KERNEL_FUTEX_PI_MAX_WAITERS];
+    uint32_t owner_count = 0;
+    if (tid <= 0 || !futex_pi_supported()) return;
+    for (uint32_t index = 0; index < KERNEL_FUTEX_PI_MAX_WAITERS;
+         ++index) {
+        kernel_futex_pi_waiter_t *waiter = &g_pi_waiters[index];
+        int duplicate = 0;
+        if (!waiter->used || waiter->tid != tid) continue;
+        for (uint32_t owner = 0; owner < owner_count; ++owner)
+            if (owners[owner] == waiter->owner_tid) duplicate = 1;
+        if (!duplicate && waiter->owner_tid > 0)
+            owners[owner_count++] = waiter->owner_tid;
+        waiter->used = 0u;
+    }
+    for (uint32_t owner = 0; owner < owner_count; ++owner)
+        futex_pi_recompute_owner_locked(owners[owner]);
+}
+
+static int futex_pi_waiter_allocate_locked(
+        const kernel_futex_key_t *key, uint64_t address,
+        int32_t tid, int32_t owner_tid) {
+    for (uint32_t index = 0; index < KERNEL_FUTEX_PI_MAX_WAITERS;
+         ++index) {
+        if (g_pi_waiters[index].used) continue;
+        g_pi_waiters[index].used = 1u;
+        g_pi_waiters[index].key = *key;
+        g_pi_waiters[index].address = address;
+        g_pi_waiters[index].tid = tid;
+        g_pi_waiters[index].owner_tid = owner_tid;
+        g_pi_waiters[index].sequence = ++g_pi_sequence;
+        return (int)index;
+    }
+    return -EDGE_LINUX_ENOMEM;
+}
+
+int kernel_futex_pi_owner_died_locked(uint64_t address,
+                                      int32_t owner_tid,
+                                      uint32_t observed_word) {
+    uint32_t expected = observed_word;
+    uint32_t desired;
+    int best = -1;
+    int more = 0;
+    int status;
+
+    if (!futex_pi_supported() || !address || owner_tid <= 0) return 0;
+    for (uint32_t index = 0; index < KERNEL_FUTEX_PI_MAX_WAITERS;
+         ++index) {
+        kernel_futex_pi_waiter_t *waiter = &g_pi_waiters[index];
+        if (!waiter->used || waiter->address != address ||
+            waiter->owner_tid != owner_tid)
+            continue;
+        if (!futex_pi_waiter_active_locked(waiter)) {
+            waiter->used = 0u;
+            continue;
+        }
+        if (best < 0 || g_backend_ops->waiter_precedes_locked(
+                g_backend_context, waiter->tid,
+                g_pi_waiters[best].tid) > 0 ||
+            (g_backend_ops->waiter_precedes_locked(
+                 g_backend_context, waiter->tid,
+                 g_pi_waiters[best].tid) == 0 &&
+             waiter->sequence < g_pi_waiters[best].sequence))
+            best = (int)index;
+    }
+    if (best < 0) return 0;
+    for (uint32_t index = 0; index < KERNEL_FUTEX_PI_MAX_WAITERS;
+         ++index) {
+        if ((int)index == best || !g_pi_waiters[index].used ||
+            g_pi_waiters[index].address != address ||
+            g_pi_waiters[index].owner_tid != owner_tid)
+            continue;
+        if (futex_pi_waiter_active_locked(&g_pi_waiters[index])) {
+            more = 1;
+            break;
+        }
+        g_pi_waiters[index].used = 0u;
+    }
+    desired = (uint32_t)g_pi_waiters[best].tid |
+              EDGE_LINUX_FUTEX_OWNER_DIED |
+              (more ? EDGE_LINUX_FUTEX_WAITERS : 0u);
+    status = g_backend_ops->compare_exchange_word_locked(
+        g_backend_context, address, &expected, desired);
+    if (status != 0) return status < 0 ? status : -EDGE_LINUX_EAGAIN;
+    {
+        int32_t next_tid = g_pi_waiters[best].tid;
+        kernel_futex_key_t key = g_pi_waiters[best].key;
+        g_pi_waiters[best].used = 0u;
+        for (uint32_t index = 0;
+             index < KERNEL_FUTEX_PI_MAX_WAITERS; ++index)
+            if (g_pi_waiters[index].used &&
+                g_pi_waiters[index].address == address &&
+                g_pi_waiters[index].owner_tid == owner_tid)
+                g_pi_waiters[index].owner_tid = next_tid;
+        status = g_backend_ops->wake_tid_locked(
+            g_backend_context, &key, next_tid, 0);
+        futex_pi_recompute_owner_locked(owner_tid);
+        futex_pi_recompute_owner_locked(next_tid);
+    }
+    return status < 0 ? status : 1;
+}
+
+static int futex_pi_key_has_other_waiters_locked(
+        const kernel_futex_key_t *key, int excluded) {
+    for (uint32_t index = 0; index < KERNEL_FUTEX_PI_MAX_WAITERS;
+         ++index) {
+        kernel_futex_pi_waiter_t *waiter = &g_pi_waiters[index];
+        if ((int)index == excluded || !waiter->used ||
+            !futex_key_equal(&waiter->key, key))
+            continue;
+        if (!futex_pi_waiter_active_locked(waiter)) {
+            waiter->used = 0u;
+            continue;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+static int64_t futex_lock_pi(const kernel_futex_request_t *request) {
+    kernel_futex_key_t key;
+    uintptr_t lock_state;
+    uint32_t word;
+    uint32_t expected;
+    uint32_t desired;
+    int32_t owner_tid;
+    int32_t tid;
+    int waiter_index;
+    int status;
+
+    if (!futex_pi_supported()) return -EDGE_LINUX_ENOSYS;
+    tid = g_backend_ops->current_tid(g_backend_context);
+    if (tid <= 0 || (uint32_t)tid > EDGE_LINUX_FUTEX_TID_MASK)
+        return -EDGE_LINUX_ESRCH;
+    status = futex_resolve_key(
+        request->address, request->private_futex, &key);
+    if (status < 0) return status;
+
+    lock_state = g_backend_ops->lock(g_backend_context);
+    status = g_backend_ops->read_word_locked(
+        g_backend_context, request->address, &word);
+    if (status < 0) goto unlock_error;
+    owner_tid = (int32_t)(word & EDGE_LINUX_FUTEX_TID_MASK);
+    if (!owner_tid) {
+        expected = word;
+        desired = (word & EDGE_LINUX_FUTEX_OWNER_DIED) |
+                  (uint32_t)tid;
+        status = g_backend_ops->compare_exchange_word_locked(
+            g_backend_context, request->address, &expected, desired);
+        if (status == 0) {
+            g_backend_ops->unlock(g_backend_context, lock_state);
+            return 0;
+        }
+        if (status < 0) goto unlock_error;
+        word = expected;
+        owner_tid = (int32_t)(word & EDGE_LINUX_FUTEX_TID_MASK);
+    }
+    if (owner_tid == tid) {
+        status = -EDGE_LINUX_EDEADLK;
+        goto unlock_error;
+    }
+    if (!g_backend_ops->task_exists_locked(
+            g_backend_context, owner_tid)) {
+        status = -EDGE_LINUX_ESRCH;
+        goto unlock_error;
+    }
+    if (request->operation == KERNEL_FUTEX_TRYLOCK_PI) {
+        status = -EDGE_LINUX_EAGAIN;
+        goto unlock_error;
+    }
+    if (!(word & EDGE_LINUX_FUTEX_WAITERS)) {
+        expected = word;
+        desired = word | EDGE_LINUX_FUTEX_WAITERS;
+        status = g_backend_ops->compare_exchange_word_locked(
+            g_backend_context, request->address, &expected, desired);
+        if (status < 0) goto unlock_error;
+        if (status != 0) {
+            status = -EDGE_LINUX_EAGAIN;
+            goto unlock_error;
+        }
+    }
+    waiter_index = futex_pi_waiter_allocate_locked(
+        &key, request->address, tid, owner_tid);
+    if (waiter_index < 0) {
+        status = waiter_index;
+        goto unlock_error;
+    }
+    status = g_backend_ops->prepare_pi_wait_locked(
+        g_backend_context, request, &key);
+    if (status < 0) {
+        g_pi_waiters[waiter_index].used = 0u;
+        goto unlock_error;
+    }
+    futex_pi_recompute_owner_locked(owner_tid);
+    g_backend_ops->unlock(g_backend_context, lock_state);
+    status = (int)g_backend_ops->block_pi_wait(
+        g_backend_context, request);
+
+    lock_state = g_backend_ops->lock(g_backend_context);
+    kernel_futex_pi_waiter_cancel_locked(tid);
+    g_backend_ops->unlock(g_backend_context, lock_state);
+    return status;
+
+unlock_error:
+    g_backend_ops->unlock(g_backend_context, lock_state);
+    return status;
+}
+
+static int64_t futex_unlock_pi(const kernel_futex_request_t *request) {
+    kernel_futex_key_t key;
+    uintptr_t lock_state;
+    uint32_t word;
+    uint32_t expected;
+    uint32_t desired;
+    int32_t tid;
+    int32_t next_tid = 0;
+    int best;
+    int more;
+    int status;
+
+    if (!futex_pi_supported()) return -EDGE_LINUX_ENOSYS;
+    tid = g_backend_ops->current_tid(g_backend_context);
+    if (tid <= 0) return -EDGE_LINUX_ESRCH;
+    status = futex_resolve_key(
+        request->address, request->private_futex, &key);
+    if (status < 0) return status;
+    lock_state = g_backend_ops->lock(g_backend_context);
+    status = g_backend_ops->read_word_locked(
+        g_backend_context, request->address, &word);
+    if (status < 0) goto out;
+    if ((int32_t)(word & EDGE_LINUX_FUTEX_TID_MASK) != tid) {
+        status = -EDGE_LINUX_EPERM;
+        goto out;
+    }
+    best = futex_pi_best_waiter_locked(&key, tid);
+    expected = word;
+    if (best < 0) {
+        desired = 0u;
+    } else {
+        next_tid = g_pi_waiters[best].tid;
+        more = futex_pi_key_has_other_waiters_locked(&key, best);
+        desired = (uint32_t)next_tid |
+                  (more ? EDGE_LINUX_FUTEX_WAITERS : 0u);
+    }
+    status = g_backend_ops->compare_exchange_word_locked(
+        g_backend_context, request->address, &expected, desired);
+    if (status != 0) {
+        status = status < 0 ? status : -EDGE_LINUX_EAGAIN;
+        goto out;
+    }
+    if (best >= 0) {
+        g_pi_waiters[best].used = 0u;
+        for (uint32_t index = 0;
+             index < KERNEL_FUTEX_PI_MAX_WAITERS; ++index)
+            if (g_pi_waiters[index].used &&
+                futex_key_equal(&g_pi_waiters[index].key, &key))
+                g_pi_waiters[index].owner_tid = next_tid;
+        status = g_backend_ops->wake_tid_locked(
+            g_backend_context, &key, next_tid, 0);
+        if (status < 0) goto out;
+        futex_pi_recompute_owner_locked(next_tid);
+    }
+    futex_pi_recompute_owner_locked(tid);
+    status = 0;
+out:
+    g_backend_ops->unlock(g_backend_context, lock_state);
+    return status;
 }
 
 static int futex_resolve_key(uint64_t address, int private_futex,
@@ -51,6 +408,11 @@ int64_t kernel_futex_execute(const kernel_futex_request_t *request) {
         return g_backend_ops->wait(g_backend_context, request);
     if (request->operation == KERNEL_FUTEX_WAIT_VECTOR)
         return g_backend_ops->wait_vector(g_backend_context, request);
+    if (request->operation == KERNEL_FUTEX_LOCK_PI ||
+        request->operation == KERNEL_FUTEX_TRYLOCK_PI)
+        return futex_lock_pi(request);
+    if (request->operation == KERNEL_FUTEX_UNLOCK_PI)
+        return futex_unlock_pi(request);
 
     status = futex_resolve_key(
         request->address, request->private_futex, &source);

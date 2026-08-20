@@ -4107,6 +4107,15 @@ futex-runtime-unit: tools/tests/futex_runtime_unit.c \
 		-o $(OUT)/tests/futex_runtime_unit
 	@$(OUT)/tests/futex_runtime_unit
 
+futex-pi-runtime-unit: tools/tests/futex_pi_runtime_unit.c \
+		$(SRC)/kernel/futex_runtime.c include/kernel/futex_runtime.h
+	@mkdir -p $(OUT)/tests
+	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -iquote $(INC) \
+		tools/tests/futex_pi_runtime_unit.c \
+		$(SRC)/kernel/futex_runtime.c \
+		-o $(OUT)/tests/futex_pi_runtime_unit
+	@$(OUT)/tests/futex_pi_runtime_unit
+
 sysv-sem-runtime-unit: tools/tests/sysv_sem_runtime_unit.c \
 		$(SRC)/kernel/sysv_sem.c include/kernel/sysv_sem_runtime.h
 	@mkdir -p $(OUT)/tests

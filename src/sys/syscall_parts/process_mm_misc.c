@@ -8756,6 +8756,117 @@ static int x86_futex_requeue_locked(
         maximum, bitset);
 }
 
+static int32_t x86_futex_current_tid(void *context) {
+    task_t *current = process_current_task();
+    (void)context;
+    return current ? current->pid : 0;
+}
+
+static int x86_futex_waiter_precedes_locked(
+    void *context, int32_t candidate_tid, int32_t current_tid) {
+    task_t *candidate =
+        (task_t *)(uintptr_t)process_get_task(candidate_tid);
+    task_t *current =
+        (task_t *)(uintptr_t)process_get_task(current_tid);
+    (void)context;
+    if (!candidate) return -1;
+    if (!current) return 1;
+    return edge_linux_scheduler_state_compare(
+        &candidate->scheduler, &current->scheduler);
+}
+
+static int x86_futex_prepare_pi_wait_locked(
+    void *context, const kernel_futex_request_t *request,
+    const kernel_futex_key_t *key) {
+    task_t *current = process_current_task();
+    edge_futex_waiter_t *waiter;
+    (void)context;
+    if (!current || !request || !key) return -EINVAL;
+    waiter = futex_waiter_alloc_slot_for_pid(current->pid);
+    if (!waiter) return -EAGAIN;
+    futex_waiter_clear(waiter);
+    waiter->used = 1;
+    waiter->waiting = 1;
+    waiter->pid = current->pid;
+    waiter->private_key = (int)(uint32_t)key->scope;
+    waiter->uaddr = key->value;
+    waiter->bitset = UINT32_MAX;
+    waiter->deadline_us = request->has_timeout ?
+        request->deadline_us : 0u;
+    current->futex_wait_count++;
+    current->last_futex_wait_uaddr = request->address;
+    current->last_futex_deadline_us = waiter->deadline_us;
+    return 0;
+}
+
+static int64_t x86_futex_block_pi_wait(
+    void *context, const kernel_futex_request_t *request) {
+    task_t *current = process_current_task();
+    edge_futex_waiter_t *waiter;
+    (void)context;
+    (void)request;
+    if (!current) return -ESRCH;
+    waiter = futex_waiter_find_slot_by_pid(current->pid);
+    if (!waiter) return -EAGAIN;
+    return futex_wait_block(waiter, current);
+}
+
+static int x86_futex_wake_tid_locked(
+    void *context, const kernel_futex_key_t *key,
+    int32_t tid, int result) {
+    edge_futex_waiter_t *waiter = futex_waiter_find_slot_by_pid(tid);
+    task_t *task = (task_t *)(uintptr_t)process_get_task(tid);
+    (void)context;
+    if (!key || !waiter || !waiter->used || !waiter->waiting ||
+        waiter->uaddr != key->value ||
+        waiter->private_key != (int)(uint32_t)key->scope)
+        return -ESRCH;
+    waiter->waiting = 0;
+    waiter->result = result;
+    if (task && task->state == TASK_BLOCKED)
+        scheduler_task_make_runnable(task, scheduler_cpu_id());
+    return 0;
+}
+
+static int x86_futex_waiter_active_locked(
+    void *context, const kernel_futex_key_t *key, int32_t tid) {
+    edge_futex_waiter_t *waiter = futex_waiter_find_slot_by_pid(tid);
+    (void)context;
+    return key && waiter && waiter->used && waiter->waiting &&
+           waiter->uaddr == key->value &&
+           waiter->private_key == (int)(uint32_t)key->scope;
+}
+
+static int x86_futex_task_exists_locked(void *context, int32_t tid) {
+    task_t *task = (task_t *)(uintptr_t)process_get_task(tid);
+    (void)context;
+    return task && task->state != TASK_UNUSED &&
+           task->state != TASK_ZOMBIE;
+}
+
+static void x86_futex_recompute_pi_owner_locked(
+    void *context, int32_t owner_tid, int32_t donor_tid) {
+    task_t *owner = (task_t *)(uintptr_t)process_get_task(owner_tid);
+    task_t *donor = donor_tid > 0 ?
+        (task_t *)(uintptr_t)process_get_task(donor_tid) : 0;
+    uint64_t affinity;
+    (void)context;
+    if (!owner) return;
+    if (!owner->futex_pi_boosted) {
+        if (!donor) return;
+        owner->futex_pi_base_scheduler = owner->scheduler;
+        owner->futex_pi_boosted = 1u;
+    }
+    affinity = owner->futex_pi_base_scheduler.affinity_mask;
+    owner->scheduler = owner->futex_pi_base_scheduler;
+    if (donor && edge_linux_scheduler_state_compare(
+            &donor->scheduler, &owner->scheduler) > 0) {
+        owner->scheduler = donor->scheduler;
+        owner->scheduler.affinity_mask = affinity;
+    }
+    if (!donor) owner->futex_pi_boosted = 0u;
+}
+
 static void x86_futex_record_request(
     void *context, const kernel_futex_request_t *request) {
     task_t *current = process_current_task();
@@ -8792,6 +8903,14 @@ static const kernel_futex_backend_ops_t x86_futex_backend_ops = {
         x86_futex_compare_exchange_word_locked,
     .wake_locked = x86_futex_wake_locked,
     .requeue_locked = x86_futex_requeue_locked,
+    .current_tid = x86_futex_current_tid,
+    .waiter_precedes_locked = x86_futex_waiter_precedes_locked,
+    .prepare_pi_wait_locked = x86_futex_prepare_pi_wait_locked,
+    .block_pi_wait = x86_futex_block_pi_wait,
+    .wake_tid_locked = x86_futex_wake_tid_locked,
+    .waiter_active_locked = x86_futex_waiter_active_locked,
+    .task_exists_locked = x86_futex_task_exists_locked,
+    .recompute_pi_owner_locked = x86_futex_recompute_pi_owner_locked,
     .record_request = x86_futex_record_request,
     .record_result = x86_futex_record_result,
 };

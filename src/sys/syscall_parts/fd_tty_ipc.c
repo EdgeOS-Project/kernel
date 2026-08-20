@@ -1545,6 +1545,7 @@ static void futex_waiter_cancel_pid(int pid) {
         if (waiter->used && waiter->pid == pid)
             futex_waiter_clear(waiter);
     }
+    kernel_futex_pi_waiter_cancel_locked(pid);
     spin_unlock_irqrestore(&g_futex_lock, irq_flags);
 }
 
@@ -4881,7 +4882,9 @@ static void clear_task_child_tid_if_needed(task_t *t) {
     t->linux_thread.clear_child_tid = 0;
 }
 
-static void robust_futex_mark_owner_died(task_t *owner, uint64_t entry_u, int64_t futex_offset) {
+static void robust_futex_mark_owner_died(task_t *owner, uint64_t entry_u,
+                                         int64_t futex_offset, int pi,
+                                         int pending) {
     uint64_t futex_u;
     uint32_t word;
     uint32_t new_word;
@@ -4892,7 +4895,21 @@ static void robust_futex_mark_owner_died(task_t *owner, uint64_t entry_u, int64_
     if ((futex_u & 3u) != 0) return;
     if (!user_range_ok(futex_u, sizeof(word))) return;
     if (copy_from_user(&word, futex_u, sizeof(word)) < 0) return;
+    if (pending && !pi && !(word & LINUX_FUTEX_TID_MASK)) {
+        if (futex_key_for_task(owner, futex_u, 0,
+                               &futex_key, &private_key) == 0)
+            (void)futex_waiter_wake_matching_key(
+                futex_key, private_key, 1u, UINT32_MAX, 0);
+        return;
+    }
     if ((word & LINUX_FUTEX_TID_MASK) != (uint32_t)owner->pid) return;
+    if (pi) {
+        uint64_t irq_flags = spin_lock_irqsave(&g_futex_lock);
+        int handled = kernel_futex_pi_owner_died_locked(
+            futex_u, owner->pid, word);
+        spin_unlock_irqrestore(&g_futex_lock, irq_flags);
+        if (handled != 0) return;
+    }
     new_word = (word & ~LINUX_FUTEX_TID_MASK) | LINUX_FUTEX_OWNER_DIED;
     if (copy_to_user(futex_u, &new_word, sizeof(new_word)) < 0) return;
     if (futex_key_for_task(owner, futex_u, 0,
@@ -4919,6 +4936,9 @@ static void robust_futex_cleanup_task(task_t *t) {
     uint64_t head_u;
     uint64_t next_u;
     uint64_t pending_u = 0;
+    uint64_t pending_entry;
+    uint32_t current_modifier;
+    uint32_t pending_modifier;
     int64_t futex_offset = 0;
 
     if (!t) return;
@@ -4934,13 +4954,32 @@ static void robust_futex_cleanup_task(task_t *t) {
     if (copy_from_user(&futex_offset, head_u + 8, sizeof(futex_offset)) < 0) return;
     if (copy_from_user(&pending_u, head_u + 16, sizeof(pending_u)) < 0) return;
 
+    current_modifier = (uint32_t)(next_u & LINUX_FUTEX_ROBUST_MOD_MASK);
+    next_u &= ~(uint64_t)LINUX_FUTEX_ROBUST_MOD_MASK;
+    pending_modifier =
+        (uint32_t)(pending_u & LINUX_FUTEX_ROBUST_MOD_MASK);
+    pending_entry = pending_u & ~(uint64_t)LINUX_FUTEX_ROBUST_MOD_MASK;
+
     for (uint32_t i = 0; i < LINUX_ROBUST_LIST_LIMIT && next_u && next_u != head_u; ++i) {
         uint64_t entry_u = next_u;
+        uint64_t encoded_next;
         if (!user_range_ok(entry_u, sizeof(next_u))) break;
-        if (copy_from_user(&next_u, entry_u, sizeof(next_u)) < 0) break;
-        robust_futex_mark_owner_died(t, entry_u, futex_offset);
+        if (copy_from_user(&encoded_next, entry_u,
+                           sizeof(encoded_next)) < 0)
+            break;
+        if (entry_u != pending_entry)
+            robust_futex_mark_owner_died(
+                t, entry_u, futex_offset,
+                (current_modifier & LINUX_FUTEX_ROBUST_MOD_PI) != 0,
+                0);
+        current_modifier =
+            (uint32_t)(encoded_next & LINUX_FUTEX_ROBUST_MOD_MASK);
+        next_u = encoded_next & ~(uint64_t)LINUX_FUTEX_ROBUST_MOD_MASK;
     }
-    if (pending_u) robust_futex_mark_owner_died(t, pending_u, futex_offset);
+    if (pending_entry)
+        robust_futex_mark_owner_died(
+            t, pending_entry, futex_offset,
+            (pending_modifier & LINUX_FUTEX_ROBUST_MOD_PI) != 0, 1);
     t->linux_thread.robust_list_head = 0;
     t->linux_thread.robust_list_length = 0;
 }

@@ -9843,11 +9843,21 @@ static int64_t edge_linux_sys_futex_classic(
     request->address = context->arguments[0];
     request->private_futex =
         (operation & EDGE_LINUX_FUTEX_PRIVATE_FLAG) != 0;
+    request->robust_unlock =
+        (operation & EDGE_LINUX_FUTEX_ROBUST_UNLOCK) != 0;
     status = edge_linux_futex_word_access(context, request->address);
     if (status < 0) return status;
 
     if ((operation & EDGE_LINUX_FUTEX_CLOCK_REALTIME) &&
-        command != EDGE_LINUX_FUTEX_WAIT_BITSET)
+        command != EDGE_LINUX_FUTEX_WAIT_BITSET &&
+        command != EDGE_LINUX_FUTEX_WAIT_REQUEUE_PI &&
+        command != EDGE_LINUX_FUTEX_LOCK_PI2)
+        return -EDGE_LINUX_ENOSYS;
+    if ((operation & (EDGE_LINUX_FUTEX_ROBUST_UNLOCK |
+                      EDGE_LINUX_FUTEX_ROBUST_LIST32)) &&
+        command != EDGE_LINUX_FUTEX_WAKE &&
+        command != EDGE_LINUX_FUTEX_WAKE_BITSET &&
+        command != EDGE_LINUX_FUTEX_UNLOCK_PI)
         return -EDGE_LINUX_ENOSYS;
 
     switch (command) {
@@ -9900,6 +9910,23 @@ static int64_t edge_linux_sys_futex_classic(
         status = edge_linux_futex_decode_wake_operation(
             (uint32_t)context->arguments[5], request);
         if (status < 0) return status;
+        break;
+    case EDGE_LINUX_FUTEX_LOCK_PI:
+    case EDGE_LINUX_FUTEX_LOCK_PI2:
+        request->operation = KERNEL_FUTEX_LOCK_PI;
+        status = edge_linux_futex_timeout(
+            context, context->arguments[3],
+            command == EDGE_LINUX_FUTEX_LOCK_PI ||
+                (operation & EDGE_LINUX_FUTEX_CLOCK_REALTIME) ?
+                LINUX_CLOCK_REALTIME : LINUX_CLOCK_MONOTONIC,
+            1, request);
+        if (status < 0) return status;
+        break;
+    case EDGE_LINUX_FUTEX_TRYLOCK_PI:
+        request->operation = KERNEL_FUTEX_TRYLOCK_PI;
+        break;
+    case EDGE_LINUX_FUTEX_UNLOCK_PI:
+        request->operation = KERNEL_FUTEX_UNLOCK_PI;
         break;
     default:
         return -EDGE_LINUX_ENOSYS;

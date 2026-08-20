@@ -516,6 +516,8 @@ extern int vfs_chown_nofollow(const char *path, uint32_t uid, uint32_t gid);
 #define LINUX_FUTEX_TID_MASK 0x3fffffffu
 #define LINUX_FUTEX_OWNER_DIED 0x40000000u
 #define LINUX_ROBUST_LIST_LIMIT 2048u
+#define LINUX_FUTEX_ROBUST_MOD_PI 1u
+#define LINUX_FUTEX_ROBUST_MOD_MASK LINUX_FUTEX_ROBUST_MOD_PI
 #define ARM64_LINUX_MINSIGSTKSZ 5120u
 #define LINUX_POLLIN 0x0001
 #define LINUX_POLLPRI 0x0002
@@ -1105,7 +1107,9 @@ typedef struct {
     uint64_t default_timer_slack_ns;
     edge_seccomp_state_t seccomp;
     edge_linux_scheduler_state_t scheduler;
+    edge_linux_scheduler_state_t futex_pi_base_scheduler;
     edge_linux_scheduler_entity_t scheduler_entity;
+    uint8_t futex_pi_boosted;
     uint64_t scheduler_vruntime_us;
     uint64_t scheduler_wait_start_us;
     uint64_t scheduler_wait_us;
@@ -4212,6 +4216,7 @@ static void task_zero(kernel_task_t *task) {
     if (task->futex_bucket_plus_one || task->futex_waitv_active) {
         uint64_t futex_flags = spin_lock_irqsave(&g_futex_lock);
 
+        kernel_futex_pi_waiter_cancel_locked(task->pid);
         futex_wait_state_clear(task);
         spin_unlock_irqrestore(&g_futex_lock, futex_flags);
     }
@@ -4961,6 +4966,7 @@ static void task_interrupt_wait_for_signal(kernel_task_t *task,
         case KERNEL_TASK_WAITING_FUTEX:
         {
             uint64_t irq_flags = spin_lock_irqsave(&g_futex_lock);
+            kernel_futex_pi_waiter_cancel_locked(task->pid);
             futex_wait_state_clear(task);
             spin_unlock_irqrestore(&g_futex_lock, irq_flags);
             break;
@@ -20597,18 +20603,34 @@ static int futex_wake_locked(uint64_t key, uint32_t maximum, uint32_t bitset) {
 }
 
 static void robust_futex_mark_owner_died(kernel_task_t *owner,
-                                          uint64_t entry, int64_t offset) {
+                                          uint64_t entry, int64_t offset,
+                                          int pi, int pending) {
     uint64_t address;
     uint64_t key;
     uint64_t irq_flags;
     uint32_t word;
     uint32_t replacement;
+    int read_status;
     if (!owner || !entry) return;
     address = (uint64_t)((int64_t)entry + offset);
     if (address & 3u) return;
     irq_flags = spin_lock_irqsave(&g_futex_lock);
-    if (arch_copy_from_user(owner->ttbr0, &word, address, sizeof(word)) == 0 &&
-        (word & LINUX_FUTEX_TID_MASK) == (uint32_t)owner->pid) {
+    read_status = arch_copy_from_user(
+        owner->ttbr0, &word, address, sizeof(word));
+    if (read_status < 0) {
+        spin_unlock_irqrestore(&g_futex_lock, irq_flags);
+        return;
+    }
+    if (pending && !pi && !(word & LINUX_FUTEX_TID_MASK)) {
+        if (futex_key_for(owner, address, 0, &key) == 0)
+            (void)futex_wake_locked(key, 1u, UINT32_MAX);
+    } else if ((word & LINUX_FUTEX_TID_MASK) ==
+               (uint32_t)owner->pid) {
+        if (pi && kernel_futex_pi_owner_died_locked(
+                      address, owner->pid, word) != 0) {
+            spin_unlock_irqrestore(&g_futex_lock, irq_flags);
+            return;
+        }
         replacement = (word & ~LINUX_FUTEX_TID_MASK) | LINUX_FUTEX_OWNER_DIED;
         if (arch_copy_to_user(owner->ttbr0, address, &replacement,
                               sizeof(replacement)) == 0 &&
@@ -20622,7 +20644,10 @@ static void robust_futex_cleanup(kernel_task_t *owner) {
     uint64_t head;
     uint64_t next;
     uint64_t pending;
+    uint64_t pending_entry;
     int64_t offset;
+    uint32_t current_modifier;
+    uint32_t pending_modifier;
     uint32_t count;
     if (!owner || !owner->linux_thread.robust_list_head ||
         owner->linux_thread.robust_list_length != 24u)
@@ -20634,14 +20659,30 @@ static void robust_futex_cleanup(kernel_task_t *owner) {
         arch_copy_from_user(owner->ttbr0, &pending, head + 16u,
                                      sizeof(pending)) < 0)
         return;
+    current_modifier = (uint32_t)(next & LINUX_FUTEX_ROBUST_MOD_MASK);
+    next &= ~(uint64_t)LINUX_FUTEX_ROBUST_MOD_MASK;
+    pending_modifier =
+        (uint32_t)(pending & LINUX_FUTEX_ROBUST_MOD_MASK);
+    pending_entry = pending & ~(uint64_t)LINUX_FUTEX_ROBUST_MOD_MASK;
     for (count = 0; next && next != head && count < LINUX_ROBUST_LIST_LIMIT; ++count) {
         uint64_t entry = next;
-        if (arch_copy_from_user(owner->ttbr0, &next, entry,
-                                         sizeof(next)) < 0)
+        uint64_t encoded_next;
+        if (arch_copy_from_user(owner->ttbr0, &encoded_next, entry,
+                                sizeof(encoded_next)) < 0)
             break;
-        robust_futex_mark_owner_died(owner, entry, offset);
+        if (entry != pending_entry)
+            robust_futex_mark_owner_died(
+                owner, entry, offset,
+                (current_modifier & LINUX_FUTEX_ROBUST_MOD_PI) != 0,
+                0);
+        current_modifier =
+            (uint32_t)(encoded_next & LINUX_FUTEX_ROBUST_MOD_MASK);
+        next = encoded_next & ~(uint64_t)LINUX_FUTEX_ROBUST_MOD_MASK;
     }
-    if (pending) robust_futex_mark_owner_died(owner, pending, offset);
+    if (pending_entry)
+        robust_futex_mark_owner_died(
+            owner, pending_entry, offset,
+            (pending_modifier & LINUX_FUTEX_ROBUST_MOD_PI) != 0, 1);
     owner->linux_thread.robust_list_head = 0;
     owner->linux_thread.robust_list_length = 0;
 }
@@ -21062,6 +21103,7 @@ static void futex_timeout_waiters(void) {
         if (waiter->futex_deadline_us == UINT64_MAX ||
             now < waiter->futex_deadline_us) continue;
         waiter->frame.x[0] = (uint64_t)(int64_t)-LINUX_ETIMEDOUT;
+        kernel_futex_pi_waiter_cancel_locked(waiter->pid);
         futex_wait_state_clear(waiter);
         task_state_set(waiter, KERNEL_TASK_RUNNABLE);
     }
@@ -32862,6 +32904,116 @@ static int arm64_futex_requeue_locked(
         source->value, destination->value, maximum);
 }
 
+static int32_t arm64_futex_current_tid(void *context) {
+    kernel_task_t *task = current_task();
+    (void)context;
+    return task ? task->pid : 0;
+}
+
+static int arm64_futex_waiter_precedes_locked(
+    void *context, int32_t candidate_tid, int32_t current_tid) {
+    int candidate_slot = task_find_pid(candidate_tid);
+    int current_slot = task_find_pid(current_tid);
+    (void)context;
+    if (candidate_slot < 0) return -1;
+    if (current_slot < 0) return 1;
+    return edge_linux_scheduler_state_compare(
+        &g_tasks[candidate_slot].scheduler,
+        &g_tasks[current_slot].scheduler);
+}
+
+static int arm64_futex_prepare_pi_wait_locked(
+    void *context, const kernel_futex_request_t *request,
+    const kernel_futex_key_t *key) {
+    kernel_task_t *task = current_task();
+    arch_user_frame_t *frame = request ?
+        (arch_user_frame_t *)request->user_registers : 0;
+    (void)context;
+    if (!task || !frame || !key) return -LINUX_EINVAL;
+    arch_copy_frame(&task->frame, frame);
+    futex_wait_state_clear(task);
+    task->futex_key = key->value;
+    task->futex_bitset = UINT32_MAX;
+    task->futex_deadline_us = request->has_timeout ?
+        request->deadline_us : UINT64_MAX;
+    futex_wait_queue_add(task);
+    task_state_set(task, KERNEL_TASK_WAITING_FUTEX);
+    return 0;
+}
+
+static int64_t arm64_futex_block_pi_wait(
+    void *context, const kernel_futex_request_t *request) {
+    (void)context;
+    (void)request;
+    task_resume_next();
+}
+
+static int arm64_futex_wake_tid_locked(
+    void *context, const kernel_futex_key_t *key,
+    int32_t tid, int result) {
+    int slot = task_find_pid(tid);
+    kernel_task_t *task;
+    (void)context;
+    if (!key || slot < 0) return -LINUX_ESRCH;
+    task = &g_tasks[slot];
+    if (task_state_shadow_at((uint32_t)slot) !=
+            KERNEL_TASK_WAITING_FUTEX ||
+        task->futex_waitv_active || task->futex_key != key->value)
+        return -LINUX_ESRCH;
+    task->frame.x[0] = (uint64_t)(int64_t)result;
+    futex_wait_state_clear(task);
+    task_state_set(task, KERNEL_TASK_RUNNABLE);
+    if (!g_reschedule_target_plus_one ||
+        edge_linux_scheduler_state_compare(
+            &task->scheduler,
+            &g_tasks[g_reschedule_target_plus_one - 1u].scheduler) > 0)
+        g_reschedule_target_plus_one = (uint16_t)(slot + 1u);
+    return 0;
+}
+
+static int arm64_futex_waiter_active_locked(
+    void *context, const kernel_futex_key_t *key, int32_t tid) {
+    int slot = task_find_pid(tid);
+    kernel_task_t *task;
+    (void)context;
+    if (!key || slot < 0) return 0;
+    task = &g_tasks[slot];
+    return task_state_shadow_at((uint32_t)slot) ==
+               KERNEL_TASK_WAITING_FUTEX &&
+           !task->futex_waitv_active && task->futex_key == key->value;
+}
+
+static int arm64_futex_task_exists_locked(void *context, int32_t tid) {
+    int slot = task_find_pid(tid);
+    (void)context;
+    return slot >= 0 && g_tasks[slot].state != KERNEL_TASK_UNUSED &&
+           g_tasks[slot].state != KERNEL_TASK_ZOMBIE;
+}
+
+static void arm64_futex_recompute_pi_owner_locked(
+    void *context, int32_t owner_tid, int32_t donor_tid) {
+    int owner_slot = task_find_pid(owner_tid);
+    int donor_slot = donor_tid > 0 ? task_find_pid(donor_tid) : -1;
+    kernel_task_t *owner;
+    uint64_t affinity;
+    (void)context;
+    if (owner_slot < 0) return;
+    owner = &g_tasks[owner_slot];
+    if (!owner->futex_pi_boosted) {
+        if (donor_slot < 0) return;
+        owner->futex_pi_base_scheduler = owner->scheduler;
+        owner->futex_pi_boosted = 1u;
+    }
+    affinity = owner->futex_pi_base_scheduler.affinity_mask;
+    owner->scheduler = owner->futex_pi_base_scheduler;
+    if (donor_slot >= 0 && edge_linux_scheduler_state_compare(
+            &g_tasks[donor_slot].scheduler, &owner->scheduler) > 0) {
+        owner->scheduler = g_tasks[donor_slot].scheduler;
+        owner->scheduler.affinity_mask = affinity;
+    }
+    if (donor_slot < 0) owner->futex_pi_boosted = 0u;
+}
+
 static const kernel_futex_backend_ops_t arm64_futex_backend_ops = {
     .resolve_key = arm64_futex_resolve_key,
     .wait = arm64_futex_wait,
@@ -32873,6 +33025,14 @@ static const kernel_futex_backend_ops_t arm64_futex_backend_ops = {
         arm64_futex_compare_exchange_word_locked,
     .wake_locked = arm64_futex_wake_locked,
     .requeue_locked = arm64_futex_requeue_locked,
+    .current_tid = arm64_futex_current_tid,
+    .waiter_precedes_locked = arm64_futex_waiter_precedes_locked,
+    .prepare_pi_wait_locked = arm64_futex_prepare_pi_wait_locked,
+    .block_pi_wait = arm64_futex_block_pi_wait,
+    .wake_tid_locked = arm64_futex_wake_tid_locked,
+    .waiter_active_locked = arm64_futex_waiter_active_locked,
+    .task_exists_locked = arm64_futex_task_exists_locked,
+    .recompute_pi_owner_locked = arm64_futex_recompute_pi_owner_locked,
 };
 
 #ifdef CONFIG_BSD_DRIVER_BRIDGE
