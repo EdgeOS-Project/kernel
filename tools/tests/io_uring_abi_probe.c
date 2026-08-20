@@ -43,10 +43,21 @@
 #define IORING_OP_NOP 0u
 #define IORING_OP_READ 22u
 #define IORING_OP_WRITE 23u
+#define IORING_OP_POLL_ADD 6u
+#define IORING_OP_TIMEOUT 11u
+#define IORING_OP_TIMEOUT_REMOVE 12u
 #define IORING_OFF_SQ_RING 0x00000000ull
 #define IORING_OFF_CQ_RING 0x08000000ull
 #define IORING_OFF_SQES 0x10000000ull
 #define PROBE_OPERATION_COUNT 65u
+#define POLLIN 0x0001u
+#define ETIME 62
+#define ECANCELED 125
+
+struct kernel_timespec {
+    int64_t seconds;
+    int64_t nanoseconds;
+};
 
 struct io_uring_sqe {
     uint8_t opcode;
@@ -170,11 +181,38 @@ static void print_text(const char *text) {
                        (long)text_length(text), 0, 0, 0);
 }
 
+static void print_integer(int64_t value) {
+    char buffer[32];
+    unsigned long length = 0;
+    uint64_t magnitude;
+    if (value < 0) {
+        buffer[length++] = '-';
+        magnitude = (uint64_t)(-(value + 1)) + 1u;
+    } else {
+        magnitude = (uint64_t)value;
+    }
+    {
+        char digits[24];
+        unsigned long count = 0;
+        do {
+            digits[count++] = (char)('0' + magnitude % 10u);
+            magnitude /= 10u;
+        } while (magnitude);
+        while (count) buffer[length++] = digits[--count];
+    }
+    buffer[length++] = '\n';
+    (void)raw_syscall6(SYS_write, 1, (long)buffer, (long)length,
+                       0, 0, 0);
+}
+
 static int expect(const char *name, long actual, long expected) {
     if (actual == expected) return 0;
     print_text("FAIL ");
     print_text(name);
     print_text("\n");
+    print_text("actual/expected\n");
+    print_integer(actual);
+    print_integer(expected);
     return 1;
 }
 
@@ -208,6 +246,8 @@ static int run_tests(void) {
     long descriptor;
     long event_descriptor;
     uint64_t event_value = 0;
+    struct kernel_timespec short_timeout = {0, 1000000};
+    struct kernel_timespec long_timeout = {60, 0};
     int failures = 0;
 
     memset(&parameters, 0, sizeof(parameters));
@@ -303,9 +343,83 @@ static int run_tests(void) {
         failures += expect("unregister eventfd", raw_syscall6(
             SYS_io_uring_register, descriptor,
             IORING_UNREGISTER_EVENTFD, 0, 0, 0, 0), 0);
+        event_value = 1;
+        failures += expect("prime poll eventfd", raw_syscall6(
+            SYS_write, event_descriptor, (long)&event_value,
+            sizeof(event_value), 0, 0, 0), sizeof(event_value));
+        memset(&sqes[2], 0, sizeof(sqes[2]));
+        sqes[2].opcode = IORING_OP_POLL_ADD;
+        sqes[2].descriptor = (int32_t)event_descriptor;
+        sqes[2].operation_flags = POLLIN;
+        sqes[2].user_data = 0x504f4c4c52454144ull;
+        sq_array[2] = 2;
+        __atomic_store_n(sq_tail, 3u, __ATOMIC_RELEASE);
+        failures += expect("submit poll", raw_syscall6(
+            SYS_io_uring_enter, descriptor, 1, 1,
+            IORING_ENTER_GETEVENTS, 0, 0), 1);
+        failures += expect_true("poll completion",
+            __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == 3u &&
+            cqes[2].user_data == 0x504f4c4c52454144ull &&
+            (cqes[2].result & POLLIN) != 0);
+        __atomic_store_n(cq_head, 3u, __ATOMIC_RELEASE);
         (void)raw_syscall6(SYS_close, event_descriptor, 0, 0, 0, 0, 0);
-        __atomic_store_n(cq_head, 2u, __ATOMIC_RELEASE);
     }
+
+    memset(&sqes[3], 0, sizeof(sqes[3]));
+    print_text("io-uring-abi: testing timeout\n");
+    sqes[3].opcode = IORING_OP_TIMEOUT;
+    sqes[3].descriptor = -1;
+    sqes[3].address = (uint64_t)(uintptr_t)&short_timeout;
+    sqes[3].length = 1;
+    sqes[3].user_data = 0x54494d454f555431ull;
+    sq_array[3] = 3;
+    __atomic_store_n(sq_tail, 4u, __ATOMIC_RELEASE);
+    failures += expect("submit timeout", raw_syscall6(
+        SYS_io_uring_enter, descriptor, 1, 1,
+        IORING_ENTER_GETEVENTS, 0, 0), 1);
+    failures += expect_true("timeout completion",
+        __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == 4u &&
+        cqes[3].user_data == 0x54494d454f555431ull &&
+        cqes[3].result == -ETIME);
+    __atomic_store_n(cq_head, 4u, __ATOMIC_RELEASE);
+
+    memset(&sqes[4], 0, sizeof(sqes[4]));
+    print_text("io-uring-abi: testing cancellation\n");
+    sqes[4].opcode = IORING_OP_TIMEOUT;
+    sqes[4].descriptor = -1;
+    sqes[4].address = (uint64_t)(uintptr_t)&long_timeout;
+    sqes[4].length = 1;
+    sqes[4].user_data = 0x43414e43454c4d45ull;
+    memset(&sqes[5], 0, sizeof(sqes[5]));
+    sqes[5].opcode = IORING_OP_TIMEOUT_REMOVE;
+    sqes[5].descriptor = -1;
+    sqes[5].address = 0x43414e43454c4d45ull;
+    sqes[5].user_data = 0x52454d4f56454f50ull;
+    sq_array[4] = 4;
+    sq_array[5] = 5;
+    __atomic_store_n(sq_tail, 6u, __ATOMIC_RELEASE);
+    failures += expect("submit cancel pair", raw_syscall6(
+        SYS_io_uring_enter, descriptor, 2, 2,
+        IORING_ENTER_GETEVENTS, 0, 0), 2);
+    failures += expect_true("canceled timeout completion",
+        __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == 6u &&
+        cqes[5].user_data == 0x43414e43454c4d45ull &&
+        cqes[5].result == -ECANCELED);
+    failures += expect_true("timeout remove completion",
+        cqes[4].user_data == 0x52454d4f56454f50ull &&
+        cqes[4].result == 0);
+    if (cqes[5].user_data != 0x43414e43454c4d45ull ||
+        cqes[5].result != -ECANCELED ||
+        cqes[4].user_data != 0x52454d4f56454f50ull ||
+        cqes[4].result != 0) {
+        print_text("io-uring-abi: cancellation CQ tail/results\n");
+        print_integer(*cq_tail);
+        print_integer((int64_t)cqes[4].user_data);
+        print_integer(cqes[4].result);
+        print_integer((int64_t)cqes[5].user_data);
+        print_integer(cqes[5].result);
+    }
+    __atomic_store_n(cq_head, 6u, __ATOMIC_RELEASE);
 
     (void)raw_syscall6(SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
     (void)raw_syscall6(SYS_munmap, (long)cq_ring, PAGE_SIZE, 0, 0, 0, 0);
@@ -315,6 +429,9 @@ close_ring:
     return failures;
 }
 
+#if defined(__x86_64__)
+__attribute__((force_align_arg_pointer))
+#endif
 void _start(void) {
     int failures = run_tests();
     print_text(failures ? "io-uring-abi: FAIL\n" :

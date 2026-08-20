@@ -6,6 +6,7 @@
 #include <stdio.h>
 
 #include "kernel/io_uring_runtime.h"
+#include "kernel/io_runtime.h"
 #include "kernel/linux_errno.h"
 
 #define TEST_PAGE_COUNT 16u
@@ -13,6 +14,7 @@
 static uint8_t g_pages[TEST_PAGE_COUNT][KERNEL_IO_URING_PAGE_SIZE]
     __attribute__((aligned(KERNEL_IO_URING_PAGE_SIZE)));
 static uint32_t g_references[TEST_PAGE_COUNT];
+static int32_t g_ready_descriptor = -1;
 
 int kernel_eventfd_retain(int event_id) {
     (void)event_id;
@@ -29,6 +31,12 @@ int64_t kernel_eventfd_write_value(int event_id, int nonblocking,
     (void)nonblocking;
     (void)value;
     return -EDGE_LINUX_EBADF;
+}
+
+int kernel_io_descriptor_ready(int32_t descriptor,
+                               kernel_io_operation_t operation) {
+    (void)operation;
+    return descriptor == g_ready_descriptor;
 }
 
 static int test_page_allocate(void *context, kernel_io_uring_page_t *page) {
@@ -115,6 +123,29 @@ int main(void) {
         (uint8_t *)cq_ring.address + parameters.cq_off.cqes);
     assert(completion[0].user_data == submission.user_data);
     assert(completion[0].result == 7 && completion[0].flags == 0);
+
+    assert(kernel_io_uring_timeout_add(
+               ring_id, 0x54494d45u, 100u, 0, -EDGE_LINUX_ETIME) == 0);
+    assert(kernel_io_uring_collect(ring_id, 99u) == 0);
+    assert(kernel_io_uring_collect(ring_id, 100u) == 1);
+    assert(kernel_io_uring_completion_count(ring_id) == 2);
+    assert(completion[1].user_data == 0x54494d45u);
+    assert(completion[1].result == -EDGE_LINUX_ETIME);
+
+    assert(kernel_io_uring_poll_add(ring_id, 0x504f4c4cu, 9, 1u) == 0);
+    assert(kernel_io_uring_collect(ring_id, 101u) == 0);
+    g_ready_descriptor = 9;
+    assert(kernel_io_uring_collect(ring_id, 102u) == 1);
+    assert(kernel_io_uring_completion_count(ring_id) == 3);
+    assert(completion[2].user_data == 0x504f4c4cu);
+    assert(completion[2].result == 1);
+
+    assert(kernel_io_uring_timeout_add(
+               ring_id, 0x43414e43u, UINT64_MAX, 0,
+               -EDGE_LINUX_ETIME) == 0);
+    assert(kernel_io_uring_pending_cancel(ring_id, 0x43414e43u) == 0);
+    assert(kernel_io_uring_pending_cancel(ring_id, 0x43414e43u) ==
+           -EDGE_LINUX_ENOENT);
 
     test_page_release(0, &sq_ring);
     test_page_release(0, &cq_ring);

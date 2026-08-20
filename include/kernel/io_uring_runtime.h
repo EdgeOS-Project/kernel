@@ -15,6 +15,7 @@
 #define KERNEL_IO_URING_MAX_SQ_RING_PAGES 1u
 #define KERNEL_IO_URING_MAX_CQ_RING_PAGES 3u
 #define KERNEL_IO_URING_MAX_SQE_PAGES 4u
+#define KERNEL_IO_URING_MAX_PENDING 128u
 
 #define KERNEL_IO_URING_OFF_SQ_RING 0x00000000ull
 #define KERNEL_IO_URING_OFF_CQ_RING 0x08000000ull
@@ -44,6 +45,14 @@ int kernel_io_uring_disabled(int32_t ring_id);
 int kernel_io_uring_eventfd_register(int32_t ring_id, int32_t event_id,
                                      int asynchronous_only);
 int kernel_io_uring_eventfd_unregister(int32_t ring_id);
+int kernel_io_uring_timeout_add(int32_t ring_id, uint64_t user_data,
+                                uint64_t deadline_us,
+                                uint32_t completion_target,
+                                int32_t expiration_result);
+int kernel_io_uring_poll_add(int32_t ring_id, uint64_t user_data,
+                             int32_t descriptor, uint32_t events);
+int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data);
+uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us);
 int kernel_io_uring_mmap_info(int32_t ring_id, uint64_t offset,
                               uint64_t length, uint32_t *page_count);
 int kernel_io_uring_mmap_page(int32_t ring_id, uint64_t offset,
@@ -53,6 +62,9 @@ int kernel_io_uring_take_submission(
     int32_t ring_id, struct edge_linux_io_uring_sqe *submission);
 int kernel_io_uring_completion_add(int32_t ring_id, uint64_t user_data,
                                    int32_t result, uint32_t flags);
+int kernel_io_uring_completion_add_async(int32_t ring_id,
+                                         uint64_t user_data,
+                                         int32_t result, uint32_t flags);
 uint32_t kernel_io_uring_completion_count(int32_t ring_id);
 
 #endif

@@ -29,11 +29,17 @@ EDGEOS_ASSESSMENTS = [
             "NOP, READ, WRITE, READV, WRITEV and FSYNC operations",
             "probe and disabled-ring registration",
             "completion eventfd registration and notification",
+            "single-shot poll requests",
+            "relative and absolute timeout requests",
+            "completion-count timeouts",
+            "timeout removal and user-data cancellation",
         ],
         "missing": [
             "asynchronous worker execution",
             "fixed files and buffers",
-            "poll, timeout and cancellation operations",
+            "multishot poll and timeout update operations",
+            "fully interruptible blocking enter and extended arguments",
+            "descriptor leases across close and reuse",
             "remaining supported VFS and socket operations",
             "ia32 and x32 compatibility layouts",
         ],
@@ -44,7 +50,10 @@ EDGEOS_ASSESSMENTS = [
         "linux_oracle": {
             "status": "partial",
             "reference": REFERENCE_COMMIT,
-            "scope": "setup, mmap, NOP completion and operation probe",
+            "scope": (
+                "setup, mmap, NOP, eventfd, poll, timeout, cancellation "
+                "and operation probe"
+            ),
         },
     },
 ]

@@ -380,6 +380,7 @@ typedef struct kernel_linux_thread_state {
     uint64_t robust_list_length;
     struct edge_linux_rseq_state rseq;
     uint32_t personality;
+    uint32_t io_uring_wait_submitted;
     kernel_restart_block_t restart_block;
 } kernel_linux_thread_state_t;
 

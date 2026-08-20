@@ -5,6 +5,7 @@
 
 #include "kernel/io_uring_runtime.h"
 #include "kernel/eventfd.h"
+#include "kernel/io_runtime.h"
 #include "kernel/linux_errno.h"
 #include "string.h"
 #include "sys/spinlock.h"
@@ -45,6 +46,19 @@
 #define IORING_CQ_FLAGS_OFFSET       20u
 #define IORING_CQ_CQES_OFFSET        64u
 
+typedef struct kernel_io_uring_pending {
+    uint8_t used;
+    uint8_t kind;
+    uint16_t reserved;
+    int32_t descriptor;
+    uint32_t events;
+    uint32_t completion_target;
+    int32_t expiration_result;
+    uint64_t user_data;
+    uint64_t deadline_us;
+    uint64_t sequence;
+} kernel_io_uring_pending_t;
+
 typedef struct kernel_io_uring {
     uint8_t used;
     uint8_t disabled;
@@ -58,12 +72,17 @@ typedef struct kernel_io_uring {
     uint32_t sqe_pages;
     int32_t event_id;
     uint8_t event_async_only;
+    uint64_t next_pending_sequence;
     kernel_io_uring_page_t
         sq_ring[KERNEL_IO_URING_MAX_SQ_RING_PAGES];
     kernel_io_uring_page_t
         cq_ring[KERNEL_IO_URING_MAX_CQ_RING_PAGES];
     kernel_io_uring_page_t sqes[KERNEL_IO_URING_MAX_SQE_PAGES];
+    kernel_io_uring_pending_t pending[KERNEL_IO_URING_MAX_PENDING];
 } kernel_io_uring_t;
+
+#define IO_URING_PENDING_TIMEOUT 1u
+#define IO_URING_PENDING_POLL    2u
 
 static kernel_io_uring_t g_io_urings[KERNEL_IO_URING_MAX_RINGS];
 static kernel_io_uring_page_allocator_t g_io_uring_allocator;
@@ -357,6 +376,153 @@ int kernel_io_uring_eventfd_unregister(int32_t ring_id) {
     return result;
 }
 
+static int io_uring_pending_add(int32_t ring_id, uint8_t kind,
+                                uint64_t user_data, int32_t descriptor,
+                                uint32_t events, uint64_t deadline_us,
+                                uint32_t completion_target,
+                                int32_t expiration_result) {
+    kernel_io_uring_t *ring;
+    uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
+    uint32_t slot;
+    int result = 0;
+
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) result = -EDGE_LINUX_EBADF;
+    else {
+        for (slot = 0; slot < KERNEL_IO_URING_MAX_PENDING; ++slot)
+            if (!ring->pending[slot].used) break;
+        if (slot == KERNEL_IO_URING_MAX_PENDING) {
+            result = -EDGE_LINUX_EAGAIN;
+        } else {
+            memset(&ring->pending[slot], 0, sizeof(ring->pending[slot]));
+            ring->pending[slot].used = 1u;
+            ring->pending[slot].kind = kind;
+            ring->pending[slot].descriptor = descriptor;
+            ring->pending[slot].events = events;
+            ring->pending[slot].deadline_us = deadline_us;
+            ring->pending[slot].completion_target = completion_target;
+            ring->pending[slot].expiration_result = expiration_result;
+            ring->pending[slot].user_data = user_data;
+            ++ring->next_pending_sequence;
+            if (!ring->next_pending_sequence)
+                ++ring->next_pending_sequence;
+            ring->pending[slot].sequence = ring->next_pending_sequence;
+        }
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_timeout_add(int32_t ring_id, uint64_t user_data,
+                                uint64_t deadline_us,
+                                uint32_t completion_target,
+                                int32_t expiration_result) {
+    return io_uring_pending_add(
+        ring_id, IO_URING_PENDING_TIMEOUT, user_data, -1, 0,
+        deadline_us, completion_target, expiration_result);
+}
+
+int kernel_io_uring_poll_add(int32_t ring_id, uint64_t user_data,
+                             int32_t descriptor, uint32_t events) {
+    if (descriptor < 0 || !events) return -EDGE_LINUX_EINVAL;
+    return io_uring_pending_add(
+        ring_id, IO_URING_PENDING_POLL, user_data, descriptor,
+        events, UINT64_MAX, 0, 0);
+}
+
+int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data) {
+    kernel_io_uring_t *ring;
+    uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
+    uint32_t slot;
+    int result = -EDGE_LINUX_ENOENT;
+
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) result = -EDGE_LINUX_EBADF;
+    else {
+        for (slot = 0; slot < KERNEL_IO_URING_MAX_PENDING; ++slot) {
+            if (!ring->pending[slot].used ||
+                ring->pending[slot].user_data != user_data)
+                continue;
+            memset(&ring->pending[slot], 0, sizeof(ring->pending[slot]));
+            result = 0;
+            break;
+        }
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us) {
+    uint32_t count = 0;
+    for (uint32_t slot = 0; slot < KERNEL_IO_URING_MAX_PENDING; ++slot) {
+        kernel_io_uring_pending_t pending;
+        kernel_io_uring_t *ring;
+        uint32_t completion_count;
+        uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
+        int32_t result = 0;
+        int remove = 0;
+        int ready = 0;
+        ring = io_uring_lookup_locked(ring_id);
+        if (!ring) {
+            spin_unlock_irqrestore(&g_io_uring_lock, flags);
+            break;
+        }
+        pending = ring->pending[slot];
+        if (!pending.used) {
+            spin_unlock_irqrestore(&g_io_uring_lock, flags);
+            continue;
+        }
+        completion_count = *io_uring_u32(
+            ring->cq_ring, IORING_CQ_TAIL_OFFSET) -
+            *io_uring_u32(ring->cq_ring, IORING_CQ_HEAD_OFFSET);
+        if (pending.kind == IO_URING_PENDING_TIMEOUT) {
+            if (pending.completion_target &&
+                completion_count >=
+                    pending.completion_target) {
+                ready = 1;
+            } else if (now_us >= pending.deadline_us) {
+                ready = 1;
+                result = pending.expiration_result;
+            }
+            if (ready) {
+                memset(&ring->pending[slot], 0,
+                       sizeof(ring->pending[slot]));
+                remove = 1;
+            }
+            spin_unlock_irqrestore(&g_io_uring_lock, flags);
+        } else if (pending.kind == IO_URING_PENDING_POLL) {
+            spin_unlock_irqrestore(&g_io_uring_lock, flags);
+            if ((pending.events & 0x2003u) &&
+                kernel_io_descriptor_ready(
+                    pending.descriptor, KERNEL_IO_READ_CURRENT))
+                result |= (int32_t)(pending.events & 0x2003u);
+            if ((pending.events & 0x0004u) &&
+                kernel_io_descriptor_ready(
+                    pending.descriptor, KERNEL_IO_WRITE_CURRENT))
+                result |= 0x0004;
+            if (!result) continue;
+            flags = spin_lock_irqsave(&g_io_uring_lock);
+            ring = io_uring_lookup_locked(ring_id);
+            if (ring && ring->pending[slot].used &&
+                ring->pending[slot].kind == IO_URING_PENDING_POLL &&
+                ring->pending[slot].sequence == pending.sequence) {
+                memset(&ring->pending[slot], 0,
+                       sizeof(ring->pending[slot]));
+                remove = 1;
+            }
+            spin_unlock_irqrestore(&g_io_uring_lock, flags);
+        } else {
+            spin_unlock_irqrestore(&g_io_uring_lock, flags);
+            continue;
+        }
+        if (remove &&
+            kernel_io_uring_completion_add_async(
+                ring_id, pending.user_data, result, 0) == 0)
+            ++count;
+    }
+    return count;
+}
+
 static int io_uring_region(kernel_io_uring_t *ring, uint64_t offset,
                            kernel_io_uring_page_t **pages,
                            uint32_t *page_count) {
@@ -487,8 +653,9 @@ int kernel_io_uring_take_submission(
     return 0;
 }
 
-int kernel_io_uring_completion_add(int32_t ring_id, uint64_t user_data,
-                                   int32_t result, uint32_t cqe_flags) {
+static int io_uring_completion_add(int32_t ring_id, uint64_t user_data,
+                                   int32_t result, uint32_t cqe_flags,
+                                   int asynchronous) {
     struct edge_linux_io_uring_cqe *completion;
     kernel_io_uring_t *ring;
     volatile uint32_t *head_pointer;
@@ -524,7 +691,8 @@ int kernel_io_uring_completion_add(int32_t ring_id, uint64_t user_data,
     completion->result = result;
     completion->flags = cqe_flags;
     __atomic_store_n(tail_pointer, tail + 1u, __ATOMIC_RELEASE);
-    if (ring->event_id >= 0 && !ring->event_async_only &&
+    if (ring->event_id >= 0 &&
+        (!ring->event_async_only || asynchronous) &&
         kernel_eventfd_retain(ring->event_id) == 0)
         event_id = ring->event_id;
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
@@ -533,6 +701,20 @@ int kernel_io_uring_completion_add(int32_t ring_id, uint64_t user_data,
         kernel_eventfd_release(event_id);
     }
     return 0;
+}
+
+int kernel_io_uring_completion_add(int32_t ring_id, uint64_t user_data,
+                                   int32_t result, uint32_t cqe_flags) {
+    return io_uring_completion_add(
+        ring_id, user_data, result, cqe_flags, 0);
+}
+
+int kernel_io_uring_completion_add_async(int32_t ring_id,
+                                         uint64_t user_data,
+                                         int32_t result,
+                                         uint32_t cqe_flags) {
+    return io_uring_completion_add(
+        ring_id, user_data, result, cqe_flags, 1);
 }
 
 uint32_t kernel_io_uring_completion_count(int32_t ring_id) {
