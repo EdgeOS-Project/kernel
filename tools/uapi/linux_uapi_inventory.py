@@ -39,6 +39,7 @@ EDGEOS_ASSESSMENTS = [
             "CONNECT and ACCEPT through shared socket handlers",
             "FADVISE, MADVISE, EPOLL_CTL and TEE through shared subsystem handlers",
             "RENAMEAT, UNLINKAT, MKDIRAT, SYMLINKAT and LINKAT through shared VFS handlers",
+            "SOCKET, BIND and LISTEN through shared socket handlers",
         ],
         "missing": [
             "asynchronous worker execution",
@@ -61,7 +62,7 @@ EDGEOS_ASSESSMENTS = [
                 "openat, openat2, close, statx, fallocate, send, recv, "
                 "sendmsg, recvmsg, shutdown, connect, accept, fadvise, "
                 "madvise, epoll_ctl, tee, renameat, unlinkat, mkdirat, "
-                "symlinkat, linkat and operation probe"
+                "symlinkat, linkat, socket, bind, listen and operation probe"
             ),
         },
     },

@@ -95,6 +95,9 @@ struct linux_epoll_event {
 #define IORING_OP_MKDIRAT 37u
 #define IORING_OP_SYMLINKAT 38u
 #define IORING_OP_LINKAT 39u
+#define IORING_OP_SOCKET 45u
+#define IORING_OP_BIND 56u
+#define IORING_OP_LISTEN 57u
 #define IORING_OFF_SQ_RING 0x00000000ull
 #define IORING_OFF_CQ_RING 0x08000000ull
 #define IORING_OFF_SQES 0x10000000ull
@@ -391,6 +394,7 @@ static int run_tests(void) {
     int32_t listener_descriptor = -1;
     int32_t client_descriptor = -1;
     int32_t accepted_descriptor = -1;
+    int32_t ring_listener_descriptor = -1;
     int32_t advice_descriptor = -1;
     int32_t epoll_descriptor = -1;
     int32_t control_event_descriptor = -1;
@@ -414,6 +418,9 @@ static int run_tests(void) {
     uint32_t completion_position;
     static const struct user_sockaddr_un listen_address = {
         AF_UNIX, "\0edgeos-io-uring-probe",
+    };
+    static const struct user_sockaddr_un ring_listen_address = {
+        AF_UNIX, "\0edgeos-io-uring-created",
     };
     uint64_t temporary_signal_mask = 0;
     int failures = 0;
@@ -551,6 +558,13 @@ static int run_tests(void) {
         (probe.operations[IORING_OP_SYMLINKAT].flags &
          IO_URING_OP_SUPPORTED) != 0 &&
         (probe.operations[IORING_OP_LINKAT].flags &
+         IO_URING_OP_SUPPORTED) != 0);
+    failures += expect_true("probe socket setup operations",
+        (probe.operations[IORING_OP_SOCKET].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_BIND].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_LISTEN].flags &
          IO_URING_OP_SUPPORTED) != 0);
 
     event_descriptor = raw_syscall6(
@@ -1215,6 +1229,43 @@ static int run_tests(void) {
         cq_head, cq_tail, cq_mask, cqes, &path_request,
         0x554e4c494e4b4449ull, "submit unlink directory", &path_result);
     failures += expect("unlink directory completion", path_result, 0);
+
+    memset(&path_request, 0, sizeof(path_request));
+    path_request.opcode = IORING_OP_SOCKET;
+    path_request.descriptor = AF_UNIX;
+    path_request.offset = SOCK_STREAM;
+    failures += submit_one(
+        descriptor, sq_tail, sq_mask, sq_array, sqes,
+        cq_head, cq_tail, cq_mask, cqes, &path_request,
+        0x534f434b45543031ull, "submit socket", &path_result);
+    failures += expect_true("socket completion", path_result >= 0);
+    ring_listener_descriptor = path_result;
+    if (ring_listener_descriptor >= 0) {
+        memset(&path_request, 0, sizeof(path_request));
+        path_request.opcode = IORING_OP_BIND;
+        path_request.descriptor = ring_listener_descriptor;
+        path_request.address =
+            (uint64_t)(uintptr_t)&ring_listen_address;
+        path_request.offset = sizeof(uint16_t) +
+            sizeof("edgeos-io-uring-created");
+        failures += submit_one(
+            descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &path_request,
+            0x42494e4452494e47ull, "submit bind", &path_result);
+        failures += expect("bind completion", path_result, 0);
+
+        memset(&path_request, 0, sizeof(path_request));
+        path_request.opcode = IORING_OP_LISTEN;
+        path_request.descriptor = ring_listener_descriptor;
+        path_request.length = 1u;
+        failures += submit_one(
+            descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &path_request,
+            0x4c495354454e3031ull, "submit listen", &path_result);
+        failures += expect("listen completion", path_result, 0);
+        (void)raw_syscall6(
+            SYS_close, ring_listener_descriptor, 0, 0, 0, 0, 0);
+    }
 
     (void)raw_syscall6(SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
     (void)raw_syscall6(SYS_munmap, (long)cq_ring, PAGE_SIZE, 0, 0, 0, 0);
