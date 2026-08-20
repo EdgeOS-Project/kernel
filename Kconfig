@@ -159,6 +159,13 @@ config PERF_EVENTS
       Enable Linux perf_event_open software counters, event groups,
       descriptor reads, and event control operations.
 
+config LANDLOCK
+    bool "Linux Landlock filesystem access control"
+    default y
+    help
+      Enable Linux Landlock rulesets, path-beneath rules, stacked task
+      domains, and cross-architecture VFS enforcement.
+
 config RSEQ
     bool "Linux restartable sequences"
     default y

@@ -9,6 +9,7 @@
 #include "kernel/fbdev_runtime.h"
 #include "kernel/ioctl_runtime.h"
 #include "kernel/keyring_runtime.h"
+#include "kernel/landlock_runtime.h"
 #include "kernel/linux_errno.h"
 #include "kernel/perf_event.h"
 #include "kernel/perf_event_runtime.h"
@@ -19,6 +20,14 @@
 
 __attribute__((noreturn)) void kernel_current_exit(
     int32_t code, int whole_thread_group) {
+#ifdef CONFIG_LANDLOCK
+    kernel_linux_identity_t landlock_identity;
+    if (kernel_current_linux_identity(&landlock_identity) == 0)
+        kernel_landlock_task_exit(
+            landlock_identity.global_tid,
+            landlock_identity.global_tgid,
+            whole_thread_group != 0);
+#endif
 #ifdef CONFIG_PERF_EVENTS
     kernel_linux_identity_t perf_identity;
     if (kernel_current_linux_identity(&perf_identity) == 0)

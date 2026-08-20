@@ -13,6 +13,7 @@
 #include "kernel/arch_cpu.h"
 #include "kernel/io_uring_runtime.h"
 #include "kernel/keyring_runtime.h"
+#include "kernel/landlock_runtime.h"
 #include "kernel/fd_runtime.h"
 #include "kernel/anonymous_fd.h"
 #include "kernel/event_runtime.h"
@@ -118,6 +119,8 @@ static int64_t edge_linux_sys_fanotify(
 static int64_t edge_linux_sys_perf_event_open(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_quota(
+    edge_linux_syscall_context_t *context);
+static int64_t edge_linux_sys_landlock(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_truncate(
     edge_linux_syscall_context_t *context);
@@ -11164,6 +11167,10 @@ static int64_t edge_linux_sys_truncate(
             return -EDGE_LINUX_EINVAL;
         if (vfs_permission_check(target.inode, 2) < 0)
             return -EDGE_LINUX_EACCES;
+        result = kernel_landlock_check_path(
+            target.resolved_path,
+            EDGE_LINUX_LANDLOCK_ACCESS_FS_TRUNCATE);
+        if (result < 0) return result;
         return kernel_vfs_truncate_path(
             target.resolved_path, &target, (uint32_t)length);
     }
@@ -11188,6 +11195,10 @@ static int64_t edge_linux_sys_truncate(
     if ((descriptor.seals & KERNEL_VFS_SEAL_GROW) &&
         length > descriptor.size)
         return -EDGE_LINUX_EPERM;
+    if (descriptor.kind == KERNEL_VFS_DESCRIPTOR_REGULAR &&
+        !(descriptor.landlock_access &
+          EDGE_LINUX_LANDLOCK_ACCESS_FS_TRUNCATE))
+        return -EDGE_LINUX_EACCES;
     return kernel_vfs_truncate_descriptor(
         (int32_t)context->arguments[0], (uint32_t)length);
 }
@@ -11385,6 +11396,138 @@ static int64_t edge_linux_sys_quota(
     default:
         return -EDGE_LINUX_EINVAL;
     }
+#endif
+}
+
+static int64_t edge_linux_sys_landlock(
+    edge_linux_syscall_context_t *context) {
+#ifndef CONFIG_LANDLOCK
+    (void)context;
+    return -EDGE_LINUX_ENOSYS;
+#else
+    if (context->id == EDGE_LINUX_SYS_landlock_create_ruleset) {
+        edge_linux_landlock_ruleset_attr_t attributes;
+        uint64_t user_attributes = context->arguments[0];
+        uint64_t size = context->arguments[1];
+        uint32_t flags = (uint32_t)context->arguments[2];
+        int32_t ruleset_id;
+        int descriptor;
+
+        if (context->arguments[2] > UINT32_MAX)
+            return -EDGE_LINUX_EINVAL;
+        if (flags) {
+            if (user_attributes || size)
+                return -EDGE_LINUX_EINVAL;
+            return flags == EDGE_LINUX_LANDLOCK_CREATE_RULESET_VERSION ?
+                (int64_t)EDGE_LINUX_LANDLOCK_ABI_VERSION :
+                -EDGE_LINUX_EINVAL;
+        }
+        if (size < sizeof(attributes)) return -EDGE_LINUX_EINVAL;
+        if (!user_attributes) return -EDGE_LINUX_EFAULT;
+        if (edge_linux_copy_from_user(
+                context, &attributes, user_attributes,
+                sizeof(attributes)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (size > sizeof(attributes)) {
+            uint8_t extra[64];
+            uint64_t offset = sizeof(attributes);
+            while (offset < size) {
+                uint64_t chunk = size - offset;
+                uint64_t index;
+                if (chunk > sizeof(extra)) chunk = sizeof(extra);
+                if (edge_linux_copy_from_user(
+                        context, extra, user_attributes + offset,
+                        chunk) < 0)
+                    return -EDGE_LINUX_EFAULT;
+                for (index = 0; index < chunk; ++index)
+                    if (extra[index]) return -EDGE_LINUX_E2BIG;
+                offset += chunk;
+            }
+        }
+        ruleset_id = kernel_landlock_ruleset_create(
+            attributes.handled_access_fs);
+        if (ruleset_id < 0) return ruleset_id;
+        descriptor = kernel_anonymous_fd_install_descriptor(
+            KERNEL_ANONYMOUS_FD_LANDLOCK, ruleset_id, 2u,
+            KERNEL_FD_CLOEXEC);
+        if (descriptor < 0)
+            kernel_landlock_ruleset_release(ruleset_id);
+        return descriptor;
+    }
+
+    if (context->id == EDGE_LINUX_SYS_landlock_add_rule) {
+        edge_linux_landlock_path_beneath_attr_t attributes;
+        kernel_vfs_target_t target;
+        int32_t ruleset_fd;
+        int32_t ruleset_id;
+        uint32_t rule_type;
+        uint32_t flags;
+        int status;
+
+        if (edge_linux_fd_number(
+                context->arguments[0], &ruleset_fd) < 0)
+            return -EDGE_LINUX_EBADF;
+        if (context->arguments[1] > UINT32_MAX ||
+            context->arguments[3] > UINT32_MAX)
+            return -EDGE_LINUX_EINVAL;
+        rule_type = (uint32_t)context->arguments[1];
+        flags = (uint32_t)context->arguments[3];
+        if (flags || rule_type != EDGE_LINUX_LANDLOCK_RULE_PATH_BENEATH)
+            return -EDGE_LINUX_EINVAL;
+        ruleset_id = kernel_anonymous_fd_descriptor_object_id(
+            ruleset_fd, KERNEL_ANONYMOUS_FD_LANDLOCK);
+        if (ruleset_id == -EDGE_LINUX_EBADF) return ruleset_id;
+        if (ruleset_id < 0) return -EDGE_LINUX_EBADFD;
+        if (!context->arguments[2] || edge_linux_copy_from_user(
+                context, &attributes, context->arguments[2],
+                sizeof(attributes)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        status = kernel_vfs_resolve_fd(attributes.parent_fd, &target);
+        if (status < 0 || !target.inode || !target.resolved_path)
+            return status == -EDGE_LINUX_EBADF ? status :
+                   -EDGE_LINUX_EBADFD;
+        if ((target.inode->mode & 0xf000u) != VFS_INODE_DIR &&
+            (target.inode->mode & 0xf000u) != VFS_INODE_FILE)
+            return -EDGE_LINUX_EBADFD;
+        if ((target.inode->mode & 0xf000u) != VFS_INODE_DIR &&
+            (attributes.allowed_access &
+             ~(EDGE_LINUX_LANDLOCK_ACCESS_FS_EXECUTE |
+               EDGE_LINUX_LANDLOCK_ACCESS_FS_WRITE_FILE |
+               EDGE_LINUX_LANDLOCK_ACCESS_FS_READ_FILE |
+               EDGE_LINUX_LANDLOCK_ACCESS_FS_TRUNCATE)))
+            return -EDGE_LINUX_EINVAL;
+        return kernel_landlock_ruleset_add_path(
+            ruleset_id, target.resolved_path,
+            attributes.allowed_access);
+    }
+
+    if (context->id == EDGE_LINUX_SYS_landlock_restrict_self) {
+        kernel_linux_identity_t identity;
+        int32_t ruleset_fd;
+        int32_t ruleset_id;
+        uint32_t flags;
+
+        if (edge_linux_fd_number(
+                context->arguments[0], &ruleset_fd) < 0)
+            return -EDGE_LINUX_EBADF;
+        if (context->arguments[1] > UINT32_MAX)
+            return -EDGE_LINUX_EINVAL;
+        flags = (uint32_t)context->arguments[1];
+        if (flags) return -EDGE_LINUX_EINVAL;
+        if (kernel_current_linux_identity(&identity) < 0)
+            return -EDGE_LINUX_ESRCH;
+        if (!kernel_current_no_new_privileges() &&
+            !(identity.effective_capabilities &
+              (1ULL << EDGE_LINUX_CAP_SYS_ADMIN)))
+            return -EDGE_LINUX_EPERM;
+        ruleset_id = kernel_anonymous_fd_descriptor_object_id(
+            ruleset_fd, KERNEL_ANONYMOUS_FD_LANDLOCK);
+        if (ruleset_id == -EDGE_LINUX_EBADF) return ruleset_id;
+        if (ruleset_id < 0) return -EDGE_LINUX_EBADFD;
+        return kernel_landlock_restrict_task(
+            identity.global_tid, identity.global_tgid, ruleset_id);
+    }
+    return -EDGE_LINUX_ENOSYS;
 #endif
 }
 
@@ -11729,6 +11872,24 @@ static int edge_linux_path_copy(char *destination, uint32_t capacity,
     if (length >= capacity) return -EDGE_LINUX_ENAMETOOLONG;
     memcpy(destination, source, length + 1u);
     return 0;
+}
+
+static int edge_linux_paths_have_same_parent(const char *first,
+                                             const char *second) {
+    uint32_t first_parent = 0;
+    uint32_t second_parent = 0;
+    uint32_t index;
+
+    if (!first || !second || first[0] != '/' || second[0] != '/')
+        return 0;
+    for (index = 1; first[index]; ++index)
+        if (first[index] == '/') first_parent = index;
+    for (index = 1; second[index]; ++index)
+        if (second[index] == '/') second_parent = index;
+    if (!first_parent) first_parent = 1;
+    if (!second_parent) second_parent = 1;
+    return first_parent == second_parent &&
+           strncmp(first, second, first_parent) == 0;
 }
 
 static int64_t edge_linux_sys_exec(
@@ -12547,6 +12708,26 @@ static int edge_linux_path_mutation_permission(
         ((identity.effective_capabilities >> EDGE_LINUX_CAP_FOWNER) & 1u))
         return 0;
     return -EDGE_LINUX_EPERM;
+}
+
+static uint64_t edge_linux_landlock_make_access(uint16_t inode_mode) {
+    switch (inode_mode & 0xf000u) {
+    case VFS_INODE_DIR:
+        return EDGE_LINUX_LANDLOCK_ACCESS_FS_MAKE_DIR;
+    case VFS_INODE_CHR:
+        return EDGE_LINUX_LANDLOCK_ACCESS_FS_MAKE_CHAR;
+    case VFS_INODE_BLK:
+        return EDGE_LINUX_LANDLOCK_ACCESS_FS_MAKE_BLOCK;
+    case VFS_INODE_FIFO:
+        return EDGE_LINUX_LANDLOCK_ACCESS_FS_MAKE_FIFO;
+    case VFS_INODE_SOCK:
+        return EDGE_LINUX_LANDLOCK_ACCESS_FS_MAKE_SOCK;
+    case VFS_INODE_LNK:
+        return EDGE_LINUX_LANDLOCK_ACCESS_FS_MAKE_SYM;
+    case VFS_INODE_FILE:
+    default:
+        return EDGE_LINUX_LANDLOCK_ACCESS_FS_MAKE_REG;
+    }
 }
 
 static int edge_linux_target_from_resolved(
@@ -13376,6 +13557,9 @@ static int64_t edge_linux_sys_mkdir(
     mask = (uint16_t)(kernel_current_umask() & 0777u);
     mode = (uint16_t)(requested_mode & 07777u);
     mode = (uint16_t)((mode & 07000u) | ((mode & 0777u) & ~mask));
+    status = kernel_landlock_check_path(
+        workspace.resolved, EDGE_LINUX_LANDLOCK_ACCESS_FS_MAKE_DIR);
+    if (status < 0) return status;
     status = vfs_mkdir_mode(workspace.resolved, mode);
     if (status < 0) return status;
     kernel_vfs_notify_create(workspace.resolved, 1);
@@ -13440,6 +13624,11 @@ static int64_t edge_linux_sys_mknod(
         &parent);
     if (status < 0) return status;
     status = edge_linux_path_mutation_permission(parent.inode, 0);
+    if (status < 0) return status;
+    status = kernel_landlock_check_path(
+        workspace.resolved,
+        edge_linux_landlock_make_access(
+            (uint16_t)(kind ? kind : VFS_INODE_FILE)));
     if (status < 0) return status;
 
     if (kind == VFS_INODE_CHR || kind == VFS_INODE_BLK) {
@@ -14770,6 +14959,9 @@ static int64_t edge_linux_sys_symlink(
     if (status < 0) return status;
     status = edge_linux_path_mutation_permission(parent.inode, 0);
     if (status < 0) return status;
+    status = kernel_landlock_check_path(
+        workspace.resolved, EDGE_LINUX_LANDLOCK_ACCESS_FS_MAKE_SYM);
+    if (status < 0) return status;
     status = kernel_vfs_path_result(
         vfs_symlink(workspace.saved, workspace.resolved));
     if (status < 0) return status;
@@ -14951,6 +15143,7 @@ static int64_t edge_linux_sys_link(
     int source_from_descriptor = 0;
     int32_t magic_descriptor;
     int magic_status;
+    int cross_parent;
     int status;
 
     if (context->id == EDGE_LINUX_SYS_link) {
@@ -15060,6 +15253,17 @@ static int64_t edge_linux_sys_link(
     status = edge_linux_path_mutation_permission(
         destination_parent.inode, 0);
     if (status < 0) return status;
+    cross_parent = !edge_linux_paths_have_same_parent(
+        source_path, workspace.resolved);
+    status = kernel_landlock_check_path(
+        workspace.resolved,
+        edge_linux_landlock_make_access(source.mode));
+    if (status < 0) return status;
+    if (cross_parent) {
+        status = kernel_landlock_check_refer(
+            source_path, workspace.resolved);
+        if (status < 0) return status;
+    }
     status = kernel_vfs_path_result(
         vfs_link_inode(source_superblock, &source, workspace.resolved));
     if (status < 0) return status;
@@ -15130,6 +15334,11 @@ static int64_t edge_linux_sys_unlink(
         return -EDGE_LINUX_EBUSY;
     status = edge_linux_path_mutation_permission(parent.inode, &victim);
     if (status < 0) return status;
+    status = kernel_landlock_check_path(
+        workspace.resolved,
+        remove_directory ? EDGE_LINUX_LANDLOCK_ACCESS_FS_REMOVE_DIR :
+                           EDGE_LINUX_LANDLOCK_ACCESS_FS_REMOVE_FILE);
+    if (status < 0) return status;
     if (remove_directory)
         status = kernel_vfs_path_result(
             vfs_rmdir(workspace.resolved));
@@ -15161,6 +15370,7 @@ static int64_t edge_linux_sys_rename(
     int old_final_dot;
     int new_final_dot;
     int target_exists;
+    int cross_parent;
     int status;
 
     if (context->id == EDGE_LINUX_SYS_rename) {
@@ -15239,6 +15449,27 @@ static int64_t edge_linux_sys_rename(
     status = edge_linux_path_mutation_permission(
         new_parent.inode, target_exists ? &target : 0);
     if (status < 0) return status;
+    cross_parent = !edge_linux_paths_have_same_parent(
+        workspace.saved, workspace.resolved);
+    status = kernel_landlock_check_path(
+        workspace.saved,
+        ((source.mode & 0xf000u) == VFS_INODE_DIR) ?
+            EDGE_LINUX_LANDLOCK_ACCESS_FS_REMOVE_DIR :
+            EDGE_LINUX_LANDLOCK_ACCESS_FS_REMOVE_FILE);
+    if (status < 0) return status;
+    status = kernel_landlock_check_path(
+        workspace.resolved,
+        edge_linux_landlock_make_access(source.mode) |
+            (target_exists ?
+                (((target.mode & 0xf000u) == VFS_INODE_DIR) ?
+                    EDGE_LINUX_LANDLOCK_ACCESS_FS_REMOVE_DIR :
+                    EDGE_LINUX_LANDLOCK_ACCESS_FS_REMOVE_FILE) : 0));
+    if (status < 0) return status;
+    if (cross_parent) {
+        status = kernel_landlock_check_refer(
+            workspace.saved, workspace.resolved);
+        if (status < 0) return status;
+    }
     if (!vfs_superblock_same_filesystem(
             old_parent.superblock, source_superblock) ||
         !vfs_superblock_same_filesystem(

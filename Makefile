@@ -4447,6 +4447,16 @@ quota-runtime-unit: tools/tests/quota_runtime_unit.c \
 		-o $(OUT)/tests/quota_runtime_unit
 	@$(OUT)/tests/quota_runtime_unit
 
+.PHONY: landlock-runtime-unit
+landlock-runtime-unit: tools/tests/landlock_runtime_unit.c \
+		$(SRC)/kernel/landlock_runtime.c include/kernel/landlock_runtime.h
+	@mkdir -p $(OUT)/tests
+	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fno-builtin \
+		-iquote $(INC) tools/tests/landlock_runtime_unit.c \
+		$(SRC)/kernel/landlock_runtime.c \
+		-o $(OUT)/tests/landlock_runtime_unit
+	@$(OUT)/tests/landlock_runtime_unit
+
 abi-service-dispatch-unit: tools/tests/abi_service_dispatch_unit.c $(SRC)/kernel/abi_service_dispatch.c
 	@mkdir -p $(OUT)/tests
 	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fno-builtin \

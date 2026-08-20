@@ -14,6 +14,7 @@
 #include "kernel/process_runtime.h"
 #include "kernel/aio_runtime.h"
 #include "kernel/io_uring_runtime.h"
+#include "kernel/landlock_runtime.h"
 #include "kernel/proc_maps.h"
 #include "kernel/posix_timer_runtime.h"
 #include "kernel/posix_mq_runtime.h"
@@ -842,6 +843,7 @@ typedef struct {
     vfs_inode_t inode;
     vfs_superblock_t *sb;
     uint64_t mount_id;
+    uint64_t landlock_access;
     char *path;
 } bootstrap_fd_t;
 
@@ -890,6 +892,7 @@ static uint32_t g_fd_table_reserve_count;
 #define KERNEL_FD_FANOTIFY 23u
 #define KERNEL_FD_USERFAULTFD 24u
 #define KERNEL_FD_PERF_EVENT 25u
+#define KERNEL_FD_LANDLOCK 26u
 
 #define ARM64_EPOLL_SOURCE_FILE_KMSG          0x00000001u
 #define ARM64_EPOLL_SOURCE_FILE_DRM_CARD      0x00000002u
@@ -8934,6 +8937,8 @@ int arch_vfs_describe_descriptor(int32_t descriptor,
         return -EDGE_LINUX_EBADF;
     file = &task->fds[descriptor];
     description->identity = file->open_description_id;
+    description->path = file->path && file->path[0] ? file->path : 0;
+    description->landlock_access = file->landlock_access;
     description->scratch = task->scratch->xattr_scratch;
     description->scratch_capacity = sizeof(task->scratch->xattr_scratch);
     description->readable = 1;
@@ -9012,7 +9017,8 @@ int arch_vfs_describe_descriptor(int32_t descriptor,
         file->kind == KERNEL_FD_DMA_BUF ||
         file->kind == KERNEL_FD_MOUNT ||
         file->kind == KERNEL_FD_MQUEUE ||
-        file->kind == KERNEL_FD_IO_URING) {
+        file->kind == KERNEL_FD_IO_URING ||
+        file->kind == KERNEL_FD_LANDLOCK) {
         description->kind = KERNEL_VFS_DESCRIPTOR_ANONYMOUS;
         return 0;
     }
@@ -9824,6 +9830,9 @@ static int arm64_anonymous_fd_install(
     case KERNEL_ANONYMOUS_FD_IO_URING:
         local_kind = KERNEL_FD_IO_URING;
         break;
+    case KERNEL_ANONYMOUS_FD_LANDLOCK:
+        local_kind = KERNEL_FD_LANDLOCK;
+        break;
     default:
         return -LINUX_EINVAL;
     }
@@ -9834,7 +9843,8 @@ static int arm64_anonymous_fd_install(
     entry = &task->fds[fd];
     entry->kind = local_kind;
     if (kind == KERNEL_ANONYMOUS_FD_MOUNT ||
-        kind == KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE)
+        kind == KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE ||
+        kind == KERNEL_ANONYMOUS_FD_LANDLOCK)
         entry->mount_id = (uint32_t)object_id;
     else if (kind == KERNEL_ANONYMOUS_FD_TIMER)
         entry->timer_index = (uint8_t)object_id;
@@ -9902,13 +9912,17 @@ static int arm64_anonymous_fd_object_id(
     case KERNEL_ANONYMOUS_FD_IO_URING:
         expected = KERNEL_FD_IO_URING;
         break;
+    case KERNEL_ANONYMOUS_FD_LANDLOCK:
+        expected = KERNEL_FD_LANDLOCK;
+        break;
     default:
         return -LINUX_EINVAL;
     }
     entry = &task->fds[descriptor];
     if (entry->kind != expected) return -LINUX_EINVAL;
     if (kind == KERNEL_ANONYMOUS_FD_MOUNT ||
-        kind == KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE)
+        kind == KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE ||
+        kind == KERNEL_ANONYMOUS_FD_LANDLOCK)
         return (int32_t)entry->mount_id;
     if (kind == KERNEL_ANONYMOUS_FD_TIMER)
         return entry->timer_index;
@@ -10204,6 +10218,10 @@ static int fd_retain_backing_object(const bootstrap_fd_t *fd) {
     }
     if (fd->kind == KERNEL_FD_IO_URING) {
         result = kernel_io_uring_retain(fd->event_index);
+        return result < 0 ? result : 0;
+    }
+    if (fd->kind == KERNEL_FD_LANDLOCK) {
+        result = kernel_landlock_ruleset_retain((int32_t)fd->mount_id);
         return result < 0 ? result : 0;
     }
     if (fd->kind == KERNEL_FD_SOCKET &&
@@ -15750,6 +15768,8 @@ static void fd_drop_backing_object(bootstrap_fd_t *fd) {
         kernel_posix_mq_release((int32_t)fd->mount_id);
     if (fd->kind == KERNEL_FD_IO_URING)
         kernel_io_uring_release(fd->event_index);
+    if (fd->kind == KERNEL_FD_LANDLOCK)
+        kernel_landlock_ruleset_release((int32_t)fd->mount_id);
     if ((fd->kind == KERNEL_FD_PIPE_READ ||
          fd->kind == KERNEL_FD_PIPE_WRITE ||
          fd->kind == KERNEL_FD_PIPE_RW) &&
@@ -22424,7 +22444,8 @@ int arch_vfs_metadata_fd(int32_t descriptor,
                file->kind == KERNEL_FD_DMA_BUF ||
                file->kind == KERNEL_FD_MOUNT ||
                file->kind == KERNEL_FD_MQUEUE ||
-               file->kind == KERNEL_FD_IO_URING) {
+               file->kind == KERNEL_FD_IO_URING ||
+               file->kind == KERNEL_FD_LANDLOCK) {
         arm64_metadata_set_anonymous(file, metadata, 0600u);
     } else if (file->kind == KERNEL_FD_FILE) {
         if (file->sb)
@@ -31876,6 +31897,7 @@ int arch_vfs_open_install_regular(
         if (unlink_after_open) (void)vfs_unlink(path);
         return descriptor;
     }
+    task->fds[descriptor].landlock_access = request->landlock_access;
     if (!(request->flags & KERNEL_VFS_OPEN_PATH) &&
         alsa_path_kind(task->fds[descriptor].path) !=
             EDGE_ALSA_NODE_NONE)

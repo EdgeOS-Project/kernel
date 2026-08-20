@@ -738,6 +738,8 @@ int arch_vfs_describe_descriptor(int32_t descriptor,
         description->identity = (uint64_t)(uint32_t)descriptor;
     description->scratch = task->scratch->xattr_scratch;
     description->scratch_capacity = sizeof(task->scratch->xattr_scratch);
+    description->path = entry->path[0] ? entry->path : 0;
+    description->landlock_access = entry->landlock_access;
     description->readable = 1;
     description->writable = 1;
     description->mount_id = entry->mount_id;
@@ -811,7 +813,7 @@ int arch_vfs_describe_descriptor(int32_t descriptor,
         entry->kind == FD_FANOTIFY || entry->kind == FD_USERFAULTFD ||
         entry->kind == FD_PERF_EVENT ||
         entry->kind == FD_DMA_BUF || entry->kind == FD_MOUNT ||
-        entry->kind == FD_IO_URING) {
+        entry->kind == FD_IO_URING || entry->kind == FD_LANDLOCK) {
         description->kind = KERNEL_VFS_DESCRIPTOR_ANONYMOUS;
         return 0;
     }
@@ -10603,6 +10605,9 @@ static int x86_anonymous_fd_install(
     case KERNEL_ANONYMOUS_FD_IO_URING:
         local_kind = FD_IO_URING;
         break;
+    case KERNEL_ANONYMOUS_FD_LANDLOCK:
+        local_kind = FD_LANDLOCK;
+        break;
     default:
         return -EINVAL;
     }
@@ -10652,6 +10657,9 @@ static int x86_anonymous_fd_object_id(
         break;
     case KERNEL_ANONYMOUS_FD_IO_URING:
         expected = FD_IO_URING;
+        break;
+    case KERNEL_ANONYMOUS_FD_LANDLOCK:
+        expected = FD_LANDLOCK;
         break;
     default:
         return -EINVAL;

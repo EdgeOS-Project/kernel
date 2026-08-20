@@ -43,6 +43,7 @@ EDGE_SHARED_SRCS := \
 	$(SRC)/kernel/aio_runtime.c \
 	$(SRC)/kernel/io_uring_runtime.c \
 	$(SRC)/kernel/keyring_runtime.c \
+	$(SRC)/kernel/landlock_runtime.c \
 	$(SRC)/kernel/abi_service_dispatch.c \
 	$(SRC)/kernel/console_device.c \
 	$(SRC)/kernel/credentials.c \

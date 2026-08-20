@@ -82,6 +82,7 @@ typedef struct kernel_vfs_open_request {
     void *user_registers;
     const char *path;
     uint64_t resolve_flags;
+    uint64_t landlock_access;
     uint32_t flags;
     uint16_t mode;
     uint8_t access_mode;
@@ -112,6 +113,8 @@ typedef enum kernel_vfs_descriptor_kind {
 typedef struct kernel_vfs_descriptor {
     kernel_vfs_descriptor_kind_t kind;
     uint64_t identity;
+    const char *path;
+    uint64_t landlock_access;
     int readable;
     int writable;
     uint32_t seals;

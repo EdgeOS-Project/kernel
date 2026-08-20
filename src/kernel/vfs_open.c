@@ -8,12 +8,34 @@
 #include <string.h>
 
 #include "kernel/inotify.h"
+#include "kernel/landlock_runtime.h"
 #include "kernel/linux_errno.h"
 #include "kernel/process_runtime.h"
 #include "kernel/vfs_runtime.h"
 #include "vfs/vfs.h"
 
 static uint32_t g_vfs_tmpfile_sequence = 1u;
+
+static uint64_t kernel_vfs_landlock_open_access(
+    const kernel_vfs_open_request_t *request, uint16_t inode_kind) {
+    uint64_t access = 0;
+    if (!request || (request->flags & KERNEL_VFS_OPEN_PATH)) return 0;
+    if (inode_kind == VFS_INODE_DIR) {
+        if (request->access_mode == KERNEL_VFS_OPEN_READ_ONLY ||
+            request->access_mode == KERNEL_VFS_OPEN_READ_WRITE)
+            access |= EDGE_LINUX_LANDLOCK_ACCESS_FS_READ_DIR;
+        return access;
+    }
+    if (request->access_mode == KERNEL_VFS_OPEN_READ_ONLY ||
+        request->access_mode == KERNEL_VFS_OPEN_READ_WRITE)
+        access |= EDGE_LINUX_LANDLOCK_ACCESS_FS_READ_FILE;
+    if (request->access_mode == KERNEL_VFS_OPEN_WRITE_ONLY ||
+        request->access_mode == KERNEL_VFS_OPEN_READ_WRITE)
+        access |= EDGE_LINUX_LANDLOCK_ACCESS_FS_WRITE_FILE;
+    if (request->flags & KERNEL_VFS_OPEN_TRUNCATE)
+        access |= EDGE_LINUX_LANDLOCK_ACCESS_FS_TRUNCATE;
+    return access;
+}
 
 #define EDGE_RESOLVE_NO_XDEV       0x01u
 #define EDGE_RESOLVE_NO_MAGICLINKS 0x02u
@@ -396,6 +418,12 @@ static int64_t kernel_vfs_open_tmpfile(
     uint16_t mode;
     int descriptor;
     int status;
+    kernel_vfs_open_request_t tmpfile_request;
+
+    status = kernel_landlock_check_path(
+        directory, EDGE_LINUX_LANDLOCK_ACCESS_FS_MAKE_REG |
+                       EDGE_LINUX_LANDLOCK_ACCESS_FS_WRITE_FILE);
+    if (status < 0) return status;
 
     if (request->access_mode == KERNEL_VFS_OPEN_READ_ONLY)
         return -EDGE_LINUX_EINVAL;
@@ -412,6 +440,9 @@ static int64_t kernel_vfs_open_tmpfile(
     if (vfs_mount_flags_for_path(directory) & VFS_MOUNT_READONLY)
         return -EDGE_LINUX_EROFS;
     mode = kernel_vfs_created_mode(request->mode);
+    tmpfile_request = *request;
+    tmpfile_request.landlock_access =
+        EDGE_LINUX_LANDLOCK_ACCESS_FS_TRUNCATE;
     for (uint32_t attempt = 0; attempt < 64u; ++attempt) {
         status = kernel_vfs_tmpfile_path(
             directory, staging_path, capacity);
@@ -422,7 +453,7 @@ static int64_t kernel_vfs_open_tmpfile(
         if (status == -EDGE_LINUX_EEXIST) continue;
         if (status < 0) return status;
         descriptor = arch_vfs_open_install_regular(
-            request, staging_path, &inode, superblock, 1);
+            &tmpfile_request, staging_path, &inode, superblock, 1);
         if (descriptor < 0)
             (void)vfs_unlink(staging_path);
         return descriptor;
@@ -499,6 +530,11 @@ int64_t kernel_vfs_open_at(const kernel_vfs_open_request_t *request) {
         uint16_t mode;
         if (!(request->flags & KERNEL_VFS_OPEN_CREATE))
             return status;
+        status = kernel_landlock_check_path(
+            path, EDGE_LINUX_LANDLOCK_ACCESS_FS_MAKE_REG |
+                      kernel_vfs_landlock_open_access(
+                          request, VFS_INODE_FILE));
+        if (status < 0) return status;
         mode = kernel_vfs_created_mode(request->mode);
         status = kernel_vfs_create_regular(
             path, mode, scratch.source, scratch.data, scratch.capacity,
@@ -544,6 +580,14 @@ int64_t kernel_vfs_open_at(const kernel_vfs_open_request_t *request) {
     status = kernel_vfs_open_access_mask(request, created);
     if (status && vfs_permission_check(target.inode, status) < 0)
         return -EDGE_LINUX_EACCES;
+    status = kernel_landlock_check_path(
+        path, kernel_vfs_landlock_open_access(
+                  request, target.inode->mode & 0xf000u));
+    if (status < 0) return status;
+    stable_request.landlock_access =
+        kernel_landlock_check_path(
+            path, EDGE_LINUX_LANDLOCK_ACCESS_FS_TRUNCATE) == 0 ?
+        EDGE_LINUX_LANDLOCK_ACCESS_FS_TRUNCATE : 0;
     if (!(request->flags & KERNEL_VFS_OPEN_PATH) &&
         (request->flags & KERNEL_VFS_OPEN_TRUNCATE) &&
         (target.inode->mode & 0xf000u) == VFS_INODE_FILE) {

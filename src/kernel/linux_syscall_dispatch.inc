@@ -200,6 +200,11 @@ case EDGE_LINUX_SYS_keyctl:
 case EDGE_LINUX_SYS_request_key:
     context->result = edge_linux_sys_keyring(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_landlock_add_rule:
+case EDGE_LINUX_SYS_landlock_create_ruleset:
+case EDGE_LINUX_SYS_landlock_restrict_self:
+    context->result = edge_linux_sys_landlock(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_link:
 case EDGE_LINUX_SYS_linkat:
     context->result = edge_linux_sys_link(context);

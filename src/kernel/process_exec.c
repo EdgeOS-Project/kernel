@@ -5,6 +5,7 @@
  */
 
 #include "kernel/exec_runtime.h"
+#include "kernel/landlock_runtime.h"
 #include "kernel/linux_errno.h"
 #include "kernel/posix_timer_runtime.h"
 #include "kernel/process_runtime.h"
@@ -190,7 +191,10 @@ static int exec_file_validate(const kernel_exec_state_t *state,
 static int exec_resolve(kernel_exec_state_t *state, int nofollow) {
     int status = process_exec_arch_resolve(state, nofollow);
     if (status < 0) return status;
-    return exec_file_validate(state, nofollow);
+    status = exec_file_validate(state, nofollow);
+    if (status < 0) return status;
+    return kernel_landlock_check_path(
+        state->path, EDGE_LINUX_LANDLOCK_ACCESS_FS_EXECUTE);
 }
 
 static int exec_parse_shebang(kernel_exec_state_t *state,

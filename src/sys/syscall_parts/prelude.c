@@ -90,6 +90,7 @@
 #include "kernel/clone_runtime.h"
 #include "kernel/aio_runtime.h"
 #include "kernel/io_uring_runtime.h"
+#include "kernel/landlock_runtime.h"
 #include "kernel/itimer_runtime.h"
 #include "kernel/posix_timer_runtime.h"
 #include "kernel/posix_mq_runtime.h"
@@ -1500,6 +1501,7 @@ typedef enum {
     FD_MOUNT,
     FD_MQUEUE,
     FD_IO_URING,
+    FD_LANDLOCK,
 } edge_fd_kind_t;
 
 typedef struct {
@@ -1526,6 +1528,7 @@ typedef struct {
     vfs_inode_t inode;
     vfs_superblock_t *sb;
     uint64_t mount_id;
+    uint64_t landlock_access;
     char path[256];
     int pipe_id;
 } edge_fd_t;

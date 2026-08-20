@@ -72,6 +72,13 @@ void vfs_inode_close(vfs_superblock_t *superblock,
     (void)inode;
 }
 
+int kernel_landlock_check_path(const char *path,
+                               uint64_t requested_access) {
+    (void)path;
+    (void)requested_access;
+    return 0;
+}
+
 static void expect_true(const char *name, int condition) {
     if (condition) return;
     fprintf(stderr, "FAIL: %s\n", name);

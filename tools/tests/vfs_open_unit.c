@@ -118,6 +118,13 @@ uint32_t vfs_mount_flags_for_path(const char *path) {
     return 0;
 }
 
+int kernel_landlock_check_path(const char *path,
+                               uint64_t requested_access) {
+    (void)path;
+    (void)requested_access;
+    return 0;
+}
+
 int kernel_vfs_resolve_at_path(int32_t directory, const char *path,
                                char *output, uint32_t capacity) {
     (void)directory;
