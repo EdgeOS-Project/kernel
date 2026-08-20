@@ -4144,6 +4144,17 @@ posix-mq-runtime-unit: tools/tests/posix_mq_runtime_unit.c \
 		-o $(OUT)/tests/posix_mq_runtime_unit
 	@$(OUT)/tests/posix_mq_runtime_unit
 
+aio-runtime-unit: tools/tests/aio_runtime_unit.c \
+		$(SRC)/kernel/aio_runtime.c $(SRC)/kernel/eventfd.c \
+		include/kernel/aio_runtime.h include/kernel/eventfd.h
+	@mkdir -p $(OUT)/tests
+	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fno-builtin \
+		-DEDGEOS_HOST_TEST -iquote $(INC) \
+		tools/tests/aio_runtime_unit.c $(SRC)/kernel/aio_runtime.c \
+		$(SRC)/kernel/eventfd.c \
+		-o $(OUT)/tests/aio_runtime_unit
+	@$(OUT)/tests/aio_runtime_unit
+
 pty-runtime-unit: tools/tests/pty_runtime_unit.c $(SRC)/kernel/pty_runtime.c include/kernel/pty_runtime.h
 	@mkdir -p $(OUT)/tests
 	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -iquote $(INC) \

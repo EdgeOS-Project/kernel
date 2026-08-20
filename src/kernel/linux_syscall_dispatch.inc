@@ -5,6 +5,14 @@ case EDGE_LINUX_SYS_faccessat:
 case EDGE_LINUX_SYS_faccessat2:
     context->result = edge_linux_sys_access(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_io_cancel:
+case EDGE_LINUX_SYS_io_destroy:
+case EDGE_LINUX_SYS_io_getevents:
+case EDGE_LINUX_SYS_io_pgetevents:
+case EDGE_LINUX_SYS_io_setup:
+case EDGE_LINUX_SYS_io_submit:
+    context->result = edge_linux_sys_aio(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_bpf:
     context->result = edge_linux_sys_bpf(context);
     return EDGE_LINUX_SYSCALL_HANDLED;

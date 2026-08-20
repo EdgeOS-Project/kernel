@@ -82,6 +82,7 @@
 #include "kernel/pty_runtime.h"
 #include "kernel/process_runtime.h"
 #include "kernel/clone_runtime.h"
+#include "kernel/aio_runtime.h"
 #include "kernel/itimer_runtime.h"
 #include "kernel/posix_timer_runtime.h"
 #include "kernel/posix_mq_runtime.h"

@@ -9,9 +9,11 @@
 
 #include "console.h"
 #include "fs/swap.h"
+#include "kernel/aio_runtime.h"
 #include "kernel/fd_runtime.h"
 #include "kernel/anonymous_fd.h"
 #include "kernel/event_runtime.h"
+#include "kernel/eventfd.h"
 #include "kernel/exec_runtime.h"
 #include "kernel/file_metadata.h"
 #include "kernel/file_lock.h"
@@ -6351,6 +6353,480 @@ static int64_t edge_linux_sys_io(
     return edge_linux_io_is_vector(context->id) ?
         edge_linux_sys_vector_io(context) :
         edge_linux_sys_scalar_io(context);
+}
+
+#define EDGE_LINUX_IOCB_CMD_PREAD   0u
+#define EDGE_LINUX_IOCB_CMD_PWRITE  1u
+#define EDGE_LINUX_IOCB_CMD_FSYNC   2u
+#define EDGE_LINUX_IOCB_CMD_FDSYNC  3u
+#define EDGE_LINUX_IOCB_CMD_POLL    5u
+#define EDGE_LINUX_IOCB_CMD_PREADV  7u
+#define EDGE_LINUX_IOCB_CMD_PWRITEV 8u
+#define EDGE_LINUX_IOCB_FLAG_RESFD  0x01u
+#define EDGE_LINUX_IOCB_FLAG_IOPRIO 0x02u
+#define EDGE_LINUX_AIO_POLLIN       0x0001u
+#define EDGE_LINUX_AIO_POLLPRI      0x0002u
+#define EDGE_LINUX_AIO_POLLOUT      0x0004u
+#define EDGE_LINUX_AIO_POLLERR      0x0008u
+#define EDGE_LINUX_AIO_POLLHUP      0x0010u
+#define EDGE_LINUX_AIO_POLLRDHUP    0x2000u
+#define EDGE_LINUX_AIO_POLL_ALLOWED \
+    (EDGE_LINUX_AIO_POLLIN | EDGE_LINUX_AIO_POLLPRI | \
+     EDGE_LINUX_AIO_POLLOUT | EDGE_LINUX_AIO_POLLERR | \
+     EDGE_LINUX_AIO_POLLHUP | EDGE_LINUX_AIO_POLLRDHUP)
+
+static int edge_linux_aio_owner(int32_t *owner_tgid) {
+    kernel_linux_identity_t identity;
+    if (!owner_tgid || kernel_current_linux_identity(&identity) < 0)
+        return -EDGE_LINUX_ESRCH;
+    *owner_tgid = identity.global_tgid;
+    return identity.global_tgid > 0 ? 0 : -EDGE_LINUX_ESRCH;
+}
+
+static int edge_linux_aio_signal_result_event(int32_t event_id) {
+    int64_t result;
+    if (event_id < 0) return 0;
+    result = kernel_eventfd_write_value(event_id, 1, 1u);
+    return result < 0 ? (int)result : 0;
+}
+
+static int edge_linux_aio_validate_result_event(
+        const struct edge_linux_iocb *iocb, int32_t *event_id) {
+    int object_id;
+    if (!iocb || !event_id) return -EDGE_LINUX_EINVAL;
+    *event_id = -1;
+    if (!(iocb->flags & EDGE_LINUX_IOCB_FLAG_RESFD)) return 0;
+    if (iocb->result_descriptor > INT32_MAX)
+        return -EDGE_LINUX_EBADF;
+    object_id = kernel_anonymous_fd_descriptor_object_id(
+        (int32_t)iocb->result_descriptor, KERNEL_ANONYMOUS_FD_EVENT);
+    if (object_id < 0) return -EDGE_LINUX_EBADF;
+    *event_id = object_id;
+    return 0;
+}
+
+static int edge_linux_aio_validate_priority(
+        const struct edge_linux_iocb *iocb) {
+    uint32_t priority;
+    uint32_t priority_class;
+    if (!(iocb->flags & EDGE_LINUX_IOCB_FLAG_IOPRIO)) return 0;
+    priority = (uint16_t)iocb->request_priority;
+    priority_class = priority >> EDGE_LINUX_IOPRIO_CLASS_SHIFT;
+    if (priority_class > EDGE_LINUX_IOPRIO_CLASS_IDLE ||
+        (priority_class == EDGE_LINUX_IOPRIO_CLASS_NONE &&
+         (priority & EDGE_LINUX_IOPRIO_LEVEL_MASK)))
+        return -EDGE_LINUX_EINVAL;
+    return 0;
+}
+
+static int edge_linux_aio_decode_rw_flags(uint32_t raw,
+                                          uint32_t *runtime_flags) {
+    if (!runtime_flags) return -EDGE_LINUX_EINVAL;
+    if ((raw & ~EDGE_LINUX_RWF_KNOWN) ||
+        (raw & ~EDGE_LINUX_RWF_IMPLEMENTED))
+        return -EDGE_LINUX_EOPNOTSUPP;
+    if ((raw & EDGE_LINUX_RWF_APPEND) &&
+        (raw & EDGE_LINUX_RWF_NOAPPEND))
+        return -EDGE_LINUX_EINVAL;
+    *runtime_flags = edge_linux_io_runtime_flags(raw);
+    return 0;
+}
+
+static int64_t edge_linux_aio_execute_io(
+        edge_linux_syscall_context_t *context,
+        const struct edge_linux_iocb *iocb) {
+    kernel_io_vector_scratch_t scratch;
+    kernel_io_operation_t operation;
+    uint64_t requested = 0;
+    uint32_t runtime_flags;
+    uint32_t vector_count;
+    int writing;
+    int result;
+
+    if (iocb->descriptor > INT32_MAX) return -EDGE_LINUX_EBADF;
+    if (iocb->offset < 0) return -EDGE_LINUX_EINVAL;
+    if (iocb->byte_count > INT64_MAX) return -EDGE_LINUX_EINVAL;
+    result = edge_linux_aio_decode_rw_flags(
+        iocb->rw_flags, &runtime_flags);
+    if (result < 0) return result;
+    writing = iocb->opcode == EDGE_LINUX_IOCB_CMD_PWRITE ||
+              iocb->opcode == EDGE_LINUX_IOCB_CMD_PWRITEV;
+    operation = writing ? KERNEL_IO_WRITE_POSITIONAL :
+                          KERNEL_IO_READ_POSITIONAL;
+    if (iocb->opcode == EDGE_LINUX_IOCB_CMD_PREAD ||
+        iocb->opcode == EDGE_LINUX_IOCB_CMD_PWRITE) {
+        uint64_t length = iocb->byte_count;
+        if (length > EDGE_LINUX_MAX_RW_COUNT)
+            length = EDGE_LINUX_MAX_RW_COUNT;
+        return kernel_io_user_transfer(
+            (int32_t)iocb->descriptor, iocb->buffer, length,
+            (uint64_t)iocb->offset, operation, runtime_flags,
+            context->user_registers);
+    }
+    if (iocb->byte_count > EDGE_LINUX_IOV_MAX)
+        return -EDGE_LINUX_EINVAL;
+    vector_count = (uint32_t)iocb->byte_count;
+    if (!vector_count) return 0;
+    if (!iocb->buffer) return -EDGE_LINUX_EFAULT;
+    if (kernel_io_current_vector_scratch(&scratch) < 0 ||
+        !scratch.vectors || scratch.capacity < vector_count)
+        return -EDGE_LINUX_ENOMEM;
+    if (edge_linux_copy_from_user(
+            context, scratch.vectors, iocb->buffer,
+            (uint64_t)vector_count * sizeof(scratch.vectors[0])) < 0)
+        return -EDGE_LINUX_EFAULT;
+    for (uint32_t index = 0; index < vector_count; ++index) {
+        uint64_t length = scratch.vectors[index].iov_len;
+        if (requested >= EDGE_LINUX_MAX_RW_COUNT) break;
+        if (length > EDGE_LINUX_MAX_RW_COUNT - requested)
+            length = EDGE_LINUX_MAX_RW_COUNT - requested;
+        requested += length;
+    }
+    return kernel_io_user_vector_transfer(
+        (int32_t)iocb->descriptor, scratch.vectors, vector_count,
+        operation, runtime_flags, context->user_registers);
+}
+
+static int edge_linux_aio_poll_result(int32_t descriptor,
+                                      uint32_t events) {
+    uint32_t result = 0;
+    if (events & (EDGE_LINUX_AIO_POLLIN | EDGE_LINUX_AIO_POLLPRI |
+                  EDGE_LINUX_AIO_POLLRDHUP)) {
+        if (kernel_io_descriptor_ready(
+                descriptor, KERNEL_IO_READ_CURRENT))
+            result |= events &
+                (EDGE_LINUX_AIO_POLLIN | EDGE_LINUX_AIO_POLLPRI |
+                 EDGE_LINUX_AIO_POLLRDHUP);
+    }
+    if ((events & EDGE_LINUX_AIO_POLLOUT) &&
+        kernel_io_descriptor_ready(
+            descriptor, KERNEL_IO_WRITE_CURRENT))
+        result |= EDGE_LINUX_AIO_POLLOUT;
+    return (int)result;
+}
+
+static void edge_linux_aio_collect_poll(int32_t owner_tgid,
+                                        uint64_t handle) {
+    for (uint32_t slot = 0;
+         slot < KERNEL_AIO_MAX_PENDING_PER_CONTEXT; ++slot) {
+        kernel_aio_pending_request_t request;
+        int32_t result_event_id = -1;
+        int ready;
+        if (kernel_aio_pending_snapshot(
+                owner_tgid, handle, slot, &request) <= 0)
+            continue;
+        ready = edge_linux_aio_poll_result(
+            (int32_t)request.descriptor, request.events);
+        if (!ready) continue;
+        if (kernel_aio_pending_complete(
+                owner_tgid, handle, request.token, ready,
+                &result_event_id) == 0) {
+            (void)edge_linux_aio_signal_result_event(result_event_id);
+            if (result_event_id >= 0)
+                kernel_eventfd_release(result_event_id);
+        }
+    }
+}
+
+static int64_t edge_linux_aio_submit_one(
+        edge_linux_syscall_context_t *context, int32_t owner_tgid,
+        uint64_t handle, uint64_t iocb_user) {
+    struct edge_linux_io_event event;
+    struct edge_linux_iocb iocb;
+    kernel_aio_pending_request_t pending;
+    int32_t result_event_id;
+    int64_t operation_result;
+    int result;
+
+    if (!iocb_user) return -EDGE_LINUX_EFAULT;
+    if (edge_linux_copy_from_user(
+            context, &iocb, iocb_user, sizeof(iocb)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    if (iocb.reserved2 ||
+        (iocb.flags & ~(EDGE_LINUX_IOCB_FLAG_RESFD |
+                        EDGE_LINUX_IOCB_FLAG_IOPRIO)))
+        return -EDGE_LINUX_EINVAL;
+    result = edge_linux_aio_validate_priority(&iocb);
+    if (result < 0) return result;
+    result = edge_linux_aio_validate_result_event(
+        &iocb, &result_event_id);
+    if (result < 0) return result;
+    {
+        uint32_t key = 0;
+        if (edge_linux_copy_to_user(
+                context, iocb_user + offsetof(struct edge_linux_iocb, key),
+                &key, sizeof(key)) < 0)
+            return -EDGE_LINUX_EFAULT;
+    }
+
+    if (iocb.opcode == EDGE_LINUX_IOCB_CMD_POLL) {
+        uint32_t events;
+        if (iocb.descriptor > INT32_MAX ||
+            !kernel_fd_is_open((int32_t)iocb.descriptor))
+            return -EDGE_LINUX_EBADF;
+        if (iocb.rw_flags || iocb.byte_count || iocb.offset)
+            return -EDGE_LINUX_EINVAL;
+        if (iocb.buffer > UINT32_MAX || !iocb.buffer ||
+            (iocb.buffer & ~EDGE_LINUX_AIO_POLL_ALLOWED))
+            return -EDGE_LINUX_EINVAL;
+        events = (uint32_t)iocb.buffer;
+        operation_result = edge_linux_aio_poll_result(
+            (int32_t)iocb.descriptor, events);
+        if (!operation_result) {
+            memset(&pending, 0, sizeof(pending));
+            pending.data = iocb.data;
+            pending.object = iocb_user;
+            pending.descriptor = iocb.descriptor;
+            pending.events = events;
+            pending.result_event_id = result_event_id;
+            if (result_event_id >= 0) {
+                result = kernel_eventfd_retain(result_event_id);
+                if (result < 0) return result;
+            }
+            result = kernel_aio_pending_add(owner_tgid, handle, &pending);
+            if (result < 0 && result_event_id >= 0)
+                kernel_eventfd_release(result_event_id);
+            return result;
+        }
+    } else if (iocb.opcode == EDGE_LINUX_IOCB_CMD_PREAD ||
+               iocb.opcode == EDGE_LINUX_IOCB_CMD_PWRITE ||
+               iocb.opcode == EDGE_LINUX_IOCB_CMD_PREADV ||
+               iocb.opcode == EDGE_LINUX_IOCB_CMD_PWRITEV) {
+        operation_result = edge_linux_aio_execute_io(context, &iocb);
+    } else if (iocb.opcode == EDGE_LINUX_IOCB_CMD_FSYNC ||
+               iocb.opcode == EDGE_LINUX_IOCB_CMD_FDSYNC) {
+        if (iocb.descriptor > INT32_MAX) return -EDGE_LINUX_EBADF;
+        if (iocb.rw_flags || iocb.buffer || iocb.byte_count || iocb.offset)
+            return -EDGE_LINUX_EINVAL;
+        operation_result = kernel_vfs_sync_descriptor(
+            (int32_t)iocb.descriptor,
+            iocb.opcode == EDGE_LINUX_IOCB_CMD_FSYNC ?
+                KERNEL_VFS_SYNC_FILE : KERNEL_VFS_SYNC_DATA);
+    } else {
+        return -EDGE_LINUX_EINVAL;
+    }
+
+    event.data = iocb.data;
+    event.object = iocb_user;
+    event.result = operation_result;
+    event.result2 = 0;
+    result = kernel_aio_completion_enqueue(owner_tgid, handle, &event);
+    if (result < 0) return result;
+    (void)edge_linux_aio_signal_result_event(result_event_id);
+    return 0;
+}
+
+static int64_t edge_linux_sys_aio_setup(
+        edge_linux_syscall_context_t *context, int32_t owner_tgid) {
+    uint64_t handle = 0;
+    uint64_t initial;
+    uint64_t destination = context->arguments[1];
+    uint64_t requested = context->arguments[0];
+    int result;
+
+    if (!destination) return -EDGE_LINUX_EFAULT;
+    if (requested > UINT32_MAX) return -EDGE_LINUX_EINVAL;
+    if (edge_linux_copy_from_user(
+            context, &initial, destination, sizeof(initial)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    if (initial) return -EDGE_LINUX_EINVAL;
+    result = kernel_aio_context_create(
+        owner_tgid, (uint32_t)requested, &handle);
+    if (result < 0) return result;
+    if (edge_linux_copy_to_user(
+            context, destination, &handle, sizeof(handle)) < 0) {
+        (void)kernel_aio_context_destroy(owner_tgid, handle);
+        return -EDGE_LINUX_EFAULT;
+    }
+    return 0;
+}
+
+static int64_t edge_linux_sys_aio_submit(
+        edge_linux_syscall_context_t *context, int32_t owner_tgid) {
+    int64_t request_count = (int64_t)context->arguments[1];
+    uint64_t list = context->arguments[2];
+    uint64_t handle = context->arguments[0];
+    int64_t submitted = 0;
+    int result;
+
+    if (request_count < 0) return -EDGE_LINUX_EINVAL;
+    if (kernel_aio_context_query(owner_tgid, handle, 0, 0) < 0)
+        return -EDGE_LINUX_EINVAL;
+    if (!request_count) return 0;
+    if (!list) return -EDGE_LINUX_EFAULT;
+    for (; submitted < request_count; ++submitted) {
+        uint64_t iocb_user;
+        if ((uint64_t)submitted >
+            (UINT64_MAX - list) / sizeof(iocb_user))
+            result = -EDGE_LINUX_EFAULT;
+        else if (edge_linux_copy_from_user(
+                     context, &iocb_user,
+                     list + (uint64_t)submitted * sizeof(iocb_user),
+                     sizeof(iocb_user)) < 0)
+            result = -EDGE_LINUX_EFAULT;
+        else
+            result = (int)edge_linux_aio_submit_one(
+                context, owner_tgid, handle, iocb_user);
+        if (result < 0) return submitted ? submitted : result;
+    }
+    return submitted;
+}
+
+static int edge_linux_aio_timeout(
+        edge_linux_syscall_context_t *context, uint64_t user_timeout,
+        uint64_t *deadline, int *immediate) {
+    linux_timespec64_t timeout;
+    uint64_t duration;
+    uint64_t now;
+    int result;
+    *deadline = UINT64_MAX;
+    *immediate = 0;
+    if (!user_timeout) return 0;
+    if (edge_linux_copy_from_user(
+            context, &timeout, user_timeout, sizeof(timeout)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    result = edge_linux_timespec_microseconds(&timeout, &duration);
+    if (result < 0) return result;
+    now = boottime_monotonic_us();
+    *deadline = duration > UINT64_MAX - now ? UINT64_MAX : now + duration;
+    *immediate = duration == 0;
+    return 0;
+}
+
+static int64_t edge_linux_sys_aio_getevents(
+        edge_linux_syscall_context_t *context, int32_t owner_tgid) {
+    kernel_signal_runtime_state_t signal_state;
+    struct edge_linux_aio_sigset user_sigset;
+    struct edge_linux_io_event event;
+    int64_t minimum = (int64_t)context->arguments[1];
+    int64_t maximum = (int64_t)context->arguments[2];
+    uint64_t destination = context->arguments[3];
+    uint64_t handle = context->arguments[0];
+    uint64_t deadline;
+    uint64_t temporary_mask = 0;
+    int signal_mask_installed = 0;
+    int immediate;
+    int interrupted = 0;
+    int64_t copied = 0;
+    int result;
+
+    if (minimum < 0 || maximum < 0 || minimum > maximum)
+        return -EDGE_LINUX_EINVAL;
+    result = edge_linux_aio_timeout(
+        context, context->arguments[4], &deadline, &immediate);
+    if (result < 0) return result;
+    if (context->id == EDGE_LINUX_SYS_io_pgetevents &&
+        context->arguments[5]) {
+        if (edge_linux_copy_from_user(
+                context, &user_sigset, context->arguments[5],
+                sizeof(user_sigset)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (user_sigset.signal_mask) {
+            if (user_sigset.signal_set_size != sizeof(temporary_mask))
+                return -EDGE_LINUX_EINVAL;
+            if (edge_linux_copy_from_user(
+                    context, &temporary_mask, user_sigset.signal_mask,
+                    sizeof(temporary_mask)) < 0)
+                return -EDGE_LINUX_EFAULT;
+            temporary_mask = edge_linux_signal_sanitize_mask(
+                temporary_mask);
+            if (kernel_arch_signal_runtime_state(
+                    context->current_task, &signal_state) < 0)
+                return -EDGE_LINUX_EINVAL;
+            kernel_signal_wait_mask_install(
+                &signal_state, temporary_mask);
+            signal_mask_installed = 1;
+        }
+    }
+    if (kernel_aio_context_query(owner_tgid, handle, 0, 0) < 0) {
+        result = -EDGE_LINUX_EINVAL;
+        goto finish;
+    }
+    if (maximum && !destination) {
+        result = -EDGE_LINUX_EFAULT;
+        goto finish;
+    }
+    for (;;) {
+        edge_linux_aio_collect_poll(owner_tgid, handle);
+        while (copied < maximum &&
+               kernel_aio_completion_dequeue(
+                   owner_tgid, handle, &event) == 0) {
+            if (edge_linux_copy_to_user(
+                    context,
+                    destination + (uint64_t)copied * sizeof(event),
+                    &event, sizeof(event)) < 0) {
+                result = copied ? (int)copied : -EDGE_LINUX_EFAULT;
+                goto finish;
+            }
+            ++copied;
+        }
+        if (copied >= minimum || immediate ||
+            (deadline != UINT64_MAX &&
+             boottime_monotonic_us() >= deadline)) {
+            result = (int)copied;
+            goto finish;
+        }
+        if (kernel_current_signal_wake_pending()) {
+            interrupted = 1;
+            result = copied ? (int)copied : -EDGE_LINUX_EINTR;
+            goto finish;
+        }
+        {
+            int released = kernel_runtime_contention_begin();
+            int yielded = kernel_runtime_yield();
+            kernel_runtime_contention_end(released);
+            if (!yielded) {
+                result = (int)copied;
+                goto finish;
+            }
+        }
+    }
+
+finish:
+    if (signal_mask_installed)
+        kernel_signal_wait_mask_finish(&signal_state, interrupted);
+    return result;
+}
+
+static int64_t edge_linux_sys_aio(
+        edge_linux_syscall_context_t *context) {
+#ifndef CONFIG_AIO
+    (void)context;
+    return -EDGE_LINUX_ENOSYS;
+#else
+    struct edge_linux_io_event event;
+    int32_t result_event_id = -1;
+    int32_t owner_tgid;
+    int result;
+
+    result = edge_linux_aio_owner(&owner_tgid);
+    if (result < 0) return result;
+    switch (context->id) {
+    case EDGE_LINUX_SYS_io_setup:
+        return edge_linux_sys_aio_setup(context, owner_tgid);
+    case EDGE_LINUX_SYS_io_destroy:
+        return kernel_aio_context_destroy(
+            owner_tgid, context->arguments[0]);
+    case EDGE_LINUX_SYS_io_submit:
+        return edge_linux_sys_aio_submit(context, owner_tgid);
+    case EDGE_LINUX_SYS_io_getevents:
+    case EDGE_LINUX_SYS_io_pgetevents:
+        return edge_linux_sys_aio_getevents(context, owner_tgid);
+    case EDGE_LINUX_SYS_io_cancel:
+        result = kernel_aio_pending_cancel(
+            owner_tgid, context->arguments[0], context->arguments[1],
+            &event, &result_event_id);
+        if (result < 0) return result;
+        (void)edge_linux_aio_signal_result_event(result_event_id);
+        if (result_event_id >= 0)
+            kernel_eventfd_release(result_event_id);
+        return edge_linux_copy_to_user(
+            context, context->arguments[2], &event, sizeof(event)) < 0 ?
+            -EDGE_LINUX_EFAULT : 0;
+    default:
+        return -EDGE_LINUX_ENOSYS;
+    }
+#endif
 }
 
 static int edge_linux_file_range_offset_error(int64_t offset,

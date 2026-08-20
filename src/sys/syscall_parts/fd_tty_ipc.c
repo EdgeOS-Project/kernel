@@ -5024,6 +5024,7 @@ static __attribute__((noreturn)) void exit_current_thread_or_group(int code) {
      * GLib/Glycin helper processes after their supervising pthread exited.
      */
     if (tgid > 0 && tid == tgid) {
+        kernel_aio_release_owner(tgid);
         kernel_posix_timer_delete_process(tgid);
         kernel_itimer_real_delete_process(tgid);
         process_exit_current_group(code);
@@ -5052,6 +5053,7 @@ static __attribute__((noreturn)) void exit_entire_thread_group(int code) {
      */
     kernel_posix_timer_delete_process(tgid);
     kernel_itimer_real_delete_process(tgid);
+    kernel_aio_release_owner(tgid);
     process_exit_current_group(code);
     scheduler_yield();
     for (;;) {

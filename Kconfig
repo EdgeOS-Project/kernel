@@ -110,6 +110,13 @@ config POSIX_MQUEUE
       Enable Linux-compatible named POSIX message queues, descriptors,
       notification, polling, and IPC namespace isolation.
 
+config AIO
+    bool "Legacy Linux asynchronous I/O"
+    default y
+    help
+      Enable Linux io_setup, io_submit, io_getevents, io_cancel, and
+      io_destroy over the shared descriptor I/O runtime.
+
 config BSD_DRIVER_FDT_INVENTORY
     bool "Inventory Device Tree devices for BSD drivers"
     depends on BSD_DRIVER_BRIDGE && DEVICE_TREE

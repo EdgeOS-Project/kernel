@@ -12,6 +12,7 @@
 #include "block/device_mapper.h"
 #include "block/loop.h"
 #include "kernel/process_runtime.h"
+#include "kernel/aio_runtime.h"
 #include "kernel/proc_maps.h"
 #include "kernel/posix_timer_runtime.h"
 #include "kernel/posix_mq_runtime.h"
@@ -20907,6 +20908,7 @@ static __attribute__((noreturn)) void task_finish(kernel_task_t *task,
     siginfo_purge_target(task->pid, 1);
     if (!signal_group_survives) {
         siginfo_purge_target(signal_group, 0);
+        kernel_aio_release_owner(signal_group);
         kernel_posix_timer_delete_process(signal_group);
         kernel_itimer_real_delete_process(signal_group);
     }

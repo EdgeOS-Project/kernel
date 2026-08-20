@@ -3014,109 +3014,151 @@
     {
       "id": "io_cancel",
       "semantic_id": "io_cancel",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_aio",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/aio_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 210,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_aio",
+          "evidence_status": "oracle-verified"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 3,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_aio",
+          "evidence_status": "oracle-verified"
+        }
       }
     },
     {
       "id": "io_destroy",
       "semantic_id": "io_destroy",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_aio",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/aio_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 207,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_aio",
+          "evidence_status": "oracle-verified"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 1,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_aio",
+          "evidence_status": "oracle-verified"
+        }
       }
     },
     {
       "id": "io_getevents",
       "semantic_id": "io_getevents",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_aio",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/aio_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 208,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_aio",
+          "evidence_status": "oracle-verified"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 4,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_aio",
+          "evidence_status": "oracle-verified"
+        }
       }
     },
     {
       "id": "io_pgetevents",
       "semantic_id": "io_pgetevents",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_aio",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/aio_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 333,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_aio",
+          "evidence_status": "oracle-verified"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 292,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_aio",
+          "evidence_status": "oracle-verified"
+        }
       }
     },
     {
       "id": "io_setup",
       "semantic_id": "io_setup",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_aio",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/aio_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 206,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_aio",
+          "evidence_status": "oracle-verified"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 0,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_aio",
+          "evidence_status": "oracle-verified"
+        }
       }
     },
     {
       "id": "io_submit",
       "semantic_id": "io_submit",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_aio",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/aio_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 209,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_aio",
+          "evidence_status": "oracle-verified"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 2,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_aio",
+          "evidence_status": "oracle-verified"
+        }
       }
     },
     {

@@ -536,6 +536,34 @@ struct edge_linux_mq_attr {
     int64_t mq_curmsgs;
 };
 
+/* Legacy Linux native asynchronous I/O UAPI shared by 64-bit targets. */
+struct edge_linux_io_event {
+    uint64_t data;
+    uint64_t object;
+    int64_t result;
+    int64_t result2;
+};
+
+struct edge_linux_iocb {
+    uint64_t data;
+    uint32_t key;
+    uint32_t rw_flags;
+    uint16_t opcode;
+    int16_t request_priority;
+    uint32_t descriptor;
+    uint64_t buffer;
+    uint64_t byte_count;
+    int64_t offset;
+    uint64_t reserved2;
+    uint32_t flags;
+    uint32_t result_descriptor;
+};
+
+struct edge_linux_aio_sigset {
+    uint64_t signal_mask;
+    uint64_t signal_set_size;
+};
+
 _Static_assert(sizeof(struct edge_linux_ipc_perm64) == 48,
                "Linux ipc_perm size mismatch");
 _Static_assert(offsetof(struct edge_linux_ipc_perm64, mode) == 20,
@@ -564,6 +592,18 @@ _Static_assert(sizeof(struct edge_linux_msginfo) == 32,
                "Linux msginfo size mismatch");
 _Static_assert(sizeof(struct edge_linux_mq_attr) == 32,
                "Linux mq_attr size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_event) == 32,
+               "Linux io_event size mismatch");
+_Static_assert(sizeof(struct edge_linux_iocb) == 64,
+               "Linux iocb size mismatch");
+_Static_assert(offsetof(struct edge_linux_iocb, opcode) == 16,
+               "Linux iocb opcode offset mismatch");
+_Static_assert(offsetof(struct edge_linux_iocb, buffer) == 24,
+               "Linux iocb buffer offset mismatch");
+_Static_assert(offsetof(struct edge_linux_iocb, flags) == 56,
+               "Linux iocb flags offset mismatch");
+_Static_assert(sizeof(struct edge_linux_aio_sigset) == 16,
+               "Linux aio sigset size mismatch");
 
 /* statx is an architecture-independent Linux UAPI layout on 64-bit ports. */
 struct edge_linux_statx_timestamp {
