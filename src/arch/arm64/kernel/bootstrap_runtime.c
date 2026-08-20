@@ -5866,6 +5866,26 @@ static void task_tty_release_session_leader(kernel_task_t *task) {
     task_tty_notify_foreground_group(transition.detached_foreground_pgid);
 }
 
+int arch_tty_vhangup(void) {
+    kernel_task_t *task = current_task();
+    bootstrap_fd_t identity;
+    kernel_tty_state_t *tty;
+    edge_linux_tty_session_transition_t transition;
+
+    if (!task) return -LINUX_ESRCH;
+    if (!task->has_controlling_tty) return 0;
+    bytes_zero(&identity, sizeof(identity));
+    identity.tty_identity = task->controlling_tty;
+    tty = task_tty_state(task, &identity);
+    if (!tty) return 0;
+    edge_linux_tty_session_hangup(&tty->session, &transition);
+    if (!transition.detach_whole_session) return 0;
+    task_tty_clear_session(transition.detached_session_id);
+    task_tty_notify_foreground_group(
+        transition.detached_foreground_pgid);
+    return 0;
+}
+
 static void task_tty_release_exiting_group(kernel_task_t *task,
                                            int whole_group) {
     int group;

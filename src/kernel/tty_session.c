@@ -191,6 +191,20 @@ void edge_linux_tty_session_release(
     state->foreground_pgid = 0;
 }
 
+void edge_linux_tty_session_hangup(
+    edge_linux_tty_session_state_t *state,
+    edge_linux_tty_session_transition_t *transition) {
+    tty_transition_reset(transition);
+    if (!state || state->session_id <= 0) return;
+    if (transition) {
+        transition->detached_session_id = state->session_id;
+        transition->detached_foreground_pgid = state->foreground_pgid;
+        transition->detach_whole_session = 1;
+    }
+    state->session_id = 0;
+    state->foreground_pgid = 0;
+}
+
 int64_t edge_linux_tty_console_redirect_install(
     void *owner, edge_linux_tty_console_writer_t writer, void *context,
     edge_linux_tty_console_release_t release, int privileged) {

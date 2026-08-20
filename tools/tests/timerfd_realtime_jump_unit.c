@@ -30,6 +30,27 @@ uint64_t kernel_arch_boottime_source_hz(void) {
 const char *kernel_arch_boottime_source_name(void) {
     return "test";
 }
+void kernel_arch_boottime_vdso_snapshot(
+    uint64_t *cycle_last, uint64_t *monotonic_base_us,
+    uint64_t *frequency) {
+    *cycle_last = g_monotonic_us;
+    *monotonic_base_us = g_monotonic_us;
+    *frequency = 1000000u;
+}
+void linux_vdso_time_update(
+    uint64_t cycle_last, uint64_t monotonic_base_us,
+    uint64_t realtime_offset_us, uint64_t frequency,
+    uint64_t discipline_anchor_us, int64_t frequency_scaled_ppm,
+    int64_t pending_adjustment_us) {
+    (void)cycle_last;
+    (void)monotonic_base_us;
+    (void)realtime_offset_us;
+    (void)frequency;
+    (void)discipline_anchor_us;
+    (void)frequency_scaled_ppm;
+    (void)pending_adjustment_us;
+}
+void spinlock_contention_relax(void) {}
 void kernel_timerfd_state_changed(int timer_id) {
     assert(g_notification_count < 8);
     g_notifications[g_notification_count++] = timer_id;
@@ -94,6 +115,12 @@ int main(void) {
     assert(state.deadline_is_monotonic);
     assert(kernel_timerfd_monotonic_deadline(&state, &deadline) == 0);
     assert(deadline == 11000000u);
+
+    kernel_timerfd_realtime_rate_change();
+    assert(g_notification_count == 3);
+    assert(kernel_timerfd_query(cancel_timer, &state) == 0);
+    assert(!state.canceled);
+    g_notification_count = 0;
 
     assert(boottime_set_realtime_us(7000000u) == 0);
     assert(g_notification_count == 3);

@@ -21,7 +21,9 @@ static inline void spinlock_init(spinlock_t *l) {
 
 static inline uint64_t spin_lock_irqsave(spinlock_t *l) {
     uint64_t flags = 0;
-#if defined(__x86_64__)
+#if defined(EDGEOS_HOST_TEST)
+    (void)flags;
+#elif defined(__x86_64__)
     __asm__ __volatile__("pushfq; popq %0; cli" : "=r"(flags) :: "memory");
 #elif defined(__aarch64__)
     __asm__ __volatile__("mrs %0, daif; msr daifset, #0xf" : "=r"(flags) :: "memory");
@@ -30,7 +32,9 @@ static inline uint64_t spin_lock_irqsave(spinlock_t *l) {
 #endif
     while (__sync_lock_test_and_set(&l->v, 1)) {
         while (l->v) {
-#if defined(__aarch64__)
+#if defined(EDGEOS_HOST_TEST)
+            __asm__ __volatile__("" ::: "memory");
+#elif defined(__aarch64__)
             spinlock_contention_relax();
             continue;
 #else
@@ -49,7 +53,9 @@ static inline uint64_t spin_lock_irqsave(spinlock_t *l) {
 
 static inline int spin_trylock_irqsave(spinlock_t *l, uint64_t *flags_out) {
     uint64_t flags = 0;
-#if defined(__x86_64__)
+#if defined(EDGEOS_HOST_TEST)
+    (void)flags;
+#elif defined(__x86_64__)
     __asm__ __volatile__("pushfq; popq %0; cli" : "=r"(flags) :: "memory");
 #elif defined(__aarch64__)
     __asm__ __volatile__("mrs %0, daif; msr daifset, #0xf" : "=r"(flags) :: "memory");
@@ -57,7 +63,9 @@ static inline int spin_trylock_irqsave(spinlock_t *l, uint64_t *flags_out) {
 #error "spin_trylock_irqsave needs an architecture implementation"
 #endif
     if (__sync_lock_test_and_set(&l->v, 1)) {
-#if defined(__x86_64__)
+#if defined(EDGEOS_HOST_TEST)
+        (void)flags;
+#elif defined(__x86_64__)
         if (flags & (1ULL << 9)) __asm__ __volatile__("sti");
 #elif defined(__aarch64__)
         __asm__ __volatile__("msr daif, %0" :: "r"(flags) : "memory");
@@ -71,7 +79,9 @@ static inline int spin_trylock_irqsave(spinlock_t *l, uint64_t *flags_out) {
 
 static inline void spin_unlock_irqrestore(spinlock_t *l, uint64_t flags) {
     __sync_lock_release(&l->v);
-#if defined(__x86_64__)
+#if defined(EDGEOS_HOST_TEST)
+    (void)flags;
+#elif defined(__x86_64__)
     if (flags & (1ULL << 9)) __asm__ __volatile__("sti");
 #elif defined(__aarch64__)
     __asm__ __volatile__("msr daif, %0" :: "r"(flags) : "memory");

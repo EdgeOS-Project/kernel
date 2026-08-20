@@ -75,6 +75,13 @@ void edge_linux_tty_session_release(
     int32_t sid,
     edge_linux_tty_session_transition_t *transition);
 
+void edge_linux_tty_session_hangup(
+    edge_linux_tty_session_state_t *state,
+    edge_linux_tty_session_transition_t *transition);
+
+/* Revoke the current task's controlling terminal using native TTY objects. */
+int arch_tty_vhangup(void);
+
 /* Linux TIOCCONS permits one privileged console-redirection target. */
 int64_t edge_linux_tty_console_redirect_install(
     void *owner, edge_linux_tty_console_writer_t writer, void *context,

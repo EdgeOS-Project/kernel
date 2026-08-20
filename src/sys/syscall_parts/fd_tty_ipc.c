@@ -7362,6 +7362,30 @@ static void tty_session_release_task(task_t *task) {
         transition.detached_foreground_pgid);
 }
 
+int arch_tty_vhangup(void) {
+    task_t *task = process_current_task();
+    edge_linux_tty_session_state_t *state = 0;
+    edge_linux_tty_session_transition_t transition;
+
+    if (!task) return -ESRCH;
+    if (task->ctty_kind == PROCESS_CTTY_PTY) {
+        if (task->ctty_id >= 0 && task->ctty_id < EDGE_MAX_PTYS &&
+            g_ptys[task->ctty_id].used)
+            state = &g_ptys[task->ctty_id].session;
+    } else if (task->ctty_kind == PROCESS_CTTY_CONSOLE) {
+        edge_console_line_t *line =
+            console_line_state(console_line_from_vt(task->ctty_id));
+        if (line) state = &line->session;
+    }
+    if (!state) return 0;
+    edge_linux_tty_session_hangup(state, &transition);
+    if (!transition.detach_whole_session) return 0;
+    tty_clear_session_tasks(transition.detached_session_id);
+    tty_notify_disassociated_process_group(
+        transition.detached_foreground_pgid);
+    return 0;
+}
+
 static uint64_t open_console_tty_fd(edge_fd_proc_t *p, const char *path, int flags) {
     int fd;
     int line_id;

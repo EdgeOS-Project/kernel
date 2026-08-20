@@ -57,6 +57,8 @@
 #include "kernel/syslog_runtime.h"
 #include "kernel/timerfd.h"
 #include "kernel/timerfd_runtime.h"
+#include "kernel/time_discipline.h"
+#include "kernel/tty_session.h"
 #include "kernel/vfs_runtime.h"
 #include "sys/boottime.h"
 #include "sys/bootlog.h"
@@ -918,6 +920,52 @@ static int64_t edge_linux_sys_set_wall_time(
             return -EDGE_LINUX_EINVAL;
     }
     return 0;
+}
+
+static int64_t edge_linux_sys_vhangup(
+    edge_linux_syscall_context_t *context) {
+    kernel_linux_identity_t identity;
+
+    (void)context;
+    if (kernel_current_linux_identity(&identity) < 0)
+        return -EDGE_LINUX_ESRCH;
+    if ((identity.effective_capabilities &
+         (1ull << EDGE_LINUX_CAP_SYS_TTY_CONFIG)) == 0)
+        return -EDGE_LINUX_EPERM;
+    return arch_tty_vhangup();
+}
+
+static int64_t edge_linux_sys_clock_adjust(
+    edge_linux_syscall_context_t *context) {
+    kernel_linux_identity_t identity;
+    edge_linux_timex_t timex;
+    uint64_t timex_user;
+    int32_t clock_id = LINUX_CLOCK_REALTIME;
+    int privileged;
+    int result;
+
+    if (context->id == EDGE_LINUX_SYS_clock_adjtime) {
+        clock_id = (int32_t)context->arguments[0];
+        timex_user = context->arguments[1];
+    } else {
+        timex_user = context->arguments[0];
+    }
+    if (!timex_user) return -EDGE_LINUX_EFAULT;
+    if (edge_linux_copy_from_user(
+            context, &timex, timex_user, sizeof(timex)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    if (kernel_current_linux_identity(&identity) < 0)
+        return -EDGE_LINUX_ESRCH;
+    privileged = (identity.effective_capabilities &
+                  (1ull << EDGE_LINUX_CAP_SYS_TIME)) != 0;
+    result = kernel_time_discipline_adjust(
+        clock_id, &timex, privileged);
+    if (result < 0 && context->id == EDGE_LINUX_SYS_clock_adjtime)
+        return result;
+    if (edge_linux_copy_to_user(
+            context, timex_user, &timex, sizeof(timex)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    return result;
 }
 
 static int64_t edge_linux_sys_uname(edge_linux_syscall_context_t *context) {

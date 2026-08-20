@@ -19,6 +19,9 @@ typedef struct {
     uint64_t monotonic_base_us;
     uint64_t realtime_offset_us;
     uint64_t frequency;
+    uint64_t discipline_anchor_us;
+    int64_t frequency_scaled_ppm;
+    int64_t pending_adjustment_us;
 } edge_linux_vdso_data_t;
 
 extern const uint8_t edge_linux_vdso_image[8192];
@@ -33,12 +36,18 @@ static uint64_t g_latest_cycle_last;
 static uint64_t g_latest_monotonic_base_us;
 static uint64_t g_latest_realtime_offset_us;
 static uint64_t g_latest_frequency;
+static uint64_t g_latest_discipline_anchor_us;
+static int64_t g_latest_frequency_scaled_ppm;
+static int64_t g_latest_pending_adjustment_us;
 
 static void linux_vdso_write_data(edge_linux_vdso_data_t *data,
                                   uint64_t cycle_last,
                                   uint64_t monotonic_base_us,
                                   uint64_t realtime_offset_us,
-                                  uint64_t frequency) {
+                                  uint64_t frequency,
+                                  uint64_t discipline_anchor_us,
+                                  int64_t frequency_scaled_ppm,
+                                  int64_t pending_adjustment_us) {
     uint32_t sequence;
 
     if (!data) return;
@@ -49,6 +58,9 @@ static void linux_vdso_write_data(edge_linux_vdso_data_t *data,
     data->monotonic_base_us = monotonic_base_us;
     data->realtime_offset_us = realtime_offset_us;
     data->frequency = frequency;
+    data->discipline_anchor_us = discipline_anchor_us;
+    data->frequency_scaled_ppm = frequency_scaled_ppm;
+    data->pending_adjustment_us = pending_adjustment_us;
     __atomic_store_n(&data->sequence, sequence + 2u, __ATOMIC_RELEASE);
 }
 
@@ -59,6 +71,9 @@ static void linux_vdso_copy_latest(edge_linux_vdso_data_t *data) {
     uint64_t monotonic_base_us;
     uint64_t realtime_offset_us;
     uint64_t frequency;
+    uint64_t discipline_anchor_us;
+    int64_t frequency_scaled_ppm;
+    int64_t pending_adjustment_us;
 
     do {
         before = __atomic_load_n(&g_latest_sequence, __ATOMIC_ACQUIRE);
@@ -67,10 +82,15 @@ static void linux_vdso_copy_latest(edge_linux_vdso_data_t *data) {
         monotonic_base_us = g_latest_monotonic_base_us;
         realtime_offset_us = g_latest_realtime_offset_us;
         frequency = g_latest_frequency;
+        discipline_anchor_us = g_latest_discipline_anchor_us;
+        frequency_scaled_ppm = g_latest_frequency_scaled_ppm;
+        pending_adjustment_us = g_latest_pending_adjustment_us;
         after = __atomic_load_n(&g_latest_sequence, __ATOMIC_ACQUIRE);
     } while (before != after || (after & 1u));
     linux_vdso_write_data(data, cycle_last, monotonic_base_us,
-                          realtime_offset_us, frequency);
+                          realtime_offset_us, frequency,
+                          discipline_anchor_us, frequency_scaled_ppm,
+                          pending_adjustment_us);
 }
 
 static int linux_vdso_prepare_image(void) {
@@ -126,7 +146,10 @@ uint64_t linux_vdso_map(uint64_t address_space) {
 void linux_vdso_time_update(uint64_t cycle_last,
                             uint64_t monotonic_base_us,
                             uint64_t realtime_offset_us,
-                            uint64_t frequency) {
+                            uint64_t frequency,
+                            uint64_t discipline_anchor_us,
+                            int64_t frequency_scaled_ppm,
+                            int64_t pending_adjustment_us) {
     uint32_t sequence;
 
     /*
@@ -147,9 +170,15 @@ void linux_vdso_time_update(uint64_t cycle_last,
     g_latest_monotonic_base_us = monotonic_base_us;
     g_latest_realtime_offset_us = realtime_offset_us;
     g_latest_frequency = frequency;
+    g_latest_discipline_anchor_us = discipline_anchor_us;
+    g_latest_frequency_scaled_ppm = frequency_scaled_ppm;
+    g_latest_pending_adjustment_us = pending_adjustment_us;
     __atomic_store_n(&g_latest_sequence, sequence + 2u, __ATOMIC_RELEASE);
     if (__atomic_load_n(&g_image_state, __ATOMIC_ACQUIRE) == 2u)
         linux_vdso_write_data(g_data, cycle_last, monotonic_base_us,
-                              realtime_offset_us, frequency);
+                              realtime_offset_us, frequency,
+                              discipline_anchor_us,
+                              frequency_scaled_ppm,
+                              pending_adjustment_us);
     __atomic_store_n(&g_time_update_lock, 0u, __ATOMIC_RELEASE);
 }

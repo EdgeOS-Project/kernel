@@ -372,7 +372,7 @@ void kernel_timerfd_realtime_change_begin(void) {
     kernel_timerfd_lock();
 }
 
-void kernel_timerfd_realtime_change_complete(void) {
+static void kernel_timerfd_realtime_change_notify(int cancel_absolute) {
     uint8_t notify[EDGE_RUNTIME_MAX_TIMERFDS] = {0};
 
     for (int timer_id = 0; timer_id < EDGE_RUNTIME_MAX_TIMERFDS;
@@ -385,7 +385,7 @@ void kernel_timerfd_realtime_change_complete(void) {
             !timer->next_expiry_us)
             continue;
         notify[timer_id] = 1;
-        if (timer->cancel_on_set) {
+        if (cancel_absolute && timer->cancel_on_set) {
             timer->next_expiry_us = 0;
             timer->expirations = 0;
             timer->canceled = 1;
@@ -403,4 +403,13 @@ void kernel_timerfd_realtime_change_complete(void) {
          ++timer_id) {
         if (notify[timer_id]) kernel_timerfd_state_changed(timer_id);
     }
+}
+
+void kernel_timerfd_realtime_change_complete(void) {
+    kernel_timerfd_realtime_change_notify(1);
+}
+
+void kernel_timerfd_realtime_rate_change(void) {
+    kernel_timerfd_lock();
+    kernel_timerfd_realtime_change_notify(0);
 }

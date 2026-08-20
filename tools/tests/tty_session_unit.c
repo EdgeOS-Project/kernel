@@ -8,9 +8,14 @@
 #include <stdio.h>
 #include <string.h>
 
+#if defined(__aarch64__)
+void spinlock_contention_relax(void) {}
+#endif
+
 int main(void) {
     edge_linux_tty_session_state_t state;
     edge_linux_tty_session_caller_t caller;
+    edge_linux_tty_session_transition_t transition;
     int32_t value = -1;
 
     memset(&state, 0, sizeof(state));
@@ -30,6 +35,14 @@ int main(void) {
     assert(value == 41);
     assert(edge_linux_tty_session_get_peer_id(&state, 0) ==
            -EDGE_LINUX_EFAULT);
+
+    memset(&transition, 0, sizeof(transition));
+    edge_linux_tty_session_hangup(&state, &transition);
+    assert(state.session_id == 0);
+    assert(state.foreground_pgid == 0);
+    assert(transition.detached_session_id == 41);
+    assert(transition.detached_foreground_pgid == 42);
+    assert(transition.detach_whole_session == 1);
 
     puts("tty_session_unit: PASS");
     return 0;

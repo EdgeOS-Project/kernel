@@ -36,6 +36,10 @@ case EDGE_LINUX_SYS_clock_getres:
 case EDGE_LINUX_SYS_clock_gettime:
     context->result = edge_linux_sys_clock(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_adjtimex:
+case EDGE_LINUX_SYS_clock_adjtime:
+    context->result = edge_linux_sys_clock_adjust(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_clone:
 case EDGE_LINUX_SYS_clone3:
 case EDGE_LINUX_SYS_fork:
@@ -536,6 +540,9 @@ case EDGE_LINUX_SYS_utime:
 case EDGE_LINUX_SYS_utimensat:
 case EDGE_LINUX_SYS_utimes:
     context->result = edge_linux_sys_utimens(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_vhangup:
+    context->result = edge_linux_sys_vhangup(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_vmsplice:
     context->result = edge_linux_sys_vmsplice(context);

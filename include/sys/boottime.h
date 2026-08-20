@@ -12,5 +12,10 @@ uint32_t boottime_now_us(void);
 uint64_t boottime_monotonic_us(void);
 uint64_t boottime_realtime_us(void);
 int boottime_set_realtime_us(uint64_t realtime_us);
+int boottime_adjust_realtime_us(int64_t adjustment_us, int immediate);
+int boottime_set_pending_adjustment_us(int64_t adjustment_us);
+int boottime_set_frequency_scaled_ppm(int64_t frequency_scaled_ppm);
+int64_t boottime_frequency_scaled_ppm(void);
+int64_t boottime_pending_adjustment_us(void);
 
 #endif

@@ -123,6 +123,85 @@ _Static_assert(sizeof(struct edge_linux_mount_attr) == 32,
 #define EDGE_LINUX_FUTEX_BITSET_MATCH_ANY UINT32_MAX
 #define EDGE_LINUX_FUTEX_WAITV_MAX 128u
 
+/* Linux time discipline UAPI. */
+#define EDGE_LINUX_ADJ_OFFSET 0x0001u
+#define EDGE_LINUX_ADJ_FREQUENCY 0x0002u
+#define EDGE_LINUX_ADJ_MAXERROR 0x0004u
+#define EDGE_LINUX_ADJ_ESTERROR 0x0008u
+#define EDGE_LINUX_ADJ_STATUS 0x0010u
+#define EDGE_LINUX_ADJ_TIMECONST 0x0020u
+#define EDGE_LINUX_ADJ_TAI 0x0080u
+#define EDGE_LINUX_ADJ_SETOFFSET 0x0100u
+#define EDGE_LINUX_ADJ_MICRO 0x1000u
+#define EDGE_LINUX_ADJ_NANO 0x2000u
+#define EDGE_LINUX_ADJ_TICK 0x4000u
+#define EDGE_LINUX_ADJ_ADJTIME 0x8000u
+#define EDGE_LINUX_ADJ_OFFSET_READONLY 0x2000u
+#define EDGE_LINUX_ADJ_OFFSET_SINGLESHOT 0x8001u
+#define EDGE_LINUX_ADJ_OFFSET_SS_READ 0xa001u
+
+#define EDGE_LINUX_STA_PLL 0x0001u
+#define EDGE_LINUX_STA_PPSFREQ 0x0002u
+#define EDGE_LINUX_STA_PPSTIME 0x0004u
+#define EDGE_LINUX_STA_FLL 0x0008u
+#define EDGE_LINUX_STA_INS 0x0010u
+#define EDGE_LINUX_STA_DEL 0x0020u
+#define EDGE_LINUX_STA_UNSYNC 0x0040u
+#define EDGE_LINUX_STA_FREQHOLD 0x0080u
+#define EDGE_LINUX_STA_PPSSIGNAL 0x0100u
+#define EDGE_LINUX_STA_PPSJITTER 0x0200u
+#define EDGE_LINUX_STA_PPSWANDER 0x0400u
+#define EDGE_LINUX_STA_PPSERROR 0x0800u
+#define EDGE_LINUX_STA_CLOCKERR 0x1000u
+#define EDGE_LINUX_STA_NANO 0x2000u
+#define EDGE_LINUX_STA_MODE 0x4000u
+#define EDGE_LINUX_STA_CLK 0x8000u
+#define EDGE_LINUX_STA_READONLY \
+    (EDGE_LINUX_STA_PPSSIGNAL | EDGE_LINUX_STA_PPSJITTER | \
+     EDGE_LINUX_STA_PPSWANDER | EDGE_LINUX_STA_PPSERROR | \
+     EDGE_LINUX_STA_CLOCKERR | EDGE_LINUX_STA_NANO | \
+     EDGE_LINUX_STA_MODE | EDGE_LINUX_STA_CLK)
+
+#define EDGE_LINUX_TIME_OK 0
+#define EDGE_LINUX_TIME_INS 1
+#define EDGE_LINUX_TIME_DEL 2
+#define EDGE_LINUX_TIME_ERROR 5
+
+typedef struct edge_linux_timex_timeval {
+    int64_t tv_sec;
+    int64_t tv_usec;
+} edge_linux_timex_timeval_t;
+
+typedef struct edge_linux_timex {
+    uint32_t modes;
+    uint32_t padding0;
+    int64_t offset;
+    int64_t frequency;
+    int64_t maximum_error;
+    int64_t estimated_error;
+    int32_t status;
+    uint32_t padding1;
+    int64_t constant;
+    int64_t precision;
+    int64_t tolerance;
+    edge_linux_timex_timeval_t time;
+    int64_t tick;
+    int64_t pps_frequency;
+    int64_t jitter;
+    int32_t shift;
+    uint32_t padding2;
+    int64_t stability;
+    int64_t jitter_count;
+    int64_t calibration_count;
+    int64_t error_count;
+    int64_t stability_count;
+    int32_t tai;
+    uint32_t padding3[11];
+} edge_linux_timex_t;
+
+_Static_assert(sizeof(edge_linux_timex_t) == 208u,
+               "Linux timex ABI size mismatch");
+
 #define EDGE_LINUX_EXT_SUPER_MAGIC 0x0000ef53u
 #define EDGE_LINUX_PROC_SUPER_MAGIC 0x00009fa0u
 #define EDGE_LINUX_SYSFS_MAGIC 0x62656572u

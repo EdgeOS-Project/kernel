@@ -44,5 +44,6 @@ int kernel_timerfd_monotonic_deadline(
     const kernel_timerfd_state_t *state, uint64_t *deadline_us);
 void kernel_timerfd_realtime_change_begin(void);
 void kernel_timerfd_realtime_change_complete(void);
+void kernel_timerfd_realtime_rate_change(void);
 
 #endif

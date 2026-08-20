@@ -145,19 +145,26 @@
     {
       "id": "adjtimex",
       "semantic_id": "adjtimex",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_clock_adjust",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/clock_adjust_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 159,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_clock_adjust",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 171,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_clock_adjust",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {
@@ -461,19 +468,26 @@
     {
       "id": "clock_adjtime",
       "semantic_id": "clock_adjtime",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_clock_adjust",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/clock_adjust_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 305,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_clock_adjust",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 266,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_clock_adjust",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {
@@ -8778,19 +8792,26 @@
     {
       "id": "vhangup",
       "semantic_id": "vhangup",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_vhangup",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/vhangup_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 153,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_vhangup",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 58,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_vhangup",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {

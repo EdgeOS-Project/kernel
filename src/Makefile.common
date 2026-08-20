@@ -132,6 +132,7 @@ EDGE_SHARED_SRCS := \
 	$(SRC)/kernel/task_scratch.c \
 	$(SRC)/kernel/timerfd.c \
 	$(SRC)/kernel/time.c \
+	$(SRC)/kernel/time_discipline.c \
 	$(SRC)/kernel/tty_session.c \
 	$(SRC)/kernel/utsname.c \
 	$(SRC)/kernel/vfs_context.c \

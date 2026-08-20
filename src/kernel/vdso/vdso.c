@@ -22,6 +22,9 @@ struct edge_vdso_data {
     u64 monotonic_base_us;
     u64 realtime_offset_us;
     u64 frequency;
+    u64 discipline_anchor_us;
+    s64 frequency_scaled_ppm;
+    s64 pending_adjustment_us;
 };
 
 __attribute__((section(".vdso_data"), visibility("hidden")))
@@ -66,6 +69,30 @@ static __attribute__((always_inline)) inline u64 edge_scale_cycles(
     return quotient * 1000000u + (remainder * 1000000u) / frequency;
 }
 
+static __attribute__((always_inline)) inline s64 edge_scaled_ppm_delta(
+    u64 elapsed_us, s64 scaled_ppm) {
+    const s64 scale = 65536ll;
+    s64 seconds = (s64)(elapsed_us / 1000000u);
+    s64 remainder = (s64)(elapsed_us % 1000000u);
+    s64 whole = (seconds * scaled_ppm) / scale;
+    s64 fraction = (remainder * scaled_ppm) / (scale * 1000000ll);
+    return whole + fraction;
+}
+
+static __attribute__((always_inline)) inline s64 edge_slew_delta(
+    u64 elapsed_us, s64 pending_adjustment_us) {
+    s64 limit;
+
+    if (!pending_adjustment_us) return 0;
+    limit = (s64)(elapsed_us / 2000u);
+    if (!limit && elapsed_us) limit = 1;
+    if (pending_adjustment_us > 0)
+        return pending_adjustment_us < limit ?
+            pending_adjustment_us : limit;
+    return ((u64)(-(pending_adjustment_us + 1)) + 1u) < (u64)limit ?
+        pending_adjustment_us : -limit;
+}
+
 static int edge_fast_time(int clock_id, u64 *microseconds) {
     u32 before;
     u32 after;
@@ -73,6 +100,9 @@ static int edge_fast_time(int clock_id, u64 *microseconds) {
     u64 monotonic_base;
     u64 realtime_offset;
     u64 frequency;
+    u64 discipline_anchor;
+    s64 frequency_scaled_ppm;
+    s64 pending_adjustment;
     u64 now;
 
     if (!microseconds || !edge_clock_supported(clock_id)) return -1;
@@ -83,6 +113,9 @@ static int edge_fast_time(int clock_id, u64 *microseconds) {
         monotonic_base = edge_vdso_data.monotonic_base_us;
         realtime_offset = edge_vdso_data.realtime_offset_us;
         frequency = edge_vdso_data.frequency;
+        discipline_anchor = edge_vdso_data.discipline_anchor_us;
+        frequency_scaled_ppm = edge_vdso_data.frequency_scaled_ppm;
+        pending_adjustment = edge_vdso_data.pending_adjustment_us;
         now = edge_cycle_now();
         after = __atomic_load_n(&edge_vdso_data.sequence, __ATOMIC_ACQUIRE);
     } while (before != after || (after & 1u));
@@ -90,8 +123,20 @@ static int edge_fast_time(int clock_id, u64 *microseconds) {
     *microseconds = monotonic_base +
                     edge_scale_cycles(now - cycle_last, frequency);
     if (clock_id == EDGE_CLOCK_REALTIME ||
-        clock_id == EDGE_CLOCK_REALTIME_COARSE)
+        clock_id == EDGE_CLOCK_REALTIME_COARSE) {
+        u64 elapsed = *microseconds > discipline_anchor ?
+            *microseconds - discipline_anchor : 0;
+        s64 correction =
+            edge_scaled_ppm_delta(elapsed, frequency_scaled_ppm) +
+            edge_slew_delta(elapsed, pending_adjustment);
         *microseconds += realtime_offset;
+        if (correction >= 0)
+            *microseconds += (u64)correction;
+        else if (((u64)(-(correction + 1)) + 1u) < *microseconds)
+            *microseconds -= (u64)(-(correction + 1)) + 1u;
+        else
+            *microseconds = 0;
+    }
     if (clock_id == EDGE_CLOCK_REALTIME_COARSE ||
         clock_id == EDGE_CLOCK_MONOTONIC_COARSE)
         *microseconds -= *microseconds % 1000u;
