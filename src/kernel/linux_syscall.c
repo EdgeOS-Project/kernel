@@ -12,6 +12,7 @@
 #include "kernel/aio_runtime.h"
 #include "kernel/arch_cpu.h"
 #include "kernel/io_uring_runtime.h"
+#include "kernel/keyring_runtime.h"
 #include "kernel/fd_runtime.h"
 #include "kernel/anonymous_fd.h"
 #include "kernel/event_runtime.h"
@@ -102,6 +103,8 @@ static int64_t edge_linux_sys_xattrat(
 static int64_t edge_linux_sys_fileattr(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_listns(
+    edge_linux_syscall_context_t *context);
+static int64_t edge_linux_sys_keyring(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_truncate(
     edge_linux_syscall_context_t *context);
@@ -201,6 +204,55 @@ static int edge_linux_copy_from_user(edge_linux_syscall_context_t *context,
         return -1;
     return context->arch_ops->copy_from_user(
         context->current_task, destination, source, size);
+}
+
+static int edge_linux_keyring_copy_from_user(
+    void *opaque, void *destination, uint64_t source, uint64_t length) {
+    return edge_linux_copy_from_user(
+        (edge_linux_syscall_context_t *)opaque, destination, source, length);
+}
+
+static int edge_linux_keyring_copy_to_user(
+    void *opaque, uint64_t destination, const void *source, uint64_t length) {
+    return edge_linux_copy_to_user(
+        (edge_linux_syscall_context_t *)opaque, destination, source, length);
+}
+
+static int64_t edge_linux_sys_keyring(
+    edge_linux_syscall_context_t *context) {
+#ifndef CONFIG_KEYS
+    (void)context;
+    return -EDGE_LINUX_ENOSYS;
+#else
+    kernel_linux_identity_t identity;
+    kernel_keyring_user_access_t access = {
+        .copy_from_user = edge_linux_keyring_copy_from_user,
+        .copy_to_user = edge_linux_keyring_copy_to_user,
+        .context = context,
+    };
+    uint64_t arguments[4];
+
+    if (kernel_current_linux_identity(&identity) < 0)
+        return -EDGE_LINUX_ESRCH;
+    if (context->id == EDGE_LINUX_SYS_add_key)
+        return kernel_keyring_add_key(
+            &identity, &access, context->arguments[0],
+            context->arguments[1], context->arguments[2],
+            context->arguments[3], (int32_t)context->arguments[4]);
+    if (context->id == EDGE_LINUX_SYS_request_key)
+        return kernel_keyring_request_key(
+            &identity, &access, context->arguments[0],
+            context->arguments[1], context->arguments[2],
+            (int32_t)context->arguments[3]);
+    if (context->id != EDGE_LINUX_SYS_keyctl)
+        return -EDGE_LINUX_ENOSYS;
+    arguments[0] = context->arguments[1];
+    arguments[1] = context->arguments[2];
+    arguments[2] = context->arguments[3];
+    arguments[3] = context->arguments[4];
+    return kernel_keyring_keyctl(
+        &identity, &access, (uint32_t)context->arguments[0], arguments);
+#endif
 }
 
 static int edge_linux_seccomp_copy_from_user(void *opaque, void *destination,

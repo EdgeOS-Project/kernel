@@ -8,6 +8,7 @@
 
 #include "kernel/fbdev_runtime.h"
 #include "kernel/ioctl_runtime.h"
+#include "kernel/keyring_runtime.h"
 #include "kernel/linux_errno.h"
 #include "kernel/process_runtime.h"
 #include "kernel/socket_message.h"
@@ -15,6 +16,13 @@
 
 __attribute__((noreturn)) void kernel_current_exit(
     int32_t code, int whole_thread_group) {
+#ifdef CONFIG_KEYS
+    kernel_linux_identity_t identity;
+    if (kernel_current_linux_identity(&identity) == 0)
+        kernel_keyring_task_exit(
+            identity.global_tid, identity.global_tgid,
+            whole_thread_group != 0);
+#endif
     arch_current_exit(code, whole_thread_group != 0);
     __builtin_unreachable();
 }

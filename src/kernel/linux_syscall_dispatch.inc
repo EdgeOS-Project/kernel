@@ -191,6 +191,11 @@ case EDGE_LINUX_SYS_setitimer:
 case EDGE_LINUX_SYS_kcmp:
     context->result = edge_linux_sys_kcmp(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_add_key:
+case EDGE_LINUX_SYS_keyctl:
+case EDGE_LINUX_SYS_request_key:
+    context->result = edge_linux_sys_keyring(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_link:
 case EDGE_LINUX_SYS_linkat:
     context->result = edge_linux_sys_link(context);

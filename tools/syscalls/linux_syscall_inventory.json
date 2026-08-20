@@ -127,19 +127,26 @@
     {
       "id": "add_key",
       "semantic_id": "add_key",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_keyring",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/keyring_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 248,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_keyring",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 217,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_keyring",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {
@@ -3442,19 +3449,26 @@
     {
       "id": "keyctl",
       "semantic_id": "keyctl",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_keyring",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/keyring_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 250,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_keyring",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 219,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_keyring",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {
@@ -6215,19 +6229,26 @@
     {
       "id": "request_key",
       "semantic_id": "request_key",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_keyring",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/keyring_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 249,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_keyring",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 218,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_keyring",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {

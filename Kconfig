@@ -124,6 +124,13 @@ config IO_URING
       Enable Linux io_uring setup, shared submission and completion rings,
       registration, and asynchronous descriptor operations.
 
+config KEYS
+    bool "Linux key retention service"
+    default y
+    help
+      Enable Linux add_key, request_key, and keyctl over the shared keyring,
+      permission, payload, search, timeout, and persistent-keyring runtime.
+
 config RSEQ
     bool "Linux restartable sequences"
     default y
