@@ -6869,6 +6869,7 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_OP_READV     1u
 #define EDGE_LINUX_IORING_OP_WRITEV    2u
 #define EDGE_LINUX_IORING_OP_FSYNC     3u
+#define EDGE_LINUX_IORING_OP_SYNC_FILE_RANGE 8u
 #define EDGE_LINUX_IORING_OP_POLL_ADD  6u
 #define EDGE_LINUX_IORING_OP_POLL_REMOVE 7u
 #define EDGE_LINUX_IORING_OP_SENDMSG   9u
@@ -7086,6 +7087,16 @@ static int64_t edge_linux_io_uring_execute_vfs(
     memset(nested.arguments, 0, sizeof(nested.arguments));
     nested.route_status = EDGE_LINUX_SYSCALL_IMPLEMENTED;
     switch (submission->opcode) {
+    case EDGE_LINUX_IORING_OP_SYNC_FILE_RANGE:
+        if (submission->address || submission->buffer_index ||
+            submission->splice_descriptor || submission->address3)
+            return -EDGE_LINUX_EINVAL;
+        nested.id = EDGE_LINUX_SYS_sync_file_range;
+        nested.arguments[0] = (uint32_t)submission->descriptor;
+        nested.arguments[1] = submission->offset;
+        nested.arguments[2] = submission->length;
+        nested.arguments[3] = submission->operation_flags;
+        return edge_linux_sys_file_sync(&nested);
     case EDGE_LINUX_IORING_OP_FALLOCATE:
         if (submission->buffer_index || submission->operation_flags ||
             submission->splice_descriptor)
@@ -7441,6 +7452,7 @@ static int32_t edge_linux_io_uring_execute(
             context, ring_id, submission);
         break;
     case EDGE_LINUX_IORING_OP_FALLOCATE:
+    case EDGE_LINUX_IORING_OP_SYNC_FILE_RANGE:
     case EDGE_LINUX_IORING_OP_OPENAT:
     case EDGE_LINUX_IORING_OP_CLOSE:
     case EDGE_LINUX_IORING_OP_STATX:
@@ -7682,6 +7694,7 @@ static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
            opcode == EDGE_LINUX_IORING_OP_READV ||
            opcode == EDGE_LINUX_IORING_OP_WRITEV ||
            opcode == EDGE_LINUX_IORING_OP_FSYNC ||
+           opcode == EDGE_LINUX_IORING_OP_SYNC_FILE_RANGE ||
            opcode == EDGE_LINUX_IORING_OP_POLL_ADD ||
            opcode == EDGE_LINUX_IORING_OP_POLL_REMOVE ||
            opcode == EDGE_LINUX_IORING_OP_SENDMSG ||

@@ -80,6 +80,7 @@ struct linux_epoll_event {
 #define IORING_UNREGISTER_EVENTFD 5u
 #define IO_URING_OP_SUPPORTED 1u
 #define IORING_OP_NOP 0u
+#define IORING_OP_SYNC_FILE_RANGE 8u
 #define IORING_OP_READ 22u
 #define IORING_OP_WRITE 23u
 #define IORING_OP_FADVISE 24u
@@ -130,6 +131,8 @@ struct linux_epoll_event {
 #define AT_REMOVEDIR 0x200u
 #define XATTR_CREATE 1u
 #define XATTR_REPLACE 2u
+#define SYNC_FILE_RANGE_WRITE 2u
+#define SYNC_FILE_RANGE_WAIT_AFTER 4u
 
 struct kernel_timespec {
     int64_t seconds;
@@ -601,6 +604,9 @@ static int run_tests(void) {
         (probe.operations[IORING_OP_GETXATTR].flags &
          IO_URING_OP_SUPPORTED) != 0 &&
         (probe.operations[IORING_OP_FTRUNCATE].flags &
+         IO_URING_OP_SUPPORTED) != 0);
+    failures += expect_true("probe sync file range",
+        (probe.operations[IORING_OP_SYNC_FILE_RANGE].flags &
          IO_URING_OP_SUPPORTED) != 0);
 
     event_descriptor = raw_syscall6(
@@ -1419,6 +1425,27 @@ static int run_tests(void) {
             cq_head, cq_tail, cq_mask, cqes, &path_request,
             0x465452554e433031ull, "submit ftruncate", &path_result);
         failures += expect("ftruncate completion", path_result, 0);
+
+        memset(&path_request, 0, sizeof(path_request));
+        path_request.opcode = IORING_OP_SYNC_FILE_RANGE;
+        path_request.descriptor = xattr_descriptor;
+        path_request.offset = 1u;
+        path_request.length = 64u;
+        path_request.operation_flags =
+            SYNC_FILE_RANGE_WRITE | SYNC_FILE_RANGE_WAIT_AFTER;
+        failures += submit_one(
+            descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &path_request,
+            0x53594e4352414e47ull, "submit sync file range", &path_result);
+        failures += expect("sync file range completion", path_result, 0);
+
+        path_request.operation_flags = 8u;
+        failures += submit_one(
+            descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &path_request,
+            0x53594e4342414446ull, "submit invalid sync range", &path_result);
+        failures += expect("invalid sync range completion",
+                           path_result, -EINVAL);
 
         memset(statx_buffer, 0, sizeof(statx_buffer));
         memset(&path_request, 0, sizeof(path_request));
