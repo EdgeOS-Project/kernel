@@ -6,6 +6,7 @@
 
 #include "kernel/process_session.h"
 #include "kernel/process_runtime.h"
+#include "kernel/perf_event.h"
 #include "kernel/linux_errno.h"
 #include "kernel/namespaces.h"
 #include "string.h"
@@ -179,5 +180,8 @@ int64_t kernel_process_session_change(
 void kernel_current_exec_committed(void) {
     kernel_linux_identity_t identity;
     if (kernel_current_linux_identity(&identity) < 0) return;
+#ifdef CONFIG_PERF_EVENTS
+    kernel_perf_event_task_exec(identity.global_tid);
+#endif
     (void)kernel_arch_process_exec_committed(identity.global_tgid);
 }

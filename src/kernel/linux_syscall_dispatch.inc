@@ -310,6 +310,9 @@ case EDGE_LINUX_SYS_openat2:
 case EDGE_LINUX_SYS_open_by_handle_at:
     context->result = edge_linux_sys_open_by_handle_at(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_perf_event_open:
+    context->result = edge_linux_sys_perf_event_open(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_personality:
     context->result = edge_linux_sys_personality(context);
     return EDGE_LINUX_SYSCALL_HANDLED;

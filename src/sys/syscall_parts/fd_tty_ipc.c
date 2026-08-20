@@ -5411,6 +5411,7 @@ static int fd_file_lock_info_for_entry(
                 break;
             case FD_FANOTIFY:
             case FD_USERFAULTFD:
+            case FD_PERF_EVENT:
                 object_class = EDGE_FILE_LOCK_OBJECT_ANONYMOUS;
                 object_identity = (uint64_t)(uint32_t)entry->pipe_id;
                 break;
@@ -5911,6 +5912,8 @@ static void fd_drop_backing_object(edge_fd_t *e) {
     if (e->kind == FD_FANOTIFY) kernel_fanotify_release(e->pipe_id);
     if (e->kind == FD_USERFAULTFD)
         kernel_userfaultfd_release(e->pipe_id);
+    if (e->kind == FD_PERF_EVENT)
+        kernel_perf_event_release(e->pipe_id);
     if (e->kind == FD_MEMFD) memfd_drop_ref(e->pipe_id);
     if (e->kind == FD_DMA_BUF) edge_drm_prime_release(e->pipe_id);
     if (e->kind == FD_MOUNT) kernel_mount_api_release(e->pipe_id);
@@ -5986,6 +5989,9 @@ static int fd_add_backing_object(edge_fd_t *e) {
     }
     if (e->kind == FD_USERFAULTFD) {
         return kernel_userfaultfd_retain(e->pipe_id) == 0 ? 0 : -1;
+    }
+    if (e->kind == FD_PERF_EVENT) {
+        return kernel_perf_event_retain(e->pipe_id) == 0 ? 0 : -1;
     }
     if (e->kind == FD_MEMFD) {
         if (!memfd_get(e->pipe_id)) return -1;
@@ -7195,6 +7201,7 @@ static const char *fd_kind_name(edge_fd_kind_t kind) {
         case FD_INOTIFY: return "inotify";
         case FD_FANOTIFY: return "fanotify";
         case FD_USERFAULTFD: return "userfaultfd";
+        case FD_PERF_EVENT: return "perf_event";
         case FD_MEMFD: return "memfd";
         case FD_DMA_BUF: return "dma-buf";
         case FD_TUN: return "tun";

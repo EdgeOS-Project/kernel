@@ -809,6 +809,7 @@ int arch_vfs_describe_descriptor(int32_t descriptor,
         entry->kind == FD_SIGNALFD || entry->kind == FD_EPOLL ||
         entry->kind == FD_PIDFD || entry->kind == FD_INOTIFY ||
         entry->kind == FD_FANOTIFY || entry->kind == FD_USERFAULTFD ||
+        entry->kind == FD_PERF_EVENT ||
         entry->kind == FD_DMA_BUF || entry->kind == FD_MOUNT ||
         entry->kind == FD_IO_URING) {
         description->kind = KERNEL_VFS_DESCRIPTOR_ANONYMOUS;
@@ -10587,6 +10588,9 @@ static int x86_anonymous_fd_install(
     case KERNEL_ANONYMOUS_FD_USERFAULTFD:
         local_kind = FD_USERFAULTFD;
         break;
+    case KERNEL_ANONYMOUS_FD_PERF_EVENT:
+        local_kind = FD_PERF_EVENT;
+        break;
     case KERNEL_ANONYMOUS_FD_PRIME:
         local_kind = FD_DMA_BUF;
         break;
@@ -10633,6 +10637,9 @@ static int x86_anonymous_fd_object_id(
         break;
     case KERNEL_ANONYMOUS_FD_USERFAULTFD:
         expected = FD_USERFAULTFD;
+        break;
+    case KERNEL_ANONYMOUS_FD_PERF_EVENT:
+        expected = FD_PERF_EVENT;
         break;
     case KERNEL_ANONYMOUS_FD_PRIME:
         expected = FD_DMA_BUF;

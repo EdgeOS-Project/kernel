@@ -1301,6 +1301,32 @@ static uint64_t edge_userfaultfd_read_obj(edge_fd_t *e, uint64_t buffer,
     }
 }
 
+static uint64_t edge_perf_event_read_obj(int descriptor, edge_fd_t *e,
+                                         uint64_t buffer, uint64_t length) {
+    kernel_task_scratch_t *scratch = arch_task_scratch_current();
+    uint64_t *values;
+    uint32_t capacity;
+    int64_t result;
+
+    if (!e || e->kind != FD_PERF_EVENT)
+        return (uint64_t)-EBADF;
+    if (!buffer) return (uint64_t)-EFAULT;
+    if (!scratch) return (uint64_t)-EIO;
+    values = scratch->perf_event_values;
+    capacity = length / sizeof(uint64_t) >
+        sizeof(scratch->perf_event_values) /
+            sizeof(scratch->perf_event_values[0]) ?
+        (uint32_t)(sizeof(scratch->perf_event_values) /
+                   sizeof(scratch->perf_event_values[0])) :
+        (uint32_t)(length / sizeof(uint64_t));
+    result = kernel_perf_event_read_descriptor(
+        descriptor, values, capacity);
+    if (result < 0) return (uint64_t)result;
+    if (copy_to_user(buffer, values, (uint64_t)result) < 0)
+        return (uint64_t)-EFAULT;
+    return (uint64_t)result;
+}
+
 void edge_inotify_notify_path(const char *path, uint32_t mask, const char *name) {
     char event_path[VFS_PATH_MAX];
     if (!path || !path[0]) return;
@@ -2151,6 +2177,11 @@ static uint32_t anonymous_fd_ready_events(edge_fd_t *descriptor) {
             poll_state.valid = 0;
         else
             poll_state.pending = state.queued_events != 0;
+    } else if (descriptor->kind == FD_PERF_EVENT) {
+        kernel_perf_event_state_t state;
+        poll_state.kind = KERNEL_ANONYMOUS_FD_PERF_EVENT;
+        if (kernel_perf_event_query(descriptor->pipe_id, &state) < 0)
+            poll_state.valid = 0;
     } else if (descriptor->kind == FD_PIDFD) {
         const task_t *task = process_get_task(descriptor->pipe_id);
         poll_state.kind = KERNEL_ANONYMOUS_FD_PID;
@@ -2270,6 +2301,7 @@ static int poll_fd_revents(edge_fd_t *e, int16_t events) {
     if (e->kind == FD_EVENTFD || e->kind == FD_TIMERFD ||
         e->kind == FD_SIGNALFD || e->kind == FD_INOTIFY ||
         e->kind == FD_FANOTIFY || e->kind == FD_USERFAULTFD ||
+        e->kind == FD_PERF_EVENT ||
         e->kind == FD_PIDFD || e->kind == FD_MQUEUE ||
         e->kind == FD_IO_URING) {
         uint32_t anonymous_events = anonymous_fd_ready_events(e);
@@ -2356,6 +2388,7 @@ static int poll_fd_revents(edge_fd_t *e, int16_t events) {
                    e->kind == FD_SIGNALFD || e->kind == FD_INOTIFY ||
                    e->kind == FD_FANOTIFY ||
                    e->kind == FD_USERFAULTFD ||
+                   e->kind == FD_PERF_EVENT ||
                    e->kind == FD_PIDFD || e->kind == FD_MQUEUE ||
                    e->kind == FD_IO_URING) {
             /* Anonymous descriptor readiness was normalized above. */
@@ -2428,6 +2461,7 @@ static int poll_fd_revents(edge_fd_t *e, int16_t events) {
                    e->kind == FD_SIGNALFD || e->kind == FD_INOTIFY ||
                    e->kind == FD_FANOTIFY ||
                    e->kind == FD_USERFAULTFD ||
+                   e->kind == FD_PERF_EVENT ||
                    e->kind == FD_PIDFD) {
             /* Anonymous descriptor readiness was normalized above. */
         } else if (e->kind == FD_EPOLL) {
@@ -3067,6 +3101,7 @@ static int x86_wait_source_from_entry(const edge_fd_t *entry,
             break;
         case FD_FANOTIFY:
         case FD_USERFAULTFD:
+        case FD_PERF_EVENT:
             source->kind = KERNEL_WAIT_SOURCE_OWNER_WAKE;
             break;
         case FD_SIGNALFD:
@@ -3129,6 +3164,7 @@ static int x86_wait_source_from_captured(
             break;
         case FD_FANOTIFY:
         case FD_USERFAULTFD:
+        case FD_PERF_EVENT:
             source->kind = KERNEL_WAIT_SOURCE_OWNER_WAKE;
             break;
         case FD_SIGNALFD:
@@ -5525,6 +5561,9 @@ static uint64_t do_sys_fd_read_entry(int fd, edge_fd_t *e,
     }
     if (e->kind == FD_USERFAULTFD) {
         return edge_userfaultfd_read_obj(e, buf_u, len_u);
+    }
+    if (e->kind == FD_PERF_EVENT) {
+        return edge_perf_event_read_obj(fd, e, buf_u, len_u);
     }
     if (e->kind == FD_MEMFD) {
         edge_memfd_t *mf = memfd_get(e->pipe_id);

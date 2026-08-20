@@ -56,6 +56,8 @@
 #include "kernel/clone_runtime.h"
 #include "kernel/posix_timer_runtime.h"
 #include "kernel/posix_mq_runtime.h"
+#include "kernel/perf_event.h"
+#include "kernel/perf_event_runtime.h"
 #include "kernel/random.h"
 #include "kernel/seccomp.h"
 #include "kernel/signalfd.h"
@@ -111,6 +113,8 @@ static int64_t edge_linux_sys_listns(
 static int64_t edge_linux_sys_keyring(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_fanotify(
+    edge_linux_syscall_context_t *context);
+static int64_t edge_linux_sys_perf_event_open(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_truncate(
     edge_linux_syscall_context_t *context);
@@ -10929,6 +10933,112 @@ static int64_t edge_linux_sys_userfaultfd(
     }
     if (flags & ~allowed) return -EDGE_LINUX_EINVAL;
     return kernel_userfaultfd_create_descriptor(flags);
+#endif
+}
+
+static int edge_linux_perf_copy_attr(
+    edge_linux_syscall_context_t *context, uint64_t address,
+    kernel_perf_event_attr_t *attr) {
+    uint8_t tail[32];
+    uint32_t supplied_size;
+    uint32_t copy_size;
+    uint32_t offset;
+
+    if (!address || address > UINT64_MAX - sizeof(uint32_t) || !attr ||
+        edge_linux_copy_from_user(
+            context, &supplied_size, address + sizeof(uint32_t),
+            sizeof(supplied_size)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    if (!supplied_size) supplied_size = KERNEL_PERF_ATTR_SIZE_VER0;
+    if (supplied_size < KERNEL_PERF_ATTR_SIZE_VER0 || supplied_size > 4096u) {
+        uint32_t current_size = KERNEL_PERF_ATTR_SIZE_CURRENT;
+        if (edge_linux_copy_to_user(
+                context, address + sizeof(uint32_t), &current_size,
+                sizeof(current_size)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        return -EDGE_LINUX_E2BIG;
+    }
+    memset(attr, 0, sizeof(*attr));
+    copy_size = supplied_size < sizeof(*attr) ?
+        supplied_size : (uint32_t)sizeof(*attr);
+    if (edge_linux_copy_from_user(
+            context, attr, address, copy_size) < 0)
+        return -EDGE_LINUX_EFAULT;
+    attr->size = supplied_size;
+    for (offset = (uint32_t)sizeof(*attr); offset < supplied_size;) {
+        uint32_t chunk = supplied_size - offset;
+        if (chunk > sizeof(tail)) chunk = sizeof(tail);
+        if (edge_linux_copy_from_user(
+                context, tail, address + offset, chunk) < 0)
+            return -EDGE_LINUX_EFAULT;
+        for (uint32_t index = 0; index < chunk; ++index) {
+            if (tail[index]) {
+                uint32_t current_size = KERNEL_PERF_ATTR_SIZE_CURRENT;
+                if (edge_linux_copy_to_user(
+                        context, address + sizeof(uint32_t), &current_size,
+                        sizeof(current_size)) < 0)
+                    return -EDGE_LINUX_EFAULT;
+                return -EDGE_LINUX_E2BIG;
+            }
+        }
+        offset += chunk;
+    }
+    return 0;
+}
+
+static int64_t edge_linux_sys_perf_event_open(
+    edge_linux_syscall_context_t *context) {
+#ifndef CONFIG_PERF_EVENTS
+    (void)context;
+    return -EDGE_LINUX_ENOSYS;
+#else
+    kernel_perf_event_open_request_t request;
+    kernel_linux_identity_t caller;
+    kernel_linux_identity_t target;
+    int32_t visible_pid = (int32_t)context->arguments[1];
+    int32_t group_descriptor = (int32_t)context->arguments[3];
+    int status;
+
+    memset(&request, 0, sizeof(request));
+    status = edge_linux_perf_copy_attr(
+        context, context->arguments[0], &request.attr);
+    if (status < 0) return status;
+    request.cpu = (int32_t)context->arguments[2];
+    request.group_id = -1;
+    request.flags = (uint32_t)context->arguments[4];
+    if ((uint64_t)request.flags != context->arguments[4] ||
+        (request.flags & ~KERNEL_PERF_FLAG_MASK))
+        return -EDGE_LINUX_EINVAL;
+    if (kernel_current_linux_identity(&caller) < 0)
+        return -EDGE_LINUX_ESRCH;
+    if (visible_pid == 0) {
+        request.target_tid = caller.global_tid;
+    } else if (visible_pid > 0) {
+        if (edge_linux_pid_to_global(
+                &caller, visible_pid, &request.target_tid) < 0)
+            return -EDGE_LINUX_ESRCH;
+        if (kernel_process_linux_identity(request.target_tid, &target) < 0)
+            return -EDGE_LINUX_ESRCH;
+        if (target.euid != caller.euid &&
+            !(caller.effective_capabilities &
+              ((1ULL << EDGE_LINUX_CAP_PERFMON) |
+               (1ULL << EDGE_LINUX_CAP_SYS_PTRACE))))
+            return -EDGE_LINUX_EACCES;
+    } else if (visible_pid == -1) {
+        request.target_tid = -1;
+    } else {
+        return -EDGE_LINUX_ESRCH;
+    }
+    if (request.target_tid == -1 &&
+        !(caller.effective_capabilities &
+          ((1ULL << EDGE_LINUX_CAP_PERFMON) |
+           (1ULL << EDGE_LINUX_CAP_SYS_ADMIN))))
+        return -EDGE_LINUX_EACCES;
+    if (group_descriptor != -1) {
+        request.group_id = kernel_perf_event_descriptor_id(group_descriptor);
+        if (request.group_id < 0) return -EDGE_LINUX_EBADF;
+    }
+    return kernel_perf_event_create_descriptor(&request);
 #endif
 }
 

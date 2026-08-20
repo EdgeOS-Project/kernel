@@ -4427,6 +4427,16 @@ userfaultfd-runtime-unit: tools/tests/userfaultfd_runtime_unit.c \
 		-o $(OUT)/tests/userfaultfd_runtime_unit
 	@$(OUT)/tests/userfaultfd_runtime_unit
 
+.PHONY: perf-event-runtime-unit
+perf-event-runtime-unit: tools/tests/perf_event_runtime_unit.c \
+		$(SRC)/kernel/perf_event.c include/kernel/perf_event.h
+	@mkdir -p $(OUT)/tests
+	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fno-builtin \
+		-iquote $(INC) tools/tests/perf_event_runtime_unit.c \
+		$(SRC)/kernel/perf_event.c \
+		-o $(OUT)/tests/perf_event_runtime_unit
+	@$(OUT)/tests/perf_event_runtime_unit
+
 abi-service-dispatch-unit: tools/tests/abi_service_dispatch_unit.c $(SRC)/kernel/abi_service_dispatch.c
 	@mkdir -p $(OUT)/tests
 	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fno-builtin \

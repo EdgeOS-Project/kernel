@@ -47,6 +47,8 @@
 #include "kernel/fanotify_runtime.h"
 #include "kernel/userfaultfd.h"
 #include "kernel/userfaultfd_runtime.h"
+#include "kernel/perf_event.h"
+#include "kernel/perf_event_runtime.h"
 #include "kernel/inotify.h"
 #include "kernel/io_buffer.h"
 #include "kernel/inotify_runtime.h"
@@ -272,6 +274,7 @@ extern int vfs_chown_nofollow(const char *path, uint32_t uid, uint32_t gid);
 #define LINUX_SYS_rt_sigpending 136u
 #define LINUX_SYS_rt_sigqueueinfo 138u
 #define LINUX_SYS_rt_tgsigqueueinfo 240u
+#define LINUX_SYS_perf_event_open 241u
 #define LINUX_SYS_times 153u
 #define LINUX_SYS_setrlimit 164u
 
@@ -886,6 +889,7 @@ static uint32_t g_fd_table_reserve_count;
 #define KERNEL_FD_IO_URING 22u
 #define KERNEL_FD_FANOTIFY 23u
 #define KERNEL_FD_USERFAULTFD 24u
+#define KERNEL_FD_PERF_EVENT 25u
 
 #define ARM64_EPOLL_SOURCE_FILE_KMSG          0x00000001u
 #define ARM64_EPOLL_SOURCE_FILE_DRM_CARD      0x00000002u
@@ -1143,6 +1147,10 @@ typedef struct {
     uint64_t system_ticks;
     uint64_t children_user_ticks;
     uint64_t children_system_ticks;
+    uint64_t rusage_user_time_us;
+    uint64_t rusage_system_time_us;
+    uint64_t rusage_children_user_time_us;
+    uint64_t rusage_children_system_time_us;
     uint64_t minor_faults;
     uint64_t major_faults;
     uint16_t io_priority;
@@ -1209,7 +1217,6 @@ static void task_state_set(kernel_task_t *task,
 static int task_find_pid(int pid);
 static int task_group_id(const kernel_task_t *task);
 static kernel_task_t *task_group_leader(kernel_task_t *task);
-static uint64_t task_ticks_to_microseconds(uint64_t ticks);
 static uint32_t vm_prot(uint64_t prot);
 static int tmpfs_mapping_contains_page(uint64_t ttbr0, uint64_t address);
 static int tmpfs_mapping_covers_range(uint64_t ttbr0, uint64_t start,
@@ -2924,6 +2931,8 @@ static int kernel_identity_view_from_task(
 static int kernel_task_view_from_task(const kernel_task_t *task,
                                       kernel_proc_task_view_t *view) {
     kernel_task_identity_view_t identity;
+    uint64_t live_runtime_us = 0;
+    uint64_t now_us;
     uint16_t processor_plus_one;
     if (kernel_identity_view_from_task(task, &identity) < 0 || !view)
         return -1;
@@ -2977,20 +2986,35 @@ static int kernel_task_view_from_task(const kernel_task_t *task,
             UINT64_MAX : view->scheduler_wait_us + pending_wait;
     }
     view->start_time_ticks = task->start_time_ticks;
-    view->usage.user_time_us =
-        task_ticks_to_microseconds(task->user_ticks);
-    view->usage.sys_time_us =
-        task_ticks_to_microseconds(task->system_ticks);
+    view->usage.user_time_us = __atomic_load_n(
+        &task->rusage_user_time_us, __ATOMIC_RELAXED);
+    view->usage.sys_time_us = __atomic_load_n(
+        &task->rusage_system_time_us, __ATOMIC_RELAXED);
+    if (task == current_task() && task->state == KERNEL_TASK_RUNNING &&
+        g_task_run_started_us) {
+        now_us = boottime_monotonic_us();
+        live_runtime_us = now_us > g_task_run_started_us ?
+            now_us - g_task_run_started_us : 0u;
+        if (task->active_syscall_frame) {
+            view->usage.sys_time_us =
+                view->usage.sys_time_us > UINT64_MAX - live_runtime_us ?
+                    UINT64_MAX :
+                    view->usage.sys_time_us + live_runtime_us;
+        } else {
+            view->usage.user_time_us =
+                view->usage.user_time_us > UINT64_MAX - live_runtime_us ?
+                    UINT64_MAX :
+                    view->usage.user_time_us + live_runtime_us;
+        }
+    }
     view->usage.voluntary_ctxt_switches =
         task->scheduler_voluntary_switches;
     view->usage.involuntary_ctxt_switches =
         task->scheduler_involuntary_switches;
     view->usage.minor_faults = task->minor_faults;
     view->usage.major_faults = task->major_faults;
-    view->children_usage.user_time_us =
-        task_ticks_to_microseconds(task->children_user_ticks);
-    view->children_usage.sys_time_us =
-        task_ticks_to_microseconds(task->children_system_ticks);
+    view->children_usage.user_time_us = task->rusage_children_user_time_us;
+    view->children_usage.sys_time_us = task->rusage_children_system_time_us;
     view->memory_context_id = task->ttbr0;
     view->files_context_id = task->files_id;
     view->fs_context_id = task->fs_id;
@@ -4596,11 +4620,18 @@ static void task_account_reaped_child(kernel_task_t *parent,
     task_ticks_add(&leader->children_system_ticks, child->system_ticks);
     task_ticks_add(&leader->children_system_ticks,
                    child->children_system_ticks);
-}
-
-static uint64_t task_ticks_to_microseconds(uint64_t ticks) {
-    return ticks > UINT64_MAX / EDGE_KERNEL_TIMER_TICK_US ?
-           UINT64_MAX : ticks * EDGE_KERNEL_TIMER_TICK_US;
+    task_scheduler_counter_add(
+        &leader->rusage_children_user_time_us,
+        child->rusage_user_time_us);
+    task_scheduler_counter_add(
+        &leader->rusage_children_user_time_us,
+        child->rusage_children_user_time_us);
+    task_scheduler_counter_add(
+        &leader->rusage_children_system_time_us,
+        child->rusage_system_time_us);
+    task_scheduler_counter_add(
+        &leader->rusage_children_system_time_us,
+        child->rusage_children_system_time_us);
 }
 
 static int siginfo_enqueue(int target, uint32_t signal, int thread_directed,
@@ -5522,17 +5553,15 @@ static void socket_network_wake_readers(void);
 
 static void task_wait_result_usage(const kernel_task_t *child,
                                    kernel_process_usage_t *usage) {
-    uint64_t user_ticks;
-    uint64_t system_ticks;
     if (!usage) return;
     bytes_zero(usage, sizeof(*usage));
     if (!child) return;
-    user_ticks = child->user_ticks;
-    task_ticks_add(&user_ticks, child->children_user_ticks);
-    system_ticks = child->system_ticks;
-    task_ticks_add(&system_ticks, child->children_system_ticks);
-    usage->user_time_us = task_ticks_to_microseconds(user_ticks);
-    usage->sys_time_us = task_ticks_to_microseconds(system_ticks);
+    usage->user_time_us = child->rusage_user_time_us;
+    task_scheduler_counter_add(
+        &usage->user_time_us, child->rusage_children_user_time_us);
+    usage->sys_time_us = child->rusage_system_time_us;
+    task_scheduler_counter_add(
+        &usage->sys_time_us, child->rusage_children_system_time_us);
 }
 
 int64_t arch_process_wait(const kernel_process_wait_query_t *query,
@@ -6161,12 +6190,17 @@ static uint32_t task_scheduler_account_runtime(kernel_task_t *task,
     cpu = edgeos_arm64_smp_current_cpu();
     runtime_us = now_us > g_task_run_started_us ?
                  now_us - g_task_run_started_us : 0;
-    if (task->active_syscall_frame)
+    if (task->active_syscall_frame) {
+        task_scheduler_counter_add(
+            &task->rusage_system_time_us, runtime_us);
         task_scheduler_counter_add(
             &g_scheduler_cpu_system_us[cpu], runtime_us);
-    else
+    } else {
+        task_scheduler_counter_add(
+            &task->rusage_user_time_us, runtime_us);
         task_scheduler_counter_add(
             &g_scheduler_cpu_user_us[cpu], runtime_us);
+    }
     cgroupfs_cpu_account_runtime_mode(task->cgroup_id, runtime_us, now_us,
                                       task->active_syscall_frame != 0);
     task_scheduler_effective_state(task, &effective);
@@ -8973,6 +9007,7 @@ int arch_vfs_describe_descriptor(int32_t descriptor,
         file->kind == KERNEL_FD_INOTIFY ||
         file->kind == KERNEL_FD_FANOTIFY ||
         file->kind == KERNEL_FD_USERFAULTFD ||
+        file->kind == KERNEL_FD_PERF_EVENT ||
         file->kind == KERNEL_FD_SIGNALFD ||
         file->kind == KERNEL_FD_DMA_BUF ||
         file->kind == KERNEL_FD_MOUNT ||
@@ -9774,6 +9809,9 @@ static int arm64_anonymous_fd_install(
     case KERNEL_ANONYMOUS_FD_USERFAULTFD:
         local_kind = KERNEL_FD_USERFAULTFD;
         break;
+    case KERNEL_ANONYMOUS_FD_PERF_EVENT:
+        local_kind = KERNEL_FD_PERF_EVENT;
+        break;
     case KERNEL_ANONYMOUS_FD_PRIME:
         local_kind = KERNEL_FD_DMA_BUF;
         break;
@@ -9848,6 +9886,9 @@ static int arm64_anonymous_fd_object_id(
         break;
     case KERNEL_ANONYMOUS_FD_USERFAULTFD:
         expected = KERNEL_FD_USERFAULTFD;
+        break;
+    case KERNEL_ANONYMOUS_FD_PERF_EVENT:
+        expected = KERNEL_FD_PERF_EVENT;
         break;
     case KERNEL_ANONYMOUS_FD_PRIME:
         expected = KERNEL_FD_DMA_BUF;
@@ -10106,6 +10147,11 @@ static int fd_retain_backing_object(const bootstrap_fd_t *fd) {
     }
     if (fd->kind == KERNEL_FD_USERFAULTFD) {
         result = kernel_userfaultfd_retain(fd->event_index);
+        return result < 0 ?
+            (result == -1 ? -LINUX_EBADF : result) : 0;
+    }
+    if (fd->kind == KERNEL_FD_PERF_EVENT) {
+        result = kernel_perf_event_retain(fd->event_index);
         return result < 0 ?
             (result == -1 ? -LINUX_EBADF : result) : 0;
     }
@@ -15677,6 +15723,8 @@ static void fd_drop_backing_object(bootstrap_fd_t *fd) {
         kernel_fanotify_release(fd->event_index);
     if (fd->kind == KERNEL_FD_USERFAULTFD)
         kernel_userfaultfd_release(fd->event_index);
+    if (fd->kind == KERNEL_FD_PERF_EVENT)
+        kernel_perf_event_release(fd->event_index);
     if (fd->kind == KERNEL_FD_SIGNALFD)
         kernel_signalfd_release(fd->event_index);
     if ((fd->kind == KERNEL_FD_PTY_MASTER ||
@@ -15912,6 +15960,7 @@ static int fd_file_lock_information(kernel_task_t *task,
                 break;
             case KERNEL_FD_FANOTIFY:
             case KERNEL_FD_USERFAULTFD:
+            case KERNEL_FD_PERF_EVENT:
                 object_class = EDGE_FILE_LOCK_OBJECT_ANONYMOUS;
                 object_identity = fd->event_index;
                 break;
@@ -16473,7 +16522,7 @@ static int arm64_epoll_source_encode(
 
     if (!fd || !fd->used || !fd->open_description_id ||
         fd->open_description_id != expected_description_id ||
-        fd->kind > KERNEL_FD_USERFAULTFD || !source ||
+        fd->kind > KERNEL_FD_PERF_EVENT || !source ||
         kernel_file_description_snapshot(
             arm64_description_locator(fd->open_description_id),
             &description) < 0 ||
@@ -16541,6 +16590,7 @@ static int arm64_epoll_source_encode(
         case KERNEL_FD_INOTIFY:
         case KERNEL_FD_FANOTIFY:
         case KERNEL_FD_USERFAULTFD:
+        case KERNEL_FD_PERF_EVENT:
         case KERNEL_FD_INPUT:
         case KERNEL_FD_SIGNALFD:
             source->primary_object_id = fd->event_index;
@@ -16588,7 +16638,7 @@ static int arm64_epoll_source_materialize(
     static char alsa_timer_path[] = EDGE_ALSA_PATH_TIMER;
 
     if (!source || !fd ||
-        source->kind > KERNEL_FD_USERFAULTFD ||
+        source->kind > KERNEL_FD_PERF_EVENT ||
         source->secondary_object_id <= 0 ||
         !source->cookie)
         return -LINUX_EBADF;
@@ -16659,6 +16709,7 @@ static int arm64_epoll_source_materialize(
         case KERNEL_FD_INOTIFY:
         case KERNEL_FD_FANOTIFY:
         case KERNEL_FD_USERFAULTFD:
+        case KERNEL_FD_PERF_EVENT:
         case KERNEL_FD_INPUT:
         case KERNEL_FD_SIGNALFD:
             if (source->primary_object_id < 0 ||
@@ -19043,6 +19094,11 @@ static uint32_t fd_anonymous_ready_mask(
             poll_state.valid = 0;
         else
             poll_state.pending = state.queued_events != 0;
+    } else if (fd->kind == KERNEL_FD_PERF_EVENT) {
+        kernel_perf_event_state_t state;
+        poll_state.kind = KERNEL_ANONYMOUS_FD_PERF_EVENT;
+        if (kernel_perf_event_query(fd->event_index, &state) < 0)
+            poll_state.valid = 0;
     } else if (fd->kind == KERNEL_FD_PIDFD) {
         int target = task_find_pid((int)fd->inode.ino);
         poll_state.kind = KERNEL_ANONYMOUS_FD_PID;
@@ -19118,6 +19174,7 @@ static uint32_t fd_ready_mask(kernel_task_t *task, bootstrap_fd_t *fd) {
                fd->kind == KERNEL_FD_INOTIFY ||
                fd->kind == KERNEL_FD_FANOTIFY ||
                fd->kind == KERNEL_FD_USERFAULTFD ||
+               fd->kind == KERNEL_FD_PERF_EVENT ||
                fd->kind == KERNEL_FD_PIDFD ||
                fd->kind == KERNEL_FD_SIGNALFD ||
                fd->kind == KERNEL_FD_MQUEUE ||
@@ -19759,6 +19816,7 @@ static int arm64_wait_source_from_fd(const bootstrap_fd_t *fd,
             break;
         case KERNEL_FD_FANOTIFY:
         case KERNEL_FD_USERFAULTFD:
+        case KERNEL_FD_PERF_EVENT:
             source->kind = KERNEL_WAIT_SOURCE_OWNER_WAKE;
             source->object_index = fd->event_index;
             break;
@@ -21169,6 +21227,7 @@ static __attribute__((noreturn)) void task_finish(kernel_task_t *task,
     int signal_group_survives = 0;
     uint32_t current_cpu;
     if (!task) task_resume_next();
+    (void)task_scheduler_account_runtime(task, boottime_monotonic_us());
     current_cpu = edgeos_arm64_smp_current_cpu();
     if (whole_group) {
         int group = task_group_id(task);
@@ -21275,6 +21334,18 @@ static __attribute__((noreturn)) void task_finish(kernel_task_t *task,
                            sibling->children_user_ticks);
             task_ticks_add(&task->children_system_ticks,
                            sibling->children_system_ticks);
+            task_scheduler_counter_add(
+                &task->rusage_user_time_us,
+                sibling->rusage_user_time_us);
+            task_scheduler_counter_add(
+                &task->rusage_system_time_us,
+                sibling->rusage_system_time_us);
+            task_scheduler_counter_add(
+                &task->rusage_children_user_time_us,
+                sibling->rusage_children_user_time_us);
+            task_scheduler_counter_add(
+                &task->rusage_children_system_time_us,
+                sibling->rusage_children_system_time_us);
             robust_futex_cleanup(sibling);
             fifo_open_pending_cancel(sibling);
             task_clear_child_tid(sibling);
@@ -21341,6 +21412,18 @@ static __attribute__((noreturn)) void task_finish(kernel_task_t *task,
                            task->children_user_ticks);
             task_ticks_add(&g_tasks[leader_slot].children_system_ticks,
                            task->children_system_ticks);
+            task_scheduler_counter_add(
+                &g_tasks[leader_slot].rusage_user_time_us,
+                task->rusage_user_time_us);
+            task_scheduler_counter_add(
+                &g_tasks[leader_slot].rusage_system_time_us,
+                task->rusage_system_time_us);
+            task_scheduler_counter_add(
+                &g_tasks[leader_slot].rusage_children_user_time_us,
+                task->rusage_children_user_time_us);
+            task_scheduler_counter_add(
+                &g_tasks[leader_slot].rusage_children_system_time_us,
+                task->rusage_children_system_time_us);
         }
         task_reparent_children(task->pid, process_leader, 0);
         task_zero(task);
@@ -22336,6 +22419,7 @@ int arch_vfs_metadata_fd(int32_t descriptor,
                file->kind == KERNEL_FD_INOTIFY ||
                file->kind == KERNEL_FD_FANOTIFY ||
                file->kind == KERNEL_FD_USERFAULTFD ||
+               file->kind == KERNEL_FD_PERF_EVENT ||
                file->kind == KERNEL_FD_SIGNALFD ||
                file->kind == KERNEL_FD_DMA_BUF ||
                file->kind == KERNEL_FD_MOUNT ||
@@ -23394,6 +23478,27 @@ static int64_t fd_read_user_internal(
             return result;
         }
         task_resume_next();
+    }
+    if (fd->kind == KERNEL_FD_PERF_EVENT) {
+        uint64_t *values;
+        uint32_t capacity;
+        int64_t result;
+
+        if (!buffer) return -LINUX_EFAULT;
+        if (!task->scratch) return -LINUX_EIO;
+        values = task->scratch->perf_event_values;
+        capacity = length / sizeof(uint64_t) >
+            sizeof(task->scratch->perf_event_values) /
+                sizeof(task->scratch->perf_event_values[0]) ?
+            (uint32_t)(sizeof(task->scratch->perf_event_values) /
+                       sizeof(task->scratch->perf_event_values[0])) :
+            (uint32_t)(length / sizeof(uint64_t));
+        result = kernel_perf_event_read(
+            fd->event_index, values, capacity);
+        if (result < 0) return result;
+        return arch_copy_to_user(
+            task->ttbr0, buffer, values, (uint64_t)result) < 0 ?
+            -LINUX_EFAULT : result;
     }
     if (fd->kind == KERNEL_FD_FILE &&
         edge_drm_path_is_card(fd->path)) {
@@ -31286,6 +31391,16 @@ int process_exec_arch_de_thread(kernel_exec_state_t *state) {
                        peer->children_user_ticks);
         task_ticks_add(&task->children_system_ticks,
                        peer->children_system_ticks);
+        task_scheduler_counter_add(
+            &task->rusage_user_time_us, peer->rusage_user_time_us);
+        task_scheduler_counter_add(
+            &task->rusage_system_time_us, peer->rusage_system_time_us);
+        task_scheduler_counter_add(
+            &task->rusage_children_user_time_us,
+            peer->rusage_children_user_time_us);
+        task_scheduler_counter_add(
+            &task->rusage_children_system_time_us,
+            peer->rusage_children_system_time_us);
         robust_futex_cleanup(peer);
         fifo_open_pending_cancel(peer);
         task_clear_child_tid(peer);
@@ -34403,6 +34518,10 @@ int process_clone_arch_prepare(const kernel_clone_prepare_t *prepare,
     child->system_ticks = 0;
     child->children_user_ticks = 0;
     child->children_system_ticks = 0;
+    child->rusage_user_time_us = 0;
+    child->rusage_system_time_us = 0;
+    child->rusage_children_user_time_us = 0;
+    child->rusage_children_system_time_us = 0;
     child->minor_faults = 0;
     child->major_faults = 0;
     child->signal_pending = 0;

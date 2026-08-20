@@ -10,6 +10,8 @@
 #include "kernel/ioctl_runtime.h"
 #include "kernel/keyring_runtime.h"
 #include "kernel/linux_errno.h"
+#include "kernel/perf_event.h"
+#include "kernel/perf_event_runtime.h"
 #include "kernel/process_runtime.h"
 #include "kernel/socket_message.h"
 #include "kernel/socket_runtime.h"
@@ -17,6 +19,11 @@
 
 __attribute__((noreturn)) void kernel_current_exit(
     int32_t code, int whole_thread_group) {
+#ifdef CONFIG_PERF_EVENTS
+    kernel_linux_identity_t perf_identity;
+    if (kernel_current_linux_identity(&perf_identity) == 0)
+        kernel_perf_event_task_exit(perf_identity.global_tid);
+#endif
 #ifdef CONFIG_KEYS
     kernel_linux_identity_t identity;
     if (kernel_current_linux_identity(&identity) == 0)
@@ -37,6 +44,8 @@ int64_t kernel_ioctl_execute(const kernel_ioctl_request_t *request) {
         if (result != -EDGE_LINUX_ENOTTY) return result;
     }
     result = kernel_userfaultfd_ioctl(request);
+    if (result != -EDGE_LINUX_ENOTTY) return result;
+    result = kernel_perf_event_ioctl(request);
     if (result != -EDGE_LINUX_ENOTTY) return result;
     return arch_ioctl_execute(request);
 }

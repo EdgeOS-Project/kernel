@@ -5149,19 +5149,26 @@
     {
       "id": "perf_event_open",
       "semantic_id": "perf_event_open",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_perf_event_open",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/perf_event_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 298,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_perf_event_open",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 241,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_perf_event_open",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {

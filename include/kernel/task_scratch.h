@@ -27,7 +27,11 @@ typedef kernel_wait_pollfd_t kernel_linux_pollfd_t;
  * architecture register state and is shared by every architecture backend.
  */
 typedef struct kernel_task_scratch {
-    char path_scratch[KERNEL_TASK_PATH_SCRATCH_COUNT][KERNEL_TASK_PATH_MAX];
+    union {
+        char path_scratch[KERNEL_TASK_PATH_SCRATCH_COUNT]
+                         [KERNEL_TASK_PATH_MAX];
+        uint64_t perf_event_values[EDGE_RUNTIME_MAX_PERF_EVENTS * 3u + 3u];
+    };
     uint8_t xattr_scratch[EDGE_LINUX_XATTR_VALUE_MAX];
     /*
      * SCM_RIGHTS receive keeps a 253-descriptor publication transaction off
