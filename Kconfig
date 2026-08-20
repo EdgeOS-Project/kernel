@@ -131,6 +131,13 @@ config KEYS
       Enable Linux add_key, request_key, and keyctl over the shared keyring,
       permission, payload, search, timeout, and persistent-keyring runtime.
 
+config FANOTIFY
+    bool "Linux fanotify notification service"
+    default y
+    help
+      Enable Linux fanotify notification groups, inode marks, event queues,
+      polling, and event file descriptors over the shared VFS event source.
+
 config RSEQ
     bool "Linux restartable sequences"
     default y

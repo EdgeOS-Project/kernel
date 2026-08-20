@@ -4389,7 +4389,7 @@ task-scratch-current-unit: tools/tests/task_scratch_current_unit.c $(SRC)/kernel
 		-o $(OUT)/tests/task_scratch_current_unit
 	@$(OUT)/tests/task_scratch_current_unit
 
-event-dispatch-policy-unit: tools/tests/event_dispatch_policy_unit.c $(SRC)/kernel/event_dispatch_policy.c include/kernel/event_runtime.h include/kernel/inotify_runtime.h
+event-dispatch-policy-unit: tools/tests/event_dispatch_policy_unit.c $(SRC)/kernel/event_dispatch_policy.c include/kernel/event_runtime.h include/kernel/fanotify_runtime.h include/kernel/inotify_runtime.h
 	@mkdir -p $(OUT)/tests
 	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fno-builtin \
 		-iquote $(INC) \
@@ -4406,6 +4406,16 @@ inotify-readiness-sequence-unit: tools/tests/inotify_readiness_sequence_unit.c $
 		$(SRC)/kernel/inotify.c \
 		-o $(OUT)/tests/inotify_readiness_sequence_unit
 	@$(OUT)/tests/inotify_readiness_sequence_unit
+
+.PHONY: fanotify-runtime-unit
+fanotify-runtime-unit: tools/tests/fanotify_runtime_unit.c \
+		$(SRC)/kernel/fanotify.c include/kernel/fanotify.h
+	@mkdir -p $(OUT)/tests
+	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fno-builtin \
+		-iquote $(INC) tools/tests/fanotify_runtime_unit.c \
+		$(SRC)/kernel/fanotify.c \
+		-o $(OUT)/tests/fanotify_runtime_unit
+	@$(OUT)/tests/fanotify_runtime_unit
 
 abi-service-dispatch-unit: tools/tests/abi_service_dispatch_unit.c $(SRC)/kernel/abi_service_dispatch.c
 	@mkdir -p $(OUT)/tests

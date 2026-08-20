@@ -80,6 +80,10 @@ case EDGE_LINUX_SYS_exit_group:
 case EDGE_LINUX_SYS_fallocate:
     context->result = edge_linux_sys_fallocate(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_fanotify_init:
+case EDGE_LINUX_SYS_fanotify_mark:
+    context->result = edge_linux_sys_fanotify(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_close:
 case EDGE_LINUX_SYS_close_range:
 case EDGE_LINUX_SYS_dup:

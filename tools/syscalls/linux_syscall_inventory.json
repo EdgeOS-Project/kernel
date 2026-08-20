@@ -1313,37 +1313,51 @@
     {
       "id": "fanotify_init",
       "semantic_id": "fanotify_init",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_fanotify",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/fanotify_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 300,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_fanotify",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 262,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_fanotify",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {
       "id": "fanotify_mark",
       "semantic_id": "fanotify_mark",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_fanotify",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/fanotify_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 301,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_fanotify",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 263,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_fanotify",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {

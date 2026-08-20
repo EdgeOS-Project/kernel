@@ -7,6 +7,8 @@
 #include "kernel/anonymous_fd.h"
 #include "kernel/event_runtime.h"
 #include "kernel/eventfd.h"
+#include "kernel/fanotify.h"
+#include "kernel/fanotify_runtime.h"
 #include "kernel/inotify.h"
 #include "kernel/inotify_runtime.h"
 #include "kernel/linux_errno.h"
@@ -177,5 +179,27 @@ int kernel_inotify_descriptor_id(int32_t descriptor) {
         descriptor, KERNEL_ANONYMOUS_FD_INOTIFY);
     if (object_id < 0) return object_id;
     return kernel_inotify_query(object_id, &state) < 0 ?
+        -EDGE_LINUX_EBADF : object_id;
+}
+
+int kernel_fanotify_create_descriptor(uint32_t flags,
+                                      uint32_t event_flags) {
+    int object_id = kernel_fanotify_create(flags, event_flags);
+    int descriptor;
+    if (object_id < 0) return object_id;
+    descriptor = kernel_anonymous_fd_install_descriptor(
+        KERNEL_ANONYMOUS_FD_FANOTIFY, object_id,
+        (flags & KERNEL_FAN_NONBLOCK) ? 0x00000800u : 0u,
+        flags & KERNEL_FAN_CLOEXEC);
+    if (descriptor < 0) kernel_fanotify_release(object_id);
+    return descriptor;
+}
+
+int kernel_fanotify_descriptor_id(int32_t descriptor) {
+    kernel_fanotify_state_t state;
+    int object_id = kernel_anonymous_fd_descriptor_object_id(
+        descriptor, KERNEL_ANONYMOUS_FD_FANOTIFY);
+    if (object_id < 0) return object_id;
+    return kernel_fanotify_query(object_id, &state) < 0 ?
         -EDGE_LINUX_EBADF : object_id;
 }

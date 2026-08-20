@@ -23,6 +23,7 @@ uint32_t kernel_anonymous_fd_poll_events(
         break;
     case KERNEL_ANONYMOUS_FD_SIGNAL:
     case KERNEL_ANONYMOUS_FD_INOTIFY:
+    case KERNEL_ANONYMOUS_FD_FANOTIFY:
     case KERNEL_ANONYMOUS_FD_PID:
         if (state->pending) events |= KERNEL_ANONYMOUS_FD_POLL_INPUT;
         break;

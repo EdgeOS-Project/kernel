@@ -57,6 +57,8 @@
 #include "kernel/file_mapping_policy.h"
 #include "kernel/fs_context.h"
 #include "kernel/futex_runtime.h"
+#include "kernel/fanotify.h"
+#include "kernel/fanotify_runtime.h"
 #include "kernel/inotify.h"
 #include "kernel/inotify_runtime.h"
 #include "kernel/io_buffer.h"
@@ -1484,6 +1486,7 @@ typedef enum {
     FD_EPOLL,
     FD_PIDFD,
     FD_INOTIFY,
+    FD_FANOTIFY,
     FD_MEMFD,
     FD_DMA_BUF,
     FD_TUN,

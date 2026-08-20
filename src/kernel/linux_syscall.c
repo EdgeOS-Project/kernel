@@ -22,6 +22,8 @@
 #include "kernel/file_lock.h"
 #include "kernel/fs_context.h"
 #include "kernel/futex_runtime.h"
+#include "kernel/fanotify.h"
+#include "kernel/fanotify_runtime.h"
 #include "kernel/inotify.h"
 #include "kernel/inotify_runtime.h"
 #include "kernel/ioctl_runtime.h"
@@ -105,6 +107,8 @@ static int64_t edge_linux_sys_fileattr(
 static int64_t edge_linux_sys_listns(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_keyring(
+    edge_linux_syscall_context_t *context);
+static int64_t edge_linux_sys_fanotify(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_truncate(
     edge_linux_syscall_context_t *context);
@@ -10787,6 +10791,120 @@ static int64_t edge_linux_sys_inotify(
     return kernel_inotify_add_watch(
         inotify_id, target.resolved_path, mask,
         (target.inode->mode & 0xf000u) == VFS_INODE_DIR);
+}
+
+static int64_t edge_linux_sys_fanotify(
+    edge_linux_syscall_context_t *context) {
+#ifndef CONFIG_FANOTIFY
+    (void)context;
+    return -EDGE_LINUX_ENOSYS;
+#else
+    kernel_vfs_xattr_scratch_t scratch;
+    kernel_vfs_target_t target;
+    kernel_linux_identity_t identity;
+    uint32_t flags;
+    uint32_t event_flags;
+    uint64_t mask;
+    int group_id;
+    int status;
+
+    if (context->id == EDGE_LINUX_SYS_fanotify_init) {
+        const uint32_t class_mask = KERNEL_FAN_CLASS_CONTENT |
+                                    KERNEL_FAN_CLASS_PRE_CONTENT;
+        const uint32_t report_mask = KERNEL_FAN_REPORT_PIDFD |
+            KERNEL_FAN_REPORT_TID | KERNEL_FAN_REPORT_FID |
+            KERNEL_FAN_REPORT_DIR_FID | KERNEL_FAN_REPORT_NAME |
+            KERNEL_FAN_REPORT_TARGET_FID | KERNEL_FAN_REPORT_FD_ERROR |
+            KERNEL_FAN_REPORT_MNT;
+        const uint32_t fid_mask = KERNEL_FAN_REPORT_FID |
+            KERNEL_FAN_REPORT_DIR_FID | KERNEL_FAN_REPORT_NAME |
+            KERNEL_FAN_REPORT_TARGET_FID;
+        const uint32_t allowed_flags = KERNEL_FAN_CLOEXEC |
+            KERNEL_FAN_NONBLOCK | class_mask |
+            KERNEL_FAN_UNLIMITED_QUEUE | KERNEL_FAN_UNLIMITED_MARKS |
+            KERNEL_FAN_ENABLE_AUDIT | report_mask;
+        const uint32_t allowed_event_flags = 0x00000003u |
+            0x00000400u | 0x00000800u | 0x00001000u |
+            0x00008000u | 0x00040000u | 0x00080000u |
+            0x00100000u;
+
+        flags = (uint32_t)context->arguments[0];
+        event_flags = (uint32_t)context->arguments[1];
+        if (flags & ~allowed_flags) return -EDGE_LINUX_EINVAL;
+        if ((flags & class_mask) == class_mask)
+            return -EDGE_LINUX_EINVAL;
+        if (event_flags & ~allowed_event_flags)
+            return -EDGE_LINUX_EINVAL;
+        if ((event_flags & 3u) == 3u) return -EDGE_LINUX_EINVAL;
+        if ((flags & KERNEL_FAN_REPORT_NAME) &&
+            !(flags & KERNEL_FAN_REPORT_DIR_FID))
+            return -EDGE_LINUX_EINVAL;
+        if ((flags & KERNEL_FAN_REPORT_TARGET_FID) &&
+            (!(flags & KERNEL_FAN_REPORT_NAME) ||
+             !(flags & KERNEL_FAN_REPORT_FID)))
+            return -EDGE_LINUX_EINVAL;
+        if ((flags & fid_mask) &&
+            (flags & class_mask) != KERNEL_FAN_CLASS_NOTIF)
+            return -EDGE_LINUX_EINVAL;
+        if ((flags & KERNEL_FAN_REPORT_MNT) &&
+            ((flags & class_mask) != KERNEL_FAN_CLASS_NOTIF ||
+             (flags & (fid_mask | KERNEL_FAN_REPORT_FD_ERROR))))
+            return -EDGE_LINUX_EINVAL;
+        if (kernel_current_linux_identity(&identity) < 0)
+            return -EDGE_LINUX_ESRCH;
+        if (!(identity.effective_capabilities &
+              (1ULL << EDGE_LINUX_CAP_SYS_ADMIN))) {
+            if ((flags & (class_mask | KERNEL_FAN_REPORT_TID |
+                          KERNEL_FAN_REPORT_PIDFD |
+                          KERNEL_FAN_REPORT_FD_ERROR |
+                          KERNEL_FAN_UNLIMITED_QUEUE |
+                          KERNEL_FAN_UNLIMITED_MARKS)) ||
+                !(flags & (fid_mask | KERNEL_FAN_REPORT_MNT)))
+                return -EDGE_LINUX_EPERM;
+            return -EDGE_LINUX_EOPNOTSUPP;
+        }
+        if ((flags & class_mask) != KERNEL_FAN_CLASS_NOTIF ||
+            (flags & (KERNEL_FAN_UNLIMITED_QUEUE |
+                      KERNEL_FAN_UNLIMITED_MARKS |
+                      KERNEL_FAN_ENABLE_AUDIT)) ||
+            (flags & (report_mask & ~KERNEL_FAN_REPORT_FD_ERROR)))
+            return -EDGE_LINUX_EOPNOTSUPP;
+        return kernel_fanotify_create_descriptor(flags, event_flags);
+    }
+
+    if (context->id != EDGE_LINUX_SYS_fanotify_mark)
+        return -EDGE_LINUX_ENOSYS;
+    group_id = kernel_fanotify_descriptor_id(
+        (int32_t)context->arguments[0]);
+    if (group_id < 0) return group_id;
+    flags = (uint32_t)context->arguments[1];
+    mask = context->arguments[2];
+    if ((flags & KERNEL_FAN_MARK_FLUSH) != 0)
+        return kernel_fanotify_modify_mark(
+            group_id, flags, mask, 0, 0);
+    status = kernel_vfs_current_xattr_scratch(&scratch);
+    if (status < 0 || !scratch.path ||
+        scratch.path_capacity < VFS_PATH_MAX)
+        return status < 0 ? status : -EDGE_LINUX_EIO;
+    if (!context->arguments[4]) return -EDGE_LINUX_EFAULT;
+    status = edge_linux_copy_user_string(
+        context, context->arguments[4], scratch.path,
+        scratch.path_capacity, EDGE_LINUX_ENAMETOOLONG);
+    if (status < 0) return status;
+    status = kernel_vfs_resolve_at_path(
+        (int32_t)context->arguments[3], scratch.path,
+        scratch.path, scratch.path_capacity);
+    if (status < 0) return status;
+    status = kernel_vfs_resolve_path(
+        scratch.path,
+        (flags & KERNEL_FAN_MARK_DONT_FOLLOW) != 0, &target);
+    if (status < 0) return status;
+    if (!target.inode || !target.resolved_path)
+        return -EDGE_LINUX_EIO;
+    return kernel_fanotify_modify_mark(
+        group_id, flags, mask, target.resolved_path,
+        (target.inode->mode & 0xf000u) == VFS_INODE_DIR);
+#endif
 }
 
 static int64_t edge_linux_sys_signalfd(

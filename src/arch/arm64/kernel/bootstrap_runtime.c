@@ -43,6 +43,8 @@
 #include "kernel/file_lock.h"
 #include "kernel/fs_context.h"
 #include "kernel/futex_runtime.h"
+#include "kernel/fanotify.h"
+#include "kernel/fanotify_runtime.h"
 #include "kernel/inotify.h"
 #include "kernel/io_buffer.h"
 #include "kernel/inotify_runtime.h"
@@ -256,6 +258,8 @@ extern int vfs_chown_nofollow(const char *path, uint32_t uid, uint32_t gid);
 #define LINUX_SYS_sysinfo 179u
 #define LINUX_SYS_getrlimit 163u
 #define LINUX_SYS_prlimit64 261u
+#define LINUX_SYS_fanotify_init 262u
+#define LINUX_SYS_fanotify_mark 263u
 #define LINUX_SYS_getresuid 148u
 #define LINUX_SYS_setresuid 147u
 #define LINUX_SYS_getresgid 150u
@@ -877,6 +881,7 @@ static uint32_t g_fd_table_reserve_count;
 #define KERNEL_FD_MOUNT 20u
 #define KERNEL_FD_MQUEUE 21u
 #define KERNEL_FD_IO_URING 22u
+#define KERNEL_FD_FANOTIFY 23u
 
 #define ARM64_EPOLL_SOURCE_FILE_KMSG          0x00000001u
 #define ARM64_EPOLL_SOURCE_FILE_DRM_CARD      0x00000002u
@@ -8889,6 +8894,7 @@ int arch_vfs_describe_descriptor(int32_t descriptor,
     if (file->kind == KERNEL_FD_EVENT || file->kind == KERNEL_FD_EPOLL ||
         file->kind == KERNEL_FD_TIMER || file->kind == KERNEL_FD_PIDFD ||
         file->kind == KERNEL_FD_INOTIFY ||
+        file->kind == KERNEL_FD_FANOTIFY ||
         file->kind == KERNEL_FD_SIGNALFD ||
         file->kind == KERNEL_FD_DMA_BUF ||
         file->kind == KERNEL_FD_MOUNT ||
@@ -9684,6 +9690,9 @@ static int arm64_anonymous_fd_install(
     case KERNEL_ANONYMOUS_FD_INOTIFY:
         local_kind = KERNEL_FD_INOTIFY;
         break;
+    case KERNEL_ANONYMOUS_FD_FANOTIFY:
+        local_kind = KERNEL_FD_FANOTIFY;
+        break;
     case KERNEL_ANONYMOUS_FD_PRIME:
         local_kind = KERNEL_FD_DMA_BUF;
         break;
@@ -9752,6 +9761,9 @@ static int arm64_anonymous_fd_object_id(
         break;
     case KERNEL_ANONYMOUS_FD_INOTIFY:
         expected = KERNEL_FD_INOTIFY;
+        break;
+    case KERNEL_ANONYMOUS_FD_FANOTIFY:
+        expected = KERNEL_FD_FANOTIFY;
         break;
     case KERNEL_ANONYMOUS_FD_PRIME:
         expected = KERNEL_FD_DMA_BUF;
@@ -9838,6 +9850,18 @@ static int64_t inotify_read_now(kernel_task_t *task,
         object_index, arm64_inotify_copy_record, &context, length);
 }
 
+static int64_t fanotify_read_now(kernel_task_t *task,
+                                 uint16_t object_index, uint64_t buffer,
+                                 uint64_t length) {
+    arm64_inotify_copy_context_t context = {
+        .task = task,
+        .buffer = buffer,
+    };
+    if (!task) return -LINUX_ESRCH;
+    return kernel_fanotify_read(
+        object_index, arm64_inotify_copy_record, &context, length);
+}
+
 void arch_inotify_state_changed(int inotify_id) {
     if (inotify_id < 0 || inotify_id > UINT8_MAX) return;
     for (uint32_t index = 0; index < g_task_high_water; ++index) {
@@ -9878,6 +9902,38 @@ void arch_inotify_state_changed(int inotify_id) {
     poll_wake_waiters();
 }
 
+void arch_fanotify_state_changed(int group_id) {
+    if (group_id < 0 || group_id > UINT16_MAX) return;
+    for (uint32_t index = 0; index < g_task_high_water; ++index) {
+        kernel_task_t *task;
+        const bootstrap_fd_t *fd;
+        int64_t result;
+        if (task_state_shadow_at(index) != KERNEL_TASK_WAITING_INOTIFY)
+            continue;
+        task = &g_tasks[index];
+        fd = task_fd_operation_lease_view(task, 0);
+        if (!fd || fd->kind != KERNEL_FD_FANOTIFY) continue;
+        if (fd->event_index != (uint16_t)group_id) continue;
+        if (task->vector_io_active) {
+            task->inotify_read_buffer = 0;
+            task->inotify_read_length = 0;
+            task->inotify_wait_index = 0;
+            (void)task_vector_io_make_runnable(task);
+            continue;
+        }
+        result = fanotify_read_now(
+            task, fd->event_index, task->inotify_read_buffer,
+            task->inotify_read_length);
+        if (result == -LINUX_EAGAIN) continue;
+        task->frame.x[0] = (uint64_t)result;
+        task->inotify_read_buffer = task->inotify_read_length = 0;
+        task->inotify_wait_index = 0;
+        task_state_set(task, KERNEL_TASK_RUNNABLE);
+        task_fd_operation_lease_release(task, 0);
+    }
+    poll_wake_waiters();
+}
+
 static void inotify_notify_path(const char *path, uint32_t mask) {
     kernel_inotify_notify_path(path, mask, 0);
 }
@@ -9900,6 +9956,11 @@ static int fd_retain_backing_object(const bootstrap_fd_t *fd) {
     }
     if (fd->kind == KERNEL_FD_INOTIFY) {
         result = kernel_inotify_retain(fd->event_index);
+        return result < 0 ?
+            (result == -1 ? -LINUX_EBADF : result) : 0;
+    }
+    if (fd->kind == KERNEL_FD_FANOTIFY) {
+        result = kernel_fanotify_retain(fd->event_index);
         return result < 0 ?
             (result == -1 ? -LINUX_EBADF : result) : 0;
     }
@@ -15467,6 +15528,8 @@ static void fd_drop_backing_object(bootstrap_fd_t *fd) {
             fd->namespace_id);
     if (fd->kind == KERNEL_FD_INOTIFY)
         kernel_inotify_release(fd->event_index);
+    if (fd->kind == KERNEL_FD_FANOTIFY)
+        kernel_fanotify_release(fd->event_index);
     if (fd->kind == KERNEL_FD_SIGNALFD)
         kernel_signalfd_release(fd->event_index);
     if ((fd->kind == KERNEL_FD_PTY_MASTER ||
@@ -15698,6 +15761,10 @@ static int fd_file_lock_information(kernel_task_t *task,
                 break;
             case KERNEL_FD_INOTIFY:
                 object_class = EDGE_FILE_LOCK_OBJECT_INOTIFY;
+                object_identity = fd->event_index;
+                break;
+            case KERNEL_FD_FANOTIFY:
+                object_class = EDGE_FILE_LOCK_OBJECT_ANONYMOUS;
                 object_identity = fd->event_index;
                 break;
             case KERNEL_FD_FBDEV:
@@ -16258,7 +16325,7 @@ static int arm64_epoll_source_encode(
 
     if (!fd || !fd->used || !fd->open_description_id ||
         fd->open_description_id != expected_description_id ||
-        fd->kind > KERNEL_FD_IO_URING || !source ||
+        fd->kind > KERNEL_FD_FANOTIFY || !source ||
         kernel_file_description_snapshot(
             arm64_description_locator(fd->open_description_id),
             &description) < 0 ||
@@ -16324,6 +16391,7 @@ static int arm64_epoll_source_encode(
             break;
         case KERNEL_FD_EVENT:
         case KERNEL_FD_INOTIFY:
+        case KERNEL_FD_FANOTIFY:
         case KERNEL_FD_INPUT:
         case KERNEL_FD_SIGNALFD:
             source->primary_object_id = fd->event_index;
@@ -16371,7 +16439,7 @@ static int arm64_epoll_source_materialize(
     static char alsa_timer_path[] = EDGE_ALSA_PATH_TIMER;
 
     if (!source || !fd ||
-        source->kind > KERNEL_FD_IO_URING ||
+        source->kind > KERNEL_FD_FANOTIFY ||
         source->secondary_object_id <= 0 ||
         !source->cookie)
         return -LINUX_EBADF;
@@ -16440,6 +16508,7 @@ static int arm64_epoll_source_materialize(
             break;
         case KERNEL_FD_EVENT:
         case KERNEL_FD_INOTIFY:
+        case KERNEL_FD_FANOTIFY:
         case KERNEL_FD_INPUT:
         case KERNEL_FD_SIGNALFD:
             if (source->primary_object_id < 0 ||
@@ -18810,6 +18879,13 @@ static uint32_t fd_anonymous_ready_mask(
             poll_state.valid = 0;
         else
             poll_state.pending = state.queued_events != 0;
+    } else if (fd->kind == KERNEL_FD_FANOTIFY) {
+        kernel_fanotify_state_t state;
+        poll_state.kind = KERNEL_ANONYMOUS_FD_FANOTIFY;
+        if (kernel_fanotify_query(fd->event_index, &state) < 0)
+            poll_state.valid = 0;
+        else
+            poll_state.pending = state.queued_events != 0;
     } else if (fd->kind == KERNEL_FD_PIDFD) {
         int target = task_find_pid((int)fd->inode.ino);
         poll_state.kind = KERNEL_ANONYMOUS_FD_PID;
@@ -18883,6 +18959,7 @@ static uint32_t fd_ready_mask(kernel_task_t *task, bootstrap_fd_t *fd) {
     } else if (fd->kind == KERNEL_FD_EVENT ||
                fd->kind == KERNEL_FD_TIMER ||
                fd->kind == KERNEL_FD_INOTIFY ||
+               fd->kind == KERNEL_FD_FANOTIFY ||
                fd->kind == KERNEL_FD_PIDFD ||
                fd->kind == KERNEL_FD_SIGNALFD ||
                fd->kind == KERNEL_FD_MQUEUE ||
@@ -19104,6 +19181,13 @@ static void arm64_epoll_ready_sequences(
         kernel_inotify_state_t state;
         if (read_sequence &&
             kernel_inotify_query(fd->event_index, &state) == 0)
+            *read_sequence = state.readiness_sequence;
+        return;
+    }
+    if (fd->kind == KERNEL_FD_FANOTIFY) {
+        kernel_fanotify_state_t state;
+        if (read_sequence &&
+            kernel_fanotify_query(fd->event_index, &state) == 0)
             *read_sequence = state.readiness_sequence;
         return;
     }
@@ -19506,6 +19590,10 @@ static int arm64_wait_source_from_fd(const bootstrap_fd_t *fd,
             break;
         case KERNEL_FD_INOTIFY:
             source->kind = KERNEL_WAIT_SOURCE_INOTIFY;
+            source->object_index = fd->event_index;
+            break;
+        case KERNEL_FD_FANOTIFY:
+            source->kind = KERNEL_WAIT_SOURCE_OWNER_WAKE;
             source->object_index = fd->event_index;
             break;
         case KERNEL_FD_PIDFD:
@@ -22069,6 +22157,7 @@ int arch_vfs_metadata_fd(int32_t descriptor,
                file->kind == KERNEL_FD_TIMER ||
                file->kind == KERNEL_FD_PIDFD ||
                file->kind == KERNEL_FD_INOTIFY ||
+               file->kind == KERNEL_FD_FANOTIFY ||
                file->kind == KERNEL_FD_SIGNALFD ||
                file->kind == KERNEL_FD_DMA_BUF ||
                file->kind == KERNEL_FD_MOUNT ||
@@ -23554,6 +23643,39 @@ static int64_t fd_read_user_internal(
         task_state_set(task, KERNEL_TASK_WAITING_INOTIFY);
         task_resume_next();
     }
+    if (fd->kind == KERNEL_FD_FANOTIFY) {
+        const bootstrap_fd_t *operation_fd;
+        int lease_result;
+        int64_t result;
+
+        operation_fd = retained_fd;
+        if (!operation_fd) {
+            lease_result = task_fd_operation_lease_acquire_view(
+                task, 0, fd_number, &operation_fd);
+            if (lease_result < 0) return lease_result;
+        }
+        if (operation_fd->kind != KERNEL_FD_FANOTIFY) {
+            task_fd_operation_lease_release(task, 0);
+            return -LINUX_EBADF;
+        }
+        result = fanotify_read_now(
+            task, operation_fd->event_index, buffer, length);
+        if (result != -LINUX_EAGAIN ||
+            (operation_fd->status_flags & LINUX_O_NONBLOCK)) {
+            task_fd_operation_lease_release(task, 0);
+            return result;
+        }
+        if (!frame) {
+            task_fd_operation_lease_release(task, 0);
+            return -LINUX_EINVAL;
+        }
+        arch_copy_frame(&task->frame, frame);
+        task->inotify_wait_index = operation_fd->event_index;
+        task->inotify_read_buffer = buffer;
+        task->inotify_read_length = length;
+        task_state_set(task, KERNEL_TASK_WAITING_INOTIFY);
+        task_resume_next();
+    }
     if (fd->kind == KERNEL_FD_FILE &&
         alsa_path_kind(fd->path) != EDGE_ALSA_NODE_NONE) {
         int64_t result;
@@ -24479,7 +24601,8 @@ static int arm64_vector_io_arm_wait(
         arm64_vector_io_recheck_wait(task, fd, writing);
         return 0;
     }
-    if (!writing && fd->kind == KERNEL_FD_INOTIFY) {
+    if (!writing && (fd->kind == KERNEL_FD_INOTIFY ||
+                     fd->kind == KERNEL_FD_FANOTIFY)) {
         task->inotify_read_buffer = 0;
         task->inotify_read_length = 0;
         task->inotify_wait_index = fd->event_index;
@@ -33486,6 +33609,18 @@ static int64_t arm64_ioctl_execute(
 
             if (!a2) return -LINUX_EFAULT;
             if (kernel_inotify_query(fd->event_index, &state) < 0)
+                return -LINUX_EBADF;
+            available = (int)state.queued_bytes;
+            return arch_copy_to_user(task->ttbr0, a2, &available,
+                                     sizeof(available)) < 0 ?
+                   -LINUX_EFAULT : 0;
+        }
+        if (fd->kind == KERNEL_FD_FANOTIFY && a1 == LINUX_FIONREAD) {
+            kernel_fanotify_state_t state;
+            int available;
+
+            if (!a2) return -LINUX_EFAULT;
+            if (kernel_fanotify_query(fd->event_index, &state) < 0)
                 return -LINUX_EBADF;
             available = (int)state.queued_bytes;
             return arch_copy_to_user(task->ttbr0, a2, &available,

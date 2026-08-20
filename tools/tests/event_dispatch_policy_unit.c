@@ -8,6 +8,7 @@
 #include <stdio.h>
 
 #include "kernel/event_runtime.h"
+#include "kernel/fanotify_runtime.h"
 #include "kernel/inotify_runtime.h"
 #include "kernel/linux_errno.h"
 #include "kernel/runtime_limits.h"
@@ -17,6 +18,7 @@ static int g_epoll_calls;
 static int g_poll_calls;
 static int g_select_calls;
 static int g_inotify_calls;
+static int g_fanotify_calls;
 
 static void expect_true(const char *name, int condition) {
     if (condition) return;
@@ -76,6 +78,11 @@ void arch_inotify_state_changed(int inotify_id) {
     if (inotify_id != 24) ++g_failures;
 }
 
+void arch_fanotify_state_changed(int group_id) {
+    ++g_fanotify_calls;
+    if (group_id != 7) ++g_failures;
+}
+
 static void test_wait_dispatch(void) {
     expect_true("epoll dispatch",
                 kernel_epoll_wait_descriptor(
@@ -118,9 +125,19 @@ static void test_inotify_dispatch(void) {
     expect_true("inotify dispatch", g_inotify_calls == 1);
 }
 
+static void test_fanotify_dispatch(void) {
+    kernel_fanotify_state_changed(-1);
+    kernel_fanotify_state_changed(
+        EDGE_RUNTIME_MAX_FANOTIFY_GROUPS);
+    expect_true("fanotify invalid range", g_fanotify_calls == 0);
+    kernel_fanotify_state_changed(7);
+    expect_true("fanotify dispatch", g_fanotify_calls == 1);
+}
+
 int main(void) {
     test_wait_dispatch();
     test_inotify_dispatch();
+    test_fanotify_dispatch();
     if (g_failures) return 1;
     puts("event_dispatch_policy_unit: PASS");
     return 0;

@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include "kernel/event_runtime.h"
+#include "kernel/fanotify_runtime.h"
 #include "kernel/inotify_runtime.h"
 #include "kernel/linux_errno.h"
 #include "kernel/runtime_limits.h"
@@ -63,4 +64,11 @@ void kernel_inotify_state_changed(int inotify_id) {
         inotify_id >= EDGE_RUNTIME_MAX_INOTIFY_INSTANCES)
         return;
     arch_inotify_state_changed(inotify_id);
+}
+
+void kernel_fanotify_state_changed(int group_id) {
+    if (group_id < 0 ||
+        group_id >= EDGE_RUNTIME_MAX_FANOTIFY_GROUPS)
+        return;
+    arch_fanotify_state_changed(group_id);
 }

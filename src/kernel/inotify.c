@@ -11,6 +11,7 @@
 
 #include "kernel/inotify.h"
 #include "kernel/inotify_runtime.h"
+#include "kernel/fanotify.h"
 #include "kernel/linux_errno.h"
 #include "kernel/process_runtime.h"
 #include "kernel/runtime_limits.h"
@@ -602,6 +603,7 @@ void kernel_inotify_notify_path(const char *canonical_path, uint32_t mask,
     }
     kernel_inotify_unlock();
     kernel_inotify_wake_mask(wake_mask);
+    kernel_fanotify_notify_path(canonical_path, mask);
 }
 
 static int kernel_inotify_path_has_prefix(const char *path,
@@ -699,4 +701,5 @@ void kernel_inotify_notify_move(const char *old_canonical_path,
     }
     kernel_inotify_unlock();
     kernel_inotify_wake_mask(wake_mask);
+    kernel_fanotify_notify_move(old_canonical_path, new_canonical_path);
 }
