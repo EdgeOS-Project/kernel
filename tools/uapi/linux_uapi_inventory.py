@@ -40,6 +40,7 @@ EDGEOS_ASSESSMENTS = [
             "FADVISE, MADVISE, EPOLL_CTL and TEE through shared subsystem handlers",
             "RENAMEAT, UNLINKAT, MKDIRAT, SYMLINKAT and LINKAT through shared VFS handlers",
             "SOCKET, BIND and LISTEN through shared socket handlers",
+            "FSETXATTR, SETXATTR, FGETXATTR, GETXATTR and FTRUNCATE through shared VFS handlers",
         ],
         "missing": [
             "asynchronous worker execution",
@@ -62,7 +63,8 @@ EDGEOS_ASSESSMENTS = [
                 "openat, openat2, close, statx, fallocate, send, recv, "
                 "sendmsg, recvmsg, shutdown, connect, accept, fadvise, "
                 "madvise, epoll_ctl, tee, renameat, unlinkat, mkdirat, "
-                "symlinkat, linkat, socket, bind, listen and operation probe"
+                "symlinkat, linkat, socket, bind, listen, fsetxattr, "
+                "setxattr, fgetxattr, getxattr, ftruncate and operation probe"
             ),
         },
     },

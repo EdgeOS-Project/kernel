@@ -8,8 +8,16 @@
 #define SYS_close 3
 #define SYS_mmap 9
 #define SYS_munmap 11
+#define SYS_fsetxattr 190
+#define SYS_fgetxattr 193
+#define SYS_flistxattr 196
+#define SYS_fremovexattr 199
 #define SYS_exit 60
 #elif defined(__aarch64__)
+#define SYS_fsetxattr 7
+#define SYS_fgetxattr 10
+#define SYS_flistxattr 13
+#define SYS_fremovexattr 16
 #define SYS_close 57
 #define SYS_write 64
 #define SYS_exit 93
@@ -57,7 +65,10 @@ struct linux_epoll_event {
 #define MAP_ANONYMOUS 0x20
 #define PAGE_SIZE 4096u
 #define EBADF 9
+#define EEXIST 17
 #define EINVAL 22
+#define ERANGE 34
+#define ENODATA 61
 #define AT_FDCWD (-100)
 #define O_RDWR 2u
 #define O_CREAT 64u
@@ -95,7 +106,12 @@ struct linux_epoll_event {
 #define IORING_OP_MKDIRAT 37u
 #define IORING_OP_SYMLINKAT 38u
 #define IORING_OP_LINKAT 39u
+#define IORING_OP_FSETXATTR 41u
+#define IORING_OP_SETXATTR 42u
+#define IORING_OP_FGETXATTR 43u
+#define IORING_OP_GETXATTR 44u
 #define IORING_OP_SOCKET 45u
+#define IORING_OP_FTRUNCATE 55u
 #define IORING_OP_BIND 56u
 #define IORING_OP_LISTEN 57u
 #define IORING_OFF_SQ_RING 0x00000000ull
@@ -112,6 +128,8 @@ struct linux_epoll_event {
 #define MADV_DONTNEED 4u
 #define POSIX_FADV_NORMAL 0u
 #define AT_REMOVEDIR 0x200u
+#define XATTR_CREATE 1u
+#define XATTR_REPLACE 2u
 
 struct kernel_timespec {
     int64_t seconds;
@@ -395,6 +413,7 @@ static int run_tests(void) {
     int32_t client_descriptor = -1;
     int32_t accepted_descriptor = -1;
     int32_t ring_listener_descriptor = -1;
+    int32_t xattr_descriptor = -1;
     int32_t advice_descriptor = -1;
     int32_t epoll_descriptor = -1;
     int32_t control_event_descriptor = -1;
@@ -409,6 +428,12 @@ static int run_tests(void) {
     static const char path_hardlink[] = "/tmp/edgeos-uring-path/hard";
     static const char path_symlink[] = "/tmp/edgeos-uring-path/symbolic";
     static const char symlink_target[] = "source";
+    static const char xattr_path[] = "/tmp/edgeos-io-uring-xattr";
+    static const char xattr_name[] = "user.edgeos";
+    static const char xattr_fd_value[] = "descriptor-value";
+    static const char xattr_path_value[] = "path-value";
+    char xattr_buffer[sizeof(xattr_fd_value)] = {0};
+    char xattr_list[64] = {0};
     struct io_uring_sqe path_request;
     int32_t path_result = -1;
     struct linux_epoll_event epoll_event = {
@@ -565,6 +590,17 @@ static int run_tests(void) {
         (probe.operations[IORING_OP_BIND].flags &
          IO_URING_OP_SUPPORTED) != 0 &&
         (probe.operations[IORING_OP_LISTEN].flags &
+         IO_URING_OP_SUPPORTED) != 0);
+    failures += expect_true("probe xattr and truncate operations",
+        (probe.operations[IORING_OP_FSETXATTR].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_SETXATTR].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_FGETXATTR].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_GETXATTR].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_FTRUNCATE].flags &
          IO_URING_OP_SUPPORTED) != 0);
 
     event_descriptor = raw_syscall6(
@@ -1265,6 +1301,152 @@ static int run_tests(void) {
         failures += expect("listen completion", path_result, 0);
         (void)raw_syscall6(
             SYS_close, ring_listener_descriptor, 0, 0, 0, 0, 0);
+    }
+
+    memset(&path_request, 0, sizeof(path_request));
+    path_request.opcode = IORING_OP_OPENAT;
+    path_request.descriptor = AT_FDCWD;
+    path_request.address = (uint64_t)(uintptr_t)xattr_path;
+    path_request.length = 0600u;
+    path_request.operation_flags = O_RDWR | O_CREAT | O_TRUNC;
+    failures += submit_one(
+        descriptor, sq_tail, sq_mask, sq_array, sqes,
+        cq_head, cq_tail, cq_mask, cqes, &path_request,
+        0x58415454524f504eull, "submit xattr open", &path_result);
+    failures += expect_true("xattr open completion", path_result >= 0);
+    xattr_descriptor = path_result;
+    if (xattr_descriptor >= 0) {
+        memset(&path_request, 0, sizeof(path_request));
+        path_request.opcode = IORING_OP_FSETXATTR;
+        path_request.descriptor = xattr_descriptor;
+        path_request.address = (uint64_t)(uintptr_t)xattr_name;
+        path_request.offset = (uint64_t)(uintptr_t)xattr_fd_value;
+        path_request.length = sizeof(xattr_fd_value);
+        failures += submit_one(
+            descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &path_request,
+            0x4653455458415454ull, "submit fsetxattr", &path_result);
+        failures += expect("fsetxattr completion", path_result, 0);
+
+        memset(xattr_buffer, 0, sizeof(xattr_buffer));
+        memset(&path_request, 0, sizeof(path_request));
+        path_request.opcode = IORING_OP_FGETXATTR;
+        path_request.descriptor = xattr_descriptor;
+        path_request.address = (uint64_t)(uintptr_t)xattr_name;
+        path_request.offset = (uint64_t)(uintptr_t)xattr_buffer;
+        path_request.length = sizeof(xattr_buffer);
+        failures += submit_one(
+            descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &path_request,
+            0x4647455458415454ull, "submit fgetxattr", &path_result);
+        failures += expect(
+            "fgetxattr completion", path_result, sizeof(xattr_fd_value));
+        failures += expect_true("fgetxattr data",
+            xattr_buffer[0] == xattr_fd_value[0] &&
+            xattr_buffer[sizeof(xattr_fd_value) - 1u] == 0);
+
+        memset(&path_request, 0, sizeof(path_request));
+        path_request.opcode = IORING_OP_SETXATTR;
+        path_request.descriptor = -1;
+        path_request.address = (uint64_t)(uintptr_t)xattr_name;
+        path_request.offset = (uint64_t)(uintptr_t)xattr_path_value;
+        path_request.length = sizeof(xattr_path_value);
+        path_request.address3 = (uint64_t)(uintptr_t)xattr_path;
+        failures += submit_one(
+            descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &path_request,
+            0x5345545841545452ull, "submit setxattr", &path_result);
+        failures += expect("setxattr completion", path_result, 0);
+
+        memset(xattr_buffer, 0, sizeof(xattr_buffer));
+        memset(&path_request, 0, sizeof(path_request));
+        path_request.opcode = IORING_OP_GETXATTR;
+        path_request.descriptor = -1;
+        path_request.address = (uint64_t)(uintptr_t)xattr_name;
+        path_request.offset = (uint64_t)(uintptr_t)xattr_buffer;
+        path_request.length = sizeof(xattr_buffer);
+        path_request.address3 = (uint64_t)(uintptr_t)xattr_path;
+        failures += submit_one(
+            descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &path_request,
+            0x4745545841545452ull, "submit getxattr", &path_result);
+        failures += expect(
+            "getxattr completion", path_result, sizeof(xattr_path_value));
+        failures += expect_true("getxattr data",
+            xattr_buffer[0] == xattr_path_value[0] &&
+            xattr_buffer[sizeof(xattr_path_value) - 1u] == 0);
+
+        failures += expect("fsetxattr create existing", raw_syscall6(
+            SYS_fsetxattr, xattr_descriptor,
+            (long)(uintptr_t)xattr_name,
+            (long)(uintptr_t)xattr_fd_value, sizeof(xattr_fd_value),
+            XATTR_CREATE, 0), -EEXIST);
+        failures += expect("fsetxattr replace", raw_syscall6(
+            SYS_fsetxattr, xattr_descriptor,
+            (long)(uintptr_t)xattr_name,
+            (long)(uintptr_t)xattr_fd_value, sizeof(xattr_fd_value),
+            XATTR_REPLACE, 0), 0);
+        failures += expect("fgetxattr query", raw_syscall6(
+            SYS_fgetxattr, xattr_descriptor,
+            (long)(uintptr_t)xattr_name, 0, 0, 0, 0),
+            sizeof(xattr_fd_value));
+        failures += expect("fgetxattr short", raw_syscall6(
+            SYS_fgetxattr, xattr_descriptor,
+            (long)(uintptr_t)xattr_name,
+            (long)(uintptr_t)xattr_buffer,
+            sizeof(xattr_fd_value) - 1u, 0, 0), -ERANGE);
+        memset(xattr_list, 0, sizeof(xattr_list));
+        failures += expect("flistxattr", raw_syscall6(
+            SYS_flistxattr, xattr_descriptor,
+            (long)(uintptr_t)xattr_list, sizeof(xattr_list), 0, 0, 0),
+            sizeof(xattr_name));
+        failures += expect_true("flistxattr data",
+            xattr_list[0] == xattr_name[0] &&
+            xattr_list[sizeof(xattr_name) - 1u] == 0);
+        failures += expect("fremovexattr", raw_syscall6(
+            SYS_fremovexattr, xattr_descriptor,
+            (long)(uintptr_t)xattr_name, 0, 0, 0, 0), 0);
+        failures += expect("fgetxattr removed", raw_syscall6(
+            SYS_fgetxattr, xattr_descriptor,
+            (long)(uintptr_t)xattr_name, 0, 0, 0, 0), -ENODATA);
+
+        memset(&path_request, 0, sizeof(path_request));
+        path_request.opcode = IORING_OP_FTRUNCATE;
+        path_request.descriptor = xattr_descriptor;
+        path_request.offset = 123u;
+        failures += submit_one(
+            descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &path_request,
+            0x465452554e433031ull, "submit ftruncate", &path_result);
+        failures += expect("ftruncate completion", path_result, 0);
+
+        memset(statx_buffer, 0, sizeof(statx_buffer));
+        memset(&path_request, 0, sizeof(path_request));
+        path_request.opcode = IORING_OP_STATX;
+        path_request.descriptor = AT_FDCWD;
+        path_request.address = (uint64_t)(uintptr_t)xattr_path;
+        path_request.offset = (uint64_t)(uintptr_t)statx_buffer;
+        path_request.length = 0x7ffu;
+        failures += submit_one(
+            descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &path_request,
+            0x535441545853495aull, "submit size statx", &path_result);
+        failures += expect("size statx completion", path_result, 0);
+        failures += expect_true("ftruncate size",
+            statx_buffer[40] == 123u && statx_buffer[41] == 0u &&
+            statx_buffer[47] == 0u);
+        (void)raw_syscall6(
+            SYS_close, xattr_descriptor, 0, 0, 0, 0, 0);
+
+        memset(&path_request, 0, sizeof(path_request));
+        path_request.opcode = IORING_OP_UNLINKAT;
+        path_request.descriptor = AT_FDCWD;
+        path_request.address = (uint64_t)(uintptr_t)xattr_path;
+        failures += submit_one(
+            descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &path_request,
+            0x554e4c494e4b5841ull, "submit xattr unlink", &path_result);
+        failures += expect("xattr unlink completion", path_result, 0);
     }
 
     (void)raw_syscall6(SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
