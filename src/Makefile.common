@@ -63,6 +63,7 @@ EDGE_SHARED_SRCS := \
 	$(SRC)/kernel/userfaultfd_ioctl.c \
 	$(SRC)/kernel/perf_event.c \
 	$(SRC)/kernel/perf_event_runtime.c \
+	$(SRC)/kernel/quota_runtime.c \
 	$(SRC)/kernel/file_description_runtime.c \
 	$(SRC)/kernel/fd_runtime.c \
 	$(SRC)/kernel/fd_table_runtime.c \

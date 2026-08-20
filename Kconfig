@@ -124,6 +124,13 @@ config IO_URING
       Enable Linux io_uring setup, shared submission and completion rings,
       registration, and asynchronous descriptor operations.
 
+config QUOTA
+    bool "Linux filesystem quotas"
+    default y
+    help
+      Enable Linux quotactl and quotactl_fd control, quota formats, grace
+      information, and per-user, per-group, and per-project limit records.
+
 config KEYS
     bool "Linux key retention service"
     default y

@@ -4437,6 +4437,16 @@ perf-event-runtime-unit: tools/tests/perf_event_runtime_unit.c \
 		-o $(OUT)/tests/perf_event_runtime_unit
 	@$(OUT)/tests/perf_event_runtime_unit
 
+.PHONY: quota-runtime-unit
+quota-runtime-unit: tools/tests/quota_runtime_unit.c \
+		$(SRC)/kernel/quota_runtime.c include/kernel/quota_runtime.h
+	@mkdir -p $(OUT)/tests
+	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fno-builtin \
+		-iquote $(INC) tools/tests/quota_runtime_unit.c \
+		$(SRC)/kernel/quota_runtime.c \
+		-o $(OUT)/tests/quota_runtime_unit
+	@$(OUT)/tests/quota_runtime_unit
+
 abi-service-dispatch-unit: tools/tests/abi_service_dispatch_unit.c $(SRC)/kernel/abi_service_dispatch.c
 	@mkdir -p $(OUT)/tests
 	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fno-builtin \

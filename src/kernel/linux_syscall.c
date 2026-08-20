@@ -53,6 +53,7 @@
 #include "kernel/device_uevent.h"
 #include "kernel/directory_runtime.h"
 #include "kernel/process_runtime.h"
+#include "kernel/quota_runtime.h"
 #include "kernel/clone_runtime.h"
 #include "kernel/posix_timer_runtime.h"
 #include "kernel/posix_mq_runtime.h"
@@ -115,6 +116,8 @@ static int64_t edge_linux_sys_keyring(
 static int64_t edge_linux_sys_fanotify(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_perf_event_open(
+    edge_linux_syscall_context_t *context);
+static int64_t edge_linux_sys_quota(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_truncate(
     edge_linux_syscall_context_t *context);
@@ -11211,6 +11214,178 @@ static int64_t edge_linux_statfs_magic(const char *filesystem) {
     if (!strcmp(filesystem, "overlay"))
         return EDGE_LINUX_OVERLAYFS_SUPER_MAGIC;
     return 0;
+}
+
+#define EDGE_LINUX_Q_SYNC         0x800001u
+#define EDGE_LINUX_Q_QUOTAON      0x800002u
+#define EDGE_LINUX_Q_QUOTAOFF     0x800003u
+#define EDGE_LINUX_Q_GETFMT       0x800004u
+#define EDGE_LINUX_Q_GETINFO      0x800005u
+#define EDGE_LINUX_Q_SETINFO      0x800006u
+#define EDGE_LINUX_Q_GETQUOTA     0x800007u
+#define EDGE_LINUX_Q_SETQUOTA     0x800008u
+#define EDGE_LINUX_Q_GETNEXTQUOTA 0x800009u
+
+static int edge_linux_quota_admin(
+    const kernel_linux_identity_t *identity) {
+    return identity &&
+           ((identity->effective_capabilities >>
+             EDGE_LINUX_CAP_SYS_ADMIN) & 1u);
+}
+
+static int edge_linux_quota_permission(
+    const kernel_linux_identity_t *identity, uint32_t operation,
+    uint32_t type, uint32_t id) {
+    if (!identity) return -EDGE_LINUX_ESRCH;
+    if (operation == EDGE_LINUX_Q_GETFMT ||
+        operation == EDGE_LINUX_Q_SYNC ||
+        operation == EDGE_LINUX_Q_GETINFO)
+        return 0;
+    if (operation == EDGE_LINUX_Q_GETQUOTA &&
+        ((type == KERNEL_QUOTA_USER && id == identity->euid) ||
+         (type == KERNEL_QUOTA_GROUP && id == identity->egid)))
+        return 0;
+    return edge_linux_quota_admin(identity) ? 0 : -EDGE_LINUX_EPERM;
+}
+
+static int edge_linux_quota_superblock(
+    edge_linux_syscall_context_t *context, uint32_t operation,
+    vfs_superblock_t **superblock) {
+    kernel_vfs_descriptor_t descriptor;
+    kernel_vfs_target_t target;
+    kernel_vfs_xattr_scratch_t scratch;
+    int status;
+
+    if (!superblock) return -EDGE_LINUX_EINVAL;
+    *superblock = 0;
+    if (context->id == EDGE_LINUX_SYS_quotactl_fd) {
+        if (context->arguments[0] > INT32_MAX)
+            return -EDGE_LINUX_EBADF;
+        status = kernel_vfs_describe_descriptor(
+            (int32_t)context->arguments[0], &descriptor);
+        if (status < 0) return status;
+        if (!descriptor.superblock) return -EDGE_LINUX_ENOTBLK;
+        *superblock = descriptor.superblock;
+        return 0;
+    }
+    if (!context->arguments[1])
+        return operation == EDGE_LINUX_Q_SYNC ? 1 :
+            -EDGE_LINUX_ENODEV;
+    status = kernel_vfs_current_xattr_scratch(&scratch);
+    if (status < 0) return status;
+    status = edge_linux_copy_user_string(
+        context, context->arguments[1], scratch.path,
+        scratch.path_capacity, EDGE_LINUX_ENAMETOOLONG);
+    if (status < 0) return status;
+    *superblock = vfs_superblock_for_device_name(scratch.path);
+    if (*superblock) return 0;
+    status = kernel_vfs_resolve_path(scratch.path, 0, &target);
+    if (status < 0) return status;
+    if (!target.superblock) return -EDGE_LINUX_ENODEV;
+    *superblock = target.superblock;
+    return 0;
+}
+
+static int64_t edge_linux_sys_quota(
+    edge_linux_syscall_context_t *context) {
+#ifndef CONFIG_QUOTA
+    (void)context;
+    return -EDGE_LINUX_ENOSYS;
+#else
+    kernel_linux_identity_t identity;
+    kernel_quota_block_t quota;
+    kernel_quota_next_block_t next;
+    kernel_quota_info_t information;
+    vfs_superblock_t *superblock;
+    uint64_t raw_command = context->id == EDGE_LINUX_SYS_quotactl_fd ?
+        context->arguments[1] : context->arguments[0];
+    uint64_t user_address = context->arguments[3];
+    uint32_t command;
+    uint32_t operation;
+    uint32_t type;
+    uint32_t id = (uint32_t)context->arguments[2];
+    uint32_t format;
+    int status;
+
+    if (raw_command > UINT32_MAX) return -EDGE_LINUX_EINVAL;
+    command = (uint32_t)raw_command;
+    operation = command >> 8;
+    type = command & 0xffu;
+    if (context->id == EDGE_LINUX_SYS_quotactl_fd) {
+        status = edge_linux_quota_superblock(
+            context, operation, &superblock);
+        if (status < 0) return status;
+    }
+    if (type >= KERNEL_QUOTA_TYPES) return -EDGE_LINUX_EINVAL;
+    if (kernel_current_linux_identity(&identity) < 0)
+        return -EDGE_LINUX_ESRCH;
+    status = edge_linux_quota_permission(&identity, operation, type, id);
+    if (status < 0) return status;
+    if (context->id != EDGE_LINUX_SYS_quotactl_fd) {
+        status = edge_linux_quota_superblock(
+            context, operation, &superblock);
+        if (status == 1) {
+            return vfs_filesystem_sync_all() < 0 ?
+                -EDGE_LINUX_EIO : 0;
+        }
+        if (status < 0) return status;
+    }
+
+    switch (operation) {
+    case EDGE_LINUX_Q_QUOTAON: {
+        kernel_vfs_xattr_scratch_t scratch;
+        if (!user_address) return -EDGE_LINUX_EFAULT;
+        status = kernel_vfs_current_xattr_scratch(&scratch);
+        if (status < 0) return status;
+        status = edge_linux_copy_user_string(
+            context, user_address, scratch.path, scratch.path_capacity,
+            EDGE_LINUX_ENAMETOOLONG);
+        if (status < 0) return status;
+        return kernel_quota_enable(superblock, type, id);
+    }
+    case EDGE_LINUX_Q_QUOTAOFF:
+        return kernel_quota_disable(superblock, type);
+    case EDGE_LINUX_Q_SYNC:
+        return kernel_quota_sync(superblock, type);
+    case EDGE_LINUX_Q_GETFMT:
+        status = kernel_quota_format(superblock, type, &format);
+        if (status < 0) return status;
+        return !user_address || edge_linux_copy_to_user(
+            context, user_address, &format, sizeof(format)) < 0 ?
+            -EDGE_LINUX_EFAULT : 0;
+    case EDGE_LINUX_Q_GETINFO:
+        status = kernel_quota_get_info(superblock, type, &information);
+        if (status < 0) return status;
+        return !user_address || edge_linux_copy_to_user(
+            context, user_address, &information, sizeof(information)) < 0 ?
+            -EDGE_LINUX_EFAULT : 0;
+    case EDGE_LINUX_Q_SETINFO:
+        if (!user_address || edge_linux_copy_from_user(
+                context, &information, user_address,
+                sizeof(information)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        return kernel_quota_set_info(superblock, type, &information);
+    case EDGE_LINUX_Q_GETQUOTA:
+        status = kernel_quota_get(superblock, type, id, &quota);
+        if (status < 0) return status;
+        return !user_address || edge_linux_copy_to_user(
+            context, user_address, &quota, sizeof(quota)) < 0 ?
+            -EDGE_LINUX_EFAULT : 0;
+    case EDGE_LINUX_Q_GETNEXTQUOTA:
+        status = kernel_quota_get_next(superblock, type, id, &next);
+        if (status < 0) return status;
+        return !user_address || edge_linux_copy_to_user(
+            context, user_address, &next, sizeof(next)) < 0 ?
+            -EDGE_LINUX_EFAULT : 0;
+    case EDGE_LINUX_Q_SETQUOTA:
+        if (!user_address || edge_linux_copy_from_user(
+                context, &quota, user_address, sizeof(quota)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        return kernel_quota_set(superblock, type, id, &quota);
+    default:
+        return -EDGE_LINUX_EINVAL;
+    }
+#endif
 }
 
 static int edge_linux_statfs_from_superblock(

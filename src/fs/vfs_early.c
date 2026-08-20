@@ -531,6 +531,20 @@ vfs_superblock_t *vfs_superblock_for_mount_id(uint64_t mount_id) {
     return 0;
 }
 
+vfs_superblock_t *vfs_superblock_for_device_name(const char *device_name) {
+    const char *basename;
+    if (!device_name || !device_name[0]) return 0;
+    basename = device_name;
+    for (const char *cursor = device_name; *cursor; ++cursor)
+        if (*cursor == '/' && cursor[1]) basename = cursor + 1;
+    for (int index = g_mount_count - 1; index >= 0; --index)
+        if (g_mount_at(index).dev_name[0] &&
+            (text_equal(g_mount_at(index).dev_name, device_name) ||
+             text_equal(g_mount_at(index).dev_name, basename)))
+            return &g_mount_at(index);
+    return 0;
+}
+
 int vfs_remount(const char *target, uint32_t mount_flags) {
     vfs_superblock_t *mount;
     if (!target || target[0] != '/') return -1;

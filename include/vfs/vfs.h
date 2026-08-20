@@ -496,6 +496,7 @@ int vfs_inode_fileattr_set(vfs_superblock_t *sb, vfs_inode_t *inode,
 int vfs_mount_id_for_superblock(const vfs_superblock_t *sb,
                                 uint64_t *mount_id_out);
 vfs_superblock_t *vfs_superblock_for_mount_id(uint64_t mount_id);
+vfs_superblock_t *vfs_superblock_for_device_name(const char *device_name);
 uint32_t vfs_mount_flags_for_path(const char *path);
 int vfs_mkdir(const char *path);
 int vfs_mkdir_mode(const char *path, uint16_t mode);

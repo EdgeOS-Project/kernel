@@ -380,6 +380,10 @@ case EDGE_LINUX_SYS_rt_sigqueueinfo:
 case EDGE_LINUX_SYS_rt_tgsigqueueinfo:
     context->result = edge_linux_sys_queued_signal(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_quotactl:
+case EDGE_LINUX_SYS_quotactl_fd:
+    context->result = edge_linux_sys_quota(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_readlink:
 case EDGE_LINUX_SYS_readlinkat:
     context->result = edge_linux_sys_readlink(context);
