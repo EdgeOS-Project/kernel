@@ -90,6 +90,11 @@ struct linux_epoll_event {
 #define IORING_OP_RECV 27u
 #define IORING_OP_TEE 33u
 #define IORING_OP_SHUTDOWN 34u
+#define IORING_OP_RENAMEAT 35u
+#define IORING_OP_UNLINKAT 36u
+#define IORING_OP_MKDIRAT 37u
+#define IORING_OP_SYMLINKAT 38u
+#define IORING_OP_LINKAT 39u
 #define IORING_OFF_SQ_RING 0x00000000ull
 #define IORING_OFF_CQ_RING 0x08000000ull
 #define IORING_OFF_SQES 0x10000000ull
@@ -103,6 +108,7 @@ struct linux_epoll_event {
 #define EPOLL_CTL_ADD 1u
 #define MADV_DONTNEED 4u
 #define POSIX_FADV_NORMAL 0u
+#define AT_REMOVEDIR 0x200u
 
 struct kernel_timespec {
     int64_t seconds;
@@ -316,6 +322,35 @@ static void *map_ring(long descriptor, uint64_t offset) {
     return result < 0 && result >= -4095 ? 0 : (void *)(uintptr_t)result;
 }
 
+static int submit_one(
+        long ring_descriptor, volatile uint32_t *sq_tail,
+        volatile uint32_t *sq_mask, volatile uint32_t *sq_array,
+        struct io_uring_sqe *sqes, volatile uint32_t *cq_head,
+        volatile uint32_t *cq_tail, volatile uint32_t *cq_mask,
+        struct io_uring_cqe *cqes, const struct io_uring_sqe *request,
+        uint64_t user_data, const char *name, int32_t *result) {
+    uint32_t submission = __atomic_load_n(sq_tail, __ATOMIC_ACQUIRE);
+    uint32_t completion = __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE);
+    uint32_t submission_slot = submission & *sq_mask;
+    uint32_t completion_slot = completion & *cq_mask;
+    int failures = 0;
+
+    sqes[submission_slot] = *request;
+    sqes[submission_slot].user_data = user_data;
+    sq_array[submission_slot] = submission_slot;
+    __atomic_store_n(sq_tail, submission + 1u, __ATOMIC_RELEASE);
+    failures += expect(name, raw_syscall6(
+        SYS_io_uring_enter, ring_descriptor, 1, 1,
+        IORING_ENTER_GETEVENTS, 0, 0), 1);
+    failures += expect_true(name,
+        __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == completion + 1u &&
+        cqes[completion_slot].user_data == user_data);
+    if (result)
+        *result = cqes[completion_slot].result;
+    __atomic_store_n(cq_head, completion + 1u, __ATOMIC_RELEASE);
+    return failures;
+}
+
 static int run_tests(void) {
     struct io_uring_probe probe;
     struct io_uring_params parameters;
@@ -364,6 +399,14 @@ static int run_tests(void) {
     uint64_t advice_address = 0;
     char tee_buffer[5] = {0};
     static const char tee_data[] = "tee!";
+    static const char path_directory[] = "/tmp/edgeos-uring-path";
+    static const char path_source[] = "/tmp/edgeos-uring-path/source";
+    static const char path_renamed[] = "/tmp/edgeos-uring-path/renamed";
+    static const char path_hardlink[] = "/tmp/edgeos-uring-path/hard";
+    static const char path_symlink[] = "/tmp/edgeos-uring-path/symbolic";
+    static const char symlink_target[] = "source";
+    struct io_uring_sqe path_request;
+    int32_t path_result = -1;
     struct linux_epoll_event epoll_event = {
         EPOLLIN, 0x45504f4c4c444154ull,
     };
@@ -497,6 +540,17 @@ static int run_tests(void) {
         (probe.operations[IORING_OP_EPOLL_CTL].flags &
          IO_URING_OP_SUPPORTED) != 0 &&
         (probe.operations[IORING_OP_TEE].flags &
+         IO_URING_OP_SUPPORTED) != 0);
+    failures += expect_true("probe path operations",
+        (probe.operations[IORING_OP_RENAMEAT].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_UNLINKAT].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_MKDIRAT].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_SYMLINKAT].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_LINKAT].flags &
          IO_URING_OP_SUPPORTED) != 0);
 
     event_descriptor = raw_syscall6(
@@ -1069,6 +1123,98 @@ static int run_tests(void) {
         if (tee_output[index] >= 0)
             (void)raw_syscall6(SYS_close, tee_output[index], 0, 0, 0, 0, 0);
     }
+
+    memset(&path_request, 0, sizeof(path_request));
+    path_request.opcode = IORING_OP_MKDIRAT;
+    path_request.descriptor = AT_FDCWD;
+    path_request.address = (uint64_t)(uintptr_t)path_directory;
+    path_request.length = 0700u;
+    failures += submit_one(
+        descriptor, sq_tail, sq_mask, sq_array, sqes,
+        cq_head, cq_tail, cq_mask, cqes, &path_request,
+        0x4d4b444952415431ull, "submit mkdirat", &path_result);
+    failures += expect("mkdirat completion", path_result, 0);
+
+    memset(&path_request, 0, sizeof(path_request));
+    path_request.opcode = IORING_OP_OPENAT;
+    path_request.descriptor = AT_FDCWD;
+    path_request.address = (uint64_t)(uintptr_t)path_source;
+    path_request.length = 0600u;
+    path_request.operation_flags = O_RDWR | O_CREAT | O_TRUNC;
+    failures += submit_one(
+        descriptor, sq_tail, sq_mask, sq_array, sqes,
+        cq_head, cq_tail, cq_mask, cqes, &path_request,
+        0x504154484f50454eull, "submit path open", &path_result);
+    failures += expect_true("path open completion", path_result >= 0);
+    if (path_result >= 0)
+        (void)raw_syscall6(SYS_close, path_result, 0, 0, 0, 0, 0);
+
+    memset(&path_request, 0, sizeof(path_request));
+    path_request.opcode = IORING_OP_LINKAT;
+    path_request.descriptor = AT_FDCWD;
+    path_request.address = (uint64_t)(uintptr_t)path_source;
+    path_request.offset = (uint64_t)(uintptr_t)path_hardlink;
+    path_request.length = (uint32_t)AT_FDCWD;
+    failures += submit_one(
+        descriptor, sq_tail, sq_mask, sq_array, sqes,
+        cq_head, cq_tail, cq_mask, cqes, &path_request,
+        0x4c494e4b41543031ull, "submit linkat", &path_result);
+    failures += expect("linkat completion", path_result, 0);
+
+    memset(&path_request, 0, sizeof(path_request));
+    path_request.opcode = IORING_OP_SYMLINKAT;
+    path_request.descriptor = AT_FDCWD;
+    path_request.address = (uint64_t)(uintptr_t)symlink_target;
+    path_request.offset = (uint64_t)(uintptr_t)path_symlink;
+    failures += submit_one(
+        descriptor, sq_tail, sq_mask, sq_array, sqes,
+        cq_head, cq_tail, cq_mask, cqes, &path_request,
+        0x53594d4c494e4b31ull, "submit symlinkat", &path_result);
+    failures += expect("symlinkat completion", path_result, 0);
+
+    memset(&path_request, 0, sizeof(path_request));
+    path_request.opcode = IORING_OP_RENAMEAT;
+    path_request.descriptor = AT_FDCWD;
+    path_request.address = (uint64_t)(uintptr_t)path_source;
+    path_request.offset = (uint64_t)(uintptr_t)path_renamed;
+    path_request.length = (uint32_t)AT_FDCWD;
+    failures += submit_one(
+        descriptor, sq_tail, sq_mask, sq_array, sqes,
+        cq_head, cq_tail, cq_mask, cqes, &path_request,
+        0x52454e414d454154ull, "submit renameat", &path_result);
+    failures += expect("renameat completion", path_result, 0);
+
+    memset(&path_request, 0, sizeof(path_request));
+    path_request.opcode = IORING_OP_UNLINKAT;
+    path_request.descriptor = AT_FDCWD;
+    path_request.address = (uint64_t)(uintptr_t)path_hardlink;
+    failures += submit_one(
+        descriptor, sq_tail, sq_mask, sq_array, sqes,
+        cq_head, cq_tail, cq_mask, cqes, &path_request,
+        0x554e4c494e4b3031ull, "submit unlink hardlink", &path_result);
+    failures += expect("unlink hardlink completion", path_result, 0);
+
+    path_request.address = (uint64_t)(uintptr_t)path_symlink;
+    failures += submit_one(
+        descriptor, sq_tail, sq_mask, sq_array, sqes,
+        cq_head, cq_tail, cq_mask, cqes, &path_request,
+        0x554e4c494e4b3032ull, "submit unlink symlink", &path_result);
+    failures += expect("unlink symlink completion", path_result, 0);
+
+    path_request.address = (uint64_t)(uintptr_t)path_renamed;
+    failures += submit_one(
+        descriptor, sq_tail, sq_mask, sq_array, sqes,
+        cq_head, cq_tail, cq_mask, cqes, &path_request,
+        0x554e4c494e4b3033ull, "submit unlink renamed", &path_result);
+    failures += expect("unlink renamed completion", path_result, 0);
+
+    path_request.address = (uint64_t)(uintptr_t)path_directory;
+    path_request.operation_flags = AT_REMOVEDIR;
+    failures += submit_one(
+        descriptor, sq_tail, sq_mask, sq_array, sqes,
+        cq_head, cq_tail, cq_mask, cqes, &path_request,
+        0x554e4c494e4b4449ull, "submit unlink directory", &path_result);
+    failures += expect("unlink directory completion", path_result, 0);
 
     (void)raw_syscall6(SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
     (void)raw_syscall6(SYS_munmap, (long)cq_ring, PAGE_SIZE, 0, 0, 0, 0);

@@ -94,6 +94,16 @@ static int64_t edge_linux_sys_tee(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_epoll(
     edge_linux_syscall_context_t *context);
+static int64_t edge_linux_sys_mkdir(
+    edge_linux_syscall_context_t *context);
+static int64_t edge_linux_sys_symlink(
+    edge_linux_syscall_context_t *context);
+static int64_t edge_linux_sys_link(
+    edge_linux_syscall_context_t *context);
+static int64_t edge_linux_sys_unlink(
+    edge_linux_syscall_context_t *context);
+static int64_t edge_linux_sys_rename(
+    edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_statx(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_socket_buffer(
@@ -6880,6 +6890,11 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_OP_EPOLL_CTL 29u
 #define EDGE_LINUX_IORING_OP_TEE       33u
 #define EDGE_LINUX_IORING_OP_SHUTDOWN  34u
+#define EDGE_LINUX_IORING_OP_RENAMEAT  35u
+#define EDGE_LINUX_IORING_OP_UNLINKAT  36u
+#define EDGE_LINUX_IORING_OP_MKDIRAT   37u
+#define EDGE_LINUX_IORING_OP_SYMLINKAT 38u
+#define EDGE_LINUX_IORING_OP_LINKAT    39u
 #define EDGE_LINUX_IORING_OP_LAST      65u
 
 #define EDGE_LINUX_IOSQE_FIXED_FILE       (1u << 0)
@@ -7150,6 +7165,53 @@ static int64_t edge_linux_io_uring_execute_vfs(
         nested.arguments[2] = submission->length;
         nested.arguments[3] = submission->operation_flags;
         return edge_linux_sys_tee(&nested);
+    case EDGE_LINUX_IORING_OP_RENAMEAT:
+        if (submission->buffer_index || submission->splice_descriptor)
+            return -EDGE_LINUX_EINVAL;
+        nested.id = EDGE_LINUX_SYS_renameat2;
+        nested.arguments[0] = (uint32_t)submission->descriptor;
+        nested.arguments[1] = submission->address;
+        nested.arguments[2] = submission->length;
+        nested.arguments[3] = submission->offset;
+        nested.arguments[4] = submission->operation_flags;
+        return edge_linux_sys_rename(&nested);
+    case EDGE_LINUX_IORING_OP_UNLINKAT:
+        if (submission->offset || submission->length ||
+            submission->buffer_index || submission->splice_descriptor)
+            return -EDGE_LINUX_EINVAL;
+        nested.id = EDGE_LINUX_SYS_unlinkat;
+        nested.arguments[0] = (uint32_t)submission->descriptor;
+        nested.arguments[1] = submission->address;
+        nested.arguments[2] = submission->operation_flags;
+        return edge_linux_sys_unlink(&nested);
+    case EDGE_LINUX_IORING_OP_MKDIRAT:
+        if (submission->offset || submission->operation_flags ||
+            submission->buffer_index || submission->splice_descriptor)
+            return -EDGE_LINUX_EINVAL;
+        nested.id = EDGE_LINUX_SYS_mkdirat;
+        nested.arguments[0] = (uint32_t)submission->descriptor;
+        nested.arguments[1] = submission->address;
+        nested.arguments[2] = submission->length;
+        return edge_linux_sys_mkdir(&nested);
+    case EDGE_LINUX_IORING_OP_SYMLINKAT:
+        if (submission->length || submission->operation_flags ||
+            submission->buffer_index || submission->splice_descriptor)
+            return -EDGE_LINUX_EINVAL;
+        nested.id = EDGE_LINUX_SYS_symlinkat;
+        nested.arguments[0] = submission->address;
+        nested.arguments[1] = (uint32_t)submission->descriptor;
+        nested.arguments[2] = submission->offset;
+        return edge_linux_sys_symlink(&nested);
+    case EDGE_LINUX_IORING_OP_LINKAT:
+        if (submission->buffer_index || submission->splice_descriptor)
+            return -EDGE_LINUX_EINVAL;
+        nested.id = EDGE_LINUX_SYS_linkat;
+        nested.arguments[0] = (uint32_t)submission->descriptor;
+        nested.arguments[1] = submission->address;
+        nested.arguments[2] = submission->length;
+        nested.arguments[3] = submission->offset;
+        nested.arguments[4] = submission->operation_flags;
+        return edge_linux_sys_link(&nested);
     default:
         (void)ring_id;
         return -EDGE_LINUX_EINVAL;
@@ -7306,6 +7368,11 @@ static int32_t edge_linux_io_uring_execute(
     case EDGE_LINUX_IORING_OP_MADVISE:
     case EDGE_LINUX_IORING_OP_EPOLL_CTL:
     case EDGE_LINUX_IORING_OP_TEE:
+    case EDGE_LINUX_IORING_OP_RENAMEAT:
+    case EDGE_LINUX_IORING_OP_UNLINKAT:
+    case EDGE_LINUX_IORING_OP_MKDIRAT:
+    case EDGE_LINUX_IORING_OP_SYMLINKAT:
+    case EDGE_LINUX_IORING_OP_LINKAT:
         result = edge_linux_io_uring_execute_vfs(
             context, ring_id, submission);
         break;
@@ -7548,7 +7615,12 @@ static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
            opcode == EDGE_LINUX_IORING_OP_OPENAT2 ||
            opcode == EDGE_LINUX_IORING_OP_EPOLL_CTL ||
            opcode == EDGE_LINUX_IORING_OP_TEE ||
-           opcode == EDGE_LINUX_IORING_OP_SHUTDOWN;
+           opcode == EDGE_LINUX_IORING_OP_SHUTDOWN ||
+           opcode == EDGE_LINUX_IORING_OP_RENAMEAT ||
+           opcode == EDGE_LINUX_IORING_OP_UNLINKAT ||
+           opcode == EDGE_LINUX_IORING_OP_MKDIRAT ||
+           opcode == EDGE_LINUX_IORING_OP_SYMLINKAT ||
+           opcode == EDGE_LINUX_IORING_OP_LINKAT;
 }
 
 static int64_t edge_linux_sys_io_uring_register(
