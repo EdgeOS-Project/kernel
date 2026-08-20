@@ -5,6 +5,9 @@ case EDGE_LINUX_SYS_faccessat:
 case EDGE_LINUX_SYS_faccessat2:
     context->result = edge_linux_sys_access(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_acct:
+    context->result = edge_linux_sys_acct(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_io_cancel:
 case EDGE_LINUX_SYS_io_destroy:
 case EDGE_LINUX_SYS_io_getevents:

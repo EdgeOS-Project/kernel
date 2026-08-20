@@ -12,6 +12,7 @@
 #include "block/device_mapper.h"
 #include "block/loop.h"
 #include "kernel/process_runtime.h"
+#include "kernel/process_accounting.h"
 #include "kernel/aio_runtime.h"
 #include "kernel/io_uring_runtime.h"
 #include "kernel/landlock_runtime.h"
@@ -21218,6 +21219,21 @@ static void task_request_deferred_group_exit(kernel_task_t *task,
         (void)edge_smp_reschedule((uint32_t)owner - 1u);
 }
 
+static void task_account_process_exit(kernel_task_t *task, int exit_code,
+                                      uint32_t signal, int final_thread) {
+#ifdef CONFIG_BSD_PROCESS_ACCT
+    kernel_proc_task_view_t view;
+    if (kernel_task_view_from_task(task, &view) == 0)
+        kernel_process_accounting_task_exit(
+            &view, exit_code, signal, final_thread);
+#else
+    (void)task;
+    (void)exit_code;
+    (void)signal;
+    (void)final_thread;
+#endif
+}
+
 void kernel_finish_deferred_group_exit(void) {
     kernel_task_t *task = current_task();
     int exit_code;
@@ -21366,6 +21382,7 @@ static __attribute__((noreturn)) void task_finish(kernel_task_t *task,
             task_scheduler_counter_add(
                 &task->rusage_children_system_time_us,
                 sibling->rusage_children_system_time_us);
+            task_account_process_exit(sibling, exit_code, signal, 0);
             robust_futex_cleanup(sibling);
             fifo_open_pending_cancel(sibling);
             task_clear_child_tid(sibling);
@@ -21397,6 +21414,9 @@ static __attribute__((noreturn)) void task_finish(kernel_task_t *task,
         task->parent_tid = group_parent_tid;
         task->exit_signal = parent_signal;
     }
+    task_account_process_exit(
+        task, exit_code, signal,
+        whole_group || !signal_group_survives);
     robust_futex_cleanup(task);
     fifo_open_pending_cancel(task);
     task_clear_child_tid(task);

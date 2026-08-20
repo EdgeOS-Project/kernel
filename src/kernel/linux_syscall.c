@@ -54,6 +54,7 @@
 #include "kernel/device_uevent.h"
 #include "kernel/directory_runtime.h"
 #include "kernel/process_runtime.h"
+#include "kernel/process_accounting.h"
 #include "kernel/quota_runtime.h"
 #include "kernel/clone_runtime.h"
 #include "kernel/posix_timer_runtime.h"
@@ -119,6 +120,8 @@ static int64_t edge_linux_sys_fanotify(
 static int64_t edge_linux_sys_perf_event_open(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_quota(
+    edge_linux_syscall_context_t *context);
+static int64_t edge_linux_sys_acct(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_landlock(
     edge_linux_syscall_context_t *context);
@@ -11398,6 +11401,64 @@ static int64_t edge_linux_sys_quota(
     default:
         return -EDGE_LINUX_EINVAL;
     }
+#endif
+}
+
+static int64_t edge_linux_sys_acct(
+    edge_linux_syscall_context_t *context) {
+#ifndef CONFIG_BSD_PROCESS_ACCT
+    (void)context;
+    return -EDGE_LINUX_ENOSYS;
+#else
+    kernel_linux_identity_t identity;
+    kernel_vfs_xattr_scratch_t scratch;
+    kernel_vfs_target_t target;
+    uint64_t user_path;
+    int status;
+
+    if (kernel_current_linux_identity(&identity) < 0)
+        return -EDGE_LINUX_ESRCH;
+    if (!(identity.effective_capabilities &
+          (1ULL << EDGE_LINUX_CAP_SYS_PACCT)))
+        return -EDGE_LINUX_EPERM;
+    user_path = context->arguments[0];
+    if (!user_path)
+        return kernel_process_accounting_disable(
+            identity.pid_namespace_id);
+
+    status = kernel_vfs_current_xattr_scratch(&scratch);
+    if (status < 0) return status;
+    status = edge_linux_copy_user_string(
+        context, user_path, scratch.path, scratch.path_capacity,
+        EDGE_LINUX_ENAMETOOLONG);
+    if (status < 0) return status;
+    status = kernel_vfs_resolve_path(scratch.path, 0, &target);
+    if (status < 0) return status;
+    if (!target.inode) return -EDGE_LINUX_ENOENT;
+    if ((target.inode->mode & 0xf000u) == VFS_INODE_DIR)
+        return -EDGE_LINUX_EISDIR;
+    if ((target.inode->mode & 0xf000u) != VFS_INODE_FILE)
+        return -EDGE_LINUX_EACCES;
+    if (!target.superblock) return -EDGE_LINUX_EINVAL;
+    if (strcmp(target.superblock->fs_name, "procfs") == 0 ||
+        strcmp(target.superblock->fs_name, "sysfs") == 0)
+        return -EDGE_LINUX_EINVAL;
+    if (vfs_mount_flags_for_path(target.resolved_path) &
+        VFS_MOUNT_READONLY)
+        return -EDGE_LINUX_EROFS;
+    if (target.inode->metadata_flags & VFS_FILE_XFLAG_IMMUTABLE)
+        return -EDGE_LINUX_EPERM;
+    if (!target.superblock->ops || !target.superblock->ops->write)
+        return -EDGE_LINUX_EIO;
+    if (vfs_permission_check(target.inode, 2) < 0)
+        return -EDGE_LINUX_EACCES;
+    status = kernel_landlock_check_path(
+        target.resolved_path,
+        EDGE_LINUX_LANDLOCK_ACCESS_FS_WRITE_FILE);
+    if (status < 0) return status;
+    return kernel_process_accounting_enable(
+        identity.pid_namespace_id, target.resolved_path,
+        target.superblock, target.inode);
 #endif
 }
 

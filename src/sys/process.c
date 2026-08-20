@@ -26,6 +26,7 @@
 #include "kernel/namespace_runtime.h"
 #include "kernel/pid_index.h"
 #include "kernel/process_runtime.h"
+#include "kernel/process_accounting.h"
 #include "kernel/proc_maps.h"
 #include "kernel/signal_queue.h"
 #include "kernel/signal_runtime.h"
@@ -972,6 +973,8 @@ static void task_clear_user_regions(task_t *t);
 static void task_dump_slots_local(const char *reason);
 static const char *task_state_name_local(task_state_t state);
 static int process_thread_group_has_other_live(task_t *target, int tgid);
+static int kernel_task_view_from_task(const task_t *task,
+                                      kernel_proc_task_view_t *view);
 static volatile uint32_t g_detached_zombie_reap_pending;
 
 static int process_vm_live_users_raw(int owner_pid, const task_t *exclude) {
@@ -9338,6 +9341,16 @@ static void process_finish_task_exit(task_t *t, int code, const char *reason, in
 
     process_ptrace_tracer_exit(t);
     process_rusage_charge_current_run(t);
+#ifdef CONFIG_BSD_PROCESS_ACCT
+    {
+        kernel_proc_task_view_t accounting_view;
+        if (kernel_task_view_from_task(t, &accounting_view) == 0)
+            kernel_process_accounting_task_exit(
+                &accounting_view, code, t->termination_signal,
+                !process_thread_group_has_other_live(
+                    t, process_tgid_of_task(t)));
+    }
+#endif
     edge_linux_file_lock_task_exit(t->pid);
     kernel_sysv_sem_task_exit(t->pid);
     kernel_signal_queue_purge(t->pid, 1);

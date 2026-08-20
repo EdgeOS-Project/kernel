@@ -131,6 +131,13 @@ config QUOTA
       Enable Linux quotactl and quotactl_fd control, quota formats, grace
       information, and per-user, per-group, and per-project limit records.
 
+config BSD_PROCESS_ACCT
+    bool "BSD process accounting"
+    default y
+    help
+      Enable Linux acct and version 3 process accounting records, including
+      per-PID-namespace output files and thread-group exit aggregation.
+
 config KEYS
     bool "Linux key retention service"
     default y
