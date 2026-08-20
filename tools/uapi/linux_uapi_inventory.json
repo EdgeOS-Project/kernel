@@ -47,7 +47,8 @@
         "timeout removal and user-data cancellation",
         "classic and extended temporary signal-mask enter arguments",
         "OPENAT, OPENAT2, CLOSE, STATX and FALLOCATE through shared VFS handlers",
-        "SEND, RECV, SENDMSG, RECVMSG and SHUTDOWN through shared socket handlers"
+        "SEND, RECV, SENDMSG, RECVMSG and SHUTDOWN through shared socket handlers",
+        "CONNECT and ACCEPT through shared socket handlers"
       ],
       "missing": [
         "asynchronous worker execution",
@@ -55,7 +56,7 @@
         "multishot poll and timeout update operations",
         "fully interruptible enter suspension and extended wait deadlines",
         "descriptor leases across close and reuse",
-        "remaining supported VFS and socket operations, including connect and accept",
+        "remaining supported VFS and socket operations",
         "ia32 and x32 compatibility layouts"
       ],
       "runtime_tests": [
@@ -65,7 +66,7 @@
       "linux_oracle": {
         "status": "partial",
         "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309",
-        "scope": "setup, mmap, NOP, eventfd, poll, timeout, cancellation, openat, openat2, close, statx, fallocate, send, recv, sendmsg, recvmsg, shutdown and operation probe"
+        "scope": "setup, mmap, NOP, eventfd, poll, timeout, cancellation, openat, openat2, close, statx, fallocate, send, recv, sendmsg, recvmsg, shutdown, connect, accept and operation probe"
       }
     }
   ],

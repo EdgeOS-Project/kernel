@@ -25,11 +25,17 @@
 #if defined(__x86_64__)
 #define SYS_read 0
 #define SYS_eventfd2 290
+#define SYS_socket 41
 #define SYS_socketpair 53
+#define SYS_bind 49
+#define SYS_listen 50
 #elif defined(__aarch64__)
 #define SYS_read 63
 #define SYS_eventfd2 19
+#define SYS_socket 198
 #define SYS_socketpair 199
+#define SYS_bind 200
+#define SYS_listen 201
 #endif
 
 #define PROT_READ 1
@@ -56,6 +62,8 @@
 #define IORING_OP_RECVMSG 10u
 #define IORING_OP_TIMEOUT 11u
 #define IORING_OP_TIMEOUT_REMOVE 12u
+#define IORING_OP_ACCEPT 13u
+#define IORING_OP_CONNECT 16u
 #define IORING_OP_FALLOCATE 17u
 #define IORING_OP_OPENAT 18u
 #define IORING_OP_CLOSE 19u
@@ -71,6 +79,8 @@
 #define POLLIN 0x0001u
 #define ETIME 62
 #define ECANCELED 125
+#define AF_UNIX 1
+#define SOCK_STREAM 1
 
 struct kernel_timespec {
     int64_t seconds;
@@ -105,6 +115,11 @@ struct user_msghdr {
     uint64_t control_length;
     uint32_t flags;
     uint32_t padding2;
+};
+
+struct user_sockaddr_un {
+    uint16_t family;
+    char path[108];
 };
 
 struct io_uring_sqe {
@@ -315,6 +330,12 @@ static int run_tests(void) {
     struct user_msghdr send_message = {0};
     struct user_msghdr receive_message = {0};
     int32_t socket_descriptors[2] = {-1, -1};
+    int32_t listener_descriptor = -1;
+    int32_t client_descriptor = -1;
+    int32_t accepted_descriptor = -1;
+    static const struct user_sockaddr_un listen_address = {
+        AF_UNIX, "\0edgeos-io-uring-probe",
+    };
     uint64_t temporary_signal_mask = 0;
     int failures = 0;
 
@@ -424,6 +445,11 @@ static int run_tests(void) {
         (probe.operations[IORING_OP_RECVMSG].flags &
          IO_URING_OP_SUPPORTED) != 0 &&
         (probe.operations[IORING_OP_SHUTDOWN].flags &
+         IO_URING_OP_SUPPORTED) != 0);
+    failures += expect_true("probe socket connection operations",
+        (probe.operations[IORING_OP_ACCEPT].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_CONNECT].flags &
          IO_URING_OP_SUPPORTED) != 0);
 
     event_descriptor = raw_syscall6(
@@ -756,6 +782,61 @@ static int run_tests(void) {
         (void)raw_syscall6(
             SYS_close, socket_descriptors[1], 0, 0, 0, 0, 0);
     }
+
+    listener_descriptor = (int32_t)raw_syscall6(
+        SYS_socket, AF_UNIX, SOCK_STREAM, 0, 0, 0, 0);
+    failures += expect_true("listener socket", listener_descriptor >= 0);
+    if (listener_descriptor >= 0) {
+        failures += expect("listener bind", raw_syscall6(
+            SYS_bind, listener_descriptor, (long)&listen_address,
+            sizeof(uint16_t) + sizeof("edgeos-io-uring-probe"), 0, 0, 0), 0);
+        failures += expect("listener listen", raw_syscall6(
+            SYS_listen, listener_descriptor, 1, 0, 0, 0, 0), 0);
+        client_descriptor = (int32_t)raw_syscall6(
+            SYS_socket, AF_UNIX, SOCK_STREAM, 0, 0, 0, 0);
+        failures += expect_true("client socket", client_descriptor >= 0);
+    }
+    if (listener_descriptor >= 0 && client_descriptor >= 0) {
+        memset(&sqes[4], 0, sizeof(sqes[4]));
+        sqes[4].opcode = IORING_OP_CONNECT;
+        sqes[4].descriptor = client_descriptor;
+        sqes[4].offset = sizeof(uint16_t) +
+            sizeof("edgeos-io-uring-probe");
+        sqes[4].address = (uint64_t)(uintptr_t)&listen_address;
+        sqes[4].user_data = 0x434f4e4e45435431ull;
+        sq_array[4] = 4;
+        __atomic_store_n(sq_tail, 21u, __ATOMIC_RELEASE);
+        failures += expect("submit connect", raw_syscall6(
+            SYS_io_uring_enter, descriptor, 1, 1,
+            IORING_ENTER_GETEVENTS, 0, 0), 1);
+        failures += expect_true("connect completion",
+            __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == 21u &&
+            cqes[20u & *cq_mask].user_data == 0x434f4e4e45435431ull &&
+            cqes[20u & *cq_mask].result == 0);
+        __atomic_store_n(cq_head, 21u, __ATOMIC_RELEASE);
+
+        memset(&sqes[5], 0, sizeof(sqes[5]));
+        sqes[5].opcode = IORING_OP_ACCEPT;
+        sqes[5].descriptor = listener_descriptor;
+        sqes[5].user_data = 0x4143434550543031ull;
+        sq_array[5] = 5;
+        __atomic_store_n(sq_tail, 22u, __ATOMIC_RELEASE);
+        failures += expect("submit accept", raw_syscall6(
+            SYS_io_uring_enter, descriptor, 1, 1,
+            IORING_ENTER_GETEVENTS, 0, 0), 1);
+        failures += expect_true("accept completion",
+            __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == 22u &&
+            cqes[21u & *cq_mask].user_data == 0x4143434550543031ull &&
+            cqes[21u & *cq_mask].result >= 0);
+        accepted_descriptor = cqes[21u & *cq_mask].result;
+        __atomic_store_n(cq_head, 22u, __ATOMIC_RELEASE);
+    }
+    if (accepted_descriptor >= 0)
+        (void)raw_syscall6(SYS_close, accepted_descriptor, 0, 0, 0, 0, 0);
+    if (client_descriptor >= 0)
+        (void)raw_syscall6(SYS_close, client_descriptor, 0, 0, 0, 0, 0);
+    if (listener_descriptor >= 0)
+        (void)raw_syscall6(SYS_close, listener_descriptor, 0, 0, 0, 0, 0);
 
     (void)raw_syscall6(SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
     (void)raw_syscall6(SYS_munmap, (long)cq_ring, PAGE_SIZE, 0, 0, 0, 0);
