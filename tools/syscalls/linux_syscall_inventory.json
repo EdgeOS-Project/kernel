@@ -9043,17 +9043,19 @@
     {
       "id": "ustat",
       "semantic_id": "ustat",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_ustat",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/ustat_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 136,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_ustat",
+          "evidence_status": "oracle-verified"
         },
         "aarch64": null
       }

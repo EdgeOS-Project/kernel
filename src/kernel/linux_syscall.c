@@ -11846,6 +11846,31 @@ static int64_t edge_linux_sys_statfs(
     return 0;
 }
 
+static int64_t edge_linux_sys_ustat(
+    edge_linux_syscall_context_t *context) {
+    struct edge_linux_statfs64 statfs;
+    struct edge_linux_ustat result;
+    uint64_t device = (uint32_t)context->arguments[0];
+    uint32_t major = kernel_file_device_major(device);
+    uint32_t minor = kernel_file_device_minor(device);
+    vfs_superblock_t *superblock;
+    int status;
+
+    if (major || !minor) return -EDGE_LINUX_EINVAL;
+    superblock = vfs_superblock_for_mount_id(minor);
+    if (!superblock) return -EDGE_LINUX_EINVAL;
+    status = edge_linux_statfs_from_superblock(superblock, &statfs);
+    if (status < 0) return status;
+    memset(&result, 0, sizeof(result));
+    result.f_tfree = (int32_t)statfs.f_bfree;
+    result.f_tinode = statfs.f_ffree;
+    if (!context->arguments[1] ||
+        edge_linux_copy_to_user(context, context->arguments[1], &result,
+                                sizeof(result)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    return 0;
+}
+
 static int edge_linux_lookup_file_metadata(
     edge_linux_syscall_context_t *context, int32_t directory,
     uint64_t user_path, uint32_t flags,

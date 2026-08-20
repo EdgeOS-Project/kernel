@@ -793,6 +793,20 @@ struct edge_linux_statfs64 {
     int64_t f_spare[4];
 };
 
+struct edge_linux_ustat {
+    int32_t f_tfree;
+    uint32_t __padding;
+    uint64_t f_tinode;
+    char f_fname[6];
+    char f_fpack[6];
+    uint32_t __tail_padding;
+};
+
+_Static_assert(sizeof(struct edge_linux_ustat) == 32u,
+               "Linux x86_64 ustat size mismatch");
+_Static_assert(offsetof(struct edge_linux_ustat, f_tinode) == 8u,
+               "Linux x86_64 ustat inode offset mismatch");
+
 #define EDGE_LINUX_SOL_PACKET 263u
 #define EDGE_LINUX_PACKET_ADD_MEMBERSHIP 1u
 #define EDGE_LINUX_PACKET_DROP_MEMBERSHIP 2u

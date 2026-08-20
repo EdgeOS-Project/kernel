@@ -616,6 +616,9 @@ case EDGE_LINUX_SYS_unlinkat:
 case EDGE_LINUX_SYS_userfaultfd:
     context->result = edge_linux_sys_userfaultfd(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_ustat:
+    context->result = edge_linux_sys_ustat(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_futimesat:
 case EDGE_LINUX_SYS_utime:
 case EDGE_LINUX_SYS_utimensat:
