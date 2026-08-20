@@ -45,7 +45,8 @@
         "relative and absolute timeout requests",
         "completion-count timeouts",
         "timeout removal and user-data cancellation",
-        "classic and extended temporary signal-mask enter arguments"
+        "classic and extended temporary signal-mask enter arguments",
+        "OPENAT, OPENAT2, CLOSE, STATX and FALLOCATE through shared VFS handlers"
       ],
       "missing": [
         "asynchronous worker execution",
@@ -63,7 +64,7 @@
       "linux_oracle": {
         "status": "partial",
         "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309",
-        "scope": "setup, mmap, NOP, eventfd, poll, timeout, cancellation and operation probe"
+        "scope": "setup, mmap, NOP, eventfd, poll, timeout, cancellation, openat, openat2, close, statx, fallocate and operation probe"
       }
     }
   ],

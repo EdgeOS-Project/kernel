@@ -34,6 +34,7 @@ EDGEOS_ASSESSMENTS = [
             "completion-count timeouts",
             "timeout removal and user-data cancellation",
             "classic and extended temporary signal-mask enter arguments",
+            "OPENAT, OPENAT2, CLOSE, STATX and FALLOCATE through shared VFS handlers",
         ],
         "missing": [
             "asynchronous worker execution",
@@ -52,8 +53,8 @@ EDGEOS_ASSESSMENTS = [
             "status": "partial",
             "reference": REFERENCE_COMMIT,
             "scope": (
-                "setup, mmap, NOP, eventfd, poll, timeout, cancellation "
-                "and operation probe"
+                "setup, mmap, NOP, eventfd, poll, timeout, cancellation, "
+                "openat, openat2, close, statx, fallocate and operation probe"
             ),
         },
     },

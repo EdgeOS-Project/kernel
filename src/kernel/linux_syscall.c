@@ -84,6 +84,10 @@ static int edge_linux_current_magic_fd(
 static int edge_linux_current_magic_executable(
     const char *path, const kernel_linux_identity_t *identity,
     int32_t *owner_out);
+static int64_t edge_linux_sys_fd_control(
+    edge_linux_syscall_context_t *context);
+static int64_t edge_linux_sys_statx(
+    edge_linux_syscall_context_t *context);
 
 static int edge_linux_pid_to_global(
     const kernel_linux_identity_t *caller, int32_t visible_pid,
@@ -6840,8 +6844,13 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_OP_TIMEOUT   11u
 #define EDGE_LINUX_IORING_OP_TIMEOUT_REMOVE 12u
 #define EDGE_LINUX_IORING_OP_ASYNC_CANCEL 14u
+#define EDGE_LINUX_IORING_OP_FALLOCATE 17u
+#define EDGE_LINUX_IORING_OP_OPENAT    18u
+#define EDGE_LINUX_IORING_OP_CLOSE     19u
+#define EDGE_LINUX_IORING_OP_STATX     21u
 #define EDGE_LINUX_IORING_OP_READ      22u
 #define EDGE_LINUX_IORING_OP_WRITE     23u
+#define EDGE_LINUX_IORING_OP_OPENAT2   28u
 #define EDGE_LINUX_IORING_OP_LAST      65u
 
 #define EDGE_LINUX_IOSQE_FIXED_FILE       (1u << 0)
@@ -7015,6 +7024,71 @@ static int64_t edge_linux_io_uring_execute_rw(
     return (int64_t)transferred;
 }
 
+static int64_t edge_linux_io_uring_execute_vfs(
+        edge_linux_syscall_context_t *context, int32_t ring_id,
+        const struct edge_linux_io_uring_sqe *submission) {
+    edge_linux_syscall_context_t nested = *context;
+
+    memset(nested.arguments, 0, sizeof(nested.arguments));
+    nested.route_status = EDGE_LINUX_SYSCALL_IMPLEMENTED;
+    switch (submission->opcode) {
+    case EDGE_LINUX_IORING_OP_FALLOCATE:
+        if (submission->buffer_index || submission->operation_flags ||
+            submission->splice_descriptor)
+            return -EDGE_LINUX_EINVAL;
+        nested.id = EDGE_LINUX_SYS_fallocate;
+        nested.arguments[0] = (uint32_t)submission->descriptor;
+        nested.arguments[1] = submission->length;
+        nested.arguments[2] = submission->offset;
+        nested.arguments[3] = submission->address;
+        return edge_linux_sys_fallocate(&nested);
+    case EDGE_LINUX_IORING_OP_OPENAT:
+        if (submission->buffer_index) return -EDGE_LINUX_EINVAL;
+        if (submission->splice_descriptor) return -EDGE_LINUX_ENXIO;
+        nested.id = EDGE_LINUX_SYS_openat;
+        nested.arguments[0] = (uint32_t)submission->descriptor;
+        nested.arguments[1] = submission->address;
+        nested.arguments[2] = submission->operation_flags;
+        nested.arguments[3] = submission->length;
+        return edge_linux_sys_open(&nested);
+    case EDGE_LINUX_IORING_OP_OPENAT2:
+        if (submission->buffer_index) return -EDGE_LINUX_EINVAL;
+        if (submission->splice_descriptor) return -EDGE_LINUX_ENXIO;
+        nested.id = EDGE_LINUX_SYS_openat2;
+        nested.arguments[0] = (uint32_t)submission->descriptor;
+        nested.arguments[1] = submission->address;
+        nested.arguments[2] = submission->offset;
+        nested.arguments[3] = submission->length;
+        return edge_linux_sys_open(&nested);
+    case EDGE_LINUX_IORING_OP_CLOSE:
+        if (submission->offset || submission->address ||
+            submission->length || submission->operation_flags ||
+            submission->buffer_index)
+            return -EDGE_LINUX_EINVAL;
+        if (submission->splice_descriptor) return -EDGE_LINUX_ENXIO;
+        if (kernel_anonymous_fd_descriptor_object_id(
+                submission->descriptor,
+                KERNEL_ANONYMOUS_FD_IO_URING) >= 0)
+            return -EDGE_LINUX_EBADF;
+        nested.id = EDGE_LINUX_SYS_close;
+        nested.arguments[0] = (uint32_t)submission->descriptor;
+        return edge_linux_sys_fd_control(&nested);
+    case EDGE_LINUX_IORING_OP_STATX:
+        if (submission->buffer_index || submission->splice_descriptor)
+            return -EDGE_LINUX_EINVAL;
+        nested.id = EDGE_LINUX_SYS_statx;
+        nested.arguments[0] = (uint32_t)submission->descriptor;
+        nested.arguments[1] = submission->address;
+        nested.arguments[2] = submission->operation_flags;
+        nested.arguments[3] = submission->length;
+        nested.arguments[4] = submission->offset;
+        return edge_linux_sys_statx(&nested);
+    default:
+        (void)ring_id;
+        return -EDGE_LINUX_EINVAL;
+    }
+}
+
 static int32_t edge_linux_io_uring_execute(
         edge_linux_syscall_context_t *context,
         int32_t ring_id,
@@ -7084,6 +7158,14 @@ static int32_t edge_linux_io_uring_execute(
         break;
     case EDGE_LINUX_IORING_OP_TIMEOUT:
         result = edge_linux_io_uring_timeout(
+            context, ring_id, submission);
+        break;
+    case EDGE_LINUX_IORING_OP_FALLOCATE:
+    case EDGE_LINUX_IORING_OP_OPENAT:
+    case EDGE_LINUX_IORING_OP_CLOSE:
+    case EDGE_LINUX_IORING_OP_STATX:
+    case EDGE_LINUX_IORING_OP_OPENAT2:
+        result = edge_linux_io_uring_execute_vfs(
             context, ring_id, submission);
         break;
     default:
@@ -7298,8 +7380,13 @@ static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
            opcode == EDGE_LINUX_IORING_OP_TIMEOUT ||
            opcode == EDGE_LINUX_IORING_OP_TIMEOUT_REMOVE ||
            opcode == EDGE_LINUX_IORING_OP_ASYNC_CANCEL ||
+           opcode == EDGE_LINUX_IORING_OP_FALLOCATE ||
+           opcode == EDGE_LINUX_IORING_OP_OPENAT ||
+           opcode == EDGE_LINUX_IORING_OP_CLOSE ||
+           opcode == EDGE_LINUX_IORING_OP_STATX ||
            opcode == EDGE_LINUX_IORING_OP_READ ||
-           opcode == EDGE_LINUX_IORING_OP_WRITE;
+           opcode == EDGE_LINUX_IORING_OP_WRITE ||
+           opcode == EDGE_LINUX_IORING_OP_OPENAT2;
 }
 
 static int64_t edge_linux_sys_io_uring_register(

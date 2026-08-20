@@ -34,7 +34,12 @@
 #define PROT_WRITE 2
 #define MAP_SHARED 1
 #define PAGE_SIZE 4096u
+#define EBADF 9
 #define EINVAL 22
+#define AT_FDCWD (-100)
+#define O_RDWR 2u
+#define O_CREAT 64u
+#define O_TRUNC 512u
 #define IORING_ENTER_GETEVENTS 1u
 #define IORING_ENTER_EXT_ARG (1u << 3)
 #define IORING_REGISTER_PROBE 8u
@@ -47,6 +52,11 @@
 #define IORING_OP_POLL_ADD 6u
 #define IORING_OP_TIMEOUT 11u
 #define IORING_OP_TIMEOUT_REMOVE 12u
+#define IORING_OP_FALLOCATE 17u
+#define IORING_OP_OPENAT 18u
+#define IORING_OP_CLOSE 19u
+#define IORING_OP_STATX 21u
+#define IORING_OP_OPENAT2 28u
 #define IORING_OFF_SQ_RING 0x00000000ull
 #define IORING_OFF_CQ_RING 0x08000000ull
 #define IORING_OFF_SQES 0x10000000ull
@@ -65,6 +75,12 @@ struct io_uring_getevents_arg {
     uint32_t signal_mask_size;
     uint32_t minimum_wait_microseconds;
     uint64_t timeout;
+};
+
+struct open_how {
+    uint64_t flags;
+    uint64_t mode;
+    uint64_t resolve;
 };
 
 struct io_uring_sqe {
@@ -249,6 +265,7 @@ static int run_tests(void) {
     volatile uint32_t *sq_array;
     volatile uint32_t *cq_head;
     volatile uint32_t *cq_tail;
+    volatile uint32_t *cq_mask;
     void *sq_ring;
     void *cq_ring;
     long descriptor;
@@ -257,6 +274,10 @@ static int run_tests(void) {
     struct kernel_timespec short_timeout = {0, 1000000};
     struct kernel_timespec long_timeout = {60, 0};
     struct io_uring_getevents_arg extended_argument = {0};
+    struct open_how open_how = {0};
+    uint8_t statx_buffer[256];
+    static const char null_path[] = "/dev/null";
+    static const char data_path[] = "/tmp/edgeos-io-uring-probe";
     uint64_t temporary_signal_mask = 0;
     int failures = 0;
 
@@ -308,6 +329,8 @@ static int run_tests(void) {
                                     parameters.cq_off.head);
     cq_tail = (volatile uint32_t *)((uint8_t *)cq_ring +
                                     parameters.cq_off.tail);
+    cq_mask = (volatile uint32_t *)((uint8_t *)cq_ring +
+                                    parameters.cq_off.ring_mask);
     cqes = (struct io_uring_cqe *)((uint8_t *)cq_ring +
                                    parameters.cq_off.cqes);
     memset(&sqes[0], 0, sizeof(sqes[0]));
@@ -342,6 +365,17 @@ static int run_tests(void) {
         (probe.operations[IORING_OP_READ].flags &
          IO_URING_OP_SUPPORTED) != 0 &&
         (probe.operations[IORING_OP_WRITE].flags &
+         IO_URING_OP_SUPPORTED) != 0);
+    failures += expect_true("probe VFS operations",
+        (probe.operations[IORING_OP_OPENAT].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_OPENAT2].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_CLOSE].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_STATX].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_FALLOCATE].flags &
          IO_URING_OP_SUPPORTED) != 0);
 
     event_descriptor = raw_syscall6(
@@ -444,6 +478,149 @@ static int run_tests(void) {
         print_integer(cqes[5].result);
     }
     __atomic_store_n(cq_head, 6u, __ATOMIC_RELEASE);
+
+    memset(&sqes[6], 0, sizeof(sqes[6]));
+    sqes[6].opcode = IORING_OP_OPENAT;
+    sqes[6].descriptor = AT_FDCWD;
+    sqes[6].address = (uint64_t)(uintptr_t)null_path;
+    sqes[6].operation_flags = O_RDWR;
+    sqes[6].user_data = 0x4f50454e41543031ull;
+    sq_array[6] = 6;
+    __atomic_store_n(sq_tail, 7u, __ATOMIC_RELEASE);
+    failures += expect("submit openat", raw_syscall6(
+        SYS_io_uring_enter, descriptor, 1, 1,
+        IORING_ENTER_GETEVENTS, 0, 0), 1);
+    failures += expect_true("openat completion",
+        __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == 7u &&
+        cqes[6].user_data == 0x4f50454e41543031ull &&
+        cqes[6].result >= 0);
+    if (cqes[6].result >= 0) {
+        memset(&sqes[7], 0, sizeof(sqes[7]));
+        sqes[7].opcode = IORING_OP_CLOSE;
+        sqes[7].descriptor = cqes[6].result;
+        sqes[7].user_data = 0x434c4f5345303031ull;
+        sq_array[7] = 7;
+        __atomic_store_n(sq_tail, 8u, __ATOMIC_RELEASE);
+        failures += expect("submit close", raw_syscall6(
+            SYS_io_uring_enter, descriptor, 1, 1,
+            IORING_ENTER_GETEVENTS, 0, 0), 1);
+        failures += expect_true("close completion",
+            __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == 8u &&
+            cqes[7].user_data == 0x434c4f5345303031ull &&
+            cqes[7].result == 0);
+    }
+    __atomic_store_n(cq_head, 8u, __ATOMIC_RELEASE);
+
+    open_how.flags = O_RDWR;
+    memset(&sqes[0], 0, sizeof(sqes[0]));
+    sqes[0].opcode = IORING_OP_OPENAT2;
+    sqes[0].descriptor = AT_FDCWD;
+    sqes[0].offset = (uint64_t)(uintptr_t)&open_how;
+    sqes[0].address = (uint64_t)(uintptr_t)null_path;
+    sqes[0].length = sizeof(open_how);
+    sqes[0].user_data = 0x4f50454e41543231ull;
+    sq_array[0] = 0;
+    __atomic_store_n(sq_tail, 9u, __ATOMIC_RELEASE);
+    failures += expect("submit openat2", raw_syscall6(
+        SYS_io_uring_enter, descriptor, 1, 1,
+        IORING_ENTER_GETEVENTS, 0, 0), 1);
+    failures += expect_true("openat2 completion",
+        __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == 9u &&
+        cqes[8u & *cq_mask].user_data == 0x4f50454e41543231ull &&
+        cqes[8u & *cq_mask].result >= 0);
+    if (cqes[8u & *cq_mask].result >= 0) {
+        memset(&sqes[1], 0, sizeof(sqes[1]));
+        sqes[1].opcode = IORING_OP_CLOSE;
+        sqes[1].descriptor = cqes[8u & *cq_mask].result;
+        sqes[1].user_data = 0x434c4f5345303032ull;
+        sq_array[1] = 1;
+        __atomic_store_n(sq_tail, 10u, __ATOMIC_RELEASE);
+        failures += expect("submit openat2 close", raw_syscall6(
+            SYS_io_uring_enter, descriptor, 1, 1,
+            IORING_ENTER_GETEVENTS, 0, 0), 1);
+        failures += expect_true("openat2 close completion",
+            __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == 10u &&
+            cqes[9u & *cq_mask].user_data == 0x434c4f5345303032ull &&
+            cqes[9u & *cq_mask].result == 0);
+    }
+    __atomic_store_n(cq_head, 10u, __ATOMIC_RELEASE);
+
+    memset(statx_buffer, 0, sizeof(statx_buffer));
+    memset(&sqes[2], 0, sizeof(sqes[2]));
+    sqes[2].opcode = IORING_OP_STATX;
+    sqes[2].descriptor = AT_FDCWD;
+    sqes[2].offset = (uint64_t)(uintptr_t)statx_buffer;
+    sqes[2].address = (uint64_t)(uintptr_t)null_path;
+    sqes[2].length = 0x7ffu;
+    sqes[2].user_data = 0x5354415458303031ull;
+    sq_array[2] = 2;
+    __atomic_store_n(sq_tail, 11u, __ATOMIC_RELEASE);
+    failures += expect("submit statx", raw_syscall6(
+        SYS_io_uring_enter, descriptor, 1, 1,
+        IORING_ENTER_GETEVENTS, 0, 0), 1);
+    failures += expect_true("statx completion",
+        __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == 11u &&
+        cqes[10u & *cq_mask].user_data == 0x5354415458303031ull &&
+        cqes[10u & *cq_mask].result == 0);
+    __atomic_store_n(cq_head, 11u, __ATOMIC_RELEASE);
+
+    memset(&sqes[3], 0, sizeof(sqes[3]));
+    sqes[3].opcode = IORING_OP_CLOSE;
+    sqes[3].descriptor = (int32_t)descriptor;
+    sqes[3].user_data = 0x434c4f534552494eull;
+    sq_array[3] = 3;
+    __atomic_store_n(sq_tail, 12u, __ATOMIC_RELEASE);
+    failures += expect("submit ring close", raw_syscall6(
+        SYS_io_uring_enter, descriptor, 1, 1,
+        IORING_ENTER_GETEVENTS, 0, 0), 1);
+    failures += expect_true("reject ring close",
+        __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == 12u &&
+        cqes[11u & *cq_mask].user_data == 0x434c4f534552494eull &&
+        cqes[11u & *cq_mask].result == -EBADF);
+    __atomic_store_n(cq_head, 12u, __ATOMIC_RELEASE);
+
+    memset(&sqes[4], 0, sizeof(sqes[4]));
+    sqes[4].opcode = IORING_OP_OPENAT;
+    sqes[4].descriptor = AT_FDCWD;
+    sqes[4].address = (uint64_t)(uintptr_t)data_path;
+    sqes[4].length = 0600u;
+    sqes[4].operation_flags = O_RDWR | O_CREAT | O_TRUNC;
+    sqes[4].user_data = 0x4352454154453031ull;
+    sq_array[4] = 4;
+    __atomic_store_n(sq_tail, 13u, __ATOMIC_RELEASE);
+    failures += expect("submit create", raw_syscall6(
+        SYS_io_uring_enter, descriptor, 1, 1,
+        IORING_ENTER_GETEVENTS, 0, 0), 1);
+    failures += expect_true("create completion",
+        __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == 13u &&
+        cqes[12u & *cq_mask].user_data == 0x4352454154453031ull &&
+        cqes[12u & *cq_mask].result >= 0);
+    if (cqes[12u & *cq_mask].result >= 0) {
+        int32_t data_descriptor = cqes[12u & *cq_mask].result;
+        memset(&sqes[5], 0, sizeof(sqes[5]));
+        sqes[5].opcode = IORING_OP_FALLOCATE;
+        sqes[5].descriptor = data_descriptor;
+        sqes[5].address = PAGE_SIZE;
+        sqes[5].user_data = 0x46414c4c4f433031ull;
+        memset(&sqes[6], 0, sizeof(sqes[6]));
+        sqes[6].opcode = IORING_OP_CLOSE;
+        sqes[6].descriptor = data_descriptor;
+        sqes[6].user_data = 0x434c4f5345303033ull;
+        sq_array[5] = 5;
+        sq_array[6] = 6;
+        __atomic_store_n(sq_tail, 15u, __ATOMIC_RELEASE);
+        failures += expect("submit fallocate close", raw_syscall6(
+            SYS_io_uring_enter, descriptor, 2, 2,
+            IORING_ENTER_GETEVENTS, 0, 0), 2);
+        failures += expect_true("fallocate completion",
+            __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == 15u &&
+            cqes[13u & *cq_mask].user_data == 0x46414c4c4f433031ull &&
+            cqes[13u & *cq_mask].result == 0);
+        failures += expect_true("fallocate close completion",
+            cqes[14u & *cq_mask].user_data == 0x434c4f5345303033ull &&
+            cqes[14u & *cq_mask].result == 0);
+    }
+    __atomic_store_n(cq_head, 15u, __ATOMIC_RELEASE);
 
     (void)raw_syscall6(SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
     (void)raw_syscall6(SYS_munmap, (long)cq_ring, PAGE_SIZE, 0, 0, 0, 0);
