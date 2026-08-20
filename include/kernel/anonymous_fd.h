@@ -17,6 +17,7 @@ typedef enum kernel_anonymous_fd_kind {
     KERNEL_ANONYMOUS_FD_PID,
     KERNEL_ANONYMOUS_FD_PRIME,
     KERNEL_ANONYMOUS_FD_MOUNT,
+    KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE,
 } kernel_anonymous_fd_kind_t;
 
 typedef struct kernel_anonymous_fd_poll_state {
@@ -25,6 +26,7 @@ typedef struct kernel_anonymous_fd_poll_state {
     uint8_t valid;
     uint8_t pending;
     uint8_t canceled;
+    uint8_t writable;
 } kernel_anonymous_fd_poll_state_t;
 
 #define KERNEL_ANONYMOUS_FD_POLL_INPUT  0x0001u

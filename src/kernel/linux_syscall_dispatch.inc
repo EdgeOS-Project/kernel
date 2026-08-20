@@ -305,6 +305,14 @@ case EDGE_LINUX_SYS_poll:
 case EDGE_LINUX_SYS_ppoll:
     context->result = edge_linux_sys_poll(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_mq_getsetattr:
+case EDGE_LINUX_SYS_mq_notify:
+case EDGE_LINUX_SYS_mq_open:
+case EDGE_LINUX_SYS_mq_timedreceive:
+case EDGE_LINUX_SYS_mq_timedsend:
+case EDGE_LINUX_SYS_mq_unlink:
+    context->result = edge_linux_sys_posix_mq(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_timer_create:
 case EDGE_LINUX_SYS_timer_delete:
 case EDGE_LINUX_SYS_timer_getoverrun:

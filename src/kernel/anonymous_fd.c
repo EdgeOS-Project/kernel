@@ -10,6 +10,9 @@
 #include "kernel/inotify.h"
 #include "kernel/inotify_runtime.h"
 #include "kernel/linux_errno.h"
+#include "kernel/posix_mq_runtime.h"
+#include "kernel/signal_queue.h"
+#include "kernel/signal_runtime.h"
 #include "kernel/signalfd.h"
 #include "kernel/signalfd_runtime.h"
 #include "kernel/timerfd.h"
@@ -91,6 +94,10 @@ static int anonymous_fd_object_is_live(
         kernel_signalfd_state_t state;
         return kernel_signalfd_query(object_id, &state) == 0;
     }
+    if (kind == KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE) {
+        kernel_posix_mq_state_t state;
+        return kernel_posix_mq_query(object_id, &state) == 0;
+    }
     return 0;
 }
 
@@ -133,6 +140,23 @@ int kernel_signalfd_descriptor_id(int32_t descriptor) {
 
 void kernel_signalfd_state_changed(int signalfd_id) {
     anonymous_fd_state_changed(KERNEL_ANONYMOUS_FD_SIGNAL, signalfd_id);
+}
+
+void kernel_posix_mq_state_changed(int32_t queue_id) {
+    anonymous_fd_state_changed(
+        KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE, queue_id);
+}
+
+int kernel_posix_mq_deliver_notification(int32_t target_tgid,
+                                         uint32_t signal,
+                                         uint64_t value,
+                                         int32_t sender_pid,
+                                         uint32_t sender_uid) {
+    uint8_t information[KERNEL_SIGNAL_INFO_SIZE];
+    kernel_signal_info_build_sender(
+        information, signal, -3, sender_pid, sender_uid, value);
+    return kernel_linux_signal_send(
+        target_tgid, signal, 0, information);
 }
 
 int kernel_inotify_create_descriptor(uint32_t flags) {

@@ -45,6 +45,7 @@
 #include "kernel/process_runtime.h"
 #include "kernel/clone_runtime.h"
 #include "kernel/posix_timer_runtime.h"
+#include "kernel/posix_mq_runtime.h"
 #include "kernel/random.h"
 #include "kernel/seccomp.h"
 #include "kernel/signalfd.h"
@@ -2992,6 +2993,338 @@ static int64_t edge_linux_sys_sysv_msg(
         return edge_linux_sys_msgrcv(context);
     case EDGE_LINUX_SYS_msgctl:
         return edge_linux_sys_msgctl(context);
+    default:
+        return -EDGE_LINUX_ENOSYS;
+    }
+#endif
+}
+
+static int edge_linux_posix_mq_descriptor(
+        edge_linux_syscall_context_t *context, int write,
+        int32_t *queue_id, uint32_t *status_flags) {
+    int32_t descriptor = (int32_t)context->arguments[0];
+    uint32_t flags;
+    int object_id = kernel_anonymous_fd_descriptor_object_id(
+        descriptor, KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE);
+    if (object_id < 0) return -EDGE_LINUX_EBADF;
+    if (kernel_fd_get_status_flags(descriptor, &flags) < 0)
+        return -EDGE_LINUX_EBADF;
+    if (write) {
+        if ((flags & KERNEL_POSIX_MQ_O_ACCMODE) !=
+                KERNEL_POSIX_MQ_O_WRONLY &&
+            (flags & KERNEL_POSIX_MQ_O_ACCMODE) !=
+                KERNEL_POSIX_MQ_O_RDWR)
+            return -EDGE_LINUX_EBADF;
+    } else if ((flags & KERNEL_POSIX_MQ_O_ACCMODE) !=
+                   KERNEL_POSIX_MQ_O_RDONLY &&
+               (flags & KERNEL_POSIX_MQ_O_ACCMODE) !=
+                   KERNEL_POSIX_MQ_O_RDWR) {
+        return -EDGE_LINUX_EBADF;
+    }
+    *queue_id = object_id;
+    if (status_flags) *status_flags = flags;
+    return 0;
+}
+
+static int64_t edge_linux_sys_mq_open(
+        edge_linux_syscall_context_t *context) {
+    struct edge_linux_mq_attr attributes;
+    struct edge_linux_mq_attr *attributes_pointer = 0;
+    char name[KERNEL_POSIX_MQ_NAME_MAX + 2u];
+    uint32_t flags;
+    uint32_t mode;
+    uint32_t status_flags;
+    uint32_t descriptor_flags;
+    int64_t queue_id;
+    int descriptor;
+    int result;
+
+    if (context->arguments[1] > UINT32_MAX ||
+        context->arguments[2] > UINT32_MAX)
+        return -EDGE_LINUX_EINVAL;
+    flags = (uint32_t)context->arguments[1];
+    mode = (uint32_t)context->arguments[2];
+    result = edge_linux_copy_user_string(
+        context, context->arguments[0], name, sizeof(name),
+        EDGE_LINUX_ENAMETOOLONG);
+    if (result < 0) return result;
+    if (context->arguments[3]) {
+        if (edge_linux_copy_from_user(
+                context, &attributes, context->arguments[3],
+                sizeof(attributes)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        attributes_pointer = &attributes;
+    }
+    queue_id = kernel_posix_mq_open(
+        edge_linux_current_ipc_namespace(), name, flags,
+        mode & ~(uint32_t)kernel_current_umask(), attributes_pointer);
+    if (queue_id < 0) return queue_id;
+    status_flags = flags & (KERNEL_POSIX_MQ_O_ACCMODE |
+                            KERNEL_POSIX_MQ_O_NONBLOCK);
+    descriptor_flags =
+        (flags & KERNEL_POSIX_MQ_O_CLOEXEC) ? KERNEL_FD_CLOEXEC : 0u;
+    descriptor = kernel_anonymous_fd_install_descriptor(
+        KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE, (int32_t)queue_id,
+        status_flags, descriptor_flags);
+    if (descriptor < 0) kernel_posix_mq_release((int32_t)queue_id);
+    return descriptor;
+}
+
+static int64_t edge_linux_sys_mq_unlink(
+        edge_linux_syscall_context_t *context) {
+    char name[KERNEL_POSIX_MQ_NAME_MAX + 2u];
+    int result = edge_linux_copy_user_string(
+        context, context->arguments[0], name, sizeof(name),
+        EDGE_LINUX_ENAMETOOLONG);
+    if (result < 0) return result;
+    return kernel_posix_mq_unlink(
+        edge_linux_current_ipc_namespace(), name);
+}
+
+static int edge_linux_posix_mq_deadline(
+        edge_linux_syscall_context_t *context, uint64_t user_timeout,
+        uint64_t *deadline, int *has_timeout) {
+    linux_timespec64_t timeout;
+    uint64_t absolute;
+    uint64_t realtime_now;
+    uint64_t monotonic_now;
+    int result;
+    *has_timeout = 0;
+    *deadline = 0;
+    if (!user_timeout) return 0;
+    if (edge_linux_copy_from_user(
+            context, &timeout, user_timeout, sizeof(timeout)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    result = edge_linux_timespec_microseconds(&timeout, &absolute);
+    if (result < 0) return result;
+    realtime_now = boottime_realtime_us();
+    monotonic_now = boottime_monotonic_us();
+    *deadline = absolute <= realtime_now ? monotonic_now :
+        (absolute - realtime_now > UINT64_MAX - monotonic_now ?
+            UINT64_MAX : monotonic_now + (absolute - realtime_now));
+    *has_timeout = 1;
+    return 0;
+}
+
+static int64_t edge_linux_sys_mq_timedsend(
+        edge_linux_syscall_context_t *context) {
+    uint64_t message_size = context->arguments[2];
+    uint64_t deadline;
+    uint32_t status_flags;
+    uint32_t pages = 0;
+    void *payload = 0;
+    int32_t queue_id;
+    int has_timeout;
+    int result;
+    int64_t operation_result;
+
+    result = edge_linux_posix_mq_deadline(
+        context, context->arguments[4], &deadline, &has_timeout);
+    if (result < 0) return result;
+    if (context->arguments[3] >= KERNEL_POSIX_MQ_PRIORITY_MAX)
+        return -EDGE_LINUX_EINVAL;
+    result = edge_linux_posix_mq_descriptor(
+        context, 1, &queue_id, &status_flags);
+    if (result < 0) return result;
+    {
+        kernel_posix_mq_state_t state;
+        result = kernel_posix_mq_query(queue_id, &state);
+        if (result < 0) return result;
+        if (message_size > state.maximum_message_size)
+            return -EDGE_LINUX_EMSGSIZE;
+    }
+    if (message_size) {
+        pages = (uint32_t)((message_size + 4095u) / 4096u);
+        payload = arch_vm_alloc_pages(pages);
+        if (!payload) return -EDGE_LINUX_ENOMEM;
+        if (edge_linux_copy_from_user(
+                context, payload, context->arguments[1],
+                message_size) < 0) {
+            edge_linux_sysv_msg_free_buffer(payload, pages);
+            return -EDGE_LINUX_EFAULT;
+        }
+    }
+    for (;;) {
+        operation_result = kernel_posix_mq_send(
+            queue_id, payload, (uint32_t)message_size,
+            (uint32_t)context->arguments[3]);
+        if (operation_result != -EDGE_LINUX_EAGAIN ||
+            (status_flags & KERNEL_POSIX_MQ_O_NONBLOCK))
+            break;
+        if (has_timeout && boottime_monotonic_us() >= deadline) {
+            operation_result = -EDGE_LINUX_ETIMEDOUT;
+            break;
+        }
+        if (kernel_current_signal_wake_pending()) {
+            operation_result = -EDGE_LINUX_EINTR;
+            break;
+        }
+        {
+            int released = kernel_runtime_contention_begin();
+            int yielded = kernel_runtime_yield();
+            kernel_runtime_contention_end(released);
+            if (!yielded) break;
+        }
+    }
+    if (payload) edge_linux_sysv_msg_free_buffer(payload, pages);
+    return operation_result;
+}
+
+static int64_t edge_linux_sys_mq_timedreceive(
+        edge_linux_syscall_context_t *context) {
+    uint64_t capacity = context->arguments[2];
+    uint64_t deadline;
+    uint32_t status_flags;
+    uint32_t priority = 0;
+    uint32_t core_capacity;
+    uint32_t pages = 0;
+    void *payload = 0;
+    int32_t queue_id;
+    int has_timeout;
+    int result;
+    int64_t operation_result;
+
+    result = edge_linux_posix_mq_deadline(
+        context, context->arguments[4], &deadline, &has_timeout);
+    if (result < 0) return result;
+    result = edge_linux_posix_mq_descriptor(
+        context, 0, &queue_id, &status_flags);
+    if (result < 0) return result;
+    {
+        kernel_posix_mq_state_t state;
+        result = kernel_posix_mq_query(queue_id, &state);
+        if (result < 0) return result;
+        if (capacity < state.maximum_message_size)
+            return -EDGE_LINUX_EMSGSIZE;
+        pages = (state.maximum_message_size + 4095u) / 4096u;
+    }
+    payload = arch_vm_alloc_pages(pages);
+    if (!payload) return -EDGE_LINUX_ENOMEM;
+    core_capacity = capacity > UINT32_MAX ?
+        UINT32_MAX : (uint32_t)capacity;
+    for (;;) {
+        operation_result = kernel_posix_mq_receive(
+            queue_id, payload, core_capacity, &priority);
+        if (operation_result != -EDGE_LINUX_EAGAIN ||
+            (status_flags & KERNEL_POSIX_MQ_O_NONBLOCK))
+            break;
+        if (has_timeout && boottime_monotonic_us() >= deadline) {
+            operation_result = -EDGE_LINUX_ETIMEDOUT;
+            break;
+        }
+        if (kernel_current_signal_wake_pending()) {
+            operation_result = -EDGE_LINUX_EINTR;
+            break;
+        }
+        {
+            int released = kernel_runtime_contention_begin();
+            int yielded = kernel_runtime_yield();
+            kernel_runtime_contention_end(released);
+            if (!yielded) break;
+        }
+    }
+    if (operation_result >= 0 &&
+        ((operation_result && edge_linux_copy_to_user(
+            context, context->arguments[1], payload,
+            (uint64_t)operation_result) < 0) ||
+         (context->arguments[3] && edge_linux_copy_to_user(
+            context, context->arguments[3], &priority,
+            sizeof(priority)) < 0)))
+        operation_result = -EDGE_LINUX_EFAULT;
+    edge_linux_sysv_msg_free_buffer(payload, pages);
+    return operation_result;
+}
+
+static int64_t edge_linux_sys_mq_notify(
+        edge_linux_syscall_context_t *context) {
+    kernel_posix_mq_notification_t notification;
+    linux_sigevent64_t event;
+    int32_t queue_id;
+    int result = edge_linux_posix_mq_descriptor(
+        context, 0, &queue_id, 0);
+    if (result == -EDGE_LINUX_EBADF) {
+        uint32_t ignored;
+        result = edge_linux_posix_mq_descriptor(
+            context, 1, &queue_id, &ignored);
+    }
+    if (result < 0) return result;
+    if (!context->arguments[1])
+        return kernel_posix_mq_notify(queue_id, 0);
+    if (edge_linux_copy_from_user(
+            context, &event, context->arguments[1], sizeof(event)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    notification.notify = event.sigev_notify;
+    notification.signal = event.sigev_signo;
+    notification.value = event.sigev_value;
+    return kernel_posix_mq_notify(queue_id, &notification);
+}
+
+static int64_t edge_linux_sys_mq_getsetattr(
+        edge_linux_syscall_context_t *context) {
+    struct edge_linux_mq_attr replacement;
+    struct edge_linux_mq_attr current;
+    kernel_posix_mq_state_t state;
+    uint32_t status_flags;
+    int32_t queue_id;
+    int result;
+
+    memset(&replacement, 0, sizeof(replacement));
+    if (context->arguments[1]) {
+        if (edge_linux_copy_from_user(
+                context, &replacement, context->arguments[1],
+                sizeof(replacement)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if ((uint64_t)replacement.mq_flags &
+            ~(uint64_t)KERNEL_POSIX_MQ_O_NONBLOCK)
+            return -EDGE_LINUX_EINVAL;
+    }
+    result = edge_linux_posix_mq_descriptor(
+        context, 0, &queue_id, &status_flags);
+    if (result == -EDGE_LINUX_EBADF) {
+        result = edge_linux_posix_mq_descriptor(
+            context, 1, &queue_id, &status_flags);
+    }
+    if (result < 0) return result;
+    result = kernel_posix_mq_query(queue_id, &state);
+    if (result < 0) return result;
+    memset(&current, 0, sizeof(current));
+    current.mq_flags = status_flags & KERNEL_POSIX_MQ_O_NONBLOCK;
+    current.mq_maxmsg = state.maximum_messages;
+    current.mq_msgsize = state.maximum_message_size;
+    current.mq_curmsgs = state.current_messages;
+    if (context->arguments[1]) {
+        result = kernel_fd_update_status_flags(
+            (int32_t)context->arguments[0],
+            KERNEL_POSIX_MQ_O_NONBLOCK,
+            (uint32_t)replacement.mq_flags);
+        if (result < 0) return result;
+    }
+    if (context->arguments[2] && edge_linux_copy_to_user(
+            context, context->arguments[2], &current,
+            sizeof(current)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    return 0;
+}
+
+static int64_t edge_linux_sys_posix_mq(
+        edge_linux_syscall_context_t *context) {
+#ifndef CONFIG_POSIX_MQUEUE
+    (void)context;
+    return -EDGE_LINUX_ENOSYS;
+#else
+    switch (context->id) {
+    case EDGE_LINUX_SYS_mq_open:
+        return edge_linux_sys_mq_open(context);
+    case EDGE_LINUX_SYS_mq_unlink:
+        return edge_linux_sys_mq_unlink(context);
+    case EDGE_LINUX_SYS_mq_timedsend:
+        return edge_linux_sys_mq_timedsend(context);
+    case EDGE_LINUX_SYS_mq_timedreceive:
+        return edge_linux_sys_mq_timedreceive(context);
+    case EDGE_LINUX_SYS_mq_notify:
+        return edge_linux_sys_mq_notify(context);
+    case EDGE_LINUX_SYS_mq_getsetattr:
+        return edge_linux_sys_mq_getsetattr(context);
     default:
         return -EDGE_LINUX_ENOSYS;
     }

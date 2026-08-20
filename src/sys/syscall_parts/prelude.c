@@ -84,6 +84,7 @@
 #include "kernel/clone_runtime.h"
 #include "kernel/itimer_runtime.h"
 #include "kernel/posix_timer_runtime.h"
+#include "kernel/posix_mq_runtime.h"
 #include "kernel/random.h"
 #include "kernel/signal_queue.h"
 #include "kernel/signal_runtime.h"
@@ -1483,6 +1484,7 @@ typedef enum {
     FD_TUN,
     FD_NAMESPACE,
     FD_MOUNT,
+    FD_MQUEUE,
 } edge_fd_kind_t;
 
 typedef struct {

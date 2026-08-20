@@ -14,6 +14,7 @@
 #include "kernel/process_runtime.h"
 #include "kernel/proc_maps.h"
 #include "kernel/posix_timer_runtime.h"
+#include "kernel/posix_mq_runtime.h"
 #include "kernel/syslog_runtime.h"
 #include "kernel/runtime.h"
 #include "kernel/timer_policy.h"
@@ -869,6 +870,7 @@ static uint32_t g_fd_table_reserve_count;
 #define KERNEL_FD_TUN 18u
 #define KERNEL_FD_NAMESPACE 19u
 #define KERNEL_FD_MOUNT 20u
+#define KERNEL_FD_MQUEUE 21u
 
 #define ARM64_EPOLL_SOURCE_FILE_KMSG          0x00000001u
 #define ARM64_EPOLL_SOURCE_FILE_DRM_CARD      0x00000002u
@@ -8856,7 +8858,8 @@ int arch_vfs_describe_descriptor(int32_t descriptor,
         file->kind == KERNEL_FD_INOTIFY ||
         file->kind == KERNEL_FD_SIGNALFD ||
         file->kind == KERNEL_FD_DMA_BUF ||
-        file->kind == KERNEL_FD_MOUNT) {
+        file->kind == KERNEL_FD_MOUNT ||
+        file->kind == KERNEL_FD_MQUEUE) {
         description->kind = KERNEL_VFS_DESCRIPTOR_ANONYMOUS;
         return 0;
     }
@@ -9653,6 +9656,9 @@ static int arm64_anonymous_fd_install(
     case KERNEL_ANONYMOUS_FD_MOUNT:
         local_kind = KERNEL_FD_MOUNT;
         break;
+    case KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE:
+        local_kind = KERNEL_FD_MQUEUE;
+        break;
     default:
         return -LINUX_EINVAL;
     }
@@ -9662,7 +9668,8 @@ static int arm64_anonymous_fd_install(
     if (fd == allocation_limit) return -LINUX_EMFILE;
     entry = &task->fds[fd];
     entry->kind = local_kind;
-    if (kind == KERNEL_ANONYMOUS_FD_MOUNT)
+    if (kind == KERNEL_ANONYMOUS_FD_MOUNT ||
+        kind == KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE)
         entry->mount_id = (uint32_t)object_id;
     else if (kind == KERNEL_ANONYMOUS_FD_TIMER)
         entry->timer_index = (uint8_t)object_id;
@@ -9715,12 +9722,16 @@ static int arm64_anonymous_fd_object_id(
     case KERNEL_ANONYMOUS_FD_MOUNT:
         expected = KERNEL_FD_MOUNT;
         break;
+    case KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE:
+        expected = KERNEL_FD_MQUEUE;
+        break;
     default:
         return -LINUX_EINVAL;
     }
     entry = &task->fds[descriptor];
     if (entry->kind != expected) return -LINUX_EINVAL;
-    if (kind == KERNEL_ANONYMOUS_FD_MOUNT)
+    if (kind == KERNEL_ANONYMOUS_FD_MOUNT ||
+        kind == KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE)
         return (int32_t)entry->mount_id;
     if (kind == KERNEL_ANONYMOUS_FD_TIMER)
         return entry->timer_index;
@@ -9744,6 +9755,8 @@ static void anonymous_fd_runtime_state_changed(
         poll_waiters_reconfigure_plans();
     } else if (kind == KERNEL_ANONYMOUS_FD_SIGNAL) {
         signalfd_runtime_state_changed(object_id);
+    } else if (kind == KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE) {
+        /* Queue transitions only need the common poll/select wake pass. */
     } else {
         return;
     }
@@ -9891,6 +9904,10 @@ static int fd_retain_backing_object(const bootstrap_fd_t *fd) {
     }
     if (fd->kind == KERNEL_FD_MOUNT) {
         result = kernel_mount_api_retain((int)fd->mount_id);
+        return result < 0 ? result : 0;
+    }
+    if (fd->kind == KERNEL_FD_MQUEUE) {
+        result = kernel_posix_mq_retain((int32_t)fd->mount_id);
         return result < 0 ? result : 0;
     }
     if (fd->kind == KERNEL_FD_SOCKET &&
@@ -15392,6 +15409,8 @@ static void fd_drop_backing_object(bootstrap_fd_t *fd) {
         edge_drm_prime_release(fd->pipe_index);
     if (fd->kind == KERNEL_FD_MOUNT)
         kernel_mount_api_release((int)fd->mount_id);
+    if (fd->kind == KERNEL_FD_MQUEUE)
+        kernel_posix_mq_release((int32_t)fd->mount_id);
     if ((fd->kind == KERNEL_FD_PIPE_READ ||
          fd->kind == KERNEL_FD_PIPE_WRITE ||
          fd->kind == KERNEL_FD_PIPE_RW) &&
@@ -18723,6 +18742,15 @@ static uint32_t fd_anonymous_ready_mask(
         else
             poll_state.pending =
                 task && (task_pending_signals(task) & state.mask);
+    } else if (fd->kind == KERNEL_FD_MQUEUE) {
+        kernel_posix_mq_state_t state;
+        poll_state.kind = KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE;
+        if (kernel_posix_mq_query((int32_t)fd->mount_id, &state) < 0)
+            poll_state.valid = 0;
+        else {
+            poll_state.pending = state.readable;
+            poll_state.writable = state.writable;
+        }
     } else {
         poll_state.valid = 0;
     }
@@ -18771,7 +18799,8 @@ static uint32_t fd_ready_mask(kernel_task_t *task, bootstrap_fd_t *fd) {
                fd->kind == KERNEL_FD_TIMER ||
                fd->kind == KERNEL_FD_INOTIFY ||
                fd->kind == KERNEL_FD_PIDFD ||
-               fd->kind == KERNEL_FD_SIGNALFD) {
+               fd->kind == KERNEL_FD_SIGNALFD ||
+               fd->kind == KERNEL_FD_MQUEUE) {
         ready |= fd_anonymous_ready_mask(task, fd);
     } else if (fd->kind == KERNEL_FD_INPUT) {
         uint64_t cursor = 0;

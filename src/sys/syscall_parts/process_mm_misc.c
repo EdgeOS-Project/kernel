@@ -10314,6 +10314,9 @@ static int x86_anonymous_fd_install(
     case KERNEL_ANONYMOUS_FD_MOUNT:
         local_kind = FD_MOUNT;
         break;
+    case KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE:
+        local_kind = FD_MQUEUE;
+        break;
     default:
         return -EINVAL;
     }
@@ -10349,6 +10352,9 @@ static int x86_anonymous_fd_object_id(
     case KERNEL_ANONYMOUS_FD_MOUNT:
         expected = FD_MOUNT;
         break;
+    case KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE:
+        expected = FD_MQUEUE;
+        break;
     default:
         return -EINVAL;
     }
@@ -10363,7 +10369,9 @@ static void x86_anonymous_fd_state_changed(
         fd_wake_timerfd_waiters(object_id);
         return;
     }
-    if (kind != KERNEL_ANONYMOUS_FD_SIGNAL) return;
+    if (kind != KERNEL_ANONYMOUS_FD_SIGNAL &&
+        kind != KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE)
+        return;
     current = process_current_task();
     fd_proc_registry_read_begin();
     for (int process_index = 0;
@@ -10375,10 +10383,15 @@ static void x86_anonymous_fd_state_changed(
             continue;
         for (int descriptor = 0; descriptor < EDGE_MAX_FD; ++descriptor) {
             edge_fd_t *entry = &process->fds[descriptor];
-            if (!entry->used || entry->kind != FD_SIGNALFD ||
+            if (!entry->used ||
+                entry->kind != (kind == KERNEL_ANONYMOUS_FD_SIGNAL ?
+                    FD_SIGNALFD : FD_MQUEUE) ||
                 entry->pipe_id != object_id)
                 continue;
-            fd_wake_fd_owner_tasks(process->pid, current, "signalfd");
+            fd_wake_fd_owner_tasks(
+                process->pid, current,
+                kind == KERNEL_ANONYMOUS_FD_SIGNAL ?
+                    "signalfd" : "mqueue");
             break;
         }
     }

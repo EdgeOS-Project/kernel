@@ -517,6 +517,13 @@ struct edge_linux_msginfo {
     uint16_t padding;
 };
 
+struct edge_linux_mq_attr {
+    int64_t mq_flags;
+    int64_t mq_maxmsg;
+    int64_t mq_msgsize;
+    int64_t mq_curmsgs;
+};
+
 _Static_assert(sizeof(struct edge_linux_ipc_perm64) == 48,
                "Linux ipc_perm size mismatch");
 _Static_assert(offsetof(struct edge_linux_ipc_perm64, mode) == 20,
@@ -543,6 +550,8 @@ _Static_assert(offsetof(struct edge_linux_msqid_ds64, msg_cbytes) == 72,
                "Linux msqid_ds byte-count offset mismatch");
 _Static_assert(sizeof(struct edge_linux_msginfo) == 32,
                "Linux msginfo size mismatch");
+_Static_assert(sizeof(struct edge_linux_mq_attr) == 32,
+               "Linux mq_attr size mismatch");
 
 /* statx is an architecture-independent Linux UAPI layout on 64-bit ports. */
 struct edge_linux_statx_timestamp {

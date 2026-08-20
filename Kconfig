@@ -103,6 +103,13 @@ config CHECKPOINT_RESTORE
       Enable Linux checkpoint and restore UAPI details implemented by
       supported subsystems, including nondestructive SysV message reads.
 
+config POSIX_MQUEUE
+    bool "POSIX message queues"
+    default y
+    help
+      Enable Linux-compatible named POSIX message queues, descriptors,
+      notification, polling, and IPC namespace isolation.
+
 config BSD_DRIVER_FDT_INVENTORY
     bool "Inventory Device Tree devices for BSD drivers"
     depends on BSD_DRIVER_BRIDGE && DEVICE_TREE

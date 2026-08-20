@@ -4361,109 +4361,151 @@
     {
       "id": "mq_getsetattr",
       "semantic_id": "mq_getsetattr",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_posix_mq",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/posix_mq_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 245,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_posix_mq",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 185,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_posix_mq",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {
       "id": "mq_notify",
       "semantic_id": "mq_notify",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_posix_mq",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/posix_mq_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 244,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_posix_mq",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 184,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_posix_mq",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {
       "id": "mq_open",
       "semantic_id": "mq_open",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_posix_mq",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/posix_mq_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 240,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_posix_mq",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 180,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_posix_mq",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {
       "id": "mq_timedreceive",
       "semantic_id": "mq_timedreceive",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_posix_mq",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/posix_mq_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 243,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_posix_mq",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 183,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_posix_mq",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {
       "id": "mq_timedsend",
       "semantic_id": "mq_timedsend",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_posix_mq",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/posix_mq_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 242,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_posix_mq",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 182,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_posix_mq",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {
       "id": "mq_unlink",
       "semantic_id": "mq_unlink",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_posix_mq",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/posix_mq_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 241,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_posix_mq",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 181,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_posix_mq",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {

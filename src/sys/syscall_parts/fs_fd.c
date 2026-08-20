@@ -2003,6 +2003,15 @@ static uint32_t anonymous_fd_ready_events(edge_fd_t *descriptor) {
         const task_t *task = process_get_task(descriptor->pipe_id);
         poll_state.kind = KERNEL_ANONYMOUS_FD_PID;
         poll_state.pending = !task || task->state == TASK_ZOMBIE;
+    } else if (descriptor->kind == FD_MQUEUE) {
+        kernel_posix_mq_state_t state;
+        poll_state.kind = KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE;
+        if (kernel_posix_mq_query(descriptor->pipe_id, &state) < 0)
+            poll_state.valid = 0;
+        else {
+            poll_state.pending = state.readable;
+            poll_state.writable = state.writable;
+        }
     } else {
         poll_state.valid = 0;
     }
@@ -2104,7 +2113,7 @@ static int poll_fd_revents(edge_fd_t *e, int16_t events) {
 
     if (e->kind == FD_EVENTFD || e->kind == FD_TIMERFD ||
         e->kind == FD_SIGNALFD || e->kind == FD_INOTIFY ||
-        e->kind == FD_PIDFD) {
+        e->kind == FD_PIDFD || e->kind == FD_MQUEUE) {
         uint32_t anonymous_events = anonymous_fd_ready_events(e);
         rev |= (int16_t)anonymous_events;
     }
@@ -2187,7 +2196,7 @@ static int poll_fd_revents(edge_fd_t *e, int16_t events) {
             /* Socket readiness was normalized before the per-class branches. */
         } else if (e->kind == FD_EVENTFD || e->kind == FD_TIMERFD ||
                    e->kind == FD_SIGNALFD || e->kind == FD_INOTIFY ||
-                   e->kind == FD_PIDFD) {
+                   e->kind == FD_PIDFD || e->kind == FD_MQUEUE) {
             /* Anonymous descriptor readiness was normalized above. */
         } else if (e->kind == FD_EPOLL) {
             if (kernel_epoll_object_exists(e->pipe_id) &&
