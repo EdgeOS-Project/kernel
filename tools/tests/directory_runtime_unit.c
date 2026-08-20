@@ -112,7 +112,7 @@ static void test_records_and_cursor(void) {
     int64_t result;
 
     reset_state();
-    result = kernel_vfs_getdents64(&request);
+    result = kernel_vfs_getdents(&request);
     first = (struct edge_linux_dirent64 *)(void *)g_user;
     second = (struct edge_linux_dirent64 *)(void *)
         (g_user + first->d_reclen);
@@ -127,12 +127,36 @@ static void test_records_and_cursor(void) {
                 g_commits == 2u && g_finishes == 1u);
 }
 
+static void test_native_records_and_dtype_tail(void) {
+    kernel_vfs_getdents_request_t request =
+        request_with_capacity(sizeof(g_user));
+    struct edge_linux_dirent *first;
+    struct edge_linux_dirent *second;
+    int64_t result;
+
+    reset_state();
+    request.format = KERNEL_VFS_DIRENT_NATIVE64;
+    result = kernel_vfs_getdents(&request);
+    first = (struct edge_linux_dirent *)(void *)g_user;
+    second = (struct edge_linux_dirent *)(void *)
+        (g_user + first->d_reclen);
+    expect_true("native records",
+                result == first->d_reclen + second->d_reclen &&
+                first->d_ino == 100u && first->d_off == 1 &&
+                strcmp(first->d_name, "alpha") == 0 &&
+                g_user[first->d_reclen - 1u] == 8u &&
+                second->d_ino == 101u && second->d_off == 2 &&
+                strcmp(second->d_name, "beta") == 0 &&
+                g_user[first->d_reclen + second->d_reclen - 1u] == 4u &&
+                g_commits == 2u && g_finishes == 1u);
+}
+
 static void test_partial_and_error_policy(void) {
     kernel_vfs_getdents_request_t request = request_with_capacity(32u);
     int64_t result;
 
     reset_state();
-    result = kernel_vfs_getdents64(&request);
+    result = kernel_vfs_getdents(&request);
     expect_true("partial buffer",
                 result == 32 && g_entry_index == 1u && g_commits == 1u &&
                 g_finishes == 1u);
@@ -140,7 +164,7 @@ static void test_partial_and_error_policy(void) {
     reset_state();
     request.capacity = 8u;
     expect_true("record too small",
-                kernel_vfs_getdents64(&request) ==
+                kernel_vfs_getdents(&request) ==
                     -EDGE_LINUX_EINVAL &&
                 g_commits == 0u && g_finishes == 1u);
 
@@ -148,7 +172,7 @@ static void test_partial_and_error_policy(void) {
     request.capacity = sizeof(g_user);
     g_copy_failure = 1;
     expect_true("copy fault",
-                kernel_vfs_getdents64(&request) ==
+                kernel_vfs_getdents(&request) ==
                     -EDGE_LINUX_EFAULT &&
                 g_commits == 0u && g_entry_index == 0u &&
                 g_finishes == 1u);
@@ -156,7 +180,7 @@ static void test_partial_and_error_policy(void) {
     reset_state();
     g_open_result = -EDGE_LINUX_EBADF;
     expect_true("open error",
-                kernel_vfs_getdents64(&request) ==
+                kernel_vfs_getdents(&request) ==
                     -EDGE_LINUX_EBADF && g_finishes == 0u);
 }
 
@@ -168,7 +192,7 @@ static void test_special_policy(void) {
     g_special_handled = 1;
     g_special_result = 37;
     expect_true("special result",
-                kernel_vfs_getdents64(&request) == 37 &&
+                kernel_vfs_getdents(&request) == 37 &&
                 g_commits == 0u && g_finishes == 0u);
 }
 
@@ -276,6 +300,7 @@ static void test_device_directory_backend_policy(void) {
 
 int main(void) {
     test_records_and_cursor();
+    test_native_records_and_dtype_tail();
     test_partial_and_error_policy();
     test_special_policy();
     test_dtype_policy();

@@ -1366,6 +1366,14 @@ struct edge_linux_dirent64 {
     char d_name[];
 };
 
+/* Native 64-bit layout used by the historical getdents syscall. */
+struct edge_linux_dirent {
+    uint64_t d_ino;
+    int64_t d_off;
+    uint16_t d_reclen;
+    char d_name[];
+};
+
 /* Fixed prefix of Linux's variable-length struct file_handle. */
 struct edge_linux_file_handle_header {
     uint32_t handle_bytes;
@@ -1508,6 +1516,8 @@ _Static_assert(sizeof(struct edge_linux_xattr_args) == 16,
                "Linux xattr_args ABI layout");
 _Static_assert(offsetof(struct edge_linux_dirent64, d_name) == 19,
                "Linux dirent64 name offset");
+_Static_assert(offsetof(struct edge_linux_dirent, d_name) == 18,
+               "Linux native dirent name offset");
 _Static_assert(sizeof(struct edge_linux_file_handle_header) == 8,
                "Linux file_handle prefix ABI layout");
 _Static_assert(offsetof(struct edge_linux_file_handle_header,

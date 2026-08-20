@@ -2243,17 +2243,19 @@
     {
       "id": "getdents",
       "semantic_id": "getdents",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_getdents",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/getdents_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 78,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_getdents",
+          "evidence_status": "runtime-probe-listed"
         },
         "aarch64": null
       }
@@ -2261,24 +2263,24 @@
     {
       "id": "getdents64",
       "semantic_id": "getdents64",
-      "shared_handler": "edge_linux_sys_getdents64",
+      "shared_handler": "edge_linux_sys_getdents",
       "architecture_exceptions": [],
       "runtime_tests": [
         "tools/tests/getdents64_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 217,
           "status": "implemented",
-          "route": "shared:edge_linux_sys_getdents64",
+          "route": "shared:edge_linux_sys_getdents",
           "evidence_status": "runtime-probe-listed"
         },
         "aarch64": {
           "number": 61,
           "status": "implemented",
-          "route": "shared:edge_linux_sys_getdents64",
+          "route": "shared:edge_linux_sys_getdents",
           "evidence_status": "runtime-probe-listed"
         }
       }

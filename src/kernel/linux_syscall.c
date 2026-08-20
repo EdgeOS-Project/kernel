@@ -2428,18 +2428,20 @@ static int64_t edge_linux_sys_open(edge_linux_syscall_context_t *context) {
     return kernel_vfs_open_at(&request);
 }
 
-static int64_t edge_linux_sys_getdents64(
+static int64_t edge_linux_sys_getdents(
     edge_linux_syscall_context_t *context) {
     kernel_vfs_getdents_request_t request;
 
     if (context->arguments[0] > INT32_MAX) return -EDGE_LINUX_EBADF;
     memset(&request, 0, sizeof(request));
     request.descriptor = (int32_t)context->arguments[0];
+    request.format = context->id == EDGE_LINUX_SYS_getdents ?
+        KERNEL_VFS_DIRENT_NATIVE64 : KERNEL_VFS_DIRENT64;
     request.user_buffer = context->arguments[1];
-    request.capacity = context->arguments[2];
+    request.capacity = (uint32_t)context->arguments[2];
     request.copy_context = context;
     request.copy_to_user = edge_linux_directory_copy_to_user;
-    return kernel_vfs_getdents64(&request);
+    return kernel_vfs_getdents(&request);
 }
 
 static int64_t edge_linux_sys_brk(

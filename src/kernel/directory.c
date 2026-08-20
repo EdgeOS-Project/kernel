@@ -67,7 +67,7 @@ int kernel_vfs_device_directory_uses_backing_readdir(
            (path[mount_length] == 0 || path[mount_length] == '/');
 }
 
-int kernel_vfs_dirent64_emit(
+static int kernel_vfs_dirent64_emit(
     const kernel_vfs_getdents_request_t *request, uint64_t *written,
     uint64_t inode, int64_t next_offset, uint8_t type, const char *name) {
     union {
@@ -106,7 +106,56 @@ int kernel_vfs_dirent64_emit(
     return 1;
 }
 
-int64_t kernel_vfs_getdents64(
+static int kernel_vfs_dirent_native64_emit(
+    const kernel_vfs_getdents_request_t *request, uint64_t *written,
+    uint64_t inode, int64_t next_offset, uint8_t type, const char *name) {
+    union {
+        struct edge_linux_dirent alignment;
+        uint8_t bytes[offsetof(struct edge_linux_dirent, d_name) +
+                      VFS_NAME_MAX + 9u];
+    } record;
+    struct edge_linux_dirent *directory_entry =
+        (struct edge_linux_dirent *)(void *)record.bytes;
+    uint64_t name_length = 0;
+    uint64_t record_length;
+
+    if (!request || !written || !request->copy_to_user || !name)
+        return -EDGE_LINUX_EIO;
+    while (name_length < VFS_NAME_MAX && name[name_length]) ++name_length;
+    if (name_length == VFS_NAME_MAX) return -EDGE_LINUX_ENAMETOOLONG;
+    record_length = (offsetof(struct edge_linux_dirent, d_name) +
+                     name_length + 2u + 7u) & ~7ULL;
+    if (*written > request->capacity ||
+        record_length > request->capacity - *written)
+        return *written ? 0 : -EDGE_LINUX_EINVAL;
+    if (request->user_buffer > UINT64_MAX - *written)
+        return *written ? 0 : -EDGE_LINUX_EFAULT;
+
+    memset(record.bytes, 0, (size_t)record_length);
+    directory_entry->d_ino = inode;
+    directory_entry->d_off = next_offset;
+    directory_entry->d_reclen = (uint16_t)record_length;
+    memcpy(directory_entry->d_name, name, (size_t)name_length + 1u);
+    record.bytes[record_length - 1u] = type;
+    if (request->copy_to_user(
+            request->copy_context, request->user_buffer + *written,
+            record.bytes, record_length) < 0)
+        return *written ? 0 : -EDGE_LINUX_EFAULT;
+    *written += record_length;
+    return 1;
+}
+
+int kernel_vfs_dirent_emit(
+    const kernel_vfs_getdents_request_t *request, uint64_t *written,
+    uint64_t inode, int64_t next_offset, uint8_t type, const char *name) {
+    if (request && request->format == KERNEL_VFS_DIRENT_NATIVE64)
+        return kernel_vfs_dirent_native64_emit(
+            request, written, inode, next_offset, type, name);
+    return kernel_vfs_dirent64_emit(
+        request, written, inode, next_offset, type, name);
+}
+
+int64_t kernel_vfs_getdents(
     const kernel_vfs_getdents_request_t *request) {
     kernel_vfs_directory_cursor_t cursor;
     kernel_vfs_directory_entry_t entry;
@@ -129,7 +178,7 @@ int64_t kernel_vfs_getdents64(
             return written ? (int64_t)written : status;
         }
         if (!status) break;
-        status = kernel_vfs_dirent64_emit(
+        status = kernel_vfs_dirent_emit(
             request, &written, entry.inode.ino,
             (int64_t)entry.next_offset,
             kernel_vfs_mode_to_dtype(entry.inode.mode), entry.name);

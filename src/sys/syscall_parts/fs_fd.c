@@ -6661,7 +6661,7 @@ int64_t arch_vfs_special_getdents64(
             uint64_t idx = fd_description_offset(e);
             while (idx < 2) {
                 const char *name = (idx == 0) ? "." : "..";
-                int emitted = kernel_vfs_dirent64_emit(
+                int emitted = kernel_vfs_dirent_emit(
                     request, &written, 2, (int64_t)(idx + 1),
                     LINUX_DT_DIR, name);
                 if (emitted < 0) return emitted;
@@ -6695,7 +6695,7 @@ int64_t arch_vfs_special_getdents64(
                     break;
 #endif
                 }
-                emitted = kernel_vfs_dirent64_emit(
+                emitted = kernel_vfs_dirent_emit(
                     request, &written,
                     (idx < 2) ? (uint64_t)2 :
                         (uint64_t)(0x5F800000u + (uint32_t)idx),
@@ -6764,7 +6764,7 @@ int64_t arch_vfs_special_getdents64(
                         break;
                     name = input_name_buffer;
                 }
-                emitted = kernel_vfs_dirent64_emit(
+                emitted = kernel_vfs_dirent_emit(
                     request, &written,
                     idx < 2u ? 2u :
                         (uint64_t)(0x5F620000u + (uint32_t)idx),
@@ -6811,7 +6811,7 @@ int64_t arch_vfs_special_getdents64(
                 } else {
                     break;
                 }
-                emitted = kernel_vfs_dirent64_emit(
+                emitted = kernel_vfs_dirent_emit(
                     request, &written,
                     (idx < 2) ? (uint64_t)2 :
                         (uint64_t)(0x5F610000u + (uint32_t)idx),
@@ -6876,7 +6876,7 @@ int64_t arch_vfs_special_getdents64(
                     if (rc < 0) break;
                     name = block_name;
                 }
-                emitted = kernel_vfs_dirent64_emit(
+                emitted = kernel_vfs_dirent_emit(
                     request, &written,
                     (idx < 2) ? (uint64_t)2 :
                         (uint64_t)(0x5F700000u + (uint32_t)idx),
@@ -6941,7 +6941,7 @@ int64_t arch_vfs_special_getdents64(
                         name = part_name;
                         dtype = LINUX_DT_DIR;
                     }
-                    emitted = kernel_vfs_dirent64_emit(
+                    emitted = kernel_vfs_dirent_emit(
                         request, &written,
                         (idx < 2) ? (uint64_t)2 :
                             (uint64_t)(0x5F710000u + (uint32_t)idx),
@@ -7106,7 +7106,7 @@ int64_t arch_vfs_special_getdents64(
                     if (pci_device_name_by_index((uint32_t)(idx - 2u), pci_name, sizeof(pci_name)) < 0) break;
                     name = pci_name;
                 }
-                emitted = kernel_vfs_dirent64_emit(
+                emitted = kernel_vfs_dirent_emit(
                     request, &written,
                     (idx < 2) ? (uint64_t)2 :
                         (uint64_t)(0x5F600000u + (uint32_t)idx),
@@ -7143,7 +7143,7 @@ int64_t arch_vfs_special_getdents64(
                 if (file_entries && strcmp(name, "tables") == 0) dtype = LINUX_DT_DIR;
                 if (file_entries && strcmp(name, "subsystem") == 0) dtype = LINUX_DT_LNK;
                 {
-                    int emitted = kernel_vfs_dirent64_emit(
+                    int emitted = kernel_vfs_dirent_emit(
                         request, &written,
                         (idx < 2) ? (uint64_t)2 :
                             (uint64_t)(0x5F500000u + (uint32_t)idx),
@@ -7214,7 +7214,7 @@ int64_t arch_vfs_special_getdents64(
             }
 
             {
-                int emitted = kernel_vfs_dirent64_emit(
+                int emitted = kernel_vfs_dirent_emit(
                     request, &written,
                     (idx < 2) ? (uint64_t)2 :
                         (uint64_t)(0xD0FFF100u + (uint64_t)(idx - 2)),
@@ -7263,7 +7263,7 @@ int64_t arch_vfs_special_getdents64(
                     strcat(full, name);
                     inode = linux_devnode_ino_from_path(full);
                 }
-                emitted = kernel_vfs_dirent64_emit(
+                emitted = kernel_vfs_dirent_emit(
                     request, &written, inode, (int64_t)(idx + 1),
                     dtype, name);
                 if (emitted < 0) return emitted;
@@ -7330,7 +7330,7 @@ int64_t arch_vfs_special_getdents64(
                 strcpy(full_path, "/dev/input/");
                 strcat(full_path, name);
             }
-            emitted = kernel_vfs_dirent64_emit(
+            emitted = kernel_vfs_dirent_emit(
                 request, &written,
                 idx < 2u ? 2u :
                     linux_devnode_ino_from_path(full_path),
@@ -7374,7 +7374,7 @@ int64_t arch_vfs_special_getdents64(
                     strcat(full, name);
                     inode = linux_devnode_ino_from_path(full);
                 }
-                emitted = kernel_vfs_dirent64_emit(
+                emitted = kernel_vfs_dirent_emit(
                     request, &written, inode, (int64_t)(idx + 1),
                     dtype, name);
                 if (emitted < 0) return emitted;
@@ -7481,7 +7481,7 @@ int64_t arch_vfs_special_getdents64(
                     inode = 0xD0000000u + (uint64_t)block_count() +
                         (idx - (uint64_t)(2 + block_count()));
                 }
-                emitted = kernel_vfs_dirent64_emit(
+                emitted = kernel_vfs_dirent_emit(
                     request, &written, inode, (int64_t)(idx + 1),
                     dtype, name);
                 if (emitted < 0) return emitted;

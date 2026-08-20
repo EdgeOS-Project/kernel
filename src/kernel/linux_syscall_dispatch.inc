@@ -121,8 +121,9 @@ case EDGE_LINUX_SYS_get_mempolicy:
 case EDGE_LINUX_SYS_getcpu:
     context->result = edge_linux_sys_getcpu(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_getdents:
 case EDGE_LINUX_SYS_getdents64:
-    context->result = edge_linux_sys_getdents64(context);
+    context->result = edge_linux_sys_getdents(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_getpriority:
     context->result = edge_linux_sys_getpriority(context);
