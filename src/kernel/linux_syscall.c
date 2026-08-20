@@ -120,6 +120,8 @@ static int64_t edge_linux_sys_socket_core(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_socket_message(
     edge_linux_syscall_context_t *context);
+static int64_t edge_linux_sys_futex(
+    edge_linux_syscall_context_t *context);
 
 static int edge_linux_pid_to_global(
     const kernel_linux_identity_t *caller, int32_t visible_pid,
@@ -6903,6 +6905,7 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_OP_FGETXATTR 43u
 #define EDGE_LINUX_IORING_OP_GETXATTR  44u
 #define EDGE_LINUX_IORING_OP_SOCKET    45u
+#define EDGE_LINUX_IORING_OP_FUTEX_WAKE 52u
 #define EDGE_LINUX_IORING_OP_FTRUNCATE 55u
 #define EDGE_LINUX_IORING_OP_BIND      56u
 #define EDGE_LINUX_IORING_OP_LISTEN    57u
@@ -7392,7 +7395,8 @@ static int32_t edge_linux_io_uring_execute(
         return -EDGE_LINUX_EINVAL;
     if (submission->address3 &&
         submission->opcode != EDGE_LINUX_IORING_OP_SETXATTR &&
-        submission->opcode != EDGE_LINUX_IORING_OP_GETXATTR)
+        submission->opcode != EDGE_LINUX_IORING_OP_GETXATTR &&
+        submission->opcode != EDGE_LINUX_IORING_OP_FUTEX_WAKE)
         return -EDGE_LINUX_EINVAL;
     switch (submission->opcode) {
     case EDGE_LINUX_IORING_OP_NOP:
@@ -7451,6 +7455,24 @@ static int32_t edge_linux_io_uring_execute(
         result = edge_linux_io_uring_timeout(
             context, ring_id, submission);
         break;
+    case EDGE_LINUX_IORING_OP_FUTEX_WAKE: {
+        edge_linux_syscall_context_t nested = *context;
+
+        if (submission->length || submission->operation_flags ||
+            submission->buffer_index || submission->splice_descriptor) {
+            result = -EDGE_LINUX_EINVAL;
+            break;
+        }
+        memset(nested.arguments, 0, sizeof(nested.arguments));
+        nested.id = EDGE_LINUX_SYS_futex_wake;
+        nested.route_status = EDGE_LINUX_SYSCALL_IMPLEMENTED;
+        nested.arguments[0] = submission->address;
+        nested.arguments[1] = submission->address3;
+        nested.arguments[2] = submission->offset;
+        nested.arguments[3] = (uint32_t)submission->descriptor;
+        result = edge_linux_sys_futex(&nested);
+        break;
+    }
     case EDGE_LINUX_IORING_OP_FALLOCATE:
     case EDGE_LINUX_IORING_OP_SYNC_FILE_RANGE:
     case EDGE_LINUX_IORING_OP_OPENAT:
@@ -7730,6 +7752,7 @@ static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
            opcode == EDGE_LINUX_IORING_OP_SETXATTR ||
            opcode == EDGE_LINUX_IORING_OP_FGETXATTR ||
            opcode == EDGE_LINUX_IORING_OP_GETXATTR ||
+           opcode == EDGE_LINUX_IORING_OP_FUTEX_WAKE ||
            opcode == EDGE_LINUX_IORING_OP_FTRUNCATE;
 }
 

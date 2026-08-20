@@ -53,7 +53,8 @@
         "RENAMEAT, UNLINKAT, MKDIRAT, SYMLINKAT and LINKAT through shared VFS handlers",
         "SOCKET, BIND and LISTEN through shared socket handlers",
         "FSETXATTR, SETXATTR, FGETXATTR, GETXATTR and FTRUNCATE through shared VFS handlers",
-        "SYNC_FILE_RANGE through the shared bounded writeback policy"
+        "SYNC_FILE_RANGE through the shared bounded writeback policy",
+        "FUTEX_WAKE through the shared futex2 handler"
       ],
       "missing": [
         "asynchronous worker execution",
@@ -71,7 +72,7 @@
       "linux_oracle": {
         "status": "partial",
         "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309",
-        "scope": "setup, mmap, NOP, eventfd, poll, timeout, cancellation, openat, openat2, close, statx, fallocate, send, recv, sendmsg, recvmsg, shutdown, connect, accept, fadvise, madvise, epoll_ctl, tee, renameat, unlinkat, mkdirat, symlinkat, linkat, socket, bind, listen, fsetxattr, setxattr, fgetxattr, getxattr, ftruncate, sync_file_range and operation probe"
+        "scope": "setup, mmap, NOP, eventfd, poll, timeout, cancellation, openat, openat2, close, statx, fallocate, send, recv, sendmsg, recvmsg, shutdown, connect, accept, fadvise, madvise, epoll_ctl, tee, renameat, unlinkat, mkdirat, symlinkat, linkat, socket, bind, listen, fsetxattr, setxattr, fgetxattr, getxattr, ftruncate, sync_file_range, futex_wake and operation probe"
       }
     }
   ],

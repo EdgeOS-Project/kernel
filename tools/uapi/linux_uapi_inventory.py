@@ -42,6 +42,7 @@ EDGEOS_ASSESSMENTS = [
             "SOCKET, BIND and LISTEN through shared socket handlers",
             "FSETXATTR, SETXATTR, FGETXATTR, GETXATTR and FTRUNCATE through shared VFS handlers",
             "SYNC_FILE_RANGE through the shared bounded writeback policy",
+            "FUTEX_WAKE through the shared futex2 handler",
         ],
         "missing": [
             "asynchronous worker execution",
@@ -65,8 +66,8 @@ EDGEOS_ASSESSMENTS = [
                 "sendmsg, recvmsg, shutdown, connect, accept, fadvise, "
                 "madvise, epoll_ctl, tee, renameat, unlinkat, mkdirat, "
                 "symlinkat, linkat, socket, bind, listen, fsetxattr, "
-                "setxattr, fgetxattr, getxattr, ftruncate, sync_file_range "
-                "and operation probe"
+                "setxattr, fgetxattr, getxattr, ftruncate, sync_file_range, "
+                "futex_wake and operation probe"
             ),
         },
     },

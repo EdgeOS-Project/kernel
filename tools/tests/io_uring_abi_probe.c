@@ -75,6 +75,7 @@ struct linux_epoll_event {
 #define O_TRUNC 512u
 #define IORING_ENTER_GETEVENTS 1u
 #define IORING_ENTER_EXT_ARG (1u << 3)
+#define IOSQE_IO_LINK (1u << 2)
 #define IORING_REGISTER_PROBE 8u
 #define IORING_REGISTER_EVENTFD 4u
 #define IORING_UNREGISTER_EVENTFD 5u
@@ -112,6 +113,7 @@ struct linux_epoll_event {
 #define IORING_OP_FGETXATTR 43u
 #define IORING_OP_GETXATTR 44u
 #define IORING_OP_SOCKET 45u
+#define IORING_OP_FUTEX_WAKE 52u
 #define IORING_OP_FTRUNCATE 55u
 #define IORING_OP_BIND 56u
 #define IORING_OP_LISTEN 57u
@@ -133,6 +135,7 @@ struct linux_epoll_event {
 #define XATTR_REPLACE 2u
 #define SYNC_FILE_RANGE_WRITE 2u
 #define SYNC_FILE_RANGE_WAIT_AFTER 4u
+#define FUTEX2_SIZE_U32 2u
 
 struct kernel_timespec {
     int64_t seconds;
@@ -451,6 +454,7 @@ static int run_tests(void) {
         AF_UNIX, "\0edgeos-io-uring-created",
     };
     uint64_t temporary_signal_mask = 0;
+    uint32_t futex_word = 0;
     int failures = 0;
 
     memset(&parameters, 0, sizeof(parameters));
@@ -530,7 +534,8 @@ static int run_tests(void) {
         (long)&probe, PROBE_OPERATION_COUNT, 0, 0), 0);
     failures += expect_true("probe extent",
         probe.last_opcode >= IORING_OP_WRITE &&
-        probe.operation_count == PROBE_OPERATION_COUNT);
+        probe.operation_count > IORING_OP_FUTEX_WAKE &&
+        probe.operation_count <= PROBE_OPERATION_COUNT);
     failures += expect_true("probe NOP",
         probe.operations[IORING_OP_NOP].opcode == IORING_OP_NOP &&
         (probe.operations[IORING_OP_NOP].flags &
@@ -607,6 +612,9 @@ static int run_tests(void) {
          IO_URING_OP_SUPPORTED) != 0);
     failures += expect_true("probe sync file range",
         (probe.operations[IORING_OP_SYNC_FILE_RANGE].flags &
+         IO_URING_OP_SUPPORTED) != 0);
+    failures += expect_true("probe futex wake",
+        (probe.operations[IORING_OP_FUTEX_WAKE].flags &
          IO_URING_OP_SUPPORTED) != 0);
 
     event_descriptor = raw_syscall6(
@@ -830,6 +838,7 @@ static int run_tests(void) {
         int32_t data_descriptor = cqes[12u & *cq_mask].result;
         memset(&sqes[5], 0, sizeof(sqes[5]));
         sqes[5].opcode = IORING_OP_FALLOCATE;
+        sqes[5].flags = IOSQE_IO_LINK;
         sqes[5].descriptor = data_descriptor;
         sqes[5].address = PAGE_SIZE;
         sqes[5].user_data = 0x46414c4c4f433031ull;
@@ -1475,6 +1484,25 @@ static int run_tests(void) {
             0x554e4c494e4b5841ull, "submit xattr unlink", &path_result);
         failures += expect("xattr unlink completion", path_result, 0);
     }
+
+    memset(&path_request, 0, sizeof(path_request));
+    path_request.opcode = IORING_OP_FUTEX_WAKE;
+    path_request.descriptor = FUTEX2_SIZE_U32;
+    path_request.address = (uint64_t)(uintptr_t)&futex_word;
+    path_request.address3 = UINT32_MAX;
+    failures += submit_one(
+        descriptor, sq_tail, sq_mask, sq_array, sqes,
+        cq_head, cq_tail, cq_mask, cqes, &path_request,
+        0x465554455857414bull, "submit futex wake", &path_result);
+    failures += expect("futex wake completion", path_result, 0);
+
+    path_request.address3 = 0;
+    failures += submit_one(
+        descriptor, sq_tail, sq_mask, sq_array, sqes,
+        cq_head, cq_tail, cq_mask, cqes, &path_request,
+        0x4655544558424144ull, "submit invalid futex wake", &path_result);
+    failures += expect("invalid futex wake completion", path_result,
+                       -EINVAL);
 
     (void)raw_syscall6(SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
     (void)raw_syscall6(SYS_munmap, (long)cq_ring, PAGE_SIZE, 0, 0, 0, 0);
