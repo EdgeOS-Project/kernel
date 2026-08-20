@@ -36,6 +36,7 @@
 #define PAGE_SIZE 4096u
 #define EINVAL 22
 #define IORING_ENTER_GETEVENTS 1u
+#define IORING_ENTER_EXT_ARG (1u << 3)
 #define IORING_REGISTER_PROBE 8u
 #define IORING_REGISTER_EVENTFD 4u
 #define IORING_UNREGISTER_EVENTFD 5u
@@ -57,6 +58,13 @@
 struct kernel_timespec {
     int64_t seconds;
     int64_t nanoseconds;
+};
+
+struct io_uring_getevents_arg {
+    uint64_t signal_mask;
+    uint32_t signal_mask_size;
+    uint32_t minimum_wait_microseconds;
+    uint64_t timeout;
 };
 
 struct io_uring_sqe {
@@ -248,6 +256,8 @@ static int run_tests(void) {
     uint64_t event_value = 0;
     struct kernel_timespec short_timeout = {0, 1000000};
     struct kernel_timespec long_timeout = {60, 0};
+    struct io_uring_getevents_arg extended_argument = {0};
+    uint64_t temporary_signal_mask = 0;
     int failures = 0;
 
     memset(&parameters, 0, sizeof(parameters));
@@ -265,6 +275,20 @@ static int run_tests(void) {
         parameters.sq_entries >= 8 && parameters.cq_entries >= 8);
     failures += expect_true("ring offsets",
         parameters.sq_off.array >= 24 && parameters.cq_off.cqes >= 24);
+    failures += expect("extended enter arguments", raw_syscall6(
+        SYS_io_uring_enter, descriptor, 0, 0,
+        IORING_ENTER_GETEVENTS | IORING_ENTER_EXT_ARG,
+        (long)&extended_argument,
+        sizeof(extended_argument)), 0);
+    failures += expect("reject extended argument size", raw_syscall6(
+        SYS_io_uring_enter, descriptor, 0, 0,
+        IORING_ENTER_GETEVENTS | IORING_ENTER_EXT_ARG,
+        (long)&extended_argument,
+        sizeof(extended_argument) - 1u), -EINVAL);
+    failures += expect("temporary signal mask", raw_syscall6(
+        SYS_io_uring_enter, descriptor, 0, 0,
+        IORING_ENTER_GETEVENTS, (long)&temporary_signal_mask,
+        sizeof(temporary_signal_mask)), 0);
 
     sq_ring = map_ring(descriptor, IORING_OFF_SQ_RING);
     cq_ring = map_ring(descriptor, IORING_OFF_CQ_RING);

@@ -6859,9 +6859,11 @@ static int64_t edge_linux_sys_aio(
 
 #define EDGE_LINUX_IORING_ENTER_GETEVENTS (1u << 0)
 #define EDGE_LINUX_IORING_ENTER_SQ_WAKEUP (1u << 1)
+#define EDGE_LINUX_IORING_ENTER_EXT_ARG   (1u << 3)
 #define EDGE_LINUX_IORING_ENTER_SUPPORTED \
     (EDGE_LINUX_IORING_ENTER_GETEVENTS | \
-     EDGE_LINUX_IORING_ENTER_SQ_WAKEUP)
+     EDGE_LINUX_IORING_ENTER_SQ_WAKEUP | \
+     EDGE_LINUX_IORING_ENTER_EXT_ARG)
 
 #define EDGE_LINUX_IORING_REGISTER_EVENTFD      4u
 #define EDGE_LINUX_IORING_UNREGISTER_EVENTFD    5u
@@ -7130,23 +7132,62 @@ static int64_t edge_linux_sys_io_uring_setup(
 
 static int64_t edge_linux_sys_io_uring_enter(
         edge_linux_syscall_context_t *context) {
+    kernel_signal_runtime_state_t signal_state;
     struct edge_linux_io_uring_sqe submission;
+    struct edge_linux_io_uring_getevents_arg extended_argument;
     uint32_t to_submit = (uint32_t)context->arguments[1];
     uint32_t minimum = (uint32_t)context->arguments[2];
     uint32_t flags = (uint32_t)context->arguments[3];
     int32_t descriptor = (int32_t)(uint32_t)context->arguments[0];
     int32_t ring_id;
     uint32_t submitted = 0;
+    uint64_t temporary_mask = 0;
     int cancel_link = 0;
+    int interrupted = 0;
+    int signal_mask_installed = 0;
+    int use_temporary_mask = 0;
     kernel_linux_thread_state_t *thread_state = 0;
+    int64_t final_result;
 
     if (context->arguments[1] != to_submit ||
         context->arguments[2] != minimum ||
         context->arguments[3] != flags ||
         (flags & ~EDGE_LINUX_IORING_ENTER_SUPPORTED))
         return -EDGE_LINUX_EINVAL;
-    if (context->arguments[4] || context->arguments[5])
-        return -EDGE_LINUX_EOPNOTSUPP;
+    if ((flags & EDGE_LINUX_IORING_ENTER_GETEVENTS) &&
+        (flags & EDGE_LINUX_IORING_ENTER_EXT_ARG)) {
+        if (context->arguments[5] != sizeof(extended_argument))
+            return -EDGE_LINUX_EINVAL;
+        if (edge_linux_copy_from_user(
+                context, &extended_argument, context->arguments[4],
+                sizeof(extended_argument)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (extended_argument.minimum_wait_microseconds ||
+            extended_argument.timeout)
+            return -EDGE_LINUX_EOPNOTSUPP;
+        if (extended_argument.signal_mask) {
+            if (extended_argument.signal_mask_size !=
+                sizeof(temporary_mask))
+                return -EDGE_LINUX_EINVAL;
+            if (edge_linux_copy_from_user(
+                    context, &temporary_mask,
+                    extended_argument.signal_mask,
+                    sizeof(temporary_mask)) < 0)
+                return -EDGE_LINUX_EFAULT;
+            use_temporary_mask = 1;
+        } else if (extended_argument.signal_mask_size) {
+            return -EDGE_LINUX_EINVAL;
+        }
+    } else if ((flags & EDGE_LINUX_IORING_ENTER_GETEVENTS) && minimum &&
+               context->arguments[4]) {
+        if (context->arguments[5] != sizeof(temporary_mask))
+            return -EDGE_LINUX_EINVAL;
+        if (edge_linux_copy_from_user(
+                context, &temporary_mask, context->arguments[4],
+                sizeof(temporary_mask)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        use_temporary_mask = 1;
+    }
     ring_id = kernel_anonymous_fd_descriptor_object_id(
         descriptor, KERNEL_ANONYMOUS_FD_IO_URING);
     if (ring_id < 0) return -EDGE_LINUX_EBADF;
@@ -7155,6 +7196,15 @@ static int64_t edge_linux_sys_io_uring_enter(
     if (kernel_arch_current_linux_thread_state(&thread_state) == 0 &&
         thread_state)
         thread_state->io_uring_wait_submitted = 0;
+    if (use_temporary_mask) {
+        if (kernel_arch_signal_runtime_state(
+                context->current_task, &signal_state) < 0)
+            return -EDGE_LINUX_EINVAL;
+        kernel_signal_wait_mask_install(
+            &signal_state,
+            edge_linux_signal_sanitize_mask(temporary_mask));
+        signal_mask_installed = 1;
+    }
 
     while (submitted < to_submit) {
         int take_result = kernel_io_uring_take_submission(
@@ -7163,8 +7213,11 @@ static int64_t edge_linux_sys_io_uring_enter(
         int linked;
         int hard_linked;
         if (take_result == -EDGE_LINUX_EAGAIN) break;
-        if (take_result < 0)
-            return submitted ? (int64_t)submitted : (int64_t)take_result;
+        if (take_result < 0) {
+            final_result = submitted ?
+                (int64_t)submitted : (int64_t)take_result;
+            goto finish;
+        }
         linked = (submission.flags & EDGE_LINUX_IOSQE_IO_LINK) != 0;
         hard_linked =
             (submission.flags & EDGE_LINUX_IOSQE_IO_HARDLINK) != 0;
@@ -7200,19 +7253,21 @@ static int64_t edge_linux_sys_io_uring_enter(
                 arch_cpu_relax();
             }
             if (kernel_io_uring_completion_count(ring_id) < minimum)
-                return thread_state ?
-                    thread_state->io_uring_wait_submitted : submitted;
+                goto submitted_result;
         }
         while (kernel_io_uring_completion_count(ring_id) < minimum) {
             int released;
             int yielded;
-            if (kernel_current_signal_wake_pending())
-                return (thread_state ?
+            if (kernel_current_signal_wake_pending()) {
+                interrupted = 1;
+                final_result = (thread_state ?
                         thread_state->io_uring_wait_submitted : submitted) ?
                        (int64_t)(thread_state ?
                            thread_state->io_uring_wait_submitted :
                            submitted) :
                                    -(int64_t)EDGE_LINUX_EINTR;
+                goto finish;
+            }
             (void)kernel_io_uring_collect(
                 ring_id, boottime_monotonic_us());
             released = kernel_runtime_contention_begin();
@@ -7224,7 +7279,13 @@ static int64_t edge_linux_sys_io_uring_enter(
             if (!yielded) break;
         }
     }
-    return thread_state ? thread_state->io_uring_wait_submitted : submitted;
+submitted_result:
+    final_result = thread_state ?
+        thread_state->io_uring_wait_submitted : submitted;
+finish:
+    if (signal_mask_installed)
+        kernel_signal_wait_mask_finish(&signal_state, interrupted);
+    return final_result;
 }
 
 static int edge_linux_io_uring_probe_supported(uint8_t opcode) {

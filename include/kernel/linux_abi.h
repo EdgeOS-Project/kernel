@@ -639,6 +639,13 @@ struct edge_linux_io_uring_probe {
     uint32_t reserved2[3];
 };
 
+struct edge_linux_io_uring_getevents_arg {
+    uint64_t signal_mask;
+    uint32_t signal_mask_size;
+    uint32_t minimum_wait_microseconds;
+    uint64_t timeout;
+};
+
 _Static_assert(sizeof(struct edge_linux_ipc_perm64) == 48,
                "Linux ipc_perm size mismatch");
 _Static_assert(offsetof(struct edge_linux_ipc_perm64, mode) == 20,
@@ -695,6 +702,8 @@ _Static_assert(sizeof(struct edge_linux_io_uring_probe_op) == 8,
                "Linux io_uring probe operation size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_probe) == 16,
                "Linux io_uring probe header size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_uring_getevents_arg) == 24,
+               "Linux io_uring getevents argument size mismatch");
 
 /* statx is an architecture-independent Linux UAPI layout on 64-bit ports. */
 struct edge_linux_statx_timestamp {
