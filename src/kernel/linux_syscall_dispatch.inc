@@ -215,6 +215,11 @@ case EDGE_LINUX_SYS_listns:
 case EDGE_LINUX_SYS_lseek:
     context->result = edge_linux_sys_lseek(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_lsm_get_self_attr:
+case EDGE_LINUX_SYS_lsm_list_modules:
+case EDGE_LINUX_SYS_lsm_set_self_attr:
+    context->result = edge_linux_sys_lsm(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_madvise:
     context->result = edge_linux_sys_madvise(context);
     return EDGE_LINUX_SYSCALL_HANDLED;

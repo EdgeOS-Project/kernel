@@ -41,7 +41,7 @@ def load_existing() -> dict[str, dict[str, Any]]:
 
 def architecture_entry(
     report: dict[str, Any], architecture: str, name: str,
-    runtime_tests: list[str],
+    runtime_tests: list[str], oracle_status: str,
 ) -> dict[str, Any] | None:
     side = report[architecture]
     if name not in side["numbers"]:
@@ -56,6 +56,7 @@ def architecture_entry(
         "route": route,
         "evidence_status": (
             "explicit-enosys" if is_enosys else
+            "oracle-verified" if oracle_status == "verified" else
             "runtime-probe-listed" if runtime_tests else
             "static-route-only"
         ),
@@ -72,6 +73,7 @@ def build_document() -> dict[str, Any]:
     for name in names:
         old = existing.get(name, {})
         runtime_tests = old.get("runtime_tests", [])
+        oracle_status = old.get("oracle_status", "not-run")
         syscalls.append(
             {
                 "id": name,
@@ -80,12 +82,14 @@ def build_document() -> dict[str, Any]:
                 "architecture_exceptions": ARCHITECTURE_EXCEPTIONS.get(name, []),
                 "runtime_tests": runtime_tests,
                 "linux_oracle": "required",
-                "oracle_status": old.get("oracle_status", "not-run"),
+                "oracle_status": oracle_status,
                 "architectures": {
                     "x86_64": architecture_entry(
-                        report, "x86_64", name, runtime_tests),
+                        report, "x86_64", name, runtime_tests,
+                        oracle_status),
                     "aarch64": architecture_entry(
-                        report, "arm64", name, runtime_tests),
+                        report, "arm64", name, runtime_tests,
+                        oracle_status),
                 },
             }
         )

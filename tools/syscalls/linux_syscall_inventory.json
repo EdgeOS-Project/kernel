@@ -2290,7 +2290,7 @@
           "number": 78,
           "status": "implemented",
           "route": "shared:edge_linux_sys_getdents",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": null
       }
@@ -2310,13 +2310,13 @@
           "number": 217,
           "status": "implemented",
           "route": "shared:edge_linux_sys_getdents",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 61,
           "status": "implemented",
           "route": "shared:edge_linux_sys_getdents",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -3525,13 +3525,13 @@
           "number": 445,
           "status": "implemented",
           "route": "shared:edge_linux_sys_landlock",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 445,
           "status": "implemented",
           "route": "shared:edge_linux_sys_landlock",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -3550,13 +3550,13 @@
           "number": 444,
           "status": "implemented",
           "route": "shared:edge_linux_sys_landlock",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 444,
           "status": "implemented",
           "route": "shared:edge_linux_sys_landlock",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -3575,13 +3575,13 @@
           "number": 446,
           "status": "implemented",
           "route": "shared:edge_linux_sys_landlock",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 446,
           "status": "implemented",
           "route": "shared:edge_linux_sys_landlock",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -3921,55 +3921,76 @@
     {
       "id": "lsm_get_self_attr",
       "semantic_id": "lsm_get_self_attr",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_lsm",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/lsm_uapi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 459,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_lsm",
+          "evidence_status": "oracle-verified"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 459,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_lsm",
+          "evidence_status": "oracle-verified"
+        }
       }
     },
     {
       "id": "lsm_list_modules",
       "semantic_id": "lsm_list_modules",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_lsm",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/lsm_uapi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 461,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_lsm",
+          "evidence_status": "oracle-verified"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 461,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_lsm",
+          "evidence_status": "oracle-verified"
+        }
       }
     },
     {
       "id": "lsm_set_self_attr",
       "semantic_id": "lsm_set_self_attr",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_lsm",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/lsm_uapi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 460,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_lsm",
+          "evidence_status": "oracle-verified"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 460,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_lsm",
+          "evidence_status": "oracle-verified"
+        }
       }
     },
     {

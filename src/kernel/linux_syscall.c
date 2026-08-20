@@ -122,6 +122,8 @@ static int64_t edge_linux_sys_quota(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_landlock(
     edge_linux_syscall_context_t *context);
+static int64_t edge_linux_sys_lsm(
+    edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_truncate(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_mkdir(
@@ -11529,6 +11531,127 @@ static int64_t edge_linux_sys_landlock(
     }
     return -EDGE_LINUX_ENOSYS;
 #endif
+}
+
+#define EDGE_LINUX_LSM_ID_CAPABILITY 100u
+#define EDGE_LINUX_LSM_ID_LANDLOCK   110u
+#define EDGE_LINUX_LSM_ATTR_UNDEF    0u
+#define EDGE_LINUX_LSM_FLAG_SINGLE   0x0001u
+
+typedef struct edge_linux_lsm_ctx {
+    uint64_t id;
+    uint64_t flags;
+    uint64_t len;
+    uint64_t ctx_len;
+} edge_linux_lsm_ctx_t;
+
+static int edge_linux_lsm_probe_user(
+    edge_linux_syscall_context_t *context, uint64_t address,
+    uint32_t size, edge_linux_lsm_ctx_t *header) {
+    uint8_t scratch[64];
+    uint32_t offset = 0;
+
+    if (!address) return -EDGE_LINUX_EFAULT;
+    while (offset < size) {
+        uint32_t chunk = size - offset;
+        if (chunk > sizeof(scratch)) chunk = sizeof(scratch);
+        if (address + offset < address ||
+            edge_linux_copy_from_user(
+                context, scratch, address + offset, chunk) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (!offset && header)
+            memcpy(header, scratch, sizeof(*header));
+        offset += chunk;
+    }
+    return 0;
+}
+
+static int64_t edge_linux_sys_lsm(
+    edge_linux_syscall_context_t *context) {
+    if (context->id == EDGE_LINUX_SYS_lsm_list_modules) {
+        uint64_t module_ids[2];
+        uint64_t user_ids = context->arguments[0];
+        uint64_t user_size = context->arguments[1];
+        uint32_t flags = (uint32_t)context->arguments[2];
+        uint32_t module_count = 1u;
+        uint32_t available_size;
+        uint32_t required_size;
+
+        if (flags) return -EDGE_LINUX_EINVAL;
+        if (!user_size || edge_linux_copy_from_user(
+                context, &available_size, user_size,
+                sizeof(available_size)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        module_ids[0] = EDGE_LINUX_LSM_ID_CAPABILITY;
+#ifdef CONFIG_LANDLOCK
+        module_ids[module_count++] = EDGE_LINUX_LSM_ID_LANDLOCK;
+#endif
+        required_size = module_count * sizeof(module_ids[0]);
+        if (edge_linux_copy_to_user(
+                context, user_size, &required_size,
+                sizeof(required_size)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (available_size < required_size) return -EDGE_LINUX_E2BIG;
+        if (edge_linux_copy_to_user(
+                context, user_ids, module_ids, required_size) < 0)
+            return -EDGE_LINUX_EFAULT;
+        return module_count;
+    }
+
+    if (context->id == EDGE_LINUX_SYS_lsm_get_self_attr) {
+        edge_linux_lsm_ctx_t selector;
+        uint32_t attribute = (uint32_t)context->arguments[0];
+        uint64_t user_context = context->arguments[1];
+        uint64_t user_size = context->arguments[2];
+        uint32_t flags = (uint32_t)context->arguments[3];
+        uint32_t available_size;
+        uint32_t result_size = 0;
+
+        if (attribute == EDGE_LINUX_LSM_ATTR_UNDEF || !user_size)
+            return -EDGE_LINUX_EINVAL;
+        if (edge_linux_copy_from_user(
+                context, &available_size, user_size,
+                sizeof(available_size)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        (void)available_size;
+        if (flags) {
+            if (flags != EDGE_LINUX_LSM_FLAG_SINGLE || !user_context)
+                return -EDGE_LINUX_EINVAL;
+            if (edge_linux_copy_from_user(
+                    context, &selector, user_context,
+                    sizeof(selector)) < 0)
+                return -EDGE_LINUX_EFAULT;
+            if (!selector.id) return -EDGE_LINUX_EINVAL;
+        }
+        if (edge_linux_copy_to_user(
+                context, user_size, &result_size,
+                sizeof(result_size)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        return -EDGE_LINUX_EOPNOTSUPP;
+    }
+
+    if (context->id == EDGE_LINUX_SYS_lsm_set_self_attr) {
+        edge_linux_lsm_ctx_t attributes;
+        uint64_t user_context = context->arguments[1];
+        uint32_t size = (uint32_t)context->arguments[2];
+        uint32_t flags = (uint32_t)context->arguments[3];
+        uint64_t required_length;
+        int status;
+
+        if (flags) return -EDGE_LINUX_EINVAL;
+        if (size < sizeof(attributes)) return -EDGE_LINUX_EINVAL;
+        if (size > KERNEL_MM_USER_PAGE_SIZE) return -EDGE_LINUX_E2BIG;
+        status = edge_linux_lsm_probe_user(
+            context, user_context, size, &attributes);
+        if (status < 0) return status;
+        if (attributes.ctx_len > UINT64_MAX - sizeof(attributes))
+            return -EDGE_LINUX_EINVAL;
+        required_length = sizeof(attributes) + attributes.ctx_len;
+        if (size < attributes.len || attributes.len < required_length)
+            return -EDGE_LINUX_EINVAL;
+        return -EDGE_LINUX_EOPNOTSUPP;
+    }
+    return -EDGE_LINUX_ENOSYS;
 }
 
 static int edge_linux_statfs_from_superblock(
