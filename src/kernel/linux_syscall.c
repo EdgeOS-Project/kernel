@@ -24,6 +24,8 @@
 #include "kernel/futex_runtime.h"
 #include "kernel/fanotify.h"
 #include "kernel/fanotify_runtime.h"
+#include "kernel/userfaultfd_runtime.h"
+#include "kernel/userfaultfd.h"
 #include "kernel/inotify.h"
 #include "kernel/inotify_runtime.h"
 #include "kernel/ioctl_runtime.h"
@@ -10904,6 +10906,29 @@ static int64_t edge_linux_sys_fanotify(
     return kernel_fanotify_modify_mark(
         group_id, flags, mask, target.resolved_path,
         (target.inode->mode & 0xf000u) == VFS_INODE_DIR);
+#endif
+}
+
+static int64_t edge_linux_sys_userfaultfd(
+    edge_linux_syscall_context_t *context) {
+#ifndef CONFIG_USERFAULTFD
+    (void)context;
+    return -EDGE_LINUX_ENOSYS;
+#else
+    uint32_t flags = (uint32_t)context->arguments[0];
+    uint32_t allowed = KERNEL_UFFD_CLOEXEC | KERNEL_UFFD_NONBLOCK |
+                       KERNEL_UFFD_USER_MODE_ONLY;
+    linux_credential_state_t credentials;
+
+    if (!(flags & KERNEL_UFFD_USER_MODE_ONLY)) {
+        if (kernel_current_credentials_get(&credentials) < 0)
+            return -EDGE_LINUX_ESRCH;
+        if (!(credentials.capabilities.effective &
+              (1ULL << EDGE_LINUX_CAP_SYS_PTRACE)))
+            return -EDGE_LINUX_EPERM;
+    }
+    if (flags & ~allowed) return -EDGE_LINUX_EINVAL;
+    return kernel_userfaultfd_create_descriptor(flags);
 #endif
 }
 

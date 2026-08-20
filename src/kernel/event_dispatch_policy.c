@@ -11,6 +11,7 @@
 #include "kernel/inotify_runtime.h"
 #include "kernel/linux_errno.h"
 #include "kernel/runtime_limits.h"
+#include "kernel/userfaultfd_runtime.h"
 
 int64_t kernel_epoll_wait_descriptor(int32_t epoll_descriptor,
                                      uint64_t user_events,
@@ -71,4 +72,11 @@ void kernel_fanotify_state_changed(int group_id) {
         group_id >= EDGE_RUNTIME_MAX_FANOTIFY_GROUPS)
         return;
     arch_fanotify_state_changed(group_id);
+}
+
+void kernel_userfaultfd_state_changed(int context_id) {
+    if (context_id < 0 ||
+        context_id >= EDGE_RUNTIME_MAX_USERFAULTFDS)
+        return;
+    arch_userfaultfd_state_changed(context_id);
 }

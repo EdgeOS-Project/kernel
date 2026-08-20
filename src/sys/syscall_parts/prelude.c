@@ -59,6 +59,8 @@
 #include "kernel/futex_runtime.h"
 #include "kernel/fanotify.h"
 #include "kernel/fanotify_runtime.h"
+#include "kernel/userfaultfd.h"
+#include "kernel/userfaultfd_runtime.h"
 #include "kernel/inotify.h"
 #include "kernel/inotify_runtime.h"
 #include "kernel/io_buffer.h"
@@ -1487,6 +1489,7 @@ typedef enum {
     FD_PIDFD,
     FD_INOTIFY,
     FD_FANOTIFY,
+    FD_USERFAULTFD,
     FD_MEMFD,
     FD_DMA_BUF,
     FD_TUN,

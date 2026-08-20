@@ -138,6 +138,13 @@ config FANOTIFY
       Enable Linux fanotify notification groups, inode marks, event queues,
       polling, and event file descriptors over the shared VFS event source.
 
+config USERFAULTFD
+    bool "Linux userfaultfd missing-page service"
+    default y
+    help
+      Enable Linux userfaultfd missing-page registration, page-fault events,
+      polling, and userspace COPY, ZEROPAGE, and WAKE resolution.
+
 config RSEQ
     bool "Linux restartable sequences"
     default y

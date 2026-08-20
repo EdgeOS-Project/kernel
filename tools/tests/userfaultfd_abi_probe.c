@@ -1,0 +1,397 @@
+/* SPDX-License-Identifier: MPL-2.0 */
+/* Linux userfaultfd missing-page ABI probe for x86_64 and AArch64. */
+
+#include <stdint.h>
+
+#if defined(__x86_64__)
+#define SYS_read 0
+#define SYS_write 1
+#define SYS_mmap 9
+#define SYS_munmap 11
+#define SYS_ioctl 16
+#define SYS_close 3
+#define SYS_clone 56
+#define SYS_wait4 61
+#define SYS_kill 62
+#define SYS_sched_yield 24
+#define SYS_exit 60
+#define SYS_userfaultfd 323
+#elif defined(__aarch64__)
+#define SYS_read 63
+#define SYS_write 64
+#define SYS_mmap 222
+#define SYS_munmap 215
+#define SYS_ioctl 29
+#define SYS_close 57
+#define SYS_clone 220
+#define SYS_wait4 260
+#define SYS_kill 129
+#define SYS_sched_yield 124
+#define SYS_exit 93
+#define SYS_userfaultfd 282
+#else
+#error "userfaultfd_abi_probe requires a Linux 64-bit architecture"
+#endif
+
+#define PAGE_SIZE 4096u
+#define PROT_READ 0x1
+#define PROT_WRITE 0x2
+#define MAP_PRIVATE 0x2
+#define MAP_ANONYMOUS 0x20
+#define O_NONBLOCK 0x800
+#define O_CLOEXEC 0x80000
+#define UFFD_USER_MODE_ONLY 0x1
+#define UFFD_API 0xAAu
+#define UFFDIO_REGISTER_MODE_MISSING 0x1u
+#define UFFDIO_API 0xc018aa3fu
+#define UFFDIO_REGISTER 0xc020aa00u
+#define UFFDIO_UNREGISTER 0x8010aa01u
+#define UFFDIO_COPY 0xc028aa03u
+#define UFFDIO_ZEROPAGE 0xc020aa04u
+#define UFFD_EVENT_PAGEFAULT 0x12u
+#define CLONE_VM 0x00000100u
+#define SIGCHLD 17
+#define SIGKILL 9
+#define EAGAIN 11
+#define EINVAL 22
+
+struct uffdio_api {
+    uint64_t api;
+    uint64_t features;
+    uint64_t ioctls;
+};
+
+struct uffdio_range {
+    uint64_t start;
+    uint64_t len;
+};
+
+struct uffdio_register {
+    struct uffdio_range range;
+    uint64_t mode;
+    uint64_t ioctls;
+};
+
+struct uffdio_copy {
+    uint64_t dst;
+    uint64_t src;
+    uint64_t len;
+    uint64_t mode;
+    int64_t copy;
+};
+
+struct uffdio_zeropage {
+    struct uffdio_range range;
+    uint64_t mode;
+    int64_t zeropage;
+};
+
+struct uffd_msg {
+    uint8_t event;
+    uint8_t reserved1;
+    uint16_t reserved2;
+    uint32_t reserved3;
+    uint64_t flags;
+    uint64_t address;
+    uint32_t thread_id;
+    uint32_t reserved4;
+};
+
+static unsigned char g_fault_stack[16384] __attribute__((aligned(16)));
+static volatile unsigned char *g_fault_address;
+static volatile unsigned char g_fault_value;
+
+static long raw_syscall6(long number, long a0, long a1, long a2,
+                         long a3, long a4, long a5) {
+#if defined(__x86_64__)
+    register long r10 __asm__("r10") = a3;
+    register long r8 __asm__("r8") = a4;
+    register long r9 __asm__("r9") = a5;
+    long result;
+    __asm__ volatile("syscall"
+                     : "=a"(result)
+                     : "a"(number), "D"(a0), "S"(a1), "d"(a2),
+                       "r"(r10), "r"(r8), "r"(r9)
+                     : "rcx", "r11", "memory");
+    return result;
+#else
+    register long x8 __asm__("x8") = number;
+    register long x0 __asm__("x0") = a0;
+    register long x1 __asm__("x1") = a1;
+    register long x2 __asm__("x2") = a2;
+    register long x3 __asm__("x3") = a3;
+    register long x4 __asm__("x4") = a4;
+    register long x5 __asm__("x5") = a5;
+    __asm__ volatile("svc #0"
+                     : "+r"(x0)
+                     : "r"(x8), "r"(x1), "r"(x2), "r"(x3),
+                       "r"(x4), "r"(x5)
+                     : "memory", "cc");
+    return x0;
+#endif
+}
+
+static __attribute__((noreturn)) void exit_now(int status) {
+    (void)raw_syscall6(SYS_exit, status, 0, 0, 0, 0, 0);
+    for (;;) { }
+}
+
+static __attribute__((noreturn, noinline, used))
+void fault_child_entry(void) {
+    g_fault_value = *g_fault_address;
+    __asm__ volatile("" ::: "memory");
+    exit_now(0);
+}
+
+#if defined(__x86_64__)
+static __attribute__((naked, noinline)) long
+spawn_fault_child(unsigned long flags __attribute__((unused)),
+                  void *stack __attribute__((unused))) {
+    __asm__ volatile(
+        "mov $56, %rax\n"
+        "syscall\n"
+        "test %rax, %rax\n"
+        "jnz 1f\n"
+        "xor %ebp, %ebp\n"
+        "call fault_child_entry\n"
+        "ud2\n"
+        "1: ret\n");
+}
+#else
+static __attribute__((noinline)) long
+spawn_fault_child(unsigned long flags, void *stack) {
+    register unsigned long x0 __asm__("x0") = flags;
+    register void *x1 __asm__("x1") = stack;
+    register unsigned long x2 __asm__("x2") = 0;
+    register unsigned long x3 __asm__("x3") = 0;
+    register unsigned long x4 __asm__("x4") = 0;
+    register unsigned long x8 __asm__("x8") = SYS_clone;
+    __asm__ volatile(
+        "svc #0\n"
+        "cbnz x0, 1f\n"
+        "mov x29, xzr\n"
+        "bl fault_child_entry\n"
+        "brk #0\n"
+        "1:\n"
+        : "+r"(x0)
+        : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x8)
+        : "x29", "x30", "memory", "cc");
+    return (long)x0;
+}
+#endif
+
+static unsigned long text_length(const char *text) {
+    unsigned long length = 0;
+    while (text[length]) ++length;
+    return length;
+}
+
+static void print_text(const char *text) {
+    (void)raw_syscall6(
+        SYS_write, 1, (long)text, (long)text_length(text), 0, 0, 0);
+}
+
+static void print_number(long value) {
+    char output[24];
+    unsigned long magnitude;
+    unsigned long count = 0;
+    if (value < 0) {
+        print_text("-");
+        magnitude = (unsigned long)(-(value + 1)) + 1u;
+    } else {
+        magnitude = (unsigned long)value;
+    }
+    do {
+        output[count++] = (char)('0' + magnitude % 10u);
+        magnitude /= 10u;
+    } while (magnitude);
+    for (unsigned long left = 0, right = count - 1u; left < right;
+         ++left, --right) {
+        char temporary = output[left];
+        output[left] = output[right];
+        output[right] = temporary;
+    }
+    (void)raw_syscall6(
+        SYS_write, 1, (long)output, (long)count, 0, 0, 0);
+}
+
+static int expect_result(const char *name, long actual, long expected) {
+    if (actual == expected) return 0;
+    print_text("FAIL ");
+    print_text(name);
+    print_text(" expected=");
+    print_number(expected);
+    print_text(" actual=");
+    print_number(actual);
+    print_text("\n");
+    return 1;
+}
+
+void _start(void) {
+    struct uffdio_api api = { .api = UFFD_API };
+    struct uffdio_register registration;
+    struct uffdio_copy copy;
+    struct uffdio_zeropage zero;
+    struct uffd_msg message;
+    unsigned char *source;
+    unsigned char *destination;
+    long descriptor;
+    int failures = 0;
+
+    failures += expect_result(
+        "invalid-flags",
+        raw_syscall6(
+            SYS_userfaultfd,
+            0x40000000u | UFFD_USER_MODE_ONLY, 0, 0, 0, 0, 0),
+        -EINVAL);
+    source = (unsigned char *)raw_syscall6(
+        SYS_mmap, 0, PAGE_SIZE, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    destination = (unsigned char *)raw_syscall6(
+        SYS_mmap, 0, PAGE_SIZE * 3u, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if ((long)source < 0 || (long)destination < 0) {
+        print_text("FAIL mmap\n");
+        ++failures;
+        goto out;
+    }
+    for (unsigned long index = 0; index < PAGE_SIZE; ++index)
+        source[index] = (unsigned char)(index * 37u + 11u);
+
+    descriptor = raw_syscall6(
+        SYS_userfaultfd,
+        O_NONBLOCK | O_CLOEXEC | UFFD_USER_MODE_ONLY, 0, 0, 0, 0, 0);
+    if (descriptor < 0) {
+        failures += expect_result("create", descriptor, 0);
+        goto out;
+    }
+    failures += expect_result(
+        "api", raw_syscall6(
+            SYS_ioctl, descriptor, UFFDIO_API, (long)&api, 0, 0, 0), 0);
+    if (api.api != UFFD_API || !api.ioctls) {
+        print_text("FAIL api-result\n");
+        ++failures;
+    }
+
+    registration.range.start = (uint64_t)(uintptr_t)destination;
+    registration.range.len = PAGE_SIZE * 3u;
+    registration.mode = UFFDIO_REGISTER_MODE_MISSING;
+    registration.ioctls = 0;
+    failures += expect_result(
+        "register", raw_syscall6(
+            SYS_ioctl, descriptor, UFFDIO_REGISTER,
+            (long)&registration, 0, 0, 0), 0);
+    if (!registration.ioctls) {
+        print_text("FAIL register-ioctls\n");
+        ++failures;
+    }
+
+    copy.dst = (uint64_t)(uintptr_t)destination;
+    copy.src = (uint64_t)(uintptr_t)source;
+    copy.len = PAGE_SIZE;
+    copy.mode = 0;
+    copy.copy = 0;
+    failures += expect_result(
+        "copy", raw_syscall6(
+            SYS_ioctl, descriptor, UFFDIO_COPY, (long)&copy, 0, 0, 0), 0);
+    failures += expect_result("copy-count", copy.copy, PAGE_SIZE);
+    for (unsigned long index = 0; index < PAGE_SIZE; ++index) {
+        if (destination[index] != source[index]) {
+            print_text("FAIL copy-data\n");
+            ++failures;
+            break;
+        }
+    }
+
+    zero.range.start = (uint64_t)(uintptr_t)(destination + PAGE_SIZE);
+    zero.range.len = PAGE_SIZE;
+    zero.mode = 0;
+    zero.zeropage = 0;
+    failures += expect_result(
+        "zeropage", raw_syscall6(
+            SYS_ioctl, descriptor, UFFDIO_ZEROPAGE,
+            (long)&zero, 0, 0, 0), 0);
+    failures += expect_result("zero-count", zero.zeropage, PAGE_SIZE);
+    for (unsigned long index = PAGE_SIZE; index < PAGE_SIZE * 2u; ++index) {
+        if (destination[index] != 0) {
+            print_text("FAIL zero-data\n");
+            ++failures;
+            break;
+        }
+    }
+
+    g_fault_address = destination + PAGE_SIZE * 2u;
+    g_fault_value = 0;
+    {
+        long child = spawn_fault_child(
+            CLONE_VM | SIGCHLD,
+            &g_fault_stack[sizeof(g_fault_stack)]);
+        long received = -EAGAIN;
+        int child_status = -1;
+
+        if (child < 0) {
+            failures += expect_result("fault-child", child, 0);
+        } else {
+            for (unsigned long attempt = 0; attempt < 100000u; ++attempt) {
+                received = raw_syscall6(
+                    SYS_read, descriptor, (long)&message,
+                    sizeof(message), 0, 0, 0);
+                if (received != -EAGAIN) break;
+                (void)raw_syscall6(SYS_sched_yield, 0, 0, 0, 0, 0, 0);
+            }
+            failures += expect_result(
+                "fault-event-size", received, sizeof(message));
+            if (received == (long)sizeof(message) &&
+                (message.event != UFFD_EVENT_PAGEFAULT ||
+                 message.flags != 0 ||
+                 message.address !=
+                    ((uint64_t)(uintptr_t)g_fault_address &
+                     ~(uint64_t)(PAGE_SIZE - 1u)))) {
+                print_text("FAIL fault-event-data\n");
+                ++failures;
+            }
+            if (received == (long)sizeof(message)) {
+                copy.dst = (uint64_t)(uintptr_t)g_fault_address;
+                copy.src = (uint64_t)(uintptr_t)source;
+                copy.len = PAGE_SIZE;
+                copy.mode = 0;
+                copy.copy = 0;
+                failures += expect_result(
+                    "fault-copy", raw_syscall6(
+                        SYS_ioctl, descriptor, UFFDIO_COPY,
+                        (long)&copy, 0, 0, 0), 0);
+                failures += expect_result(
+                    "fault-copy-count", copy.copy, PAGE_SIZE);
+            } else {
+                (void)raw_syscall6(
+                    SYS_kill, child, SIGKILL, 0, 0, 0, 0);
+            }
+            failures += expect_result(
+                "fault-wait", raw_syscall6(
+                    SYS_wait4, child, (long)&child_status,
+                    0, 0, 0, 0), child);
+            failures += expect_result("fault-child-status", child_status, 0);
+            failures += expect_result(
+                "fault-child-value", g_fault_value, source[0]);
+        }
+    }
+    failures += expect_result(
+        "empty-read", raw_syscall6(
+            SYS_read, descriptor, (long)&message,
+            sizeof(message), 0, 0, 0), -EAGAIN);
+    failures += expect_result(
+        "unregister", raw_syscall6(
+            SYS_ioctl, descriptor, UFFDIO_UNREGISTER,
+            (long)&registration.range, 0, 0, 0), 0);
+    (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+
+out:
+    if ((long)source > 0)
+        (void)raw_syscall6(SYS_munmap, (long)source, PAGE_SIZE, 0, 0, 0, 0);
+    if ((long)destination > 0)
+        (void)raw_syscall6(
+            SYS_munmap, (long)destination, PAGE_SIZE * 3u, 0, 0, 0, 0);
+    if (!failures) print_text("USERFAULTFD_ABI_PROBE_PASS\n");
+    (void)raw_syscall6(SYS_exit, failures ? 1 : 0, 0, 0, 0, 0, 0);
+    for (;;) { }
+}

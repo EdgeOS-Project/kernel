@@ -12,6 +12,7 @@
 #include "kernel/inotify_runtime.h"
 #include "kernel/linux_errno.h"
 #include "kernel/runtime_limits.h"
+#include "kernel/userfaultfd_runtime.h"
 
 static int g_failures;
 static int g_epoll_calls;
@@ -19,6 +20,7 @@ static int g_poll_calls;
 static int g_select_calls;
 static int g_inotify_calls;
 static int g_fanotify_calls;
+static int g_userfaultfd_calls;
 
 static void expect_true(const char *name, int condition) {
     if (condition) return;
@@ -83,6 +85,11 @@ void arch_fanotify_state_changed(int group_id) {
     if (group_id != 7) ++g_failures;
 }
 
+void arch_userfaultfd_state_changed(int context_id) {
+    ++g_userfaultfd_calls;
+    if (context_id != 11) ++g_failures;
+}
+
 static void test_wait_dispatch(void) {
     expect_true("epoll dispatch",
                 kernel_epoll_wait_descriptor(
@@ -134,10 +141,20 @@ static void test_fanotify_dispatch(void) {
     expect_true("fanotify dispatch", g_fanotify_calls == 1);
 }
 
+static void test_userfaultfd_dispatch(void) {
+    kernel_userfaultfd_state_changed(-1);
+    kernel_userfaultfd_state_changed(
+        EDGE_RUNTIME_MAX_USERFAULTFDS);
+    expect_true("userfaultfd invalid range", g_userfaultfd_calls == 0);
+    kernel_userfaultfd_state_changed(11);
+    expect_true("userfaultfd dispatch", g_userfaultfd_calls == 1);
+}
+
 int main(void) {
     test_wait_dispatch();
     test_inotify_dispatch();
     test_fanotify_dispatch();
+    test_userfaultfd_dispatch();
     if (g_failures) return 1;
     puts("event_dispatch_policy_unit: PASS");
     return 0;

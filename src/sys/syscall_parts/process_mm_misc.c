@@ -808,7 +808,7 @@ int arch_vfs_describe_descriptor(int32_t descriptor,
     if (entry->kind == FD_EVENTFD || entry->kind == FD_TIMERFD ||
         entry->kind == FD_SIGNALFD || entry->kind == FD_EPOLL ||
         entry->kind == FD_PIDFD || entry->kind == FD_INOTIFY ||
-        entry->kind == FD_FANOTIFY ||
+        entry->kind == FD_FANOTIFY || entry->kind == FD_USERFAULTFD ||
         entry->kind == FD_DMA_BUF || entry->kind == FD_MOUNT ||
         entry->kind == FD_IO_URING) {
         description->kind = KERNEL_VFS_DESCRIPTOR_ANONYMOUS;
@@ -8318,6 +8318,77 @@ int arch_mm_range_mapped(uint64_t address, uint64_t length) {
     return covered ? 0 : -ENOMEM;
 }
 
+static task_t *x86_mm_task_for_address_space(uint64_t address_space) {
+    if (!address_space) return 0;
+    for (int index = 0; index < PROC_MAX_TASKS; ++index) {
+        const task_t *view = process_task_by_index(index);
+        task_t *task;
+
+        if (!view || view->state == TASK_UNUSED ||
+            view->cr3 != address_space)
+            continue;
+        task = process_task_by_pid(view->pid);
+        return task ? process_vm_task(task) : 0;
+    }
+    return 0;
+}
+
+int arch_mm_address_space_range_mapped(
+        uint64_t address_space, uint64_t address, uint64_t length) {
+    task_t *memory = x86_mm_task_for_address_space(address_space);
+    uint64_t end;
+    int covered;
+
+    if (!memory || !length || length > UINT64_MAX - address)
+        return -ENOMEM;
+    end = address + length;
+    process_user_vma_mutation_lock(memory);
+    covered = user_vma_range_covered(memory, address, end);
+    process_user_vma_mutation_unlock(memory);
+    return covered ? 0 : -ENOMEM;
+}
+
+int arch_mm_address_space_page_resident(
+        uint64_t address_space, uint64_t address) {
+    task_t *memory = x86_mm_task_for_address_space(address_space);
+    uint64_t page = address & ~(PAGE_SIZE - 1u);
+    int covered;
+
+    if (!memory) return -ENOMEM;
+    process_user_vma_mutation_lock(memory);
+    covered = user_vma_range_covered(memory, page, page + PAGE_SIZE);
+    process_user_vma_mutation_unlock(memory);
+    if (!covered) return -ENOMEM;
+    return (user_pte_flags_address_space(
+        address_space & ~0xfffULL, address) & PTE_PRESENT) != 0u;
+}
+
+int arch_mm_address_space_copy(
+        uint64_t address_space, uint64_t address, void *buffer,
+        uint64_t size, kernel_mm_process_vm_operation_t operation) {
+    task_t *memory = x86_mm_task_for_address_space(address_space);
+    if (!memory || (!buffer && size) || size > UINT64_MAX - address)
+        return -EFAULT;
+    if (operation == KERNEL_MM_PROCESS_VM_READ)
+        return process_read_user_memory(
+            memory->pid, address, buffer, size) < 0 ? -EFAULT : 0;
+    if (operation == KERNEL_MM_PROCESS_VM_WRITE) {
+        uint64_t end = address + size;
+        uint64_t page = address & ~(PAGE_SIZE - 1u);
+
+        while (page < end) {
+            if (!(user_pte_flags_address_space(
+                    address_space & ~0xfffULL, page) & PTE_PRESENT) &&
+                !process_user_mmap_handle_fault(memory, page, 1))
+                return -EFAULT;
+            page += PAGE_SIZE;
+        }
+        return process_write_user_memory(
+            memory->pid, address, buffer, size) < 0 ? -EFAULT : 0;
+    }
+    return -EINVAL;
+}
+
 int arch_mm_sync_range(uint64_t address, uint64_t length, uint32_t flags) {
     task_t *current = process_current_task();
     task_t *memory = current ? process_vm_task(current) : 0;
@@ -10513,6 +10584,9 @@ static int x86_anonymous_fd_install(
     case KERNEL_ANONYMOUS_FD_FANOTIFY:
         local_kind = FD_FANOTIFY;
         break;
+    case KERNEL_ANONYMOUS_FD_USERFAULTFD:
+        local_kind = FD_USERFAULTFD;
+        break;
     case KERNEL_ANONYMOUS_FD_PRIME:
         local_kind = FD_DMA_BUF;
         break;
@@ -10556,6 +10630,9 @@ static int x86_anonymous_fd_object_id(
         break;
     case KERNEL_ANONYMOUS_FD_FANOTIFY:
         expected = FD_FANOTIFY;
+        break;
+    case KERNEL_ANONYMOUS_FD_USERFAULTFD:
+        expected = FD_USERFAULTFD;
         break;
     case KERNEL_ANONYMOUS_FD_PRIME:
         expected = FD_DMA_BUF;

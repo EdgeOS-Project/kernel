@@ -4389,7 +4389,7 @@ task-scratch-current-unit: tools/tests/task_scratch_current_unit.c $(SRC)/kernel
 		-o $(OUT)/tests/task_scratch_current_unit
 	@$(OUT)/tests/task_scratch_current_unit
 
-event-dispatch-policy-unit: tools/tests/event_dispatch_policy_unit.c $(SRC)/kernel/event_dispatch_policy.c include/kernel/event_runtime.h include/kernel/fanotify_runtime.h include/kernel/inotify_runtime.h
+event-dispatch-policy-unit: tools/tests/event_dispatch_policy_unit.c $(SRC)/kernel/event_dispatch_policy.c include/kernel/event_runtime.h include/kernel/fanotify_runtime.h include/kernel/inotify_runtime.h include/kernel/userfaultfd_runtime.h
 	@mkdir -p $(OUT)/tests
 	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fno-builtin \
 		-iquote $(INC) \
@@ -4416,6 +4416,16 @@ fanotify-runtime-unit: tools/tests/fanotify_runtime_unit.c \
 		$(SRC)/kernel/fanotify.c \
 		-o $(OUT)/tests/fanotify_runtime_unit
 	@$(OUT)/tests/fanotify_runtime_unit
+
+.PHONY: userfaultfd-runtime-unit
+userfaultfd-runtime-unit: tools/tests/userfaultfd_runtime_unit.c \
+		$(SRC)/kernel/userfaultfd.c include/kernel/userfaultfd.h
+	@mkdir -p $(OUT)/tests
+	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fno-builtin \
+		-iquote $(INC) tools/tests/userfaultfd_runtime_unit.c \
+		$(SRC)/kernel/userfaultfd.c \
+		-o $(OUT)/tests/userfaultfd_runtime_unit
+	@$(OUT)/tests/userfaultfd_runtime_unit
 
 abi-service-dispatch-unit: tools/tests/abi_service_dispatch_unit.c $(SRC)/kernel/abi_service_dispatch.c
 	@mkdir -p $(OUT)/tests

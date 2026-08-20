@@ -312,6 +312,13 @@ int arch_mm_lock_all(uint32_t flags);
 int arch_mm_unlock_all(void);
 uint64_t arch_mm_current_address_space(void);
 int arch_mm_range_mapped(uint64_t address, uint64_t length);
+int arch_mm_address_space_range_mapped(
+    uint64_t address_space, uint64_t address, uint64_t length);
+int arch_mm_address_space_page_resident(
+    uint64_t address_space, uint64_t address);
+int arch_mm_address_space_copy(
+    uint64_t address_space, uint64_t address, void *buffer, uint64_t size,
+    kernel_mm_process_vm_operation_t operation);
 int arch_mm_sync_range(uint64_t address, uint64_t length, uint32_t flags);
 int64_t arch_mm_protect_range(uint64_t address, uint64_t length,
                               uint64_t protection);

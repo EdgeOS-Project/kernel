@@ -17,6 +17,8 @@
 #include "kernel/linux_ptrace.h"
 #include "kernel/smp.h"
 #include "kernel/process_runtime.h"
+#include "kernel/mm_runtime.h"
+#include "kernel/userfaultfd.h"
 #include "fs/cgroupfs.h"
 #include "mm/statistics.h"
 #ifdef CONFIG_BSD_DRIVER_BRIDGE
@@ -1001,6 +1003,38 @@ void isr_exception_handler(REGISTERS *reg) {
          */
         if (!p || wr || us) {
             task_t *t = process_current_task();
+            int userfault_context = -1;
+            uint64_t userfault_ticket = 0;
+            int userfault_status = 0;
+
+            if (!p && t &&
+                !kernel_userfaultfd_resolution_bypasses_fault(
+                    arch_mm_current_address_space(), cr2)) {
+                userfault_status = kernel_userfaultfd_missing_fault(
+                    arch_mm_current_address_space(), cr2, (int)wr,
+                    &userfault_context, &userfault_ticket);
+            }
+            if (userfault_status > 0) {
+                t->userfaultfd_wait_active = 1;
+                t->userfaultfd_wait_context = userfault_context;
+                t->userfaultfd_wait_ticket = userfault_ticket;
+                scheduler_task_set_blocked(t);
+                if (!kernel_userfaultfd_fault_pending(
+                        userfault_context, userfault_ticket))
+                    scheduler_task_make_runnable(
+                        t, x86_smp_current_cpu_id());
+                scheduler_yield_from_irq();
+                t->userfaultfd_wait_active = 0;
+                t->userfaultfd_wait_context = -1;
+                t->userfaultfd_wait_ticket = 0;
+                if (!kernel_userfaultfd_fault_pending(
+                        userfault_context, userfault_ticket)) {
+                    process_account_minor_fault(t);
+                    cgroupfs_memory_note_fault(t->cgroup_id, 0);
+                    edge_mm_statistics_note_fault(0);
+                }
+                return;
+            }
             int resolved = process_user_mmap_handle_fault(
                 t, cr2, (int)wr);
             if (resolved) {

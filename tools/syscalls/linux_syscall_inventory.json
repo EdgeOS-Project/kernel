@@ -8948,19 +8948,26 @@
     {
       "id": "userfaultfd",
       "semantic_id": "userfaultfd",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_userfaultfd",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/userfaultfd_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 323,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_userfaultfd",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 282,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_userfaultfd",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {

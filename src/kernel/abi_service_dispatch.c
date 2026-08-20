@@ -13,6 +13,7 @@
 #include "kernel/process_runtime.h"
 #include "kernel/socket_message.h"
 #include "kernel/socket_runtime.h"
+#include "kernel/userfaultfd_runtime.h"
 
 __attribute__((noreturn)) void kernel_current_exit(
     int32_t code, int whole_thread_group) {
@@ -35,6 +36,8 @@ int64_t kernel_ioctl_execute(const kernel_ioctl_request_t *request) {
         result = kernel_fbdev_ioctl(request);
         if (result != -EDGE_LINUX_ENOTTY) return result;
     }
+    result = kernel_userfaultfd_ioctl(request);
+    if (result != -EDGE_LINUX_ENOTTY) return result;
     return arch_ioctl_execute(request);
 }
 

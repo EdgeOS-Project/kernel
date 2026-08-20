@@ -87,8 +87,7 @@ static inline uint64_t read_cr3_local(void) {
     return v;
 }
 
-static uint64_t user_pte_flags(uint64_t va) {
-    uint64_t cr3 = read_cr3_local() & ~0xFFFULL;
+static uint64_t user_pte_flags_address_space(uint64_t cr3, uint64_t va) {
     uint64_t *pml4 = x86_page_table_alias(cr3);
     if (!pml4) return 0;
     uint64_t pml4e = pml4[(va >> 39) & 0x1FF];
@@ -111,6 +110,11 @@ static uint64_t user_pte_flags(uint64_t va) {
     uint64_t pte = pt[(va >> 12) & 0x1FF];
     if (!(pte & PTE_PRESENT)) return 0;
     return pte & 0xFFFULL;
+}
+
+static uint64_t user_pte_flags(uint64_t va) {
+    return user_pte_flags_address_space(
+        read_cr3_local() & ~0xFFFULL, va);
 }
 
 static uint64_t user_pte_phys_for_cr3(uint64_t cr3, uint64_t va) {
@@ -5406,6 +5410,7 @@ static int fd_file_lock_info_for_entry(
                 object_identity = (uint64_t)(uint32_t)entry->pipe_id;
                 break;
             case FD_FANOTIFY:
+            case FD_USERFAULTFD:
                 object_class = EDGE_FILE_LOCK_OBJECT_ANONYMOUS;
                 object_identity = (uint64_t)(uint32_t)entry->pipe_id;
                 break;
@@ -5904,6 +5909,8 @@ static void fd_drop_backing_object(edge_fd_t *e) {
     if (e->kind == FD_EPOLL) kernel_epoll_object_release(e->pipe_id);
     if (e->kind == FD_INOTIFY) kernel_inotify_release(e->pipe_id);
     if (e->kind == FD_FANOTIFY) kernel_fanotify_release(e->pipe_id);
+    if (e->kind == FD_USERFAULTFD)
+        kernel_userfaultfd_release(e->pipe_id);
     if (e->kind == FD_MEMFD) memfd_drop_ref(e->pipe_id);
     if (e->kind == FD_DMA_BUF) edge_drm_prime_release(e->pipe_id);
     if (e->kind == FD_MOUNT) kernel_mount_api_release(e->pipe_id);
@@ -5976,6 +5983,9 @@ static int fd_add_backing_object(edge_fd_t *e) {
     }
     if (e->kind == FD_FANOTIFY) {
         return kernel_fanotify_retain(e->pipe_id) == 0 ? 0 : -1;
+    }
+    if (e->kind == FD_USERFAULTFD) {
+        return kernel_userfaultfd_retain(e->pipe_id) == 0 ? 0 : -1;
     }
     if (e->kind == FD_MEMFD) {
         if (!memfd_get(e->pipe_id)) return -1;
@@ -7184,6 +7194,7 @@ static const char *fd_kind_name(edge_fd_kind_t kind) {
         case FD_PIDFD: return "pidfd";
         case FD_INOTIFY: return "inotify";
         case FD_FANOTIFY: return "fanotify";
+        case FD_USERFAULTFD: return "userfaultfd";
         case FD_MEMFD: return "memfd";
         case FD_DMA_BUF: return "dma-buf";
         case FD_TUN: return "tun";

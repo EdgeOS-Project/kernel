@@ -336,6 +336,9 @@ typedef struct task_struct {
     edge_user_vma_t *user_vmas;
     kernel_exec_record_t *exec_record;
     kernel_task_scratch_t *scratch;
+    uint8_t userfaultfd_wait_active;
+    int32_t userfaultfd_wait_context;
+    uint64_t userfaultfd_wait_ticket;
 } task_t;
 
 typedef void (*process_task_exit_hook_t)(task_t *t);

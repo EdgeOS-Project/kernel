@@ -1119,6 +1119,43 @@ void arch_fanotify_state_changed(int id) {
     }
 }
 
+void arch_userfaultfd_state_changed(int id) {
+    task_t *cur = process_current_task();
+    if (id < 0) return;
+    for (int index = 0; index < PROC_MAX_TASKS; ++index) {
+        const task_t *view = process_task_by_index(index);
+        task_t *task;
+
+        if (!view || view->state == TASK_UNUSED)
+            continue;
+        task = process_task_by_pid(view->pid);
+        if (!task ||
+                !task->userfaultfd_wait_active ||
+                task->userfaultfd_wait_context != id ||
+                kernel_userfaultfd_fault_pending(
+                    id, task->userfaultfd_wait_ticket))
+            continue;
+        task->userfaultfd_wait_active = 0;
+        task->userfaultfd_wait_context = -1;
+        task->userfaultfd_wait_ticket = 0;
+        if (task->state == TASK_BLOCKED)
+            scheduler_task_make_runnable(
+                task, scheduler_cpu_id());
+    }
+    for (int pi = 0; pi < EDGE_MAX_FD_PROCS; ++pi) {
+        edge_fd_proc_t *fp = g_fd_procs[pi];
+        if (!fp || !fp->pid) continue;
+        for (int fd = 0; fd < EDGE_MAX_FD; ++fd) {
+            edge_fd_t *e = &fp->fds[fd];
+            if (!e->used || e->kind != FD_USERFAULTFD ||
+                e->pipe_id != id)
+                continue;
+            fd_wake_fd_owner_tasks(fp->pid, cur, "userfaultfd");
+            break;
+        }
+    }
+}
+
 typedef struct edge_inotify_copy_context {
     uint64_t buffer;
 } edge_inotify_copy_context_t;
@@ -1219,6 +1256,41 @@ static uint64_t edge_fanotify_read_obj(edge_fd_t *e, uint64_t buffer,
                 cur->fd_wait_active = 1;
                 scheduler_task_set_blocked(cur);
                 if (kernel_fanotify_query(e->pipe_id, &state) < 0 ||
+                    state.queued_events != 0)
+                    scheduler_task_make_runnable(cur, scheduler_cpu_id());
+                scheduler_yield();
+                cur = process_current_task();
+                if (cur && !cur->is_idle) cur->fd_wait_active = 0;
+            }
+        }
+    }
+}
+
+static uint64_t edge_userfaultfd_read_obj(edge_fd_t *e, uint64_t buffer,
+                                          uint64_t length) {
+    edge_fanotify_copy_context_t context = { .buffer = buffer };
+    kernel_userfaultfd_state_t state;
+    int64_t result;
+
+    if (!e || e->kind != FD_USERFAULTFD ||
+        kernel_userfaultfd_query(e->pipe_id, &state) < 0)
+        return (uint64_t)-EBADF;
+    for (;;) {
+        result = kernel_userfaultfd_read(
+            e->pipe_id, edge_fanotify_copy_record, &context, length);
+        if (result != -EDGE_LINUX_EAGAIN)
+            return (uint64_t)result;
+        if ((e->flags & LINUX_O_NONBLOCK) != 0)
+            return (uint64_t)-EAGAIN;
+        if (signal_pending_interrupt()) return tty_interrupt_current_ret();
+        {
+            task_t *cur = process_current_task();
+            if (!cur || cur->is_idle) {
+                wait_blocking_step();
+            } else {
+                cur->fd_wait_active = 1;
+                scheduler_task_set_blocked(cur);
+                if (kernel_userfaultfd_query(e->pipe_id, &state) < 0 ||
                     state.queued_events != 0)
                     scheduler_task_make_runnable(cur, scheduler_cpu_id());
                 scheduler_yield();
@@ -2072,6 +2144,13 @@ static uint32_t anonymous_fd_ready_events(edge_fd_t *descriptor) {
             poll_state.valid = 0;
         else
             poll_state.pending = state.queued_events != 0;
+    } else if (descriptor->kind == FD_USERFAULTFD) {
+        kernel_userfaultfd_state_t state;
+        poll_state.kind = KERNEL_ANONYMOUS_FD_USERFAULTFD;
+        if (kernel_userfaultfd_query(descriptor->pipe_id, &state) < 0)
+            poll_state.valid = 0;
+        else
+            poll_state.pending = state.queued_events != 0;
     } else if (descriptor->kind == FD_PIDFD) {
         const task_t *task = process_get_task(descriptor->pipe_id);
         poll_state.kind = KERNEL_ANONYMOUS_FD_PID;
@@ -2190,7 +2269,7 @@ static int poll_fd_revents(edge_fd_t *e, int16_t events) {
 
     if (e->kind == FD_EVENTFD || e->kind == FD_TIMERFD ||
         e->kind == FD_SIGNALFD || e->kind == FD_INOTIFY ||
-        e->kind == FD_FANOTIFY ||
+        e->kind == FD_FANOTIFY || e->kind == FD_USERFAULTFD ||
         e->kind == FD_PIDFD || e->kind == FD_MQUEUE ||
         e->kind == FD_IO_URING) {
         uint32_t anonymous_events = anonymous_fd_ready_events(e);
@@ -2276,6 +2355,7 @@ static int poll_fd_revents(edge_fd_t *e, int16_t events) {
         } else if (e->kind == FD_EVENTFD || e->kind == FD_TIMERFD ||
                    e->kind == FD_SIGNALFD || e->kind == FD_INOTIFY ||
                    e->kind == FD_FANOTIFY ||
+                   e->kind == FD_USERFAULTFD ||
                    e->kind == FD_PIDFD || e->kind == FD_MQUEUE ||
                    e->kind == FD_IO_URING) {
             /* Anonymous descriptor readiness was normalized above. */
@@ -2347,6 +2427,7 @@ static int poll_fd_revents(edge_fd_t *e, int16_t events) {
         } else if (e->kind == FD_EVENTFD || e->kind == FD_TIMERFD ||
                    e->kind == FD_SIGNALFD || e->kind == FD_INOTIFY ||
                    e->kind == FD_FANOTIFY ||
+                   e->kind == FD_USERFAULTFD ||
                    e->kind == FD_PIDFD) {
             /* Anonymous descriptor readiness was normalized above. */
         } else if (e->kind == FD_EPOLL) {
@@ -2463,6 +2544,11 @@ static uint64_t fd_epoll_ready_seq(edge_fd_t *e, int16_t events) {
     if (e && e->kind == FD_FANOTIFY && (events & read_events)) {
         kernel_fanotify_state_t state;
         if (kernel_fanotify_query(e->pipe_id, &state) == 0)
+            return state.readiness_sequence;
+    }
+    if (e && e->kind == FD_USERFAULTFD && (events & read_events)) {
+        kernel_userfaultfd_state_t state;
+        if (kernel_userfaultfd_query(e->pipe_id, &state) == 0)
             return state.readiness_sequence;
     }
     if (e && (e->kind == FD_PIPE_R ||
@@ -2980,6 +3066,7 @@ static int x86_wait_source_from_entry(const edge_fd_t *entry,
             source->kind = KERNEL_WAIT_SOURCE_INOTIFY;
             break;
         case FD_FANOTIFY:
+        case FD_USERFAULTFD:
             source->kind = KERNEL_WAIT_SOURCE_OWNER_WAKE;
             break;
         case FD_SIGNALFD:
@@ -3041,6 +3128,7 @@ static int x86_wait_source_from_captured(
             source->kind = KERNEL_WAIT_SOURCE_INOTIFY;
             break;
         case FD_FANOTIFY:
+        case FD_USERFAULTFD:
             source->kind = KERNEL_WAIT_SOURCE_OWNER_WAKE;
             break;
         case FD_SIGNALFD:
@@ -5434,6 +5522,9 @@ static uint64_t do_sys_fd_read_entry(int fd, edge_fd_t *e,
     }
     if (e->kind == FD_FANOTIFY) {
         return edge_fanotify_read_obj(e, buf_u, len_u);
+    }
+    if (e->kind == FD_USERFAULTFD) {
+        return edge_userfaultfd_read_obj(e, buf_u, len_u);
     }
     if (e->kind == FD_MEMFD) {
         edge_memfd_t *mf = memfd_get(e->pipe_id);

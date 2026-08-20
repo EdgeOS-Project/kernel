@@ -59,6 +59,8 @@ EDGE_SHARED_SRCS := \
 	$(SRC)/kernel/exec_payload.c \
 	$(SRC)/kernel/fbdev_runtime.c \
 	$(SRC)/kernel/fanotify.c \
+	$(SRC)/kernel/userfaultfd.c \
+	$(SRC)/kernel/userfaultfd_ioctl.c \
 	$(SRC)/kernel/file_description_runtime.c \
 	$(SRC)/kernel/fd_runtime.c \
 	$(SRC)/kernel/fd_table_runtime.c \

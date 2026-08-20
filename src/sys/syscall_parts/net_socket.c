@@ -5885,6 +5885,17 @@ static uint64_t x86_ioctl_execute_raw(uint64_t fd_u, uint64_t cmd_u,
         return copy_to_user(arg_u, &available, sizeof(available)) < 0 ?
             (uint64_t)-EFAULT : 0;
     }
+    if (e->kind == FD_USERFAULTFD && cmd == LINUX_FIONREAD) {
+        kernel_userfaultfd_state_t state;
+        int available;
+        if (!arg_u) return (uint64_t)-EFAULT;
+        if (kernel_userfaultfd_query(e->pipe_id, &state) < 0)
+            return (uint64_t)-EBADF;
+        available = (int)(state.queued_events *
+                          sizeof(kernel_userfaultfd_message_t));
+        return copy_to_user(arg_u, &available, sizeof(available)) < 0 ?
+            (uint64_t)-EFAULT : 0;
+    }
     if (e->kind == FD_SOCKET) {
         if (cmd == LINUX_FIONREAD) {
             int avail = 0;

@@ -19,6 +19,10 @@
 #include "kernel/signalfd_runtime.h"
 #include "kernel/timerfd.h"
 #include "kernel/timerfd_runtime.h"
+#include "kernel/mm_runtime.h"
+#include "kernel/process_runtime.h"
+#include "kernel/userfaultfd.h"
+#include "kernel/userfaultfd_runtime.h"
 
 #define KERNEL_ANONYMOUS_FD_RDWR 0x00000002u
 
@@ -201,5 +205,33 @@ int kernel_fanotify_descriptor_id(int32_t descriptor) {
         descriptor, KERNEL_ANONYMOUS_FD_FANOTIFY);
     if (object_id < 0) return object_id;
     return kernel_fanotify_query(object_id, &state) < 0 ?
+        -EDGE_LINUX_EBADF : object_id;
+}
+
+int kernel_userfaultfd_create_descriptor(uint32_t flags) {
+    kernel_linux_identity_t identity;
+    uint64_t address_space = arch_mm_current_address_space();
+    int object_id;
+    int descriptor;
+
+    if (!address_space || kernel_current_linux_identity(&identity) < 0)
+        return -EDGE_LINUX_ESRCH;
+    object_id = kernel_userfaultfd_create(
+        address_space, identity.global_tgid, flags);
+    if (object_id < 0) return object_id;
+    descriptor = kernel_anonymous_fd_install_descriptor(
+        KERNEL_ANONYMOUS_FD_USERFAULTFD, object_id,
+        (flags & KERNEL_UFFD_NONBLOCK) ? KERNEL_UFFD_NONBLOCK : 0u,
+        flags & KERNEL_UFFD_CLOEXEC);
+    if (descriptor < 0) kernel_userfaultfd_release(object_id);
+    return descriptor;
+}
+
+int kernel_userfaultfd_descriptor_id(int32_t descriptor) {
+    kernel_userfaultfd_state_t state;
+    int object_id = kernel_anonymous_fd_descriptor_object_id(
+        descriptor, KERNEL_ANONYMOUS_FD_USERFAULTFD);
+    if (object_id < 0) return object_id;
+    return kernel_userfaultfd_query(object_id, &state) < 0 ?
         -EDGE_LINUX_EBADF : object_id;
 }

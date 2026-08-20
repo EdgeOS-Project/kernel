@@ -23,6 +23,7 @@ static int g_fbdev_result;
 static int g_ioctl_calls;
 static int g_buffer_calls;
 static int g_message_calls;
+static int g_userfaultfd_result;
 
 static void expect_true(const char *name, int condition) {
     if (condition) return;
@@ -44,6 +45,11 @@ int arch_ioctl_descriptor_is_fbdev(int32_t descriptor) {
 int64_t kernel_fbdev_ioctl(const kernel_ioctl_request_t *request) {
     return request && request->descriptor == 9 ?
         g_fbdev_result : -EDGE_LINUX_EIO;
+}
+
+int64_t kernel_userfaultfd_ioctl(const kernel_ioctl_request_t *request) {
+    return request && request->descriptor == 9 ?
+        g_userfaultfd_result : -EDGE_LINUX_ENOTTY;
 }
 
 int64_t arch_ioctl_execute(const kernel_ioctl_request_t *request) {
@@ -82,12 +88,17 @@ static void test_ioctl_dispatch(void) {
     expect_true("ioctl null request",
                 kernel_ioctl_execute(0) == -EDGE_LINUX_EIO);
     g_fbdev_result = 40;
+    g_userfaultfd_result = -EDGE_LINUX_ENOTTY;
     expect_true("fbdev short circuit",
                 kernel_ioctl_execute(&request) == 40 &&
                 g_ioctl_calls == 0);
     g_fbdev_result = -EDGE_LINUX_ENOTTY;
     expect_true("fbdev fallback",
                 kernel_ioctl_execute(&request) == 41 &&
+                g_ioctl_calls == 1);
+    g_userfaultfd_result = 44;
+    expect_true("userfaultfd short circuit",
+                kernel_ioctl_execute(&request) == 44 &&
                 g_ioctl_calls == 1);
 }
 
