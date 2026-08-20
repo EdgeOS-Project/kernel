@@ -96,6 +96,8 @@ static int64_t edge_linux_sys_epoll(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_xattr(
     edge_linux_syscall_context_t *context);
+static int64_t edge_linux_sys_xattrat(
+    edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_truncate(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_mkdir(
@@ -5581,6 +5583,16 @@ typedef enum edge_linux_xattr_operation {
     EDGE_LINUX_XATTR_REMOVE,
 } edge_linux_xattr_operation_t;
 
+typedef struct edge_linux_xattr_request {
+    edge_linux_xattr_operation_t operation;
+    uint64_t value;
+    uint64_t size;
+    uint32_t flags;
+    uint8_t *kernel_value;
+    uint32_t kernel_value_pages;
+    char name[EDGE_LINUX_XATTR_NAME_MAX + 1u];
+} edge_linux_xattr_request_t;
+
 typedef char edge_linux_xattr_name_limit_matches_vfs[
     EDGE_LINUX_XATTR_NAME_MAX == VFS_XATTR_NAME_MAX ? 1 : -1];
 typedef char edge_linux_xattr_value_limit_matches_vfs[
@@ -5665,11 +5677,6 @@ static int edge_linux_xattr_resolve(
     int32_t magic_descriptor;
     int magic_status;
     int result;
-    if (kernel_vfs_current_xattr_scratch(scratch) < 0 ||
-        !scratch->path || scratch->path_capacity < VFS_PATH_MAX ||
-        !scratch->value ||
-        scratch->value_capacity < EDGE_LINUX_XATTR_VALUE_MAX)
-        return -EDGE_LINUX_EIO;
     if (edge_linux_xattr_uses_fd(context->id)) {
         if (context->arguments[0] > INT32_MAX)
             return -EDGE_LINUX_EBADF;
@@ -5700,6 +5707,63 @@ static int edge_linux_xattr_copy_name(
         EDGE_LINUX_ERANGE);
     if (result < 0) return result;
     return name[0] ? 0 : -EDGE_LINUX_ERANGE;
+}
+
+static int edge_linux_xattr_scratch_acquire(
+    kernel_vfs_xattr_scratch_t *scratch) {
+    if (kernel_vfs_current_xattr_scratch(scratch) < 0 ||
+        !scratch->path || scratch->path_capacity < VFS_PATH_MAX ||
+        !scratch->value ||
+        scratch->value_capacity < EDGE_LINUX_XATTR_VALUE_MAX)
+        return -EDGE_LINUX_EIO;
+    return 0;
+}
+
+static int edge_linux_xattr_request_prepare(
+    edge_linux_syscall_context_t *context,
+    edge_linux_xattr_request_t *request,
+    kernel_vfs_xattr_scratch_t *scratch, uint64_t name,
+    uint64_t value, uint64_t size, uint32_t flags) {
+    int result;
+
+    if (!request || !scratch) return -EDGE_LINUX_EINVAL;
+    request->value = value;
+    request->size = size;
+    request->flags = flags;
+    if (request->operation == EDGE_LINUX_XATTR_LIST) return 0;
+    result = edge_linux_xattr_copy_name(context, name, request->name);
+    if (result < 0) return result;
+    if (request->operation != EDGE_LINUX_XATTR_SET) return 0;
+    if (size > EDGE_LINUX_XATTR_VALUE_MAX) return -EDGE_LINUX_E2BIG;
+    if ((flags & ~(uint32_t)(VFS_XATTR_CREATE | VFS_XATTR_REPLACE)) ||
+        flags == (VFS_XATTR_CREATE | VFS_XATTR_REPLACE))
+        return -EDGE_LINUX_EINVAL;
+    if (size && !value) return -EDGE_LINUX_EFAULT;
+    if (size) {
+        request->kernel_value_pages =
+            (uint32_t)((size + 4095u) / 4096u);
+        request->kernel_value = (uint8_t *)arch_vm_alloc_pages(
+            request->kernel_value_pages);
+        if (!request->kernel_value) return -EDGE_LINUX_ENOMEM;
+    }
+    if (size && edge_linux_copy_from_user(
+                    context, request->kernel_value, value, size) < 0) {
+        for (uint32_t page = 0; page < request->kernel_value_pages; ++page)
+            arch_vm_free_page(request->kernel_value + page * 4096u);
+        request->kernel_value = 0;
+        request->kernel_value_pages = 0;
+        return -EDGE_LINUX_EFAULT;
+    }
+    return 0;
+}
+
+static void edge_linux_xattr_request_release(
+    edge_linux_xattr_request_t *request) {
+    if (!request) return;
+    for (uint32_t page = 0; page < request->kernel_value_pages; ++page)
+        arch_vm_free_page(request->kernel_value + page * 4096u);
+    request->kernel_value = 0;
+    request->kernel_value_pages = 0;
 }
 
 static int edge_linux_xattr_mode_access(
@@ -5783,37 +5847,32 @@ static int edge_linux_xattr_filter_list(char *list, uint32_t length,
 }
 
 static int64_t edge_linux_xattr_set(
-    edge_linux_syscall_context_t *context,
     const kernel_linux_identity_t *identity, kernel_vfs_target_t *target,
-    kernel_vfs_xattr_scratch_t *scratch, const char *name) {
-    uint64_t size = context->arguments[3];
-    uint64_t flags = context->arguments[4];
+    kernel_vfs_xattr_scratch_t *scratch,
+    const edge_linux_xattr_request_t *request) {
     int result;
-    if (size > EDGE_LINUX_XATTR_VALUE_MAX) return -EDGE_LINUX_E2BIG;
-    if ((flags & ~(uint64_t)(VFS_XATTR_CREATE | VFS_XATTR_REPLACE)) ||
-        flags == (VFS_XATTR_CREATE | VFS_XATTR_REPLACE))
-        return -EDGE_LINUX_EINVAL;
-    result = edge_linux_xattr_access(identity, target->inode, name, 1);
+    result = edge_linux_xattr_access(
+        identity, target->inode, request->name, 1);
     if (result < 0) return result;
-    if (size && !context->arguments[2]) return -EDGE_LINUX_EFAULT;
-    if (size && edge_linux_copy_from_user(
-                    context, scratch->value, context->arguments[2], size) < 0)
-        return -EDGE_LINUX_EFAULT;
     return edge_linux_xattr_result(vfs_inode_setxattr(
-        target->superblock, target->inode, name, scratch->value,
-        (uint32_t)size, (uint32_t)flags));
+        target->superblock, target->inode, request->name,
+        request->size ? request->kernel_value : scratch->value,
+        (uint32_t)request->size, request->flags));
 }
 
 static int64_t edge_linux_xattr_get(
     edge_linux_syscall_context_t *context,
     const kernel_linux_identity_t *identity, kernel_vfs_target_t *target,
-    kernel_vfs_xattr_scratch_t *scratch, const char *name) {
-    uint64_t destination = context->arguments[2];
-    uint64_t size = context->arguments[3];
-    int result = edge_linux_xattr_access(identity, target->inode, name, 0);
+    kernel_vfs_xattr_scratch_t *scratch,
+    const edge_linux_xattr_request_t *request) {
+    uint64_t destination = request->value;
+    uint64_t size = request->size;
+    int result = edge_linux_xattr_access(
+        identity, target->inode, request->name, 0);
     if (result < 0) return result;
-    result = vfs_inode_getxattr(target->superblock, target->inode, name,
-                                scratch->value, scratch->value_capacity);
+    result = vfs_inode_getxattr(
+        target->superblock, target->inode, request->name,
+        scratch->value, scratch->value_capacity);
     if (result < 0) return edge_linux_xattr_result(result);
     if (!destination && !size) return result;
     if (!destination) return -EDGE_LINUX_EFAULT;
@@ -5828,9 +5887,10 @@ static int64_t edge_linux_xattr_get(
 static int64_t edge_linux_xattr_list(
     edge_linux_syscall_context_t *context,
     const kernel_linux_identity_t *identity, kernel_vfs_target_t *target,
-    kernel_vfs_xattr_scratch_t *scratch) {
-    uint64_t destination = context->arguments[1];
-    uint64_t size = context->arguments[2];
+    kernel_vfs_xattr_scratch_t *scratch,
+    const edge_linux_xattr_request_t *request) {
+    uint64_t destination = request->value;
+    uint64_t size = request->size;
     uint32_t length;
     int result = vfs_inode_listxattr(
         target->superblock, target->inode, (char *)scratch->value,
@@ -5851,35 +5911,70 @@ static int64_t edge_linux_xattr_list(
     return length;
 }
 
+static int64_t edge_linux_xattr_execute(
+    edge_linux_syscall_context_t *context,
+    const kernel_linux_identity_t *identity, kernel_vfs_target_t *target,
+    kernel_vfs_xattr_scratch_t *scratch,
+    const edge_linux_xattr_request_t *request) {
+    int result;
+
+    if (request->operation == EDGE_LINUX_XATTR_LIST)
+        return edge_linux_xattr_list(
+            context, identity, target, scratch, request);
+    if (request->operation == EDGE_LINUX_XATTR_SET)
+        return edge_linux_xattr_set(identity, target, scratch, request);
+    if (request->operation == EDGE_LINUX_XATTR_GET)
+        return edge_linux_xattr_get(
+            context, identity, target, scratch, request);
+    result = edge_linux_xattr_access(
+        identity, target->inode, request->name, 1);
+    if (result < 0) return result;
+    return edge_linux_xattr_result(vfs_inode_removexattr(
+        target->superblock, target->inode, request->name));
+}
+
 static int64_t edge_linux_sys_xattr(
     edge_linux_syscall_context_t *context) {
     kernel_linux_identity_t identity;
     kernel_vfs_xattr_scratch_t scratch;
     kernel_vfs_target_t target;
-    edge_linux_xattr_operation_t operation;
-    char name[EDGE_LINUX_XATTR_NAME_MAX + 1u];
+    edge_linux_xattr_request_t request;
+    uint64_t name = 0;
+    uint64_t value = 0;
+    uint64_t size = 0;
+    uint32_t flags = 0;
     int result;
-    operation = edge_linux_xattr_operation(context->id);
-    if (!operation) return -EDGE_LINUX_ENOSYS;
+
+    memset(&request, 0, sizeof(request));
+    request.operation = edge_linux_xattr_operation(context->id);
+    if (!request.operation) return -EDGE_LINUX_ENOSYS;
+    if (request.operation == EDGE_LINUX_XATTR_LIST) {
+        value = context->arguments[1];
+        size = context->arguments[2];
+    } else {
+        name = context->arguments[1];
+        if (request.operation == EDGE_LINUX_XATTR_SET ||
+            request.operation == EDGE_LINUX_XATTR_GET) {
+            value = context->arguments[2];
+            size = context->arguments[3];
+        }
+        if (request.operation == EDGE_LINUX_XATTR_SET)
+            flags = (uint32_t)context->arguments[4];
+    }
     if (kernel_current_linux_identity(&identity) < 0)
         return -EDGE_LINUX_ESRCH;
+    result = edge_linux_xattr_scratch_acquire(&scratch);
+    if (result < 0) return result;
+    result = edge_linux_xattr_request_prepare(
+        context, &request, &scratch, name, value, size, flags);
+    if (result < 0) return result;
     result = edge_linux_xattr_resolve(
         context, &identity, &scratch, &target);
-    if (result < 0) return result;
-    if (operation == EDGE_LINUX_XATTR_LIST)
-        return edge_linux_xattr_list(context, &identity, &target, &scratch);
-    result = edge_linux_xattr_copy_name(context, context->arguments[1], name);
-    if (result < 0) return result;
-    if (operation == EDGE_LINUX_XATTR_SET)
-        return edge_linux_xattr_set(context, &identity, &target, &scratch,
-                                    name);
-    if (operation == EDGE_LINUX_XATTR_GET)
-        return edge_linux_xattr_get(context, &identity, &target, &scratch,
-                                    name);
-    result = edge_linux_xattr_access(&identity, target.inode, name, 1);
-    if (result < 0) return result;
-    return edge_linux_xattr_result(vfs_inode_removexattr(
-        target.superblock, target.inode, name));
+    if (result >= 0)
+        result = (int)edge_linux_xattr_execute(
+            context, &identity, &target, &scratch, &request);
+    edge_linux_xattr_request_release(&request);
+    return result;
 }
 
 static int64_t edge_linux_sys_file_sync(
@@ -11872,6 +11967,123 @@ static int edge_linux_target_from_resolved(
         vfs_resolve(path, target->inode, &target->superblock, 0, 0) < 0)
         return -EDGE_LINUX_ENOENT;
     return 0;
+}
+
+static int edge_linux_xattr_resolve_at(
+    edge_linux_syscall_context_t *context,
+    const kernel_linux_identity_t *identity,
+    kernel_vfs_xattr_scratch_t *scratch,
+    edge_linux_path_workspace_t *workspace, int32_t directory,
+    uint64_t user_path, uint32_t at_flags, kernel_vfs_target_t *target) {
+    int32_t magic_descriptor;
+    int magic_status;
+    int trailing_slash;
+    int status;
+
+    if (!user_path) {
+        if (!(at_flags & EDGE_LINUX_AT_EMPTY_PATH))
+            return -EDGE_LINUX_EFAULT;
+        return kernel_vfs_resolve_fd(directory, target);
+    }
+    status = edge_linux_copy_user_string(
+        context, user_path, scratch->path, scratch->path_capacity,
+        EDGE_LINUX_ENAMETOOLONG);
+    if (status < 0) return status;
+    if (!scratch->path[0]) {
+        if (!(at_flags & EDGE_LINUX_AT_EMPTY_PATH))
+            return -EDGE_LINUX_ENOENT;
+        return kernel_vfs_resolve_fd(directory, target);
+    }
+    trailing_slash = edge_linux_path_has_trailing_slash(scratch->path);
+    if (!(at_flags & EDGE_LINUX_AT_SYMLINK_NOFOLLOW)) {
+        magic_status = edge_linux_current_magic_fd(
+            scratch->path, identity, &magic_descriptor);
+        if (magic_status < 0) return magic_status;
+        if (magic_status > 0)
+            return kernel_vfs_resolve_fd(magic_descriptor, target);
+    }
+    status = edge_linux_build_copied_at_path(directory, scratch, workspace);
+    if (status < 0) return status;
+    status = vfs_path_search_check(
+        workspace->resolved, workspace->search, VFS_PATH_MAX, 0);
+    if (status < 0) return status;
+    status = edge_linux_target_from_resolved(
+        workspace->resolved,
+        (at_flags & EDGE_LINUX_AT_SYMLINK_NOFOLLOW) && !trailing_slash,
+        target);
+    if (status < 0) return status;
+    if (trailing_slash &&
+        (target->inode->mode & 0xf000u) != VFS_INODE_DIR)
+        return -EDGE_LINUX_ENOTDIR;
+    return 0;
+}
+
+static int64_t edge_linux_sys_xattrat(
+    edge_linux_syscall_context_t *context) {
+    const uint32_t valid_at_flags =
+        EDGE_LINUX_AT_SYMLINK_NOFOLLOW | EDGE_LINUX_AT_EMPTY_PATH;
+    struct edge_linux_xattr_args arguments;
+    edge_linux_xattr_request_t request;
+    kernel_linux_identity_t identity;
+    kernel_vfs_xattr_scratch_t scratch;
+    edge_linux_path_workspace_t workspace;
+    kernel_vfs_target_t target;
+    uint64_t name = 0;
+    uint64_t value = 0;
+    uint64_t size = 0;
+    uint32_t flags = 0;
+    uint32_t at_flags = (uint32_t)context->arguments[2];
+    int32_t directory = (int32_t)(uint32_t)context->arguments[0];
+    int status;
+
+    memset(&request, 0, sizeof(request));
+    if (context->id == EDGE_LINUX_SYS_setxattrat ||
+        context->id == EDGE_LINUX_SYS_getxattrat) {
+        if (context->arguments[5] < sizeof(arguments))
+            return -EDGE_LINUX_EINVAL;
+        if (context->arguments[5] > 4096u)
+            return -EDGE_LINUX_E2BIG;
+        status = edge_linux_copy_struct_from_user(
+            &arguments, sizeof(arguments), sizeof(arguments),
+            context->arguments[4], context->arguments[5],
+            edge_linux_seccomp_copy_from_user, context);
+        if (status < 0) return status;
+        if (context->id == EDGE_LINUX_SYS_getxattrat && arguments.flags)
+            return -EDGE_LINUX_EINVAL;
+        request.operation = context->id == EDGE_LINUX_SYS_setxattrat ?
+            EDGE_LINUX_XATTR_SET : EDGE_LINUX_XATTR_GET;
+        name = context->arguments[3];
+        value = arguments.value;
+        size = arguments.size;
+        flags = arguments.flags;
+    } else if (context->id == EDGE_LINUX_SYS_listxattrat) {
+        request.operation = EDGE_LINUX_XATTR_LIST;
+        value = context->arguments[3];
+        size = context->arguments[4];
+    } else if (context->id == EDGE_LINUX_SYS_removexattrat) {
+        request.operation = EDGE_LINUX_XATTR_REMOVE;
+        name = context->arguments[3];
+    } else {
+        return -EDGE_LINUX_ENOSYS;
+    }
+    if (at_flags & ~valid_at_flags) return -EDGE_LINUX_EINVAL;
+    if (kernel_current_linux_identity(&identity) < 0)
+        return -EDGE_LINUX_ESRCH;
+    status = edge_linux_xattr_scratch_acquire(&scratch);
+    if (status < 0) return status;
+    status = edge_linux_path_workspace_initialize(&scratch, &workspace);
+    if (status < 0) return status;
+    status = edge_linux_xattr_request_prepare(
+        context, &request, &scratch, name, value, size, flags);
+    if (status < 0) return status;
+    status = edge_linux_xattr_resolve_at(
+        context, &identity, &scratch, &workspace, directory,
+        context->arguments[1], at_flags, &target);
+    if (status >= 0)
+        status = (int)edge_linux_xattr_execute(
+            context, &identity, &target, &scratch, &request);
+    edge_linux_xattr_request_release(&request);
+    return status;
 }
 
 static int64_t edge_linux_sys_access(

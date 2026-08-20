@@ -2876,19 +2876,26 @@
     {
       "id": "getxattrat",
       "semantic_id": "getxattrat",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_xattrat",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/xattrat_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 464,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_xattrat",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 464,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_xattrat",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {
@@ -3699,19 +3706,26 @@
     {
       "id": "listxattrat",
       "semantic_id": "listxattrat",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_xattrat",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/xattrat_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 465,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_xattrat",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 465,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_xattrat",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {
@@ -6083,19 +6097,26 @@
     {
       "id": "removexattrat",
       "semantic_id": "removexattrat",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_xattrat",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/xattrat_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 466,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_xattrat",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 466,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_xattrat",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {
@@ -7671,19 +7692,26 @@
     {
       "id": "setxattrat",
       "semantic_id": "setxattrat",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_xattrat",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/xattrat_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 463,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_xattrat",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 463,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_xattrat",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {

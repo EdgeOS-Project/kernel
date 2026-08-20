@@ -607,3 +607,9 @@ case EDGE_LINUX_SYS_removexattr:
 case EDGE_LINUX_SYS_setxattr:
     context->result = edge_linux_sys_xattr(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_getxattrat:
+case EDGE_LINUX_SYS_listxattrat:
+case EDGE_LINUX_SYS_removexattrat:
+case EDGE_LINUX_SYS_setxattrat:
+    context->result = edge_linux_sys_xattrat(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;

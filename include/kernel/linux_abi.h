@@ -1351,6 +1351,12 @@ struct edge_linux_open_how {
     uint64_t resolve;
 };
 
+struct edge_linux_xattr_args {
+    uint64_t value;
+    uint32_t size;
+    uint32_t flags;
+};
+
 /* Variable-length getdents64 record prefix shared by every 64-bit ABI. */
 struct edge_linux_dirent64 {
     uint64_t d_ino;
@@ -1498,6 +1504,8 @@ _Static_assert(offsetof(struct edge_linux_clone_args, cgroup) == 80,
                "Linux clone_args cgroup offset");
 _Static_assert(sizeof(struct edge_linux_open_how) == 24,
                "Linux open_how ABI layout");
+_Static_assert(sizeof(struct edge_linux_xattr_args) == 16,
+               "Linux xattr_args ABI layout");
 _Static_assert(offsetof(struct edge_linux_dirent64, d_name) == 19,
                "Linux dirent64 name offset");
 _Static_assert(sizeof(struct edge_linux_file_handle_header) == 8,
