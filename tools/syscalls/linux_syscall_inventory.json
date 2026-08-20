@@ -6718,73 +6718,101 @@
     {
       "id": "semctl",
       "semantic_id": "semctl",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_sysv_sem",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/sysv_sem_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 66,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_sysv_sem",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 191,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_sysv_sem",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {
       "id": "semget",
       "semantic_id": "semget",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_sysv_sem",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/sysv_sem_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 64,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_sysv_sem",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 190,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_sysv_sem",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {
       "id": "semop",
       "semantic_id": "semop",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_sysv_sem",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/sysv_sem_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 65,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_sysv_sem",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 193,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_sysv_sem",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {
       "id": "semtimedop",
       "semantic_id": "semtimedop",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_sysv_sem",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/sysv_sem_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 220,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_sysv_sem",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 192,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_sysv_sem",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {

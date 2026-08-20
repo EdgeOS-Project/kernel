@@ -55,6 +55,7 @@
 #include "kernel/socket_message.h"
 #include "kernel/system_runtime.h"
 #include "kernel/sysv_shm_runtime.h"
+#include "kernel/sysv_sem_runtime.h"
 #include "kernel/syslog_runtime.h"
 #include "kernel/timerfd.h"
 #include "kernel/timerfd_runtime.h"
@@ -2561,6 +2562,250 @@ static int64_t edge_linux_sys_sysv_shm(
         default:
             return -EDGE_LINUX_ENOSYS;
     }
+}
+
+static uint32_t edge_linux_current_ipc_namespace(void) {
+    const edge_namespace_set_t *namespaces =
+        kernel_arch_current_namespace_set();
+    return namespaces ? namespaces->ipc : 0u;
+}
+
+static void edge_linux_sem_status_from_x86(
+        const struct edge_linux_semid_ds_x86_64 *input,
+        kernel_sysv_sem_status_t *output) {
+    memset(output, 0, sizeof(*output));
+    output->permission = input->sem_perm;
+    output->operation_time = input->sem_otime;
+    output->change_time = input->sem_ctime;
+    output->semaphore_count = input->sem_nsems;
+}
+
+static void edge_linux_sem_status_from_arm64(
+        const struct edge_linux_semid_ds_aarch64 *input,
+        kernel_sysv_sem_status_t *output) {
+    memset(output, 0, sizeof(*output));
+    output->permission = input->sem_perm;
+    output->operation_time = input->sem_otime;
+    output->change_time = input->sem_ctime;
+    output->semaphore_count = input->sem_nsems;
+}
+
+static int edge_linux_sem_status_copy_from_user(
+        edge_linux_syscall_context_t *context, uint64_t user_address,
+        kernel_sysv_sem_status_t *status) {
+    if (context->architecture == EDGE_LINUX_ARCH_X86_64) {
+        struct edge_linux_semid_ds_x86_64 value;
+        if (edge_linux_copy_from_user(
+                context, &value, user_address, sizeof(value)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        edge_linux_sem_status_from_x86(&value, status);
+    } else {
+        struct edge_linux_semid_ds_aarch64 value;
+        if (edge_linux_copy_from_user(
+                context, &value, user_address, sizeof(value)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        edge_linux_sem_status_from_arm64(&value, status);
+    }
+    return 0;
+}
+
+static int edge_linux_sem_status_copy_to_user(
+        edge_linux_syscall_context_t *context, uint64_t user_address,
+        const kernel_sysv_sem_status_t *status) {
+    if (context->architecture == EDGE_LINUX_ARCH_X86_64) {
+        struct edge_linux_semid_ds_x86_64 value;
+        memset(&value, 0, sizeof(value));
+        value.sem_perm = status->permission;
+        value.sem_otime = status->operation_time;
+        value.sem_ctime = status->change_time;
+        value.sem_nsems = status->semaphore_count;
+        return edge_linux_copy_to_user(
+            context, user_address, &value, sizeof(value)) < 0 ?
+            -EDGE_LINUX_EFAULT : 0;
+    } else {
+        struct edge_linux_semid_ds_aarch64 value;
+        memset(&value, 0, sizeof(value));
+        value.sem_perm = status->permission;
+        value.sem_otime = status->operation_time;
+        value.sem_ctime = status->change_time;
+        value.sem_nsems = status->semaphore_count;
+        return edge_linux_copy_to_user(
+            context, user_address, &value, sizeof(value)) < 0 ?
+            -EDGE_LINUX_EFAULT : 0;
+    }
+}
+
+static int64_t edge_linux_sys_semop(
+        edge_linux_syscall_context_t *context) {
+    struct edge_linux_sembuf *operations;
+    kernel_sysv_sem_wait_t wait;
+    linux_timespec64_t timeout;
+    uint64_t deadline = UINT64_MAX;
+    uint64_t operation_count = context->arguments[2];
+    uint32_t ipc_namespace_id = edge_linux_current_ipc_namespace();
+    int32_t identifier = (int32_t)context->arguments[0];
+    int waited = 0;
+    int64_t result;
+
+    if (!operation_count) return -EDGE_LINUX_EINVAL;
+    if (operation_count > KERNEL_SYSV_SEM_MAX_OPS)
+        return -EDGE_LINUX_E2BIG;
+    if (!context->arguments[1]) return -EDGE_LINUX_EFAULT;
+    operations = (struct edge_linux_sembuf *)arch_vm_alloc_page();
+    if (!operations) return -EDGE_LINUX_ENOMEM;
+    if (edge_linux_copy_from_user(
+            context, operations, context->arguments[1],
+            operation_count * sizeof(*operations)) < 0) {
+        arch_vm_free_page(operations);
+        return -EDGE_LINUX_EFAULT;
+    }
+    if (context->id == EDGE_LINUX_SYS_semtimedop &&
+        context->arguments[3]) {
+        uint64_t duration;
+        uint64_t now;
+        if (edge_linux_copy_from_user(
+                context, &timeout, context->arguments[3],
+                sizeof(timeout)) < 0) {
+            arch_vm_free_page(operations);
+            return -EDGE_LINUX_EFAULT;
+        }
+        if (edge_linux_timespec_microseconds(&timeout, &duration) < 0) {
+            arch_vm_free_page(operations);
+            return -EDGE_LINUX_EINVAL;
+        }
+        now = boottime_monotonic_us();
+        deadline = duration > UINT64_MAX - now ? UINT64_MAX : now + duration;
+    }
+    for (;;) {
+        result = kernel_sysv_sem_operate(
+            ipc_namespace_id, identifier, operations,
+            (uint32_t)operation_count, &wait);
+        if (waited && result == -EDGE_LINUX_EINVAL) {
+            result = -EDGE_LINUX_EIDRM;
+            break;
+        }
+        if (result != -EDGE_LINUX_EAGAIN || !wait.valid) break;
+        if (deadline != UINT64_MAX && boottime_monotonic_us() >= deadline)
+            break;
+        if (kernel_current_signal_wake_pending()) {
+            result = -EDGE_LINUX_EINTR;
+            break;
+        }
+        kernel_sysv_sem_waiter_change(
+            ipc_namespace_id, identifier, &wait, 1);
+        waited = 1;
+        {
+            int released = kernel_runtime_contention_begin();
+            if (!kernel_runtime_yield()) result = -EDGE_LINUX_EAGAIN;
+            kernel_runtime_contention_end(released);
+        }
+        kernel_sysv_sem_waiter_change(
+            ipc_namespace_id, identifier, &wait, -1);
+        if (result != -EDGE_LINUX_EAGAIN) continue;
+    }
+    arch_vm_free_page(operations);
+    return result;
+}
+
+static int64_t edge_linux_sys_semctl(
+        edge_linux_syscall_context_t *context) {
+    kernel_sysv_sem_status_t status;
+    struct edge_linux_seminfo information;
+    uint16_t values[KERNEL_SYSV_SEM_MAX_PER_SET];
+    uint32_t ipc_namespace_id = edge_linux_current_ipc_namespace();
+    uint32_t command;
+    uint32_t operation;
+    uint32_t semaphore_number;
+    uint64_t argument = context->arguments[3];
+    int64_t result;
+
+    if (context->arguments[1] > UINT32_MAX ||
+        context->arguments[2] > UINT32_MAX)
+        return -EDGE_LINUX_EINVAL;
+    semaphore_number = (uint32_t)context->arguments[1];
+    command = (uint32_t)context->arguments[2];
+    operation = command & 0xffu;
+    memset(&status, 0, sizeof(status));
+    memset(values, 0, sizeof(values));
+    memset(&information, 0, sizeof(information));
+
+    if (operation == KERNEL_SYSV_IPC_SET) {
+        if (!argument) return -EDGE_LINUX_EFAULT;
+        result = edge_linux_sem_status_copy_from_user(
+            context, argument, &status);
+        if (result < 0) return result;
+    }
+    if (operation == KERNEL_SYSV_SEM_SETALL ||
+        operation == KERNEL_SYSV_SEM_GETALL) {
+        uint32_t count;
+        result = kernel_sysv_sem_count(
+            ipc_namespace_id, (int32_t)context->arguments[0],
+            operation == KERNEL_SYSV_SEM_SETALL ? 2u : 4u, &count);
+        if (result < 0) return result;
+        status.semaphore_count = count;
+        if (operation == KERNEL_SYSV_SEM_SETALL &&
+            (!argument || count > KERNEL_SYSV_SEM_MAX_PER_SET ||
+            edge_linux_copy_from_user(
+                context, values, argument,
+                count * sizeof(values[0])) < 0))
+            return -EDGE_LINUX_EFAULT;
+    }
+    result = kernel_sysv_sem_control(
+        ipc_namespace_id, (int32_t)context->arguments[0],
+        semaphore_number, command, (int32_t)argument,
+        values, KERNEL_SYSV_SEM_MAX_PER_SET, &status, &information);
+    if (result < 0) return result;
+    if (operation == KERNEL_SYSV_IPC_STAT ||
+        operation == KERNEL_SYSV_SEM_STAT ||
+        operation == KERNEL_SYSV_SEM_STAT_ANY) {
+        int copy_status;
+        if (!argument) return -EDGE_LINUX_EFAULT;
+        copy_status = edge_linux_sem_status_copy_to_user(
+            context, argument, &status);
+        return copy_status < 0 ? copy_status : result;
+    }
+    if (operation == KERNEL_SYSV_IPC_INFO ||
+        operation == KERNEL_SYSV_SEM_INFO) {
+        if (!argument || edge_linux_copy_to_user(
+                context, argument, &information,
+                sizeof(information)) < 0)
+            return -EDGE_LINUX_EFAULT;
+    } else if (operation == KERNEL_SYSV_SEM_GETALL) {
+        if (!argument || status.semaphore_count >
+                         KERNEL_SYSV_SEM_MAX_PER_SET ||
+            edge_linux_copy_to_user(
+                context, argument, values,
+                status.semaphore_count * sizeof(values[0])) < 0)
+            return -EDGE_LINUX_EFAULT;
+    }
+    return result;
+}
+
+static int64_t edge_linux_sys_sysv_sem(
+        edge_linux_syscall_context_t *context) {
+#ifndef CONFIG_SYSVIPC
+    (void)context;
+    return -EDGE_LINUX_ENOSYS;
+#else
+    switch (context->id) {
+    case EDGE_LINUX_SYS_semget:
+        if (context->arguments[1] > UINT32_MAX ||
+            context->arguments[2] > UINT32_MAX)
+            return -EDGE_LINUX_EINVAL;
+        return kernel_sysv_sem_get(
+            edge_linux_current_ipc_namespace(),
+            (int32_t)context->arguments[0],
+            (uint32_t)context->arguments[1],
+            (uint32_t)context->arguments[2]);
+    case EDGE_LINUX_SYS_semop:
+    case EDGE_LINUX_SYS_semtimedop:
+        return edge_linux_sys_semop(context);
+    case EDGE_LINUX_SYS_semctl:
+        return edge_linux_sys_semctl(context);
+    default:
+        return -EDGE_LINUX_ENOSYS;
+    }
+#endif
 }
 
 static int edge_linux_seccomp_action_supported(uint32_t action) {

@@ -508,6 +508,12 @@ case EDGE_LINUX_SYS_sysinfo:
 case EDGE_LINUX_SYS_syslog:
     context->result = edge_linux_sys_syslog(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_semctl:
+case EDGE_LINUX_SYS_semget:
+case EDGE_LINUX_SYS_semop:
+case EDGE_LINUX_SYS_semtimedop:
+    context->result = edge_linux_sys_sysv_sem(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_shmat:
 case EDGE_LINUX_SYS_shmctl:
 case EDGE_LINUX_SYS_shmdt:

@@ -452,6 +452,45 @@ struct edge_linux_shmid_ds64 {
     uint64_t reserved2;
 };
 
+struct edge_linux_sembuf {
+    uint16_t sem_num;
+    int16_t sem_op;
+    int16_t sem_flg;
+};
+
+struct edge_linux_semid_ds_x86_64 {
+    struct edge_linux_ipc_perm64 sem_perm;
+    int64_t sem_otime;
+    uint64_t unused1;
+    int64_t sem_ctime;
+    uint64_t unused2;
+    uint64_t sem_nsems;
+    uint64_t unused3;
+    uint64_t unused4;
+};
+
+struct edge_linux_semid_ds_aarch64 {
+    struct edge_linux_ipc_perm64 sem_perm;
+    int64_t sem_otime;
+    int64_t sem_ctime;
+    uint64_t sem_nsems;
+    uint64_t unused3;
+    uint64_t unused4;
+};
+
+struct edge_linux_seminfo {
+    int32_t semmap;
+    int32_t semmni;
+    int32_t semmns;
+    int32_t semmnu;
+    int32_t semmsl;
+    int32_t semopm;
+    int32_t semume;
+    int32_t semusz;
+    int32_t semvmx;
+    int32_t semaem;
+};
+
 _Static_assert(sizeof(struct edge_linux_ipc_perm64) == 48,
                "Linux ipc_perm size mismatch");
 _Static_assert(offsetof(struct edge_linux_ipc_perm64, mode) == 20,
@@ -464,6 +503,14 @@ _Static_assert(offsetof(struct edge_linux_shmid_ds64, shm_cpid) == 80,
                "Linux shmid_ds creator PID offset mismatch");
 _Static_assert(offsetof(struct edge_linux_shmid_ds64, shm_nattch) == 88,
                "Linux shmid_ds attachment offset mismatch");
+_Static_assert(sizeof(struct edge_linux_sembuf) == 6,
+               "Linux sembuf size mismatch");
+_Static_assert(sizeof(struct edge_linux_semid_ds_x86_64) == 104,
+               "Linux x86_64 semid_ds size mismatch");
+_Static_assert(sizeof(struct edge_linux_semid_ds_aarch64) == 88,
+               "Linux AArch64 semid_ds size mismatch");
+_Static_assert(sizeof(struct edge_linux_seminfo) == 40,
+               "Linux seminfo size mismatch");
 
 /* statx is an architecture-independent Linux UAPI layout on 64-bit ports. */
 struct edge_linux_statx_timestamp {

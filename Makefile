@@ -4107,6 +4107,15 @@ futex-runtime-unit: tools/tests/futex_runtime_unit.c \
 		-o $(OUT)/tests/futex_runtime_unit
 	@$(OUT)/tests/futex_runtime_unit
 
+sysv-sem-runtime-unit: tools/tests/sysv_sem_runtime_unit.c \
+		$(SRC)/kernel/sysv_sem.c include/kernel/sysv_sem_runtime.h
+	@mkdir -p $(OUT)/tests
+	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fno-builtin \
+		-DEDGEOS_HOST_TEST -iquote $(INC) \
+		tools/tests/sysv_sem_runtime_unit.c $(SRC)/kernel/sysv_sem.c \
+		-o $(OUT)/tests/sysv_sem_runtime_unit
+	@$(OUT)/tests/sysv_sem_runtime_unit
+
 pty-runtime-unit: tools/tests/pty_runtime_unit.c $(SRC)/kernel/pty_runtime.c include/kernel/pty_runtime.h
 	@mkdir -p $(OUT)/tests
 	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -iquote $(INC) \

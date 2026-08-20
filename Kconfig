@@ -88,6 +88,14 @@ config MODULES
       over the source-built EdgeOS module loader. Public flags and errors
       follow the selected Linux UAPI release.
 
+config SYSVIPC
+    bool "System V IPC"
+    default y
+    help
+      Enable Linux-compatible shared memory, semaphore arrays, and message
+      queues with IPC namespace isolation and common cross-architecture
+      policy.
+
 config BSD_DRIVER_FDT_INVENTORY
     bool "Inventory Device Tree devices for BSD drivers"
     depends on BSD_DRIVER_BRIDGE && DEVICE_TREE

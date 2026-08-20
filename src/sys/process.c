@@ -31,6 +31,7 @@
 #include "kernel/signal_runtime.h"
 #include "kernel/smp.h"
 #include "kernel/sysv_shm_runtime.h"
+#include "kernel/sysv_sem_runtime.h"
 #include "kernel/vfs_runtime.h"
 #include "fs/cgroupfs.h"
 #include "fs/swap.h"
@@ -9333,6 +9334,7 @@ static void process_finish_task_exit(task_t *t, int code, const char *reason, in
     process_ptrace_tracer_exit(t);
     process_rusage_charge_current_run(t);
     edge_linux_file_lock_task_exit(t->pid);
+    kernel_sysv_sem_task_exit(t->pid);
     kernel_signal_queue_purge(t->pid, 1);
     if (process_tgid_of_task(t) == t->pid)
         kernel_signal_queue_purge(t->pid, 0);

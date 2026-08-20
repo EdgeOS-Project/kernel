@@ -74,6 +74,7 @@
 #include "kernel/anonymous_fd.h"
 #include "kernel/system_runtime.h"
 #include "kernel/sysv_shm_runtime.h"
+#include "kernel/sysv_sem_runtime.h"
 #include "kernel/task_scratch.h"
 #include "kernel/socket_accept_queue.h"
 #include "kernel/socket_rights.h"
@@ -20808,6 +20809,7 @@ static __attribute__((noreturn)) void task_finish(kernel_task_t *task,
     orphan_reaper = task_orphan_reaper(task);
     task_tty_release_exiting_group(task, whole_group);
     edge_linux_file_lock_task_exit(task->pid);
+    kernel_sysv_sem_task_exit(task->pid);
     signal_group = task_group_id(task);
     if (!whole_group) {
         for (index = 0; index < g_task_high_water; ++index) {
@@ -20851,6 +20853,7 @@ static __attribute__((noreturn)) void task_finish(kernel_task_t *task,
             }
             task_reparent_children(sibling->pid, orphan_reaper, 1);
             edge_linux_file_lock_task_exit(sibling->pid);
+            kernel_sysv_sem_task_exit(sibling->pid);
             arm64_ptrace_tracer_exit(sibling->pid);
             siginfo_purge_target(sibling->pid, 1);
             task_ticks_add(&task->user_ticks, sibling->user_ticks);
@@ -30753,6 +30756,7 @@ int process_exec_arch_de_thread(kernel_exec_state_t *state) {
         exited_pid = peer->pid;
         task_reparent_children(peer->pid, task->pid, 0);
         edge_linux_file_lock_task_exit(peer->pid);
+        kernel_sysv_sem_task_exit(peer->pid);
         arm64_ptrace_tracer_exit(peer->pid);
         siginfo_purge_target(peer->pid, 1);
         task_ticks_add(&task->user_ticks, peer->user_ticks);
