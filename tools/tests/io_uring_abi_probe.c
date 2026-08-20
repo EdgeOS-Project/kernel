@@ -29,6 +29,12 @@
 #define SYS_socketpair 53
 #define SYS_bind 49
 #define SYS_listen 50
+#define SYS_epoll_create1 291
+#define SYS_pipe2 293
+struct linux_epoll_event {
+    uint32_t events;
+    uint64_t data;
+} __attribute__((packed));
 #elif defined(__aarch64__)
 #define SYS_read 63
 #define SYS_eventfd2 19
@@ -36,11 +42,19 @@
 #define SYS_socketpair 199
 #define SYS_bind 200
 #define SYS_listen 201
+#define SYS_epoll_create1 20
+#define SYS_pipe2 59
+struct linux_epoll_event {
+    uint32_t events;
+    uint64_t data;
+};
 #endif
 
 #define PROT_READ 1
 #define PROT_WRITE 2
 #define MAP_SHARED 1
+#define MAP_PRIVATE 2
+#define MAP_ANONYMOUS 0x20
 #define PAGE_SIZE 4096u
 #define EBADF 9
 #define EINVAL 22
@@ -57,6 +71,8 @@
 #define IORING_OP_NOP 0u
 #define IORING_OP_READ 22u
 #define IORING_OP_WRITE 23u
+#define IORING_OP_FADVISE 24u
+#define IORING_OP_MADVISE 25u
 #define IORING_OP_POLL_ADD 6u
 #define IORING_OP_SENDMSG 9u
 #define IORING_OP_RECVMSG 10u
@@ -69,8 +85,10 @@
 #define IORING_OP_CLOSE 19u
 #define IORING_OP_STATX 21u
 #define IORING_OP_OPENAT2 28u
+#define IORING_OP_EPOLL_CTL 29u
 #define IORING_OP_SEND 26u
 #define IORING_OP_RECV 27u
+#define IORING_OP_TEE 33u
 #define IORING_OP_SHUTDOWN 34u
 #define IORING_OFF_SQ_RING 0x00000000ull
 #define IORING_OFF_CQ_RING 0x08000000ull
@@ -81,6 +99,10 @@
 #define ECANCELED 125
 #define AF_UNIX 1
 #define SOCK_STREAM 1
+#define EPOLLIN 1u
+#define EPOLL_CTL_ADD 1u
+#define MADV_DONTNEED 4u
+#define POSIX_FADV_NORMAL 0u
 
 struct kernel_timespec {
     int64_t seconds;
@@ -301,6 +323,7 @@ static int run_tests(void) {
     struct io_uring_cqe *cqes;
     volatile uint32_t *sq_head;
     volatile uint32_t *sq_tail;
+    volatile uint32_t *sq_mask;
     volatile uint32_t *sq_array;
     volatile uint32_t *cq_head;
     volatile uint32_t *cq_tail;
@@ -333,6 +356,19 @@ static int run_tests(void) {
     int32_t listener_descriptor = -1;
     int32_t client_descriptor = -1;
     int32_t accepted_descriptor = -1;
+    int32_t advice_descriptor = -1;
+    int32_t epoll_descriptor = -1;
+    int32_t control_event_descriptor = -1;
+    int32_t tee_input[2] = {-1, -1};
+    int32_t tee_output[2] = {-1, -1};
+    uint64_t advice_address = 0;
+    char tee_buffer[5] = {0};
+    static const char tee_data[] = "tee!";
+    struct linux_epoll_event epoll_event = {
+        EPOLLIN, 0x45504f4c4c444154ull,
+    };
+    uint32_t submission_position;
+    uint32_t completion_position;
     static const struct user_sockaddr_un listen_address = {
         AF_UNIX, "\0edgeos-io-uring-probe",
     };
@@ -381,6 +417,8 @@ static int run_tests(void) {
                                     parameters.sq_off.head);
     sq_tail = (volatile uint32_t *)((uint8_t *)sq_ring +
                                     parameters.sq_off.tail);
+    sq_mask = (volatile uint32_t *)((uint8_t *)sq_ring +
+                                    parameters.sq_off.ring_mask);
     sq_array = (volatile uint32_t *)((uint8_t *)sq_ring +
                                      parameters.sq_off.array);
     cq_head = (volatile uint32_t *)((uint8_t *)cq_ring +
@@ -450,6 +488,15 @@ static int run_tests(void) {
         (probe.operations[IORING_OP_ACCEPT].flags &
          IO_URING_OP_SUPPORTED) != 0 &&
         (probe.operations[IORING_OP_CONNECT].flags &
+         IO_URING_OP_SUPPORTED) != 0);
+    failures += expect_true("probe advice event and pipe operations",
+        (probe.operations[IORING_OP_FADVISE].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_MADVISE].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_EPOLL_CTL].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_TEE].flags &
          IO_URING_OP_SUPPORTED) != 0);
 
     event_descriptor = raw_syscall6(
@@ -837,6 +884,191 @@ static int run_tests(void) {
         (void)raw_syscall6(SYS_close, client_descriptor, 0, 0, 0, 0, 0);
     if (listener_descriptor >= 0)
         (void)raw_syscall6(SYS_close, listener_descriptor, 0, 0, 0, 0, 0);
+
+    submission_position = __atomic_load_n(sq_tail, __ATOMIC_ACQUIRE);
+    completion_position = __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE);
+    memset(&sqes[submission_position & *sq_mask], 0,
+           sizeof(sqes[submission_position & *sq_mask]));
+    sqes[submission_position & *sq_mask].opcode = IORING_OP_OPENAT;
+    sqes[submission_position & *sq_mask].descriptor = AT_FDCWD;
+    sqes[submission_position & *sq_mask].address =
+        (uint64_t)(uintptr_t)data_path;
+    sqes[submission_position & *sq_mask].operation_flags = O_RDWR;
+    sqes[submission_position & *sq_mask].user_data = 0x4144564f50454e31ull;
+    sq_array[submission_position & *sq_mask] = submission_position & *sq_mask;
+    __atomic_store_n(sq_tail, submission_position + 1u, __ATOMIC_RELEASE);
+    failures += expect("submit advice open", raw_syscall6(
+        SYS_io_uring_enter, descriptor, 1, 1,
+        IORING_ENTER_GETEVENTS, 0, 0), 1);
+    failures += expect_true("advice open completion",
+        __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) ==
+            completion_position + 1u &&
+        cqes[completion_position & *cq_mask].user_data ==
+            0x4144564f50454e31ull &&
+        cqes[completion_position & *cq_mask].result >= 0);
+    advice_descriptor = cqes[completion_position & *cq_mask].result;
+    completion_position++;
+    __atomic_store_n(cq_head, completion_position, __ATOMIC_RELEASE);
+    if (advice_descriptor >= 0) {
+        submission_position = __atomic_load_n(sq_tail, __ATOMIC_ACQUIRE);
+        memset(&sqes[submission_position & *sq_mask], 0,
+               sizeof(sqes[submission_position & *sq_mask]));
+        sqes[submission_position & *sq_mask].opcode = IORING_OP_FADVISE;
+        sqes[submission_position & *sq_mask].descriptor = advice_descriptor;
+        sqes[submission_position & *sq_mask].address = PAGE_SIZE;
+        sqes[submission_position & *sq_mask].operation_flags =
+            POSIX_FADV_NORMAL;
+        sqes[submission_position & *sq_mask].user_data =
+            0x4641445649534531ull;
+        sq_array[submission_position & *sq_mask] =
+            submission_position & *sq_mask;
+        memset(&sqes[(submission_position + 1u) & *sq_mask], 0,
+               sizeof(sqes[(submission_position + 1u) & *sq_mask]));
+        sqes[(submission_position + 1u) & *sq_mask].opcode = IORING_OP_CLOSE;
+        sqes[(submission_position + 1u) & *sq_mask].descriptor =
+            advice_descriptor;
+        sqes[(submission_position + 1u) & *sq_mask].user_data =
+            0x414456434c4f5345ull;
+        sq_array[(submission_position + 1u) & *sq_mask] =
+            (submission_position + 1u) & *sq_mask;
+        __atomic_store_n(sq_tail, submission_position + 2u, __ATOMIC_RELEASE);
+        failures += expect("submit fadvise close", raw_syscall6(
+            SYS_io_uring_enter, descriptor, 2, 2,
+            IORING_ENTER_GETEVENTS, 0, 0), 2);
+        failures += expect_true("fadvise completion",
+            __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) ==
+                completion_position + 2u &&
+            cqes[completion_position & *cq_mask].user_data ==
+                0x4641445649534531ull &&
+            cqes[completion_position & *cq_mask].result == 0);
+        failures += expect_true("advice close completion",
+            cqes[(completion_position + 1u) & *cq_mask].user_data ==
+                0x414456434c4f5345ull &&
+            cqes[(completion_position + 1u) & *cq_mask].result == 0);
+        completion_position += 2u;
+        __atomic_store_n(cq_head, completion_position, __ATOMIC_RELEASE);
+        advice_descriptor = -1;
+    }
+
+    advice_address = (uint64_t)raw_syscall6(
+        SYS_mmap, 0, PAGE_SIZE, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    failures += expect_true("advice mapping", (int64_t)advice_address > 0);
+    if ((int64_t)advice_address > 0) {
+        submission_position = __atomic_load_n(sq_tail, __ATOMIC_ACQUIRE);
+        completion_position = __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE);
+        memset(&sqes[submission_position & *sq_mask], 0,
+               sizeof(sqes[submission_position & *sq_mask]));
+        sqes[submission_position & *sq_mask].opcode = IORING_OP_MADVISE;
+        sqes[submission_position & *sq_mask].descriptor = -1;
+        sqes[submission_position & *sq_mask].offset = PAGE_SIZE;
+        sqes[submission_position & *sq_mask].address = advice_address;
+        sqes[submission_position & *sq_mask].operation_flags = MADV_DONTNEED;
+        sqes[submission_position & *sq_mask].user_data =
+            0x4d41445649534531ull;
+        sq_array[submission_position & *sq_mask] =
+            submission_position & *sq_mask;
+        __atomic_store_n(sq_tail, submission_position + 1u, __ATOMIC_RELEASE);
+        failures += expect("submit madvise", raw_syscall6(
+            SYS_io_uring_enter, descriptor, 1, 1,
+            IORING_ENTER_GETEVENTS, 0, 0), 1);
+        failures += expect_true("madvise completion",
+            __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) ==
+                completion_position + 1u &&
+            cqes[completion_position & *cq_mask].user_data ==
+                0x4d41445649534531ull &&
+            cqes[completion_position & *cq_mask].result == 0);
+        __atomic_store_n(cq_head, completion_position + 1u, __ATOMIC_RELEASE);
+    }
+
+    epoll_descriptor = (int32_t)raw_syscall6(
+        SYS_epoll_create1, 0, 0, 0, 0, 0, 0);
+    control_event_descriptor = (int32_t)raw_syscall6(
+        SYS_eventfd2, 0, 0, 0, 0, 0, 0);
+    failures += expect_true("epoll control descriptors",
+        epoll_descriptor >= 0 && control_event_descriptor >= 0);
+    if (epoll_descriptor >= 0 && control_event_descriptor >= 0) {
+        submission_position = __atomic_load_n(sq_tail, __ATOMIC_ACQUIRE);
+        completion_position = __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE);
+        memset(&sqes[submission_position & *sq_mask], 0,
+               sizeof(sqes[submission_position & *sq_mask]));
+        sqes[submission_position & *sq_mask].opcode = IORING_OP_EPOLL_CTL;
+        sqes[submission_position & *sq_mask].descriptor = epoll_descriptor;
+        sqes[submission_position & *sq_mask].offset =
+            (uint32_t)control_event_descriptor;
+        sqes[submission_position & *sq_mask].address =
+            (uint64_t)(uintptr_t)&epoll_event;
+        sqes[submission_position & *sq_mask].length = EPOLL_CTL_ADD;
+        sqes[submission_position & *sq_mask].user_data =
+            0x45504f4c4c43544cull;
+        sq_array[submission_position & *sq_mask] =
+            submission_position & *sq_mask;
+        __atomic_store_n(sq_tail, submission_position + 1u, __ATOMIC_RELEASE);
+        failures += expect("submit epoll ctl", raw_syscall6(
+            SYS_io_uring_enter, descriptor, 1, 1,
+            IORING_ENTER_GETEVENTS, 0, 0), 1);
+        failures += expect_true("epoll ctl completion",
+            __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) ==
+                completion_position + 1u &&
+            cqes[completion_position & *cq_mask].user_data ==
+                0x45504f4c4c43544cull &&
+            cqes[completion_position & *cq_mask].result == 0);
+        __atomic_store_n(cq_head, completion_position + 1u, __ATOMIC_RELEASE);
+    }
+
+    failures += expect("tee input pipe", raw_syscall6(
+        SYS_pipe2, (long)tee_input, 0, 0, 0, 0, 0), 0);
+    failures += expect("tee output pipe", raw_syscall6(
+        SYS_pipe2, (long)tee_output, 0, 0, 0, 0, 0), 0);
+    if (tee_input[0] >= 0 && tee_input[1] >= 0 &&
+        tee_output[0] >= 0 && tee_output[1] >= 0) {
+        failures += expect("tee input write", raw_syscall6(
+            SYS_write, tee_input[1], (long)tee_data,
+            sizeof(tee_data), 0, 0, 0), sizeof(tee_data));
+        submission_position = __atomic_load_n(sq_tail, __ATOMIC_ACQUIRE);
+        completion_position = __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE);
+        memset(&sqes[submission_position & *sq_mask], 0,
+               sizeof(sqes[submission_position & *sq_mask]));
+        sqes[submission_position & *sq_mask].opcode = IORING_OP_TEE;
+        sqes[submission_position & *sq_mask].descriptor = tee_output[1];
+        sqes[submission_position & *sq_mask].length = sizeof(tee_data);
+        sqes[submission_position & *sq_mask].splice_descriptor = tee_input[0];
+        sqes[submission_position & *sq_mask].user_data =
+            0x5445455049504531ull;
+        sq_array[submission_position & *sq_mask] =
+            submission_position & *sq_mask;
+        __atomic_store_n(sq_tail, submission_position + 1u, __ATOMIC_RELEASE);
+        failures += expect("submit tee", raw_syscall6(
+            SYS_io_uring_enter, descriptor, 1, 1,
+            IORING_ENTER_GETEVENTS, 0, 0), 1);
+        failures += expect_true("tee completion",
+            __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) ==
+                completion_position + 1u &&
+            cqes[completion_position & *cq_mask].user_data ==
+                0x5445455049504531ull &&
+            cqes[completion_position & *cq_mask].result ==
+                (int32_t)sizeof(tee_data));
+        __atomic_store_n(cq_head, completion_position + 1u, __ATOMIC_RELEASE);
+        failures += expect("tee output read", raw_syscall6(
+            SYS_read, tee_output[0], (long)tee_buffer,
+            sizeof(tee_buffer), 0, 0, 0), sizeof(tee_buffer));
+        failures += expect_true("tee output data",
+            tee_buffer[0] == tee_data[0] &&
+            tee_buffer[sizeof(tee_buffer) - 1u] == 0);
+    }
+    if ((int64_t)advice_address > 0)
+        (void)raw_syscall6(SYS_munmap, (long)advice_address,
+                           PAGE_SIZE, 0, 0, 0, 0);
+    if (control_event_descriptor >= 0)
+        (void)raw_syscall6(SYS_close, control_event_descriptor, 0, 0, 0, 0, 0);
+    if (epoll_descriptor >= 0)
+        (void)raw_syscall6(SYS_close, epoll_descriptor, 0, 0, 0, 0, 0);
+    for (uint32_t index = 0; index < 2u; ++index) {
+        if (tee_input[index] >= 0)
+            (void)raw_syscall6(SYS_close, tee_input[index], 0, 0, 0, 0, 0);
+        if (tee_output[index] >= 0)
+            (void)raw_syscall6(SYS_close, tee_output[index], 0, 0, 0, 0, 0);
+    }
 
     (void)raw_syscall6(SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
     (void)raw_syscall6(SYS_munmap, (long)cq_ring, PAGE_SIZE, 0, 0, 0, 0);

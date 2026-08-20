@@ -86,6 +86,14 @@ static int edge_linux_current_magic_executable(
     int32_t *owner_out);
 static int64_t edge_linux_sys_fd_control(
     edge_linux_syscall_context_t *context);
+static int64_t edge_linux_sys_file_advice(
+    edge_linux_syscall_context_t *context);
+static int64_t edge_linux_sys_madvise(
+    edge_linux_syscall_context_t *context);
+static int64_t edge_linux_sys_tee(
+    edge_linux_syscall_context_t *context);
+static int64_t edge_linux_sys_epoll(
+    edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_statx(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_socket_buffer(
@@ -6864,9 +6872,13 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_OP_STATX     21u
 #define EDGE_LINUX_IORING_OP_READ      22u
 #define EDGE_LINUX_IORING_OP_WRITE     23u
+#define EDGE_LINUX_IORING_OP_FADVISE   24u
+#define EDGE_LINUX_IORING_OP_MADVISE   25u
 #define EDGE_LINUX_IORING_OP_SEND      26u
 #define EDGE_LINUX_IORING_OP_RECV      27u
 #define EDGE_LINUX_IORING_OP_OPENAT2   28u
+#define EDGE_LINUX_IORING_OP_EPOLL_CTL 29u
+#define EDGE_LINUX_IORING_OP_TEE       33u
 #define EDGE_LINUX_IORING_OP_SHUTDOWN  34u
 #define EDGE_LINUX_IORING_OP_LAST      65u
 
@@ -7100,6 +7112,44 @@ static int64_t edge_linux_io_uring_execute_vfs(
         nested.arguments[3] = submission->length;
         nested.arguments[4] = submission->offset;
         return edge_linux_sys_statx(&nested);
+    case EDGE_LINUX_IORING_OP_FADVISE:
+        if (submission->buffer_index || submission->splice_descriptor)
+            return -EDGE_LINUX_EINVAL;
+        nested.id = EDGE_LINUX_SYS_fadvise64;
+        nested.arguments[0] = (uint32_t)submission->descriptor;
+        nested.arguments[1] = submission->offset;
+        nested.arguments[2] = submission->address ?
+            submission->address : submission->length;
+        nested.arguments[3] = submission->operation_flags;
+        return edge_linux_sys_file_advice(&nested);
+    case EDGE_LINUX_IORING_OP_MADVISE:
+        if (submission->buffer_index || submission->splice_descriptor)
+            return -EDGE_LINUX_EINVAL;
+        nested.id = EDGE_LINUX_SYS_madvise;
+        nested.arguments[0] = submission->address;
+        nested.arguments[1] = submission->offset ?
+            submission->offset : submission->length;
+        nested.arguments[2] = submission->operation_flags;
+        return edge_linux_sys_madvise(&nested);
+    case EDGE_LINUX_IORING_OP_EPOLL_CTL:
+        if (submission->buffer_index || submission->splice_descriptor)
+            return -EDGE_LINUX_EINVAL;
+        nested.id = EDGE_LINUX_SYS_epoll_ctl;
+        nested.arguments[0] = (uint32_t)submission->descriptor;
+        nested.arguments[1] = submission->length;
+        nested.arguments[2] = submission->offset;
+        nested.arguments[3] = submission->address;
+        return edge_linux_sys_epoll(&nested);
+    case EDGE_LINUX_IORING_OP_TEE:
+        if (submission->offset || submission->address ||
+            submission->buffer_index)
+            return -EDGE_LINUX_EINVAL;
+        nested.id = EDGE_LINUX_SYS_tee;
+        nested.arguments[0] = (uint32_t)submission->splice_descriptor;
+        nested.arguments[1] = (uint32_t)submission->descriptor;
+        nested.arguments[2] = submission->length;
+        nested.arguments[3] = submission->operation_flags;
+        return edge_linux_sys_tee(&nested);
     default:
         (void)ring_id;
         return -EDGE_LINUX_EINVAL;
@@ -7252,6 +7302,10 @@ static int32_t edge_linux_io_uring_execute(
     case EDGE_LINUX_IORING_OP_CLOSE:
     case EDGE_LINUX_IORING_OP_STATX:
     case EDGE_LINUX_IORING_OP_OPENAT2:
+    case EDGE_LINUX_IORING_OP_FADVISE:
+    case EDGE_LINUX_IORING_OP_MADVISE:
+    case EDGE_LINUX_IORING_OP_EPOLL_CTL:
+    case EDGE_LINUX_IORING_OP_TEE:
         result = edge_linux_io_uring_execute_vfs(
             context, ring_id, submission);
         break;
@@ -7487,9 +7541,13 @@ static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
            opcode == EDGE_LINUX_IORING_OP_STATX ||
            opcode == EDGE_LINUX_IORING_OP_READ ||
            opcode == EDGE_LINUX_IORING_OP_WRITE ||
+           opcode == EDGE_LINUX_IORING_OP_FADVISE ||
+           opcode == EDGE_LINUX_IORING_OP_MADVISE ||
            opcode == EDGE_LINUX_IORING_OP_SEND ||
            opcode == EDGE_LINUX_IORING_OP_RECV ||
            opcode == EDGE_LINUX_IORING_OP_OPENAT2 ||
+           opcode == EDGE_LINUX_IORING_OP_EPOLL_CTL ||
+           opcode == EDGE_LINUX_IORING_OP_TEE ||
            opcode == EDGE_LINUX_IORING_OP_SHUTDOWN;
 }
 
