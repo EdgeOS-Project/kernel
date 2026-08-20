@@ -10,7 +10,9 @@
 #include <stdlib.h>
 
 #include "compat/freebsd/edgeos/allocator.h"
+#include "compat/freebsd/edgeos/hwmon.h"
 #include "compat/freebsd/edgeos/malloc.h"
+#include "compat/freebsd/edgeos/sysctl.h"
 #include "compat/freebsd/edgeos/systm.h"
 
 static uint16_t test_static_u16 = UINT16_C(0x1234);
@@ -398,6 +400,75 @@ test_sbuf_sysctl_drain(void)
     sbuf_delete(&string);
 }
 
+static void
+test_hwmon_sensor_frontend(void)
+{
+    struct sysctl_ctx_list *context;
+    struct sysctl_oid *tree;
+    struct sysctl_oid *core0;
+    struct sysctl_oid *core1;
+    struct bsd_hwmon_sensor_info info;
+    void *device_state = 0;
+    int temperature = 2982;
+    int core0_temperature = 3000;
+    int core1_temperature = 3100;
+    uint16_t fan_speed = 1450;
+    int64_t value;
+    size_t count_before = bsd_hwmon_sensor_count();
+    int found_temperature = 0;
+    int found_fan = 0;
+
+    context = bsd_sysctl_device_context(&device_state, "hwmon-test0");
+    tree = bsd_sysctl_device_tree(&device_state, "hwmon-test0");
+    assert(context != 0);
+    assert(tree != 0);
+    assert(SYSCTL_ADD_PROC(context, SYSCTL_CHILDREN(tree), OID_AUTO,
+        "temperature", CTLTYPE_INT | CTLFLAG_RD, &temperature, 0,
+        sysctl_handle_int, "IK", "Package temperature") != 0);
+    assert(SYSCTL_ADD_PROC(context, SYSCTL_CHILDREN(tree), OID_AUTO,
+        "fan0", CTLTYPE_U16 | CTLFLAG_RD, &fan_speed, 0,
+        sysctl_handle_u16, "SU", "Fan speed in RPM") != 0);
+    core0 = SYSCTL_ADD_NODE(context, SYSCTL_CHILDREN(tree), OID_AUTO,
+        "core0", CTLFLAG_RD, 0, "Core 0");
+    core1 = SYSCTL_ADD_NODE(context, SYSCTL_CHILDREN(tree), OID_AUTO,
+        "core1", CTLFLAG_RD, 0, "Core 1");
+    assert(core0 != 0);
+    assert(core1 != 0);
+    assert(SYSCTL_ADD_PROC(context, SYSCTL_CHILDREN(core0), OID_AUTO,
+        "sensor0", CTLTYPE_INT | CTLFLAG_RD, &core0_temperature, 0,
+        sysctl_handle_int, "IK", "Core 0 temperature") != 0);
+    assert(SYSCTL_ADD_PROC(context, SYSCTL_CHILDREN(core1), OID_AUTO,
+        "sensor0", CTLTYPE_INT | CTLFLAG_RD, &core1_temperature, 0,
+        sysctl_handle_int, "IK", "Core 1 temperature") != 0);
+    assert(bsd_hwmon_sensor_count() == count_before + 4);
+
+    for (size_t index = count_before; index < count_before + 4; ++index) {
+        assert(bsd_hwmon_sensor_get(index, &info) == 0);
+        assert(bsd_strcmp(info.device, "hwmon-test0") == 0);
+        assert(bsd_hwmon_sensor_read(&info, &value) == 0);
+        if (info.kind == BSD_HWMON_SENSOR_TEMPERATURE) {
+            if (bsd_strcmp(info.attribute, "temperature") == 0)
+                assert(value == 25000);
+            else if (bsd_strcmp(info.attribute, "core0/sensor0") == 0)
+                assert(value == 26800);
+            else if (bsd_strcmp(info.attribute, "core1/sensor0") == 0)
+                assert(value == 36800);
+            else
+                assert(0);
+            found_temperature++;
+        } else if (info.kind == BSD_HWMON_SENSOR_FAN) {
+            assert(bsd_strcmp(info.attribute, "fan0") == 0);
+            assert(value == 1450);
+            found_fan = 1;
+        }
+    }
+    assert(found_temperature == 3);
+    assert(found_fan);
+    assert(bsd_hwmon_sensor_get(count_before + 4, &info) == ENOENT);
+    bsd_sysctl_device_destroy(&device_state);
+    assert(bsd_hwmon_sensor_count() == count_before);
+}
+
 int
 main(void)
 {
@@ -411,6 +482,7 @@ main(void)
     test_sysctl_context_and_handler();
     test_sysctl_extended_handlers();
     test_sbuf_sysctl_drain();
+    test_hwmon_sensor_frontend();
     assert(M_TEMP->bytes_allocated == M_TEMP->bytes_freed);
     return 0;
 }

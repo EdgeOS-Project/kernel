@@ -25,6 +25,7 @@
 #include "compat/freebsd/sys/counter.h"
 #include "compat/freebsd/sys/mbuf.h"
 #include "compat/freebsd/sys/sockio.h"
+#include "compat/freebsd/vm/pmap.h"
 #include "compat/freebsd/vm/uma.h"
 #ifdef BSD_BRIDGE_HOST_TEST
 typedef unsigned int u_int;
@@ -72,6 +73,15 @@ _Static_assert(sizeof(((struct pkthdr *)0)->PH_loc) == 8,
     "local packet metadata must preserve FreeBSD storage width");
 
 #define TEST_PAGE_SIZE 4096u
+
+int
+bsd_pmap_sync_device_mapping(void *address, vm_size_t size, int to_device)
+{
+    (void)address;
+    (void)size;
+    (void)to_device;
+    return 0;
+}
 
 struct test_ipv4_wire {
     uint8_t version_header_length;

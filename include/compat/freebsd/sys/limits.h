@@ -4,7 +4,9 @@
 #ifndef EDGEOS_COMPAT_FREEBSD_SYS_LIMITS_H
 #define EDGEOS_COMPAT_FREEBSD_SYS_LIMITS_H
 
-#if defined(__GNUC__) || defined(__clang__)
+#if defined(BSD_BRIDGE_HOST_TEST)
+#include <limits.h>
+#elif defined(__GNUC__) || defined(__clang__)
 #include_next <sys/limits.h>
 #else
 #error "The BSD driver bridge requires a compiler with include_next support"

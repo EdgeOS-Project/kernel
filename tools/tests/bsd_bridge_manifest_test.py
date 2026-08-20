@@ -221,6 +221,7 @@ class BsdBridgeManifestTest(unittest.TestCase):
                 "freebsd-gem",
                 "freebsd-glxiic",
                 "freebsd-goldfish-rtc",
+                "freebsd-gpio-backlight",
                 "freebsd-gpio-core",
                 "freebsd-gve",
                 "freebsd-hid-core",
@@ -228,6 +229,7 @@ class BsdBridgeManifestTest(unittest.TestCase):
                 "freebsd-hwt-intel-pt",
                 "freebsd-hwreset-interface",
                 "freebsd-i2c-hid",
+                "freebsd-iic-sensors",
                 "freebsd-iicbus-core",
                 "freebsd-iavf",
                 "freebsd-ice",
@@ -333,6 +335,7 @@ class BsdBridgeManifestTest(unittest.TestCase):
                 "freebsd-sff",
                 "freebsd-sfxge",
                 "freebsd-siis",
+                "freebsd-simple-framebuffer",
                 "freebsd-smbios",
                 "freebsd-smbus-chipsets",
                 "freebsd-smartpqi",
@@ -904,9 +907,9 @@ class BsdBridgeManifestTest(unittest.TestCase):
 
     def test_build_plan_is_derived_from_builtin_modules(self) -> None:
         plan = render_build_plan(MANIFEST_DIR, CAPABILITY_DIR)
-        self.assertIn("BSD_BRIDGE_PACKAGE_COUNT := 253", plan)
-        self.assertIn("BSD_BRIDGE_BUILTIN_MODULE_COUNT := 329", plan)
-        self.assertIn("BSD_BRIDGE_BUILTIN_SOURCE_COUNT := 1256", plan)
+        self.assertIn("BSD_BRIDGE_PACKAGE_COUNT := 256", plan)
+        self.assertIn("BSD_BRIDGE_BUILTIN_MODULE_COUNT := 332", plan)
+        self.assertIn("BSD_BRIDGE_BUILTIN_SOURCE_COUNT := 1260", plan)
         self.assertIn("BSD_BRIDGE_LOADABLE_MODULE_COUNT := 2", plan)
         self.assertIn("BSD_BRIDGE_LOADABLE_SOURCE_COUNT := 2", plan)
         self.assertIn("freebsd-virtio--virtio-random.ko", plan)
@@ -1108,6 +1111,10 @@ class BsdBridgeManifestTest(unittest.TestCase):
         self.assertIn("dev/acpi_support/acpi_asus_wmi.c", plan)
         self.assertIn("dev/acpi_support/acpi_system76.c", plan)
         self.assertIn("dev/backlight/backlight.c", plan)
+        self.assertIn("dev/gpio/gpiobacklight.c", plan)
+        self.assertIn("dev/iicbus/sensor/lm75.c", plan)
+        self.assertIn("dev/iicbus/sensor/tmp461.c", plan)
+        self.assertIn("dev/vt/hw/simplefb/simplefb.c", plan)
         self.assertIn("kern/subr_power.c", plan)
         self.assertIn("dev/acpi_support/acpi_fujitsu.c", plan)
         self.assertIn("dev/acpi_support/acpi_hp.c", plan)
@@ -1157,9 +1164,16 @@ class BsdBridgeManifestTest(unittest.TestCase):
         self.assertIn("dev/usb/controller/uhci_pci.c", plan)
         self.assertIn("dev/usb/input/ukbd.c", plan)
         self.assertIn("dev/usb/input/ums.c", plan)
+        self.assertIn("dev/hid/hkbd.c", plan)
+        self.assertIn("dev/hid/hmt.c", plan)
+        self.assertIn("dev/hid/hpen.c", plan)
+        self.assertIn("dev/usb/input/wmt.c", plan)
+        self.assertIn("dev/usb/serial/ulpt.c", plan)
         self.assertIn("dev/sound/usb/uaudio.c", plan)
         self.assertIn("dev/sound/usb/uaudio_pcm.c", plan)
         self.assertIn("dev/usb/video/uvideo.c", plan)
+        self.assertIn("dev/usb/video/udl.c", plan)
+        self.assertIn("dev/ncthwm/ncthwm.c", plan)
         self.assertIn("dev/usb/controller/dwc_otg.c", plan)
         self.assertIn("dev/usb/controller/dwc3/dwc3.c", plan)
         self.assertIn("dev/usb/controller/musb_otg.c", plan)
@@ -1477,6 +1491,9 @@ class BsdBridgeManifestTest(unittest.TestCase):
         self.assertIn('.id = "freebsd-superio"', registry)
         self.assertIn('.id = "freebsd-wbwd"', registry)
         self.assertIn('.id = "freebsd-backlight"', registry)
+        self.assertIn('.id = "freebsd-gpio-backlight"', registry)
+        self.assertIn('.id = "freebsd-iic-sensors"', registry)
+        self.assertIn('.id = "freebsd-simple-framebuffer"', registry)
         self.assertIn('.id = "freebsd-power-core"', registry)
         self.assertIn('.id = "freebsd-cpufreq"', registry)
         self.assertIn('.id = "freebsd-cpufreq-dt"', registry)

@@ -249,6 +249,23 @@ pmap_change_attr(void *mapping, uint64_t size, int attribute)
     return 45;
 }
 
+#if !defined(BSD_BRIDGE_HOST_TEST) && \
+    (defined(__x86_64__) || defined(__aarch64__) || \
+    defined(EDGEOS_BSD_ARM64))
+static inline void *
+pmap_mapdev_attr(vm_paddr_t physical, vm_size_t size,
+    vm_memattr_t attribute)
+{
+    void *mapping;
+
+    mapping = pmap_mapdev(physical, size);
+    if (!mapping)
+        return 0;
+    (void)pmap_change_attr(mapping, size, attribute);
+    return mapping;
+}
+#endif
+
 #define pmap_kextract(virtual_value) \
     bsd_pmap_kextract((uintptr_t)(virtual_value))
 #define vtophys(virtual_value) \

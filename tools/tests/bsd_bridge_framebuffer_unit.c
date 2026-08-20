@@ -25,6 +25,7 @@ static int g_unregister_count;
 static int g_install_count;
 static int g_uninstall_count;
 static uint8_t *g_installed_address;
+static struct fb_info *g_probe_info;
 
 void
 bsd_static_record_register(enum bsd_static_record_kind kind,
@@ -65,6 +66,14 @@ test_init(struct vt_device *device)
 {
     assert(device != 0);
     g_init_count++;
+    return CN_INTERNAL;
+}
+
+static int
+test_probe(struct vt_device *device)
+{
+    assert(device != 0);
+    device->vd_softc = g_probe_info;
     return CN_INTERNAL;
 }
 
@@ -168,12 +177,19 @@ main(void)
     assert(g_unregister_count == 1);
     assert(g_uninstall_count == 1);
     assert(!display_backend_is_owner(&info));
+    driver.vd_probe = test_probe;
+    g_probe_info = &info;
+    vt_driver_register(&driver);
+    assert(vt_probe_static_drivers() == 0);
+    assert(g_init_count == 2);
+    assert(vt_deallocate(&driver, &info) == 0);
+    assert(g_fini_count == 2);
     {
         bsd_framebuffer_status_t status;
 
         bsd_framebuffer_get_status(&status);
-        assert(status.registrations == 1);
-        assert(status.removals == 1);
+        assert(status.registrations == 2);
+        assert(status.removals == 2);
         assert(status.rejected == 0);
         assert(status.active == 0);
     }

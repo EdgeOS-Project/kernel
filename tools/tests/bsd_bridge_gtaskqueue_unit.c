@@ -92,7 +92,9 @@ main(void)
     assert(bsd_allocator_initialize(&allocator) == 0);
     assert(bsd_kthread_runtime_initialize() == 0);
     mp_ncpus = 2;
-    all_cpus.bits = 3;
+    CPU_ZERO(&all_cpus);
+    CPU_SET(0, &all_cpus);
+    CPU_SET(1, &all_cpus);
 
     group = taskqgroup_create("group-unit", 2, 1);
     assert(group != 0);

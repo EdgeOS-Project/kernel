@@ -93,6 +93,12 @@ bsd_linker_image_records(const bsd_linker_image_t *image,
     return BSD_LINKER_ERR_INVALID;
 }
 
+const void *
+bsd_linker_image_base(const bsd_linker_image_t *image)
+{
+    return image;
+}
+
 static void
 test_assert(int condition, int line)
 {

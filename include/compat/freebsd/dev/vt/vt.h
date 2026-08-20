@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <sys/kernel.h>
 #include <sys/terminal.h>
 
 #ifndef _SYS_BUS_H_
@@ -48,6 +49,7 @@ struct vt_window {
     term_rect_t vw_draw_area;
 };
 
+typedef int vd_probe_t(struct vt_device *device);
 typedef int vd_init_t(struct vt_device *device);
 typedef void vd_fini_t(struct vt_device *device, void *softc);
 typedef void vd_postswitch_t(struct vt_device *device);
@@ -78,7 +80,7 @@ typedef void vd_resume_t(struct vt_device *device);
 
 struct vt_driver {
     char vd_name[16];
-    void *vd_probe;
+    vd_probe_t *vd_probe;
     vd_init_t *vd_init;
     vd_fini_t *vd_fini;
     vd_blank_t *vd_blank;
@@ -120,8 +122,17 @@ struct vt_device {
 #define VTBUF_ISCURSOR(buffer, row, column) \
     vtbuf_iscursor((buffer), (row), (column))
 
-#define VT_DRIVER_DECLARE(name, driver)
+#define VT_DRIVER_DECLARE(name, driver)                                \
+    static void name##_edgeos_register(void *argument)                 \
+    {                                                                  \
+        (void)argument;                                                 \
+        vt_driver_register(&(driver));                                  \
+    }                                                                  \
+    SYSINIT(name##_edgeos_vt_register, SI_SUB_EVENTHANDLER,             \
+        SI_ORDER_LAST, name##_edgeos_register, 0)
 
+void vt_driver_register(const struct vt_driver *driver);
+int vt_probe_static_drivers(void);
 int vt_allocate(const struct vt_driver *driver, void *softc);
 int vt_deallocate(const struct vt_driver *driver, void *softc);
 void vt_suspend(struct vt_device *device);

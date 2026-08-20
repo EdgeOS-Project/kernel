@@ -31,6 +31,7 @@ static uint32_t g_framebuffer_registrations;
 static uint32_t g_framebuffer_removals;
 static uint32_t g_framebuffer_rejected;
 static volatile int g_framebuffer_runtime_state;
+static const struct vt_driver *g_static_framebuffer_driver;
 
 static uint32_t
 framebuffer_channel_mask(int bits, int offset)
@@ -237,16 +238,22 @@ SYSUNINIT(edgeos_framebuffer_runtime, SI_SUB_EVENTHANDLER, SI_ORDER_MIDDLE,
 int
 vt_allocate(const struct vt_driver *driver, void *softc)
 {
-    struct fb_info *info = softc;
+    struct fb_info *info;
     int result;
 
-    if (!driver || !softc)
+    if (!driver || (!softc && !driver->vd_probe))
         return BSD_FRAMEBUFFER_EINVAL;
     if (g_framebuffer_driver)
         return BSD_FRAMEBUFFER_EBUSY;
     bsd_memset(&g_framebuffer_device, 0, sizeof(g_framebuffer_device));
     g_framebuffer_device.vd_driver = driver;
     g_framebuffer_device.vd_softc = softc;
+    if (driver->vd_probe &&
+        driver->vd_probe(&g_framebuffer_device) == CN_DEAD) {
+        bsd_memset(&g_framebuffer_device, 0,
+            sizeof(g_framebuffer_device));
+        return BSD_FRAMEBUFFER_EINVAL;
+    }
     if (driver->vd_init) {
         result = driver->vd_init(&g_framebuffer_device);
         if (result == CN_DEAD) {
@@ -255,9 +262,24 @@ vt_allocate(const struct vt_driver *driver, void *softc)
             return BSD_FRAMEBUFFER_EINVAL;
         }
     }
+    info = g_framebuffer_device.vd_softc;
+    if (!info) {
+        bsd_memset(&g_framebuffer_device, 0,
+            sizeof(g_framebuffer_device));
+        return BSD_FRAMEBUFFER_EINVAL;
+    }
     g_framebuffer_driver = driver;
-    g_framebuffer_softc = softc;
-    return register_framebuffer(info);
+    g_framebuffer_softc = info;
+    result = register_framebuffer(info);
+    if (result != 0) {
+        if (driver->vd_fini)
+            driver->vd_fini(&g_framebuffer_device, info);
+        bsd_memset(&g_framebuffer_device, 0,
+            sizeof(g_framebuffer_device));
+        g_framebuffer_driver = 0;
+        g_framebuffer_softc = 0;
+    }
+    return result;
 }
 
 int
@@ -276,6 +298,38 @@ vt_deallocate(const struct vt_driver *driver, void *softc)
     g_framebuffer_softc = 0;
     return 0;
 }
+
+void
+vt_driver_register(const struct vt_driver *driver)
+{
+    if (!driver || !driver->vd_probe)
+        return;
+    if (!g_static_framebuffer_driver || driver->vd_priority >
+        g_static_framebuffer_driver->vd_priority)
+        g_static_framebuffer_driver = driver;
+}
+
+int
+vt_probe_static_drivers(void)
+{
+    if (g_framebuffer_driver)
+        return 0;
+    if (!g_static_framebuffer_driver)
+        return BSD_FRAMEBUFFER_EINVAL;
+    return vt_allocate(g_static_framebuffer_driver, 0);
+}
+
+#ifndef BSD_BRIDGE_HOST_TEST
+static void
+framebuffer_probe_static_driver(void *argument)
+{
+    (void)argument;
+    (void)vt_probe_static_drivers();
+}
+
+SYSINIT(edgeos_framebuffer_static_probe, SI_SUB_DRIVERS, SI_ORDER_FIRST,
+    framebuffer_probe_static_driver, 0);
+#endif
 
 void
 vt_suspend(struct vt_device *device)

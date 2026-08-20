@@ -5,6 +5,7 @@
 #include "compat/freebsd/sys/sysctl.h"
 
 #include "compat/freebsd/edgeos/malloc.h"
+#include "compat/freebsd/edgeos/hwmon.h"
 #include "compat/freebsd/edgeos/sysctl.h"
 #include "compat/freebsd/edgeos/systm.h"
 
@@ -13,6 +14,7 @@
 #define BSD_SYSCTL_ENOMEM 12
 #define BSD_SYSCTL_EEXIST 17
 #define BSD_SYSCTL_EINVAL 22
+#define BSD_SYSCTL_EIO 5
 
 struct bsd_sysctl_device_state {
     struct sysctl_ctx_list context;
@@ -385,6 +387,13 @@ sysctl_remove_oid(struct sysctl_oid *oid, int destroy, int recurse)
     sysctl_lock();
     (void)RB_REMOVE(sysctl_oid_list, oid->oid_parent, oid);
     sysctl_unlock();
+    while (__atomic_load_n(&oid->oid_running, __ATOMIC_ACQUIRE) != 0) {
+#if defined(__x86_64__)
+        __asm__ __volatile__("pause");
+#elif defined(__aarch64__)
+        __asm__ __volatile__("yield");
+#endif
+    }
     if (destroy)
         sysctl_free_oid(oid);
     return 0;
@@ -734,4 +743,280 @@ bsd_sysctl_device_destroy(void **state)
     (void)sysctl_ctx_free(&device_state->context);
     bsd_free(device_state, M_TEMP);
     *state = 0;
+}
+
+static int
+bsd_hwmon_ascii_equal(char left, char right)
+{
+    if (left >= 'A' && left <= 'Z')
+        left = (char)(left - 'A' + 'a');
+    if (right >= 'A' && right <= 'Z')
+        right = (char)(right - 'A' + 'a');
+    return left == right;
+}
+
+static int
+bsd_hwmon_contains(const char *text, const char *needle)
+{
+    size_t index;
+    size_t offset;
+
+    if (!text || !needle || needle[0] == '\0')
+        return 0;
+    for (index = 0; text[index] != '\0'; ++index) {
+        for (offset = 0; needle[offset] != '\0'; ++offset) {
+            if (text[index + offset] == '\0' ||
+                !bsd_hwmon_ascii_equal(text[index + offset],
+                needle[offset]))
+                break;
+        }
+        if (needle[offset] == '\0')
+            return 1;
+    }
+    return 0;
+}
+
+static enum bsd_hwmon_sensor_kind
+bsd_hwmon_oid_kind(const struct sysctl_oid *oid)
+{
+    if (!oid || !oid->oid_handler ||
+        (oid->oid_kind & CTLFLAG_RD) == 0)
+        return 0;
+    if (oid->oid_fmt && oid->oid_fmt[0] == 'I' &&
+        oid->oid_fmt[1] == 'K')
+        return BSD_HWMON_SENSOR_TEMPERATURE;
+    if (bsd_hwmon_contains(oid->oid_descr, "fan speed") &&
+        bsd_hwmon_contains(oid->oid_descr, "rpm"))
+        return BSD_HWMON_SENSOR_FAN;
+    return 0;
+}
+
+struct bsd_hwmon_search {
+    size_t wanted;
+    size_t current;
+    const char *device;
+    const struct bsd_hwmon_sensor_info *match;
+    struct bsd_hwmon_sensor_info *output;
+    struct sysctl_oid *oid;
+    char path[BSD_HWMON_ATTRIBUTE_NAME_MAX];
+    size_t path_length;
+};
+
+static int
+bsd_hwmon_path_push(struct bsd_hwmon_search *search, const char *name,
+    int directory)
+{
+    size_t name_length;
+
+    if (!search || !name)
+        return 0;
+    name_length = bsd_strlen(name);
+    if (name_length == 0 ||
+        search->path_length + name_length + (directory ? 1u : 0u) >=
+        sizeof(search->path))
+        return 0;
+    bsd_memcpy(search->path + search->path_length, name, name_length);
+    search->path_length += name_length;
+    if (directory)
+        search->path[search->path_length++] = '/';
+    search->path[search->path_length] = '\0';
+    return 1;
+}
+
+static int
+bsd_hwmon_walk(struct sysctl_oid_list *children,
+    struct bsd_hwmon_search *search)
+{
+    struct sysctl_oid *oid;
+
+    RB_FOREACH(oid, sysctl_oid_list, children) {
+        enum bsd_hwmon_sensor_kind kind = bsd_hwmon_oid_kind(oid);
+        size_t saved_length = search->path_length;
+
+        if ((oid->oid_kind & CTLTYPE) == CTLTYPE_NODE) {
+            if (bsd_hwmon_path_push(search, oid->oid_name, 1) &&
+                bsd_hwmon_walk(&oid->oid_children, search))
+                return 1;
+            search->path_length = saved_length;
+            search->path[saved_length] = '\0';
+            continue;
+        }
+        if (kind == 0)
+            continue;
+        if (!bsd_hwmon_path_push(search, oid->oid_name, 0))
+            continue;
+        if (search->match) {
+            if (kind == search->match->kind &&
+                bsd_strcmp(search->device, search->match->device) == 0 &&
+                bsd_strcmp(search->path,
+                search->match->attribute) == 0) {
+                search->oid = oid;
+                return 1;
+            }
+        } else if (search->output && search->current == search->wanted) {
+            search->output->kind = kind;
+            (void)bsd_strlcpy(search->output->device, search->device,
+                sizeof(search->output->device));
+            (void)bsd_strlcpy(search->output->attribute, search->path,
+                sizeof(search->output->attribute));
+            (void)bsd_strlcpy(search->output->label,
+                oid->oid_descr && oid->oid_descr[0] != '\0' ?
+                oid->oid_descr : oid->oid_name,
+                sizeof(search->output->label));
+            return 1;
+        }
+        search->current++;
+        search->path_length = saved_length;
+        search->path[saved_length] = '\0';
+    }
+    return 0;
+}
+
+static int
+bsd_hwmon_search_devices(struct bsd_hwmon_search *search)
+{
+    struct sysctl_oid *device;
+
+    RB_FOREACH(device, sysctl_oid_list, &sysctl___dev.oid_children) {
+        if ((device->oid_kind & CTLTYPE) != CTLTYPE_NODE)
+            continue;
+        search->device = device->oid_name;
+        if (search->match &&
+            bsd_strcmp(search->device, search->match->device) != 0)
+            continue;
+        if (bsd_hwmon_walk(&device->oid_children, search))
+            return 1;
+    }
+    return 0;
+}
+
+size_t
+bsd_hwmon_sensor_count(void)
+{
+    struct bsd_hwmon_search search = {0};
+
+    sysctl_roots_initialize();
+    sysctl_lock();
+    (void)bsd_hwmon_search_devices(&search);
+    sysctl_unlock();
+    return search.current;
+}
+
+int
+bsd_hwmon_sensor_get(size_t index, struct bsd_hwmon_sensor_info *info)
+{
+    struct bsd_hwmon_search search = {
+        .wanted = index,
+        .output = info,
+    };
+    int found;
+
+    if (!info)
+        return BSD_SYSCTL_EINVAL;
+    bsd_memset(info, 0, sizeof(*info));
+    sysctl_roots_initialize();
+    sysctl_lock();
+    found = bsd_hwmon_search_devices(&search);
+    sysctl_unlock();
+    return found ? 0 : BSD_SYSCTL_ENOENT;
+}
+
+struct bsd_hwmon_value_buffer {
+    uint8_t bytes[sizeof(uint64_t)];
+    size_t length;
+};
+
+static int
+bsd_hwmon_value_output(struct sysctl_req *request, const void *data,
+    size_t length)
+{
+    struct bsd_hwmon_value_buffer *buffer = request->oldptr;
+
+    if (!buffer || !data || length == 0 ||
+        buffer->length != 0 || length > sizeof(buffer->bytes))
+        return BSD_SYSCTL_EIO;
+    bsd_memcpy(buffer->bytes, data, length);
+    buffer->length = length;
+    return 0;
+}
+
+static int
+bsd_hwmon_decode_value(const struct sysctl_oid *oid,
+    const struct bsd_hwmon_value_buffer *buffer, int64_t *value)
+{
+    uint64_t raw = 0;
+
+    if (!oid || !buffer || !value)
+        return BSD_SYSCTL_EINVAL;
+    bsd_memcpy(&raw, buffer->bytes, buffer->length);
+    switch (oid->oid_kind & CTLTYPE) {
+    case CTLTYPE_INT:
+    case CTLTYPE_S32:
+        *value = (int32_t)raw;
+        break;
+    case CTLTYPE_S16:
+        *value = (int16_t)raw;
+        break;
+    case CTLTYPE_U16:
+        *value = (uint16_t)raw;
+        break;
+    case CTLTYPE_UINT:
+    case CTLTYPE_U32:
+        *value = (uint32_t)raw;
+        break;
+    case CTLTYPE_LONG:
+        if (buffer->length == sizeof(int64_t))
+            *value = (int64_t)raw;
+        else
+            *value = (int32_t)raw;
+        break;
+    case CTLTYPE_ULONG:
+    case CTLTYPE_U64:
+        *value = (int64_t)raw;
+        break;
+    default:
+        return BSD_SYSCTL_EINVAL;
+    }
+    return 0;
+}
+
+int
+bsd_hwmon_sensor_read(const struct bsd_hwmon_sensor_info *info,
+    int64_t *value)
+{
+    struct bsd_hwmon_search search = {
+        .match = info,
+    };
+    struct bsd_hwmon_value_buffer buffer = {0};
+    struct sysctl_req request = {
+        .oldptr = &buffer,
+        .oldlen = sizeof(buffer.bytes),
+        .oldfunc = bsd_hwmon_value_output,
+    };
+    struct sysctl_oid *oid;
+    int result;
+
+    if (!info || !value)
+        return BSD_SYSCTL_EINVAL;
+    sysctl_roots_initialize();
+    sysctl_lock();
+    if (!bsd_hwmon_search_devices(&search)) {
+        sysctl_unlock();
+        return BSD_SYSCTL_ENOENT;
+    }
+    oid = search.oid;
+    oid->oid_running++;
+    sysctl_unlock();
+
+    result = oid->oid_handler(oid, oid->oid_arg1, oid->oid_arg2,
+        &request);
+    if (result == 0)
+        result = bsd_hwmon_decode_value(oid, &buffer, value);
+    if (result == 0 && info->kind == BSD_HWMON_SENSOR_TEMPERATURE)
+        *value = (*value - 2732) * 100;
+
+    sysctl_lock();
+    oid->oid_running--;
+    sysctl_unlock();
+    return result;
 }

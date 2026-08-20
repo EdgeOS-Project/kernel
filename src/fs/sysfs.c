@@ -7,6 +7,7 @@
 #endif
 #ifdef CONFIG_BSD_DRIVER_BRIDGE
 #include "compat/freebsd/edgeos/cdev.h"
+#include "compat/freebsd/edgeos/hwmon.h"
 #endif
 #ifdef CONFIG_PCI
 #include "drivers/pci.h"
@@ -36,6 +37,7 @@ enum {
     SYS_DEVICES_VIRTUAL, SYS_DEVICES_VIRTUAL_INPUT, SYS_TTY_CLASS,
     SYS_DEVICES_VIRTUAL_TTY, SYS_VIDEO4LINUX_CLASS, SYS_BSD_CDEV_CLASS,
     SYS_DEVICES_VIRTUAL_VIDEO4LINUX, SYS_DEVICES_VIRTUAL_BSD_CDEV,
+    SYS_HWMON_CLASS, SYS_DEVICES_VIRTUAL_HWMON,
     SYS_DEV, SYS_DEV_CHAR, SYS_DEV_BLOCK, SYS_BLOCK,
     SYS_DRM_CLASS, SYS_DRM_CLASS_CARD0, SYS_DRM_CLASS_RENDERD128,
     SYS_DEVICES_VIRTUAL_DRM, SYS_DRM_CARD0, SYS_DRM_CARD0_DEV,
@@ -294,6 +296,20 @@ enum {
 #define SYS_BSD_CDEV_DYNAMIC_BASE UINT32_C(0x00100000)
 #define SYS_BSD_CDEV_DYNAMIC_NODE(kind) \
     (SYS_BSD_CDEV_DYNAMIC_BASE + (uint32_t)(kind))
+
+enum {
+    SYS_HWMON_CLASS_LINK = 0,
+    SYS_HWMON_DEVICE_ROOT,
+    SYS_HWMON_DEVICE_NAME,
+    SYS_HWMON_DEVICE_INPUT,
+    SYS_HWMON_DEVICE_LABEL,
+    SYS_HWMON_DEVICE_SUBSYSTEM,
+    SYS_HWMON_DYNAMIC_COUNT
+};
+
+#define SYS_HWMON_DYNAMIC_BASE UINT32_C(0x00200000)
+#define SYS_HWMON_DYNAMIC_NODE(kind) \
+    (SYS_HWMON_DYNAMIC_BASE + (uint32_t)(kind))
 #endif
 
 typedef struct {
@@ -315,6 +331,7 @@ static const sys_entry_t g_entries[] = {
 #ifdef CONFIG_BSD_DRIVER_BRIDGE
     { SYS_CLASS, SYS_VIDEO4LINUX_CLASS, VFS_INODE_DIR | 0555, "video4linux" },
     { SYS_CLASS, SYS_BSD_CDEV_CLASS, VFS_INODE_DIR | 0555, "bsd-cdev" },
+    { SYS_CLASS, SYS_HWMON_CLASS, VFS_INODE_DIR | 0555, "hwmon" },
 #endif
     { SYS_CLASS, SYS_NET_CLASS, VFS_INODE_DIR | 0555, "net" },
     { SYS_NET_CLASS, SYS_NET_CLASS_LO, VFS_INODE_LNK | 0777, "lo" },
@@ -347,6 +364,7 @@ static const sys_entry_t g_entries[] = {
 #ifdef CONFIG_BSD_DRIVER_BRIDGE
     { SYS_DEVICES_VIRTUAL, SYS_DEVICES_VIRTUAL_VIDEO4LINUX, VFS_INODE_DIR | 0555, "video4linux" },
     { SYS_DEVICES_VIRTUAL, SYS_DEVICES_VIRTUAL_BSD_CDEV, VFS_INODE_DIR | 0555, "bsd-cdev" },
+    { SYS_DEVICES_VIRTUAL, SYS_DEVICES_VIRTUAL_HWMON, VFS_INODE_DIR | 0555, "hwmon" },
 #endif
     { SYS_DEVICES_VIRTUAL, SYS_DEVICES_VIRTUAL_NET, VFS_INODE_DIR | 0555, "net" },
     { SYS_DEVICES_VIRTUAL, SYS_DEVICES_VIRTUAL_DRM, VFS_INODE_DIR | 0555, "drm" },
@@ -1045,6 +1063,64 @@ sys_bsd_cdev_inode(const vfs_inode_t *inode, uint32_t *kind,
         *kind = value;
     return 1;
 }
+
+static void
+inode_set_hwmon(vfs_inode_t *inode, uint32_t sensor, uint32_t kind,
+    uint16_t mode)
+{
+    inode_set(inode, SYS_HWMON_DYNAMIC_NODE(kind), mode);
+    inode->ino = UINT32_C(0xf4000000) ^ (sensor << 4) ^ kind;
+    inode->fs_private[1] = sensor;
+}
+
+static int
+sys_hwmon_inode(const vfs_inode_t *inode, uint32_t *sensor,
+    uint32_t *kind, struct bsd_hwmon_sensor_info *info)
+{
+    uint32_t value;
+
+    if (!inode ||
+        inode->fs_private[0] < SYS_HWMON_DYNAMIC_BASE ||
+        inode->fs_private[0] >=
+            SYS_HWMON_DYNAMIC_BASE + SYS_HWMON_DYNAMIC_COUNT)
+        return 0;
+    value = inode->fs_private[0] - SYS_HWMON_DYNAMIC_BASE;
+    if (bsd_hwmon_sensor_get(inode->fs_private[1], info) != 0)
+        return 0;
+    if (sensor)
+        *sensor = inode->fs_private[1];
+    if (kind)
+        *kind = value;
+    return 1;
+}
+
+static int
+sys_hwmon_find_name(const char *name, uint32_t *sensor,
+    struct bsd_hwmon_sensor_info *info)
+{
+    uint32_t value;
+
+    if (sys_indexed_name(name, "hwmon", UINT32_C(65536), &value) != 0 ||
+        bsd_hwmon_sensor_get(value, info) != 0)
+        return -1;
+    if (sensor)
+        *sensor = value;
+    return 0;
+}
+
+static const char *
+sys_hwmon_input_name(enum bsd_hwmon_sensor_kind kind)
+{
+    return kind == BSD_HWMON_SENSOR_TEMPERATURE ?
+        "temp1_input" : "fan1_input";
+}
+
+static const char *
+sys_hwmon_label_name(enum bsd_hwmon_sensor_kind kind)
+{
+    return kind == BSD_HWMON_SENSOR_TEMPERATURE ?
+        "temp1_label" : "fan1_label";
+}
 #endif
 
 static int sys_lookup(vfs_superblock_t *sb, vfs_inode_t *directory,
@@ -1123,6 +1199,43 @@ static int sys_lookup(vfs_superblock_t *sb, vfs_inode_t *directory,
     }
 #endif
 #ifdef CONFIG_BSD_DRIVER_BRIDGE
+    {
+        struct bsd_hwmon_sensor_info hwmon_info;
+        uint32_t hwmon_sensor;
+        uint32_t hwmon_kind;
+
+        if (directory->fs_private[0] == SYS_HWMON_CLASS ||
+            directory->fs_private[0] == SYS_DEVICES_VIRTUAL_HWMON) {
+            if (sys_hwmon_find_name(name, &hwmon_sensor,
+                &hwmon_info) != 0)
+                return -1;
+            inode_set_hwmon(out, hwmon_sensor,
+                directory->fs_private[0] == SYS_HWMON_CLASS ?
+                    SYS_HWMON_CLASS_LINK : SYS_HWMON_DEVICE_ROOT,
+                directory->fs_private[0] == SYS_HWMON_CLASS ?
+                    VFS_INODE_LNK | 0777 : VFS_INODE_DIR | 0555);
+            return 0;
+        }
+        if (sys_hwmon_inode(directory, &hwmon_sensor, &hwmon_kind,
+            &hwmon_info) && hwmon_kind == SYS_HWMON_DEVICE_ROOT) {
+            if (text_equal(name, "name"))
+                hwmon_kind = SYS_HWMON_DEVICE_NAME;
+            else if (text_equal(name,
+                sys_hwmon_input_name(hwmon_info.kind)))
+                hwmon_kind = SYS_HWMON_DEVICE_INPUT;
+            else if (text_equal(name,
+                sys_hwmon_label_name(hwmon_info.kind)))
+                hwmon_kind = SYS_HWMON_DEVICE_LABEL;
+            else if (text_equal(name, "subsystem"))
+                hwmon_kind = SYS_HWMON_DEVICE_SUBSYSTEM;
+            else
+                return -1;
+            inode_set_hwmon(out, hwmon_sensor, hwmon_kind,
+                hwmon_kind == SYS_HWMON_DEVICE_SUBSYSTEM ?
+                    VFS_INODE_LNK | 0777 : VFS_INODE_FILE | 0444);
+            return 0;
+        }
+    }
     {
         bsd_bridge_cdev_node_t bsd_node;
         uint32_t bsd_kind;
@@ -1510,6 +1623,19 @@ static uint32_t append_u64(char *buffer, uint32_t capacity, uint32_t length,
     return length;
 }
 
+static uint32_t append_i64(char *buffer, uint32_t capacity, uint32_t length,
+                           int64_t value) {
+    uint64_t magnitude;
+
+    if (value < 0) {
+        if (length < capacity) buffer[length++] = '-';
+        magnitude = (uint64_t)(-(value + 1)) + 1u;
+    } else {
+        magnitude = (uint64_t)value;
+    }
+    return append_u64(buffer, capacity, length, magnitude);
+}
+
 static uint32_t append_device_number(char *buffer, uint32_t capacity,
                                      uint32_t length,
                                      const kernel_console_device_t *device) {
@@ -1744,6 +1870,31 @@ static int sys_read(vfs_superblock_t *sb, vfs_inode_t *inode, uint32_t offset,
     }
 #endif
 #ifdef CONFIG_BSD_DRIVER_BRIDGE
+    {
+        struct bsd_hwmon_sensor_info hwmon_info;
+        uint32_t hwmon_kind;
+        int64_t hwmon_value;
+
+        if (sys_hwmon_inode(inode, 0, &hwmon_kind, &hwmon_info)) {
+            if (hwmon_kind == SYS_HWMON_DEVICE_NAME) {
+                size = append_text(value, sizeof(value), size,
+                    hwmon_info.device);
+            } else if (hwmon_kind == SYS_HWMON_DEVICE_LABEL) {
+                size = append_text(value, sizeof(value), size,
+                    hwmon_info.label);
+            } else if (hwmon_kind == SYS_HWMON_DEVICE_INPUT) {
+                if (bsd_hwmon_sensor_read(
+                    &hwmon_info, &hwmon_value) != 0)
+                    return -1;
+                size = append_i64(value, sizeof(value), size,
+                    hwmon_value);
+            } else {
+                return -1;
+            }
+            size = append_text(value, sizeof(value), size, "\n");
+            goto copy_value;
+        }
+    }
     {
         bsd_bridge_cdev_node_t bsd_node;
         uint32_t bsd_kind;
@@ -2223,6 +2374,33 @@ static int sys_readlink(vfs_superblock_t *sb, vfs_inode_t *inode,
 #endif
 #ifdef CONFIG_BSD_DRIVER_BRIDGE
     {
+        struct bsd_hwmon_sensor_info hwmon_info;
+        uint32_t hwmon_sensor;
+        uint32_t hwmon_kind;
+
+        if (sys_hwmon_inode(inode, &hwmon_sensor, &hwmon_kind,
+            &hwmon_info)) {
+            length = 0;
+            if (hwmon_kind == SYS_HWMON_CLASS_LINK) {
+                length = append_text(dynamic_target,
+                    sizeof(dynamic_target), length,
+                    "../../devices/virtual/hwmon/hwmon");
+                length = append_u32(dynamic_target,
+                    sizeof(dynamic_target), length, hwmon_sensor);
+            } else if (hwmon_kind == SYS_HWMON_DEVICE_SUBSYSTEM) {
+                length = append_text(dynamic_target,
+                    sizeof(dynamic_target), length,
+                    "../../../../class/hwmon");
+            } else {
+                return -1;
+            }
+            if (maximum < length)
+                length = maximum;
+            memcpy(out, dynamic_target, length);
+            return (int)length;
+        }
+    }
+    {
         bsd_bridge_cdev_node_t bsd_node;
         uint32_t bsd_kind;
 
@@ -2497,6 +2675,59 @@ static int sys_readdir(vfs_superblock_t *sb, vfs_inode_t *directory,
     }
 #endif
 #ifdef CONFIG_BSD_DRIVER_BRIDGE
+    {
+        struct bsd_hwmon_sensor_info hwmon_info;
+        uint32_t hwmon_sensor;
+        uint32_t hwmon_kind;
+        uint32_t name_length;
+
+        if (directory->fs_private[0] == SYS_HWMON_CLASS ||
+            directory->fs_private[0] == SYS_DEVICES_VIRTUAL_HWMON) {
+            if (bsd_hwmon_sensor_get(position, &hwmon_info) != 0)
+                return -1;
+            name_length = append_text(name, VFS_NAME_MAX, 0, "hwmon");
+            name_length = append_u32(name, VFS_NAME_MAX, name_length,
+                position);
+            name[name_length] = 0;
+            inode_set_hwmon(out, position,
+                directory->fs_private[0] == SYS_HWMON_CLASS ?
+                    SYS_HWMON_CLASS_LINK : SYS_HWMON_DEVICE_ROOT,
+                directory->fs_private[0] == SYS_HWMON_CLASS ?
+                    VFS_INODE_LNK | 0777 : VFS_INODE_DIR | 0555);
+            return 0;
+        }
+        if (sys_hwmon_inode(directory, &hwmon_sensor, &hwmon_kind,
+            &hwmon_info) && hwmon_kind == SYS_HWMON_DEVICE_ROOT) {
+            static const uint32_t kinds[] = {
+                SYS_HWMON_DEVICE_NAME,
+                SYS_HWMON_DEVICE_INPUT,
+                SYS_HWMON_DEVICE_LABEL,
+                SYS_HWMON_DEVICE_SUBSYSTEM
+            };
+            static const uint16_t modes[] = {
+                VFS_INODE_FILE | 0444,
+                VFS_INODE_FILE | 0444,
+                VFS_INODE_FILE | 0444,
+                VFS_INODE_LNK | 0777
+            };
+            const char *entry_name;
+
+            if (position >= sizeof(kinds) / sizeof(kinds[0]))
+                return -1;
+            if (position == 0)
+                entry_name = "name";
+            else if (position == 1)
+                entry_name = sys_hwmon_input_name(hwmon_info.kind);
+            else if (position == 2)
+                entry_name = sys_hwmon_label_name(hwmon_info.kind);
+            else
+                entry_name = "subsystem";
+            strcpy(name, entry_name);
+            inode_set_hwmon(out, hwmon_sensor, kinds[position],
+                modes[position]);
+            return 0;
+        }
+    }
     {
         bsd_bridge_cdev_node_t bsd_node;
         uint32_t bsd_kind;

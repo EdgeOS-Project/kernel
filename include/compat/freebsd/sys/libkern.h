@@ -78,6 +78,20 @@ bsd_ilog2(uint64_t value)
     return 63 - __builtin_clzll(value);
 }
 
+static inline int64_t
+signed_extend64(uint64_t bitmap, int lsb, int width)
+{
+    return ((int64_t)(bitmap << (63 - lsb - (width - 1)))) >>
+        (63 - (width - 1));
+}
+
+static inline int32_t
+signed_extend32(uint32_t bitmap, int lsb, int width)
+{
+    return ((int32_t)(bitmap << (31 - lsb - (width - 1)))) >>
+        (31 - (width - 1));
+}
+
 #define ilog2(value) bsd_ilog2((uint64_t)(value))
 #define order_base_2(value) ilog2(2 * (value) - 1)
 

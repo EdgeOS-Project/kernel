@@ -622,6 +622,12 @@ BSD_BRIDGE_ARM64_UPSTREAM_OBJS := \
 BSD_BRIDGE_ARM64_UPSTREAM_BCS := \
 	$(addprefix $(OBJ)/arm64-bsd/upstream/,\
 	$(BSD_BRIDGE_ARM64_UPSTREAM_C_REL_SRCS:.c=.bc))
+BSD_BRIDGE_ARM64_DEPS := \
+	$(BSD_BRIDGE_ARM64_RUNTIME_BCS:.bc=.d) \
+	$(BSD_BRIDGE_ARM64_GENERATED_BCS:.bc=.d) \
+	$(BSD_BRIDGE_ARM64_UPSTREAM_BCS:.bc=.d) \
+	$(BSD_BRIDGE_ARM64_ACPICA_CORE_BCS:.bc=.d) \
+	$(BSD_BRIDGE_ARM64_ACPICA_OS_BCS:.bc=.d)
 .SECONDARY: $(BSD_BRIDGE_ARM64_RUNTIME_BCS) \
 	$(BSD_BRIDGE_ARM64_GENERATED_BCS) $(BSD_BRIDGE_ARM64_UPSTREAM_BCS) \
 	$(BSD_BRIDGE_ARM64_ACPICA_CORE_BCS) $(BSD_BRIDGE_ARM64_ACPICA_OS_BCS)
@@ -649,6 +655,7 @@ BSD_BRIDGE_ARM64_COMMON_SOURCE_FLAGS = \
 	-fno-builtin -fno-stack-protector -fno-strict-aliasing \
 	-mgeneral-regs-only -mno-outline-atomics \
 	-ffunction-sections -fdata-sections \
+	-MMD -MP \
 	-Wall -Wextra -Werror $(BSD_BRIDGE_COFF_SOURCE_WARNINGS) \
 	$(BSD_BRIDGE_CLANG_SOURCE_WARNINGS) \
 	-D_KERNEL -DEDGEOS_BSD_BRIDGE -DEDGEOS_BSD_COFF_TARGET=1 \
@@ -1406,6 +1413,7 @@ bsd-bridge-network-unit: native-netdev-unit tools/tests/bsd_bridge_network_unit.
 	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror \
 		-D_POSIX_C_SOURCE=200112L -DBSD_BRIDGE_HOST_TEST \
 		-iquote $(INC) \
+		-idirafter $(INC)/compat/freebsd \
 		-idirafter $(BSD_BRIDGE_UPSTREAM_SYS) \
 		tools/tests/bsd_bridge_network_unit.c \
 		$(SRC)/compat/freebsd/kern/allocator.c \
@@ -1428,6 +1436,7 @@ bsd-bridge-network-unit: native-netdev-unit tools/tests/bsd_bridge_network_unit.
 	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror \
 		-D_POSIX_C_SOURCE=200112L -DBSD_BRIDGE_HOST_TEST \
 		-iquote $(INC) \
+		-idirafter $(INC)/compat/freebsd \
 		-idirafter $(BSD_BRIDGE_UPSTREAM_SYS) \
 		-fsanitize=address,undefined -fno-omit-frame-pointer \
 		tools/tests/bsd_bridge_network_unit.c \
@@ -1497,6 +1506,7 @@ bsd-bridge-cam-unit: tools/tests/bsd_bridge_cam_unit.c $(SRC)/compat/freebsd/ker
 	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror \
 		-D_POSIX_C_SOURCE=200112L -DBSD_BRIDGE_HOST_TEST \
 		-D_KERNEL -DEDGEOS_BSD_BRIDGE -iquote $(INC) \
+		-idirafter $(INC)/compat/freebsd \
 		-idirafter $(BSD_BRIDGE_UPSTREAM_SYS) \
 		tools/tests/bsd_bridge_cam_unit.c \
 		$(SRC)/compat/freebsd/kern/allocator.c \
@@ -1512,7 +1522,8 @@ bsd-bridge-cam-unit: tools/tests/bsd_bridge_cam_unit.c $(SRC)/compat/freebsd/ker
 		-D_POSIX_C_SOURCE=200112L -DBSD_BRIDGE_HOST_TEST \
 		-D_KERNEL -DEDGEOS_BSD_BRIDGE \
 		-fsanitize=address,undefined -fno-omit-frame-pointer \
-		-iquote $(INC) -idirafter $(BSD_BRIDGE_UPSTREAM_SYS) \
+		-iquote $(INC) -idirafter $(INC)/compat/freebsd \
+		-idirafter $(BSD_BRIDGE_UPSTREAM_SYS) \
 		tools/tests/bsd_bridge_cam_unit.c \
 		$(SRC)/compat/freebsd/kern/allocator.c \
 		$(SRC)/compat/freebsd/kern/block.c \
@@ -5029,3 +5040,6 @@ clean:
 # .d -> .d.o -> .d.c implicit chain when generated bridge inputs change.
 $(DEPS): ;
 -include $(wildcard $(DEPS))
+
+$(BSD_BRIDGE_ARM64_DEPS): ;
+-include $(wildcard $(BSD_BRIDGE_ARM64_DEPS))
