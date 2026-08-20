@@ -210,6 +210,11 @@ case EDGE_LINUX_SYS_munlockall:
 case EDGE_LINUX_SYS_mmap:
     context->result = edge_linux_sys_mmap(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_delete_module:
+case EDGE_LINUX_SYS_finit_module:
+case EDGE_LINUX_SYS_init_module:
+    context->result = edge_linux_sys_module(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_mount:
 case EDGE_LINUX_SYS_pivot_root:
 case EDGE_LINUX_SYS_umount2:

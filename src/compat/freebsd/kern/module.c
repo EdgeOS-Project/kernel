@@ -1225,6 +1225,25 @@ bsd_module_deactivate_file(struct linker_file *file)
     return error;
 }
 
+int
+bsd_module_deactivate_name(const char *name)
+{
+    struct linker_file *file = 0;
+    int error;
+
+    if (!name || !name[0])
+        return BSD_MODULE_EINVAL;
+    linker_guard_lock();
+    module_guard_lock();
+    module_t module = module_lookup_name_unlocked(name);
+    if (module)
+        file = module->container;
+    module_guard_unlock();
+    error = file ? module_deactivate_file_locked(file) : BSD_MODULE_ENOENT;
+    linker_guard_unlock();
+    return error;
+}
+
 void *
 linker_hwpmc_list_objects(void)
 {

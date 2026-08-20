@@ -783,19 +783,26 @@
     {
       "id": "delete_module",
       "semantic_id": "delete_module",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_module",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/module_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 176,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_module",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 106,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_module",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {
@@ -1596,19 +1603,26 @@
     {
       "id": "finit_module",
       "semantic_id": "finit_module",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_module",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/module_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 313,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_module",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 273,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_module",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {
@@ -2878,19 +2892,26 @@
     {
       "id": "init_module",
       "semantic_id": "init_module",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_module",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/module_abi_probe.c"
+      ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
       "architectures": {
         "x86_64": {
           "number": 175,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_module",
+          "evidence_status": "runtime-probe-listed"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 105,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_module",
+          "evidence_status": "runtime-probe-listed"
+        }
       }
     },
     {

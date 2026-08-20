@@ -24,6 +24,7 @@
 #include "kernel/linux_errno.h"
 #include "kernel/linux_abi.h"
 #include "kernel/linux_mount.h"
+#include "kernel/linux_module.h"
 #include "kernel/mount_api.h"
 #include "kernel/linux_netlink.h"
 #include "kernel/io_runtime.h"
@@ -60,6 +61,7 @@
 #include "kernel/time_discipline.h"
 #include "kernel/tty_session.h"
 #include "kernel/vfs_runtime.h"
+#include "mm/arch_vm.h"
 #include "sys/boottime.h"
 #include "sys/bootlog.h"
 #include "sys/spinlock.h"
@@ -933,6 +935,189 @@ static int64_t edge_linux_sys_vhangup(
          (1ull << EDGE_LINUX_CAP_SYS_TTY_CONFIG)) == 0)
         return -EDGE_LINUX_EPERM;
     return arch_tty_vhangup();
+}
+
+#define EDGE_LINUX_MODULE_PAGE_SIZE 4096u
+#define EDGE_LINUX_MODULE_INIT_IGNORE_MODVERSIONS 0x00000001u
+#define EDGE_LINUX_MODULE_INIT_IGNORE_VERMAGIC 0x00000002u
+#define EDGE_LINUX_MODULE_INIT_COMPRESSED_FILE 0x00000004u
+
+static void edge_linux_module_free_pages(
+    void *memory, uint32_t page_count) {
+    uint8_t *bytes = memory;
+
+    if (!memory) return;
+    for (uint32_t page = 0; page < page_count; ++page)
+        arch_vm_free_page(
+            bytes + (uint64_t)page * EDGE_LINUX_MODULE_PAGE_SIZE);
+}
+
+static int edge_linux_module_copy_image(
+    edge_linux_syscall_context_t *context, uint64_t source,
+    uint32_t image_size, void **image_out, uint32_t *pages_out) {
+    uint8_t *image;
+    uint32_t pages;
+
+    if (!image_out || !pages_out) return -EDGE_LINUX_EIO;
+    *image_out = 0;
+    *pages_out = 0;
+    if (!image_size) return -EDGE_LINUX_ENOEXEC;
+    if (image_size > KERNEL_LINUX_MODULE_MAX_BYTES)
+        return -EDGE_LINUX_EFBIG;
+    pages = (image_size + EDGE_LINUX_MODULE_PAGE_SIZE - 1u) /
+        EDGE_LINUX_MODULE_PAGE_SIZE;
+    image = arch_vm_alloc_pages(pages);
+    if (!image) return -EDGE_LINUX_ENOMEM;
+    for (uint32_t offset = 0; offset < image_size;) {
+        uint32_t chunk = image_size - offset;
+        if (chunk > 65536u) chunk = 65536u;
+        if (source > UINT64_MAX - offset ||
+            edge_linux_copy_from_user(
+                context, image + offset, source + offset, chunk) < 0) {
+            edge_linux_module_free_pages(image, pages);
+            return -EDGE_LINUX_EFAULT;
+        }
+        offset += chunk;
+    }
+    *image_out = image;
+    *pages_out = pages;
+    return 0;
+}
+
+static int edge_linux_module_read_fd(
+    int32_t descriptor, void **image_out, uint32_t *image_size_out,
+    uint32_t *pages_out) {
+    kernel_file_metadata_t metadata;
+    kernel_io_file_range_info_t information;
+    uint8_t *image;
+    uint32_t image_size;
+    uint32_t pages;
+    int64_t bytes;
+    int result;
+
+    if (!image_out || !image_size_out || !pages_out)
+        return -EDGE_LINUX_EIO;
+    *image_out = 0;
+    *image_size_out = 0;
+    *pages_out = 0;
+    result = kernel_io_file_range_query(descriptor, &information);
+    if (result < 0) return result;
+    if (!information.readable) return -EDGE_LINUX_EBADF;
+    if (information.kind != KERNEL_IO_FILE_REGULAR)
+        return -EDGE_LINUX_EINVAL;
+    result = kernel_vfs_metadata_fd(descriptor, &metadata);
+    if (result < 0) return result;
+    if (!metadata.size) return -EDGE_LINUX_ENOEXEC;
+    if (metadata.size > KERNEL_LINUX_MODULE_MAX_BYTES)
+        return -EDGE_LINUX_EFBIG;
+    image_size = (uint32_t)metadata.size;
+    pages = (image_size + EDGE_LINUX_MODULE_PAGE_SIZE - 1u) /
+        EDGE_LINUX_MODULE_PAGE_SIZE;
+    image = arch_vm_alloc_pages(pages);
+    if (!image) return -EDGE_LINUX_ENOMEM;
+    bytes = kernel_io_file_range_read(
+        descriptor, 0, image, image_size);
+    if (bytes < 0) {
+        edge_linux_module_free_pages(image, pages);
+        return (int)bytes;
+    }
+    if ((uint64_t)bytes != image_size) {
+        edge_linux_module_free_pages(image, pages);
+        return -EDGE_LINUX_EIO;
+    }
+    *image_out = image;
+    *image_size_out = image_size;
+    *pages_out = pages;
+    return 0;
+}
+
+static int64_t edge_linux_sys_module(
+    edge_linux_syscall_context_t *context) {
+#ifndef CONFIG_MODULES
+    (void)context;
+    return -EDGE_LINUX_ENOSYS;
+#else
+    kernel_linux_identity_t identity;
+    char module_name[64];
+    char *parameters = 0;
+    void *image = 0;
+    uint32_t image_size = 0;
+    uint32_t image_pages = 0;
+    uint32_t flags;
+    int32_t descriptor;
+    int result;
+
+    if (kernel_current_linux_identity(&identity) < 0)
+        return -EDGE_LINUX_ESRCH;
+    if ((identity.effective_capabilities &
+         (1ull << EDGE_LINUX_CAP_SYS_MODULE)) == 0)
+        return -EDGE_LINUX_EPERM;
+    if (context->id == EDGE_LINUX_SYS_delete_module) {
+        result = edge_linux_copy_user_string(
+            context, context->arguments[0], module_name,
+            sizeof(module_name), EDGE_LINUX_ENOENT);
+        if (result < 0) return result;
+        if (!result) return -EDGE_LINUX_ENOENT;
+        return kernel_linux_module_unload(
+            module_name, (uint32_t)context->arguments[1]);
+    }
+    if (context->id == EDGE_LINUX_SYS_init_module) {
+        if (context->arguments[1] > UINT32_MAX) {
+            result = -EDGE_LINUX_EFBIG;
+            goto complete;
+        }
+        image_size = (uint32_t)context->arguments[1];
+        result = edge_linux_module_copy_image(
+            context, context->arguments[0], image_size,
+            &image, &image_pages);
+        if (result < 0) goto complete;
+        parameters = arch_vm_alloc_page();
+        if (!parameters) {
+            result = -EDGE_LINUX_ENOMEM;
+            goto complete;
+        }
+        result = edge_linux_copy_user_string(
+            context, context->arguments[2], parameters,
+            KERNEL_LINUX_MODULE_PARAMETERS_MAX, EDGE_LINUX_E2BIG);
+    } else if (context->id == EDGE_LINUX_SYS_finit_module) {
+        flags = (uint32_t)context->arguments[2];
+        if (flags & ~(EDGE_LINUX_MODULE_INIT_IGNORE_MODVERSIONS |
+                      EDGE_LINUX_MODULE_INIT_IGNORE_VERMAGIC |
+                      EDGE_LINUX_MODULE_INIT_COMPRESSED_FILE)) {
+            result = -EDGE_LINUX_EINVAL;
+            goto complete;
+        }
+        if (flags & EDGE_LINUX_MODULE_INIT_COMPRESSED_FILE) {
+            result = -EDGE_LINUX_EOPNOTSUPP;
+            goto complete;
+        }
+        if (edge_linux_fd_number(
+                context->arguments[0], &descriptor) < 0) {
+            result = -EDGE_LINUX_EBADF;
+            goto complete;
+        }
+        result = edge_linux_module_read_fd(
+            descriptor, &image, &image_size, &image_pages);
+        if (result < 0) goto complete;
+        parameters = arch_vm_alloc_page();
+        if (!parameters) {
+            result = -EDGE_LINUX_ENOMEM;
+            goto complete;
+        }
+        result = edge_linux_copy_user_string(
+            context, context->arguments[1], parameters,
+            KERNEL_LINUX_MODULE_PARAMETERS_MAX, EDGE_LINUX_E2BIG);
+    } else {
+        result = -EDGE_LINUX_ENOSYS;
+        goto complete;
+    }
+    if (result >= 0)
+        result = kernel_linux_module_load(image, image_size, parameters);
+complete:
+    edge_linux_module_free_pages(image, image_pages);
+    if (parameters) arch_vm_free_page(parameters);
+    return result;
+#endif
 }
 
 static int64_t edge_linux_sys_clock_adjust(

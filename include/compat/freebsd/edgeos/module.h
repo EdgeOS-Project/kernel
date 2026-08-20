@@ -108,6 +108,7 @@ const struct mod_pnp_match_info *bsd_module_pnp_get(size_t index);
 int bsd_module_activate_image(bsd_linker_image_t *image, const char *name,
     struct linker_file **file_out);
 int bsd_module_deactivate_file(struct linker_file *file);
+int bsd_module_deactivate_name(const char *name);
 size_t bsd_module_linked_file_count(void);
 
 void bsd_module_lock(void);

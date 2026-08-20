@@ -19,6 +19,8 @@ int bsd_driver_module_resolve_path(const char *name, size_t length,
     char *path, size_t capacity);
 int bsd_driver_module_load_path(const char *path,
     struct linker_file **file_out);
+int bsd_driver_module_load_image(const void *image, uint32_t image_size,
+    const char *name, struct linker_file **file_out);
 int bsd_driver_modules_load_config(const char *path);
 int bsd_driver_modules_load_default(void);
 

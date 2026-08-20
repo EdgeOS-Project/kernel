@@ -87,40 +87,55 @@ driver_loader_read_file(const char *path, uint32_t maximum,
 }
 
 int
-bsd_driver_module_load_path(const char *path,
+bsd_driver_module_load_image(const void *object, uint32_t object_size,
+    const char *name,
     struct linker_file **file_out)
 {
     bsd_linker_image_t *image = 0;
+    int error;
+
+    if (file_out)
+        *file_out = 0;
+    if (!object || !object_size ||
+        object_size > BSD_DRIVER_MODULE_MAX_BYTES || !name || !name[0])
+        return BSD_DRIVER_EINVAL;
+    error = bsd_linker_load_object(object, object_size,
+        BSD_LINKER_ARCH_NATIVE, bsd_driver_symbol_resolve, 0, &image);
+    if (error) {
+        printf("[bsd-bridge] module object %s failed: %d\n", name, error);
+        return BSD_DRIVER_ENOEXEC;
+    }
+    error = bsd_module_activate_image(image, name, file_out);
+    if (error) {
+        if (error == BSD_DRIVER_EEXIST)
+            return error;
+        printf("[bsd-bridge] module activation %s failed: %d\n", name,
+            error);
+        return error;
+    }
+    printf("[bsd-bridge] loaded module %s\n", name);
+    return 0;
+}
+
+int
+bsd_driver_module_load_path(const char *path,
+    struct linker_file **file_out)
+{
     void *object = 0;
     uint32_t object_size = 0;
     uint32_t object_pages = 0;
     int error;
 
-    if (file_out)
-        *file_out = 0;
     error = driver_loader_read_file(path, BSD_DRIVER_MODULE_MAX_BYTES,
         &object, &object_size, &object_pages);
     if (error) {
         printf("[bsd-bridge] module read %s failed: %d\n", path, error);
         return error;
     }
-    error = bsd_linker_load_object(object, object_size,
-        BSD_LINKER_ARCH_NATIVE, bsd_driver_symbol_resolve, 0, &image);
+    error = bsd_driver_module_load_image(object, object_size, path,
+        file_out);
     driver_loader_free_pages(object, object_pages);
-    if (error) {
-        printf("[bsd-bridge] module object %s failed: %d\n", path, error);
-        return BSD_DRIVER_ENOEXEC;
-    }
-    error = bsd_module_activate_image(image, path, file_out);
-    if (error) {
-        if (error == BSD_DRIVER_EEXIST)
-            return error;
-        printf("[bsd-bridge] module activation %s failed: %d\n",
-            path, error);
-        return error;
-    }
-    printf("[bsd-bridge] loaded module %s\n", path);
-    return 0;
+    return error;
 }
 
 int
