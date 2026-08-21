@@ -8,6 +8,7 @@
 
 #include "kernel/linux_errno.h"
 #include "kernel/mm_runtime.h"
+#include "kernel/vfs_runtime.h"
 #include "fs/cgroupfs.h"
 #include "mm/arch_vm.h"
 #include "mm/statistics.h"
@@ -1509,6 +1510,8 @@ int64_t kernel_mm_protect_range(uint64_t address, uint64_t length,
 }
 
 int64_t kernel_mm_map(const kernel_mm_map_request_t *request) {
+    kernel_mm_map_request_t effective_request;
+    kernel_vfs_descriptor_t description;
     uint64_t mapping_type;
     uint64_t address_space;
     uint64_t rounded_length;
@@ -1516,6 +1519,7 @@ int64_t kernel_mm_map(const kernel_mm_map_request_t *request) {
     uint32_t future_flags;
     int64_t result;
     int lock_status;
+    int secret_mapping = 0;
 
     if (!request) return -EDGE_LINUX_EIO;
     if (!request->length)
@@ -1537,6 +1541,21 @@ int64_t kernel_mm_map(const kernel_mm_map_request_t *request) {
     if (!(request->flags & KERNEL_MM_MAP_ANONYMOUS) &&
         request->descriptor < 0)
         return -EDGE_LINUX_EBADF;
+    effective_request = *request;
+    if (!(request->flags & KERNEL_MM_MAP_ANONYMOUS)) {
+        int status = kernel_vfs_describe_descriptor(
+            request->descriptor, &description);
+        if (status < 0) return status;
+        if (description.attributes &
+            KERNEL_VFS_DESCRIPTOR_SECRET_MEMORY) {
+            if (mapping_type != KERNEL_MM_MAP_SHARED &&
+                mapping_type != KERNEL_MM_MAP_SHARED_VALIDATE)
+                return -EDGE_LINUX_EINVAL;
+            effective_request.flags |=
+                KERNEL_MM_MAP_LOCKED | KERNEL_MM_MAP_SECRET;
+            secret_mapping = 1;
+        }
+    }
     rounded_length =
         (request->length + KERNEL_MM_USER_PAGE_SIZE - 1u) &
         ~(uint64_t)(KERNEL_MM_USER_PAGE_SIZE - 1u);
@@ -1546,21 +1565,22 @@ int64_t kernel_mm_map(const kernel_mm_map_request_t *request) {
         kernel_mm_seal_space_overlaps(
             address_space, request->address, rounded_length))
         return -EDGE_LINUX_EPERM;
-    result = arch_mm_map(request);
+    result = arch_mm_map(&effective_request);
     if (result < 0) return result;
 
     future_flags = kernel_mm_lock_space_future_flags(address_space);
-    if (!(request->flags & KERNEL_MM_MAP_LOCKED) &&
+    if (!(effective_request.flags & KERNEL_MM_MAP_LOCKED) &&
         !(future_flags & KERNEL_MM_LOCK_ALL_FUTURE))
         return result;
-    lock_flags = (!(request->flags & KERNEL_MM_MAP_LOCKED) &&
+    lock_flags = (!(effective_request.flags & KERNEL_MM_MAP_LOCKED) &&
                   (future_flags & KERNEL_MM_LOCK_ALL_ONFAULT)) ?
                  KERNEL_MM_LOCK_RANGE_ONFAULT : 0u;
     lock_status = arch_mm_lock_range(
         (uint64_t)result, rounded_length, lock_flags);
     if (lock_status < 0) {
         (void)arch_mm_unmap_range((uint64_t)result, rounded_length);
-        return lock_status;
+        return secret_mapping && lock_status == -EDGE_LINUX_ENOMEM ?
+            -EDGE_LINUX_EAGAIN : lock_status;
     }
     return result;
 }

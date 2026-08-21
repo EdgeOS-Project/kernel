@@ -698,7 +698,9 @@ int arch_vfs_sync_descriptor(int32_t descriptor,
             return -EDGE_LINUX_EIO;
         return 0;
     }
-    if (entry->kind == FD_MEMFD) return 0;
+    if (entry->kind == FD_MEMFD)
+        return memfd_entry_is_secret(entry) ?
+            -EDGE_LINUX_EINVAL : 0;
     if (entry->kind != FD_VFS)
         return operation == KERNEL_VFS_SYNC_RANGE ?
             -EDGE_LINUX_ESPIPE : -EDGE_LINUX_EINVAL;
@@ -770,6 +772,9 @@ int arch_vfs_describe_descriptor(int32_t descriptor,
         edge_memfd_t *memory = memfd_get(entry->pipe_id);
         if (!memory) return -EDGE_LINUX_EBADF;
         description->kind = KERNEL_VFS_DESCRIPTOR_MEMORY;
+        if (memory->secret)
+            description->attributes |=
+                KERNEL_VFS_DESCRIPTOR_SECRET_MEMORY;
         description->readable = !(entry->flags & LINUX_O_PATH) &&
             (entry->flags & LINUX_O_ACCMODE) != LINUX_O_WRONLY;
         description->writable = !(entry->flags & LINUX_O_PATH) &&
@@ -932,6 +937,7 @@ edge_linux_seek_result_t arch_vfs_seek_descriptor(
     } else if (entry->kind == FD_MEMFD) {
         edge_memfd_t *memory = memfd_get(entry->pipe_id);
         if (!memory) return EDGE_LINUX_SEEK_BAD_DESCRIPTOR;
+        if (memory->secret) return EDGE_LINUX_SEEK_ILLEGAL;
         entry->inode.size = memory->size;
         state.end = memory->size;
         state.maximum = (uint64_t)INT64_MAX - 1u;
@@ -1709,8 +1715,10 @@ static int64_t x86_fd_operation_file_range(
             if (!request->buffer && length) return -EFAULT;
             if (entry->kind == FD_MEMFD) {
                 edge_memfd_t *memory = memfd_get(entry->pipe_id);
-                return memory ? memfd_read_to_kernel(
-                    memory, offset, request->buffer, length) : -EBADF;
+                if (!memory) return -EBADF;
+                if (memory->secret) return -EINVAL;
+                return memfd_read_to_kernel(
+                    memory, offset, request->buffer, length);
             }
             if (entry->kind != FD_VFS || !entry->sb ||
                 !entry->sb->ops || !entry->sb->ops->read)
@@ -1726,6 +1734,7 @@ static int64_t x86_fd_operation_file_range(
             if (entry->kind == FD_MEMFD) {
                 edge_memfd_t *memory = memfd_get(entry->pipe_id);
                 if (!memory) return -EBADF;
+                if (memory->secret) return -EINVAL;
                 written = memfd_write_from_kernel(
                     memory, offset, request->buffer, length);
                 if (written > 0) entry->inode.size = memory->size;
@@ -5122,7 +5131,8 @@ static int memfd_pageout_object_page(edge_memfd_t *mf, int memfd_id,
     int backing_index;
     void *page;
 
-    if (!mf || memfd_id <= 0 || page_no >= EDGE_MEMFD_MAX_PAGES ||
+    if (!mf || mf->secret || memfd_id <= 0 ||
+        page_no >= EDGE_MEMFD_MAX_PAGES ||
         !swap_total_bytes())
         return 0;
     backing_index = mf->page_idx[page_no];
@@ -5242,7 +5252,7 @@ static uint32_t memfd_pressure_reclaim(uint32_t cgroup_id,
             page_cursor = 0;
         }
         mf = memfd_get((int)object_cursor);
-        if (!mf || !mf->size) {
+        if (!mf || mf->secret || !mf->size) {
             ++object_cursor;
             page_cursor = 0;
             if (++idle_objects >= EDGE_MEMFD_MAX - 1u) break;
@@ -10066,6 +10076,8 @@ int arch_vfs_truncate_descriptor(int32_t descriptor, uint32_t length) {
     if (entry->kind == FD_MEMFD) {
         edge_memfd_t *memory = memfd_get(entry->pipe_id);
         if (!memory) return -EDGE_LINUX_EBADF;
+        if (memory->secret && memory->size)
+            return -EDGE_LINUX_EINVAL;
         result = memfd_truncate(memory, length);
         if (result < 0) return result;
         publish_memfd_truncate(entry->pipe_id, length);
@@ -10209,10 +10221,35 @@ int arch_namespace_descriptor_get(
     return 0;
 }
 
+static int process_vm_range_overlaps_secret(
+        task_t *memory, uint64_t address, uint64_t size) {
+    uint64_t end;
+    int live;
+
+    if (!memory || !size || size > UINT64_MAX - address) return size != 0;
+    end = address + size;
+    live = user_vma_live_limit(memory);
+    for (int index = 0; index < live; ++index) {
+        const edge_user_vma_t *mapping = &memory->user_vmas[index];
+        if (mapping->end <= mapping->start ||
+            !(mapping->flags & KERNEL_MM_MAP_SECRET))
+            continue;
+        if (address < mapping->end && end > mapping->start)
+            return 1;
+    }
+    return 0;
+}
+
 int arch_mm_process_vm_copy(
         int32_t pid, uint64_t address, void *buffer, uint64_t size,
         kernel_mm_process_vm_operation_t operation) {
-    if (!process_get_task(pid)) return -ESRCH;
+    task_t *target = (task_t *)process_get_task(pid);
+    task_t *memory;
+
+    if (!target) return -ESRCH;
+    memory = process_vm_task(target);
+    if (process_vm_range_overlaps_secret(memory, address, size))
+        return -EFAULT;
     if (operation == KERNEL_MM_PROCESS_VM_READ)
         return process_read_user_memory(pid, address, buffer, size) < 0 ?
             -EFAULT : 0;
@@ -10807,6 +10844,7 @@ int arch_vfs_fallocate_descriptor(int32_t descriptor, uint32_t mode,
     if (e->kind == FD_MEMFD) {
         edge_memfd_t *mf = memfd_get(e->pipe_id);
         if (!mf) return -EDGE_LINUX_EBADF;
+        if (mf->secret) return -EDGE_LINUX_EOPNOTSUPP;
         rc = memfd_fallocate_storage(mf, mode, offset, length);
         return rc;
     }

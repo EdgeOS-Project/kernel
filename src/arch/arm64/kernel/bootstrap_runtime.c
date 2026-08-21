@@ -831,10 +831,11 @@ typedef struct {
     uint8_t epoll_index;
     uint8_t timer_index;
     uint8_t anonymous_inode;
+    uint8_t secret_memory;
     uint8_t named_fifo;
     uint8_t linkable_zero_link_inode;
     uint8_t namespace_kind;
-    uint8_t pad[3];
+    uint8_t pad[2];
     uint32_t namespace_id;
     uint32_t fd_flags;
     uint32_t status_flags;
@@ -1657,7 +1658,8 @@ static uint32_t g_mapping_provenance_cursor;
 typedef struct {
     uint8_t used;
     uint8_t protection;
-    uint8_t padding[2];
+    uint8_t secret;
+    uint8_t padding;
     uint32_t update_generation;
     uint64_t ttbr0;
     uint64_t start;
@@ -7892,6 +7894,32 @@ kernel_task_scratch_t *arch_task_scratch_current(void) {
     return task ? task->scratch : 0;
 }
 
+static int tmpfs_secret_mapping_overlaps(
+        uint64_t ttbr0, uint64_t address, uint64_t size) {
+    uint64_t end;
+    uint64_t irq_flags;
+    int overlaps = 0;
+
+    if (!size) return 0;
+    if (size > UINT64_MAX - address) return 1;
+    end = address + size;
+    irq_flags = spin_lock_irqsave(&g_tmpfs_mapping_lock);
+    for (uint32_t index = 0;
+         index < g_tmpfs_mapping_high_water; ++index) {
+        const kernel_tmpfs_mapping_t *mapping =
+            &g_tmpfs_mappings[index];
+        if (!mapping->used || !mapping->secret ||
+            mapping->ttbr0 != ttbr0)
+            continue;
+        if (address < mapping->end && end > mapping->start) {
+            overlaps = 1;
+            break;
+        }
+    }
+    spin_unlock_irqrestore(&g_tmpfs_mapping_lock, irq_flags);
+    return overlaps;
+}
+
 int arch_mm_process_vm_copy(
         int32_t pid, uint64_t address, void *buffer, uint64_t size,
         kernel_mm_process_vm_operation_t operation) {
@@ -7899,6 +7927,8 @@ int arch_mm_process_vm_copy(
     kernel_task_t *target;
     if (slot < 0) return -LINUX_ESRCH;
     target = &g_tasks[slot];
+    if (tmpfs_secret_mapping_overlaps(target->ttbr0, address, size))
+        return -LINUX_EFAULT;
     if (operation == KERNEL_MM_PROCESS_VM_READ)
         return arch_copy_from_user(
             target->ttbr0, buffer, address, size) < 0 ?
@@ -8503,6 +8533,39 @@ int64_t arch_memfd_create_descriptor(const char *name, uint32_t flags) {
     return descriptor;
 }
 
+int64_t arch_memfd_secret_descriptor(uint32_t descriptor_flags) {
+    kernel_task_t *task = current_task();
+    vfs_inode_t inode;
+    vfs_superblock_t *superblock;
+    static const char display_name[] = "/secretmem (deleted)";
+    int descriptor;
+
+    if (!task) return -LINUX_EINVAL;
+    if (tmpfs_create_anonymous(
+            0600u, 0u, &inode, &superblock) < 0)
+        return -LINUX_ENOSPC;
+    descriptor = fd_allocate_file_reserved(
+        &inode, superblock, display_name, LINUX_O_RDWR,
+        (descriptor_flags & KERNEL_MEMFD_CLOEXEC) ?
+            LINUX_FD_CLOEXEC : 0u);
+    if (descriptor < 0) {
+        tmpfs_release_anonymous(superblock, &inode);
+        return descriptor;
+    }
+    task->fds[descriptor].anonymous_inode = 1;
+    task->fds[descriptor].secret_memory = 1;
+    {
+        int result = fd_publish_thread_group(
+            task, (uint32_t)descriptor);
+        if (result < 0) {
+            fd_cancel_constructed_descriptor(
+                task, (uint32_t)descriptor);
+            return result;
+        }
+    }
+    return descriptor;
+}
+
 static uint32_t fd_effective_seals(const bootstrap_fd_t *fd) {
     uint32_t seals;
 
@@ -9069,6 +9132,7 @@ int arch_vfs_sync_descriptor(int32_t descriptor,
             return -EDGE_LINUX_EIO;
         return 0;
     }
+    if (file->secret_memory) return -EDGE_LINUX_EINVAL;
     if (file->kind != KERNEL_FD_FILE)
         return operation == KERNEL_VFS_SYNC_RANGE ?
             -EDGE_LINUX_ESPIPE : -EDGE_LINUX_EINVAL;
@@ -9113,6 +9177,9 @@ int arch_vfs_describe_descriptor(int32_t descriptor,
         description->maximum_size = UINT32_MAX;
         if (file->anonymous_inode) {
             description->kind = KERNEL_VFS_DESCRIPTOR_MEMORY;
+            if (file->secret_memory)
+                description->attributes |=
+                    KERNEL_VFS_DESCRIPTOR_SECRET_MEMORY;
             return 0;
         }
         description->superblock = file->sb;
@@ -9232,6 +9299,8 @@ edge_linux_seek_result_t arch_vfs_seek_descriptor(
     file = &task->fds[descriptor];
     if ((file->status_flags & LINUX_O_PATH) != 0)
         return EDGE_LINUX_SEEK_PATH_DESCRIPTOR;
+    if (file->secret_memory)
+        return EDGE_LINUX_SEEK_ILLEGAL;
 
     bytes_zero(&state, sizeof(state));
     if (file->kind == KERNEL_FD_FILE) {
@@ -10643,6 +10712,8 @@ int arch_vfs_truncate_descriptor(int32_t descriptor, uint32_t length) {
     file = &task->fds[descriptor];
     if (file->kind != KERNEL_FD_FILE || !file->sb)
         return -EDGE_LINUX_EINVAL;
+    if (file->secret_memory && file->inode.size)
+        return -EDGE_LINUX_EINVAL;
     result = kernel_vfs_truncate_inode_transaction(
         file->sb, &file->inode, length);
     if (result < 0) return result;
@@ -10694,6 +10765,7 @@ int arch_vfs_fallocate_descriptor(int32_t descriptor, uint32_t mode,
     file = &task->fds[descriptor];
     if (file->kind != KERNEL_FD_FILE || !file->sb)
         return -EDGE_LINUX_EINVAL;
+    if (file->secret_memory) return -EDGE_LINUX_EOPNOTSUPP;
     result = kernel_vfs_fallocate_inode_transaction(
         file->sb, &file->inode, mode, offset, length);
     if (result < 0) return result;
@@ -15198,6 +15270,7 @@ static int64_t fd_splice_read_kernel(kernel_task_t *task,
         uint64_t position = explicit_offset ? *offset :
                             fd_description_offset(fd);
         int received = EDGE_MEMDEV_NOT_HANDLED;
+        if (fd->secret_memory) return -LINUX_EINVAL;
         if ((fd->status_flags & 3u) == 1u) return -LINUX_EBADF;
         if (!fd->sb || !fd->sb->ops || !fd->sb->ops->read)
             return -LINUX_EINVAL;
@@ -15316,6 +15389,7 @@ static int64_t fd_splice_write_kernel(kernel_task_t *task,
         uint64_t position = explicit_offset ? *offset :
                             fd_description_offset(fd);
         int written = EDGE_MEMDEV_NOT_HANDLED;
+        if (fd->secret_memory) return -LINUX_EINVAL;
         if ((fd->status_flags & 3u) == 0u) return -LINUX_EBADF;
         if (fd_effective_seals(fd) &
             (KERNEL_VFS_SEAL_WRITE |
@@ -23186,6 +23260,7 @@ static int64_t fd_write_user_internal(
         if (length > 0x7fffffffULL) return -LINUX_EINVAL;
         if (!length) return 0;
     }
+    if (fd->secret_memory) return -LINUX_EINVAL;
     if (fd->kind == KERNEL_FD_NULL) return (int64_t)length;
     if (fd->kind == KERNEL_FD_TUN) {
         if (length > UINT32_MAX) return -LINUX_EINVAL;
@@ -23651,6 +23726,7 @@ static int64_t fd_read_user_internal(
             return -LINUX_EBADF;
         fd = &task->fds[fd_number];
     }
+    if (fd->secret_memory) return -LINUX_EINVAL;
     if (fd->kind == KERNEL_FD_NULL) return 0;
     if (fd->kind == KERNEL_FD_TUN) {
         const bootstrap_fd_t *operation_fd = retained_fd;
@@ -24404,6 +24480,7 @@ static int64_t fd_positioned_user_retained(
         return -LINUX_EINVAL;
     if (fd->kind != KERNEL_FD_FILE)
         return -LINUX_ESPIPE;
+    if (fd->secret_memory) return -LINUX_ESPIPE;
 
     if ((fd->inode.mode & 0xf000u) == VFS_INODE_BLK) {
         block_device_t *device = 0;
@@ -26312,6 +26389,7 @@ static int64_t arm64_fd_fcntl_fallback(void *context, int32_t descriptor,
     fd = &task->fds[descriptor];
     if (command == 1034u) { /* F_GET_SEALS */
         uint32_t seals;
+        if (fd->secret_memory) return -LINUX_EINVAL;
         if (fd->kind != KERNEL_FD_FILE || !fd->sb ||
             tmpfs_memfd_get_seals(fd->sb, &fd->inode, &seals) < 0)
             return -LINUX_EINVAL;
@@ -26320,6 +26398,7 @@ static int64_t arm64_fd_fcntl_fallback(void *context, int32_t descriptor,
     if (command == 1033u) { /* F_ADD_SEALS */
         uint32_t add = (uint32_t)argument;
         uint32_t current;
+        if (fd->secret_memory) return -LINUX_EINVAL;
         if (fd->kind != KERNEL_FD_FILE || !fd->sb ||
             tmpfs_memfd_get_seals(fd->sb, &fd->inode, &current) < 0 ||
             (add & ~(KERNEL_VFS_SEAL_SEAL |
@@ -27002,7 +27081,7 @@ static int tmpfs_mapping_has_writable_shared(
 
 static int tmpfs_mapping_register(uint64_t ttbr0, uint64_t start,
                                   uint64_t length, uint64_t file_offset,
-                                  uint32_t protection,
+                                  uint32_t protection, int secret,
                                   vfs_superblock_t *sb,
                                   const vfs_inode_t *inode) {
     uint64_t irq_flags;
@@ -27021,6 +27100,7 @@ static int tmpfs_mapping_register(uint64_t ttbr0, uint64_t start,
     bytes_zero(&g_tmpfs_mappings[slot], sizeof(g_tmpfs_mappings[slot]));
     g_tmpfs_mappings[slot].used = 1;
     g_tmpfs_mappings[slot].protection = (uint8_t)protection;
+    g_tmpfs_mappings[slot].secret = secret ? 1u : 0u;
     g_tmpfs_mappings[slot].ttbr0 = ttbr0;
     g_tmpfs_mappings[slot].start = start;
     g_tmpfs_mappings[slot].end = end;
@@ -31295,6 +31375,7 @@ int64_t arch_mm_remap_range(uint64_t old_address, uint64_t old_length,
             if (tmpfs_mapping_register(
                     task->ttbr0, old_address + old_length, extension,
                     extension_offset, tmpfs_backing.protection,
+                    tmpfs_backing.secret,
                     tmpfs_backing.sb,
                     &tmpfs_backing.inode) < 0) {
                 (void)arch_vm_unmap_user_range(
@@ -31368,6 +31449,7 @@ int64_t arch_mm_remap_range(uint64_t old_address, uint64_t old_length,
         if (tmpfs_mapping_register(
                 task->ttbr0, destination, new_length,
                 tmpfs_backing.file_offset, tmpfs_backing.protection,
+                tmpfs_backing.secret,
                 tmpfs_backing.sb,
                 &tmpfs_backing.inode) < 0) {
             (void)arch_vm_unmap_user_range(
@@ -32625,7 +32707,8 @@ int64_t arch_mm_map(const kernel_mm_map_request_t *request) {
                 task->ttbr0, address, length, a2, fd->sb, &fd->inode, a5);
             if (map_result == 0 && tmpfs_mapping_register(
                     task->ttbr0, address, length, a5,
-                    (uint32_t)a2, fd->sb, &fd->inode) < 0) {
+                    (uint32_t)a2, fd->secret_memory,
+                    fd->sb, &fd->inode) < 0) {
                 (void)arch_vm_unmap_user_range(
                     task->ttbr0, address, length);
                 map_result = -LINUX_ENOMEM;

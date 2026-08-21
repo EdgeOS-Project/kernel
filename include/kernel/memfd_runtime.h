@@ -16,6 +16,8 @@
 #define KERNEL_MEMFD_HUGE_MASK      0xfc000000u
 
 int64_t kernel_memfd_create_descriptor(const char *name, uint32_t flags);
+int64_t kernel_memfd_secret_descriptor(uint32_t descriptor_flags);
 int64_t arch_memfd_create_descriptor(const char *name, uint32_t flags);
+int64_t arch_memfd_secret_descriptor(uint32_t descriptor_flags);
 
 #endif

@@ -7299,6 +7299,7 @@ static uint64_t do_sys_fcntl(uint64_t fd_u, uint64_t cmd_u, uint64_t arg_u) {
             if (e->kind != FD_MEMFD) return (uint64_t)-EINVAL;
             mf = memfd_get(e->pipe_id);
             if (!mf) return (uint64_t)-EBADF;
+            if (mf->secret) return (uint64_t)-EINVAL;
             return (uint64_t)mf->seals;
         }
         case LINUX_F_ADD_SEALS:

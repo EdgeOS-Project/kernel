@@ -167,6 +167,13 @@ config USERFAULTFD
       Enable Linux userfaultfd missing-page registration, page-fault events,
       polling, and userspace COPY, ZEROPAGE, and WAKE resolution.
 
+config SECRETMEM
+    bool "Linux secret-memory file descriptors"
+    default y
+    help
+      Enable Linux memfd_secret descriptors, shared locked mappings,
+      non-pageable backing, and exclusion from cross-process memory access.
+
 config PERF_EVENTS
     bool "Linux performance events"
     default y

@@ -33,6 +33,12 @@ int64_t kernel_memfd_create_descriptor(const char *name, uint32_t flags) {
     return arch_memfd_create_descriptor(name, flags);
 }
 
+int64_t kernel_memfd_secret_descriptor(uint32_t descriptor_flags) {
+    if (descriptor_flags & ~KERNEL_MEMFD_CLOEXEC)
+        return -EDGE_LINUX_EINVAL;
+    return arch_memfd_secret_descriptor(descriptor_flags);
+}
+
 int kernel_namespace_descriptor_get(
     int32_t descriptor, kernel_namespace_descriptor_t *information) {
     if (!information) return -EDGE_LINUX_EINVAL;

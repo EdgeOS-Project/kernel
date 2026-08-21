@@ -126,7 +126,10 @@ typedef struct kernel_vfs_descriptor {
     kernel_pipe_runtime_t *pipe;
     uint8_t *scratch;
     uint32_t scratch_capacity;
+    uint32_t attributes;
 } kernel_vfs_descriptor_t;
+
+#define KERNEL_VFS_DESCRIPTOR_SECRET_MEMORY 0x00000001u
 
 typedef struct kernel_vfs_cache_stats {
     uint64_t cached_pages;

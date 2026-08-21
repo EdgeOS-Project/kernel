@@ -4160,19 +4160,26 @@
     {
       "id": "memfd_secret",
       "semantic_id": "memfd_secret",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_memfd_secret",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/memfd_secret_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 447,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_memfd_secret",
+          "evidence_status": "oracle-verified"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 447,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_memfd_secret",
+          "evidence_status": "oracle-verified"
+        }
       }
     },
     {

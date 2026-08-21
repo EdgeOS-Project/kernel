@@ -232,6 +232,9 @@ case EDGE_LINUX_SYS_membarrier:
 case EDGE_LINUX_SYS_memfd_create:
     context->result = edge_linux_sys_memfd_create(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_memfd_secret:
+    context->result = edge_linux_sys_memfd_secret(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_mincore:
     context->result = edge_linux_sys_mincore(context);
     return EDGE_LINUX_SYSCALL_HANDLED;

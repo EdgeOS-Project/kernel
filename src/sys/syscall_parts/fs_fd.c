@@ -5570,6 +5570,7 @@ static uint64_t do_sys_fd_read_entry(int fd, edge_fd_t *e,
         edge_memfd_t *mf = memfd_get(e->pipe_id);
         uint64_t done = 0;
         if (!mf) return (uint64_t)-EBADF;
+        if (mf->secret) return (uint64_t)-EINVAL;
         while (done < len && fd_description_offset(e) < mf->size) {
             uint64_t position = fd_description_offset(e);
             uint64_t n = len - done;
@@ -6178,6 +6179,7 @@ static uint64_t do_sys_fd_write_entry(int fd, edge_fd_t *e,
         edge_memfd_t *mf = memfd_get(e->pipe_id);
         uint64_t done = 0;
         if (!mf) return (uint64_t)-EBADF;
+        if (mf->secret) return (uint64_t)-EINVAL;
         while (done < len) {
             uint64_t position = fd_description_offset(e);
             uint64_t n = len - done;
@@ -6455,7 +6457,8 @@ static int fd_entry_positional_io_unsupported(
            entry->kind == FD_TIMERFD ||
            entry->kind == FD_SIGNALFD ||
            entry->kind == FD_EPOLL ||
-           entry->kind == FD_PIDFD;
+           entry->kind == FD_PIDFD ||
+           memfd_entry_is_secret(entry);
 }
 
 static uint64_t do_sys_pread64_entry(
@@ -6737,7 +6740,10 @@ static int linux_fd_fill_kstat(edge_fd_t *e, int fd,
         st->st_ino = 0xE0000000u + (uint64_t)(uint32_t)(e->kind << 16) + (uint64_t)(uint32_t)(e->pipe_id & 0xFFFF);
     } else if (e->kind == FD_MEMFD) {
         edge_memfd_t *mf = memfd_get(e->pipe_id);
-        fill_kstat_mode_size((uint16_t)(LINUX_S_IFREG | 0777), mf ? mf->size : 0, st);
+        fill_kstat_mode_size(
+            (uint16_t)(LINUX_S_IFREG |
+                (mf && mf->secret ? 0600 : 0777)),
+            mf ? mf->size : 0, st);
         st->st_dev = 1;
         st->st_ino = 0xE1000000u + (uint64_t)(uint32_t)(e->pipe_id & 0xFFFF);
     } else {

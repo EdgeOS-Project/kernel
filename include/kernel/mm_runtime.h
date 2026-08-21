@@ -36,6 +36,7 @@
 #define KERNEL_MM_MAP_LOCKED                 0x00002000u
 #define KERNEL_MM_MAP_NONBLOCK               0x00010000u
 #define KERNEL_MM_MAP_FIXED_NOREPLACE        0x00100000u
+#define KERNEL_MM_MAP_SECRET                 0x80000000u
 #define KERNEL_MM_VMA_INITIAL_AREAS           128u
 #define KERNEL_MM_VMA_MAX                     65530u
 #define KERNEL_MM_VMA_FORK_WIPE               0x01u

@@ -10,12 +10,14 @@
 
 #include "kernel/linux_errno.h"
 #include "kernel/mm_runtime.h"
+#include "kernel/vfs_runtime.h"
 
 static int g_failures;
 static uint64_t g_last_address;
 static uint64_t g_last_length;
 static uint64_t g_last_protection;
 static uint32_t g_last_flags;
+static uint32_t g_last_map_flags;
 static uint32_t g_last_page_count;
 static int32_t g_last_pid;
 static void *g_last_buffer;
@@ -26,6 +28,8 @@ static int g_sealed_discard_allowed = 1;
 static int g_range_mapped_result;
 static uint64_t g_current_address_space;
 static int g_process_mrelease_result;
+static uint32_t g_descriptor_attributes;
+static int g_lock_result = 19;
 static kernel_mm_program_break_state_t g_break_state = {
     .base = 0x1000u,
     .current = 0x1800u,
@@ -264,7 +268,16 @@ int arch_mm_lock_range(uint64_t address, uint64_t length, uint32_t flags) {
     g_last_address = address;
     g_last_length = length;
     g_last_flags = flags;
-    return 19;
+    return g_lock_result;
+}
+
+int kernel_vfs_describe_descriptor(
+        int32_t descriptor, kernel_vfs_descriptor_t *description) {
+    if (descriptor < 0 || !description) return -EDGE_LINUX_EBADF;
+    memset(description, 0, sizeof(*description));
+    description->kind = KERNEL_VFS_DESCRIPTOR_MEMORY;
+    description->attributes = g_descriptor_attributes;
+    return 0;
 }
 
 int arch_mm_unlock_range(uint64_t address, uint64_t length) {
@@ -318,6 +331,7 @@ int64_t arch_mm_map(const kernel_mm_map_request_t *request) {
     g_last_address = request->address;
     g_last_length = request->length;
     g_last_flags = (uint32_t)request->flags;
+    g_last_map_flags = (uint32_t)request->flags;
     return 23;
 }
 
@@ -330,6 +344,23 @@ int64_t arch_mm_remap_range(uint64_t old_address, uint64_t old_length,
     g_last_flags = flags;
     g_last_protection = new_address;
     return 24;
+}
+
+int arch_mm_file_mapping_info(
+        uint64_t address, kernel_mm_file_mapping_info_t *information) {
+    (void)address;
+    (void)information;
+    return -1;
+}
+
+int64_t arch_mm_remap_file_pages(
+        uint64_t address, uint64_t length, uint64_t file_offset,
+        uint32_t flags) {
+    (void)address;
+    (void)length;
+    (void)file_offset;
+    (void)flags;
+    return -1;
 }
 
 int arch_mm_program_break_snapshot(
@@ -470,7 +501,7 @@ static void test_map_and_remap_policy(void) {
     expect_true("anonymous map backend",
                 kernel_mm_map(&map) == 23 &&
                 g_last_length == 1u &&
-                g_last_flags ==
+                g_last_map_flags ==
                     (KERNEL_MM_MAP_PRIVATE | KERNEL_MM_MAP_ANONYMOUS));
     map.flags = KERNEL_MM_MAP_PRIVATE;
     expect_true("file map invalid descriptor",
@@ -479,6 +510,19 @@ static void test_map_and_remap_policy(void) {
     map.offset = 1u;
     expect_true("file map unaligned offset",
                 kernel_mm_map(&map) == -EDGE_LINUX_EINVAL);
+    map.offset = 0u;
+    g_descriptor_attributes = KERNEL_VFS_DESCRIPTOR_SECRET_MEMORY;
+    expect_true("secret memory rejects private mapping",
+                kernel_mm_map(&map) == -EDGE_LINUX_EINVAL);
+    map.flags = KERNEL_MM_MAP_SHARED;
+    g_lock_result = 0;
+    expect_true("secret memory is shared and locked",
+                kernel_mm_map(&map) == 23 &&
+                g_last_map_flags ==
+                    (KERNEL_MM_MAP_SHARED | KERNEL_MM_MAP_LOCKED |
+                     KERNEL_MM_MAP_SECRET));
+    g_lock_result = 19;
+    g_descriptor_attributes = 0u;
 
     expect_true("remap invalid high flags",
                 kernel_mm_remap_range(

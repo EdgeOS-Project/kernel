@@ -18,6 +18,7 @@
 static int g_failures;
 static int g_pipe_calls;
 static int g_memfd_calls;
+static int g_memfd_secret_calls;
 static int g_namespace_calls;
 static int g_socket_create_calls;
 static int g_pair_prepare_calls;
@@ -46,6 +47,11 @@ int arch_fd_pipe_prepare(
 int64_t arch_memfd_create_descriptor(const char *name, uint32_t flags) {
     ++g_memfd_calls;
     return name[0] == 'm' && flags == 7u ? 18 : -1;
+}
+
+int64_t arch_memfd_secret_descriptor(uint32_t descriptor_flags) {
+    ++g_memfd_secret_calls;
+    return descriptor_flags == KERNEL_MEMFD_CLOEXEC ? 23 : -1;
 }
 
 int arch_namespace_descriptor_get(
@@ -134,6 +140,14 @@ static void test_descriptor_factories(void) {
     expect_true("memfd dispatch",
                 kernel_memfd_create_descriptor("memory", 7) == 18 &&
                 g_memfd_calls == 1);
+    expect_true("secret memfd invalid descriptor flags",
+                kernel_memfd_secret_descriptor(2u) ==
+                    -EDGE_LINUX_EINVAL &&
+                g_memfd_secret_calls == 0);
+    expect_true("secret memfd dispatch",
+                kernel_memfd_secret_descriptor(KERNEL_MEMFD_CLOEXEC) ==
+                    23 &&
+                g_memfd_secret_calls == 1);
 
     expect_true("namespace null output",
                 kernel_namespace_descriptor_get(9, 0) ==

@@ -5583,12 +5583,21 @@ static edge_memfd_t *memfd_get(int id) {
     return &g_memfds[id];
 }
 
-static int memfd_alloc_obj(const char *name, uint32_t flags) {
+static int memfd_entry_is_secret(const edge_fd_t *entry) {
+    edge_memfd_t *memory;
+
+    if (!entry || entry->kind != FD_MEMFD) return 0;
+    memory = memfd_get(entry->pipe_id);
+    return memory && memory->secret;
+}
+
+static int memfd_alloc_obj(const char *name, uint32_t flags, int secret) {
     for (int i = 1; i < EDGE_MEMFD_MAX; ++i) {
         edge_memfd_t *mf = &g_memfds[i];
         if (mf->used) continue;
         memset(mf, 0, sizeof(*mf));
         mf->used = 1;
+        mf->secret = secret ? 1u : 0u;
         mf->descriptor_refs = 1;
         mf->id = i;
         mf->seals = (flags & KERNEL_MEMFD_ALLOW_SEALING) ?
@@ -5853,6 +5862,7 @@ static uint64_t memfd_fcntl_add_seals(edge_fd_t *e, uint64_t seals_u) {
     if (seals & ~LINUX_F_SEAL_VALID) return (uint64_t)-EINVAL;
     mf = memfd_get(e->pipe_id);
     if (!mf) return (uint64_t)-EBADF;
+    if (mf->secret) return (uint64_t)-EINVAL;
     if (mf->seals & LINUX_F_SEAL_SEAL) return (uint64_t)-EPERM;
     if ((seals & LINUX_F_SEAL_WRITE) && memfd_has_writable_shared_mapping(mf->id)) return (uint64_t)-EBUSY;
     mf->seals |= seals;
@@ -5867,7 +5877,7 @@ int64_t arch_memfd_create_descriptor(const char *name, uint32_t flags) {
 
     p = fd_proc_with_stdio();
     if (!p) return -ENOMEM;
-    id = memfd_alloc_obj(name, flags);
+    id = memfd_alloc_obj(name, flags, 0);
     if (id < 0) return -ENFILE;
     fd = fd_alloc(p, 0);
     if (fd < 0) {
@@ -5896,6 +5906,48 @@ int64_t arch_memfd_create_descriptor(const char *name, uint32_t flags) {
         return -EBADF;
     }
     return fd;
+}
+
+int64_t arch_memfd_secret_descriptor(uint32_t descriptor_flags) {
+    edge_fd_proc_t *process;
+    edge_fd_t *entry;
+    int object_id;
+    int descriptor;
+
+    process = fd_proc_with_stdio();
+    if (!process) return -ENOMEM;
+    object_id = memfd_alloc_obj("secretmem", 0u, 1);
+    if (object_id < 0) return -ENFILE;
+    descriptor = fd_alloc(process, 0);
+    if (descriptor < 0) {
+        memfd_drop_ref(object_id);
+        return -EMFILE;
+    }
+    entry = &process->fds[descriptor];
+    entry->file_ref = file_ref_alloc(LINUX_O_RDWR);
+    if (!entry->file_ref) {
+        fd_abort_reserved(process, descriptor);
+        memfd_drop_ref(object_id);
+        return -ENFILE;
+    }
+    entry->kind = FD_MEMFD;
+    entry->flags = LINUX_O_RDWR;
+    entry->fd_flags =
+        (descriptor_flags & KERNEL_MEMFD_CLOEXEC) ?
+            LINUX_FD_CLOEXEC : 0;
+    entry->pipe_id = object_id;
+    entry->inode.mode = (uint16_t)(VFS_INODE_FILE | 0600);
+    entry->inode.size = 0;
+    entry->inode.ino = 0xE1000000u + (uint32_t)object_id;
+    memfd_build_path(
+        entry->path, sizeof(entry->path), object_id, "secretmem");
+    if (fd_publish(process, descriptor) < 0) {
+        (void)file_ref_put(entry->file_ref);
+        memfd_drop_ref(object_id);
+        fd_abort_reserved(process, descriptor);
+        return -EBADF;
+    }
+    return descriptor;
 }
 
 static void fd_drop_backing_object(edge_fd_t *e) {

@@ -3957,6 +3957,25 @@ static int64_t edge_linux_sys_memfd_create(
     return kernel_memfd_create_descriptor(name, flags);
 }
 
+#define EDGE_LINUX_MEMFD_SECRET_CLOEXEC 0x00080000u
+
+static int64_t edge_linux_sys_memfd_secret(
+    edge_linux_syscall_context_t *context) {
+#ifndef CONFIG_SECRETMEM
+    (void)context;
+    return -EDGE_LINUX_ENOSYS;
+#else
+    uint32_t flags = (uint32_t)context->arguments[0];
+    uint32_t descriptor_flags = 0;
+
+    if (flags & ~EDGE_LINUX_MEMFD_SECRET_CLOEXEC)
+        return -EDGE_LINUX_EINVAL;
+    if (flags & EDGE_LINUX_MEMFD_SECRET_CLOEXEC)
+        descriptor_flags |= KERNEL_MEMFD_CLOEXEC;
+    return kernel_memfd_secret_descriptor(descriptor_flags);
+#endif
+}
+
 #define EDGE_LINUX_BPF_MAP_CREATE         0u
 #define EDGE_LINUX_BPF_MAP_LOOKUP_ELEM    1u
 #define EDGE_LINUX_BPF_MAP_UPDATE_ELEM    2u
