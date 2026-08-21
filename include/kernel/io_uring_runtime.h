@@ -14,8 +14,8 @@
 #define KERNEL_IO_URING_MAX_CQ_ENTRIES 512u
 #define KERNEL_IO_URING_PAGE_SIZE 4096u
 #define KERNEL_IO_URING_MAX_SQ_RING_PAGES 1u
-#define KERNEL_IO_URING_MAX_CQ_RING_PAGES 3u
-#define KERNEL_IO_URING_MAX_SQE_PAGES 4u
+#define KERNEL_IO_URING_MAX_CQ_RING_PAGES 5u
+#define KERNEL_IO_URING_MAX_SQE_PAGES 8u
 #define KERNEL_IO_URING_MAX_PENDING 128u
 #define KERNEL_IO_URING_MAX_FIXED_FILES 256u
 #define KERNEL_IO_URING_MAX_FIXED_BUFFERS 256u
@@ -92,6 +92,7 @@ int kernel_io_uring_task_ring_lookup(int32_t task_id, uint32_t index,
 void kernel_io_uring_task_release(int32_t task_id);
 int kernel_io_uring_enable(int32_t ring_id);
 int kernel_io_uring_disabled(int32_t ring_id);
+int kernel_io_uring_setup_flags(int32_t ring_id, uint32_t *setup_flags);
 int kernel_io_uring_eventfd_register(int32_t ring_id, int32_t event_id,
                                      int asynchronous_only);
 int kernel_io_uring_eventfd_unregister(int32_t ring_id);
@@ -130,6 +131,8 @@ int kernel_io_uring_buffers_update(
 int kernel_io_uring_fixed_buffer_validate(
     int32_t ring_id, uint32_t index,
     uint64_t address, uint64_t length);
+int kernel_io_uring_fixed_buffer_registered(
+    int32_t ring_id, uint32_t index);
 int kernel_io_uring_provided_buffers_add(
     int32_t ring_id, uint16_t group_id, uint16_t first_buffer_id,
     uint64_t address, uint32_t length, uint32_t count);
@@ -181,6 +184,8 @@ int kernel_io_uring_fixed_file_transfer(
 int kernel_io_uring_fixed_file_materialize(int32_t ring_id,
                                            uint32_t index,
                                            int32_t *descriptor);
+int kernel_io_uring_fixed_file_registered(
+    int32_t ring_id, uint32_t index);
 int kernel_io_uring_fixed_file_install(int32_t ring_id,
                                        uint32_t index,
                                        uint32_t descriptor_flags,
@@ -216,6 +221,9 @@ int kernel_io_uring_take_submission(
     int32_t ring_id, struct edge_linux_io_uring_sqe *submission);
 int kernel_io_uring_completion_add(int32_t ring_id, uint64_t user_data,
                                    int32_t result, uint32_t flags);
+int kernel_io_uring_completion_add32(
+    int32_t ring_id, uint64_t user_data, int32_t result,
+    uint32_t flags, uint64_t extra1, uint64_t extra2);
 int kernel_io_uring_completion_flush(int32_t ring_id);
 int kernel_io_uring_completion_add_async(int32_t ring_id,
                                          uint64_t user_data,

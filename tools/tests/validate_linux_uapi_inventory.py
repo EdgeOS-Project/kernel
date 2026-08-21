@@ -108,6 +108,27 @@ def validate_symbol_domain(domain: object, name: str) -> None:
         identities.add(identity)
 
 
+def validate_io_uring(domain: object) -> None:
+    validate_symbol_domain(domain, "io_uring")
+    require(isinstance(domain, dict), "io_uring: domain must be an object")
+    opcodes = domain.get("opcodes")
+    require(isinstance(opcodes, list) and opcodes,
+            "io_uring: missing resolved opcode sequence")
+    names: set[str] = set()
+    for expected, opcode in enumerate(opcodes):
+        require(isinstance(opcode, dict), "io_uring: invalid opcode")
+        name = opcode.get("name")
+        value = opcode.get("value")
+        require(isinstance(name, str) and name.startswith("IORING_OP_"),
+                "io_uring: invalid opcode name")
+        require(name not in names, f"io_uring: duplicate opcode {name}")
+        require(value == expected,
+                f"io_uring: non-contiguous opcode {name}={value}")
+        names.add(name)
+    require(opcodes[-1] == {"name": "IORING_OP_LAST", "value": 65},
+            "io_uring: frozen opcode extent changed")
+
+
 def validate_assessments(assessments: object) -> None:
     require(isinstance(assessments, list), "assessments must be a list")
     domains: set[str] = set()
@@ -160,7 +181,7 @@ def validate(document: object) -> None:
     validate_assessments(document.get("edgeos_assessments"))
     domains = document.get("domains")
     require(isinstance(domains, dict), "missing domains")
-    require({"syscalls", "ioctl", "socket_options", "netlink",
+    require({"syscalls", "ioctl", "socket_options", "io_uring", "netlink",
              "virtual_filesystems"}.issubset(domains), "missing required domain")
     validate_syscalls(domains["syscalls"])
     ioctl = domains["ioctl"]
@@ -168,6 +189,7 @@ def validate(document: object) -> None:
     for group, domain in ioctl.items():
         validate_symbol_domain(domain, f"ioctl/{group}")
     validate_symbol_domain(domains["socket_options"], "socket_options")
+    validate_io_uring(domains["io_uring"])
     validate_symbol_domain(domains["netlink"], "netlink")
     virtual_filesystems = domains["virtual_filesystems"]
     require(isinstance(virtual_filesystems, dict),

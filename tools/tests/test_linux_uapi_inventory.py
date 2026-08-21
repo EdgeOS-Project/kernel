@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +12,7 @@ from pathlib import Path
 from tools.uapi.linux_uapi_inventory import (
     EDGEOS_ASSESSMENTS,
     define_symbols,
+    enum_sequence,
     enum_symbols,
     generic_syscalls,
     logical_lines,
@@ -49,6 +52,23 @@ class LinuxUapiInventoryTests(unittest.TestCase):
         self.assertEqual(
             enum_symbols(path, ("RTM_",)),
             [{"name": "RTM_NEWTHING", "expression": "10"}],
+        )
+
+    def test_enum_sequence_resolves_automatic_values(self) -> None:
+        path = self.write(
+            "enum io_uring_op {\n"
+            "  IORING_OP_NOP,\n"
+            "  IORING_OP_READ = 4,\n"
+            "  IORING_OP_LAST,\n"
+            "};\n"
+        )
+        self.assertEqual(
+            enum_sequence(path, "io_uring_op", "IORING_OP_"),
+            [
+                {"name": "IORING_OP_NOP", "value": 0},
+                {"name": "IORING_OP_READ", "value": 4},
+                {"name": "IORING_OP_LAST", "value": 5},
+            ],
         )
 
     def test_x86_syscall_abi_filter(self) -> None:
@@ -93,6 +113,30 @@ class LinuxUapiInventoryTests(unittest.TestCase):
         )
         self.assertEqual(assessment["status"], "partial")
         self.assertIn("asynchronous worker execution", assessment["missing"])
+
+    def test_edgeos_io_uring_opcode_values_match_frozen_inventory(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        inventory = json.loads(
+            (root / "tools/uapi/linux_uapi_inventory.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        frozen = {
+            entry["name"]: entry["value"]
+            for entry in inventory["domains"]["io_uring"]["opcodes"]
+        }
+        source = (root / "src/kernel/linux_syscall.c").read_text(
+            encoding="utf-8"
+        )
+        definitions = re.findall(
+            r"^#define\s+EDGE_LINUX_(IORING_OP_[A-Z0-9_]+)\s+([0-9]+)u$",
+            source,
+            re.MULTILINE,
+        )
+        self.assertTrue(definitions)
+        for name, value in definitions:
+            self.assertIn(name, frozen)
+            self.assertEqual(int(value), frozen[name], name)
 
 
 if __name__ == "__main__":

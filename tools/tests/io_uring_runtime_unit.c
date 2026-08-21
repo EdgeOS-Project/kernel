@@ -299,6 +299,61 @@ int main(void) {
         test_page_release(0, &wait_region);
         kernel_io_uring_release(second_ring_id);
     }
+    {
+        struct edge_linux_io_uring_params extended_parameters = {
+            .flags = (1u << 10) | (1u << 11),
+        };
+        struct edge_linux_io_uring_sqe extended_submission = {0};
+        struct edge_linux_io_uring_cqe *extended_completion;
+        kernel_io_uring_page_t extended_sq_ring;
+        kernel_io_uring_page_t extended_cq_ring;
+        kernel_io_uring_page_t extended_sqes;
+        uint64_t *completion_extra;
+        uint32_t setup_flags = 0u;
+
+        assert(kernel_io_uring_create(
+                   8u, &extended_parameters, &second_ring_id) == 0);
+        assert(kernel_io_uring_setup_flags(
+                   second_ring_id, &setup_flags) == 0);
+        assert(setup_flags == extended_parameters.flags);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_SQ_RING,
+                   0u, &extended_sq_ring) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_CQ_RING,
+                   0u, &extended_cq_ring) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_SQES,
+                   0u, &extended_sqes) == 0);
+        mapped_sqe = (struct edge_linux_io_uring_sqe *)(void *)(
+            (uint8_t *)extended_sqes.address + 128u);
+        memset(mapped_sqe, 0, sizeof(*mapped_sqe));
+        mapped_sqe->opcode = 63u;
+        mapped_sqe->user_data = 0x535145313238u;
+        *page_u32(&extended_sq_ring, 64u) = 1u;
+        *page_u32(&extended_sq_ring, 4u) = 1u;
+        assert(kernel_io_uring_take_submission(
+                   second_ring_id, &extended_submission) == 0);
+        assert(extended_submission.opcode == 63u);
+        assert(extended_submission.user_data == 0x535145313238u);
+        assert(kernel_io_uring_completion_add32(
+                   second_ring_id, 0x4351453332u, -7, 3u,
+                   0x1111222233334444ull,
+                   0x5555666677778888ull) == 0);
+        extended_completion =
+            (struct edge_linux_io_uring_cqe *)(void *)(
+                (uint8_t *)extended_cq_ring.address + 64u);
+        completion_extra = (uint64_t *)(void *)(extended_completion + 1);
+        assert(extended_completion->user_data == 0x4351453332u);
+        assert(extended_completion->result == -7);
+        assert(extended_completion->flags == 3u);
+        assert(completion_extra[0] == 0x1111222233334444ull);
+        assert(completion_extra[1] == 0x5555666677778888ull);
+        test_page_release(0, &extended_sq_ring);
+        test_page_release(0, &extended_cq_ring);
+        test_page_release(0, &extended_sqes);
+        kernel_io_uring_release(second_ring_id);
+    }
     assert(kernel_io_uring_files_register(
                ring_id, fixed_files, 3u) == 0);
     assert(kernel_io_uring_file_alloc_range_get(

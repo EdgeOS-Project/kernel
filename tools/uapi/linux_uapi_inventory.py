@@ -26,7 +26,9 @@ EDGEOS_ASSESSMENTS = [
         },
         "implemented": [
             "setup and mapped submission/completion rings",
+            "128-byte SQE and 32-byte CQE ring layouts with Linux opcode numbering through NOP128",
             "NOP, READ, WRITE, READV, WRITEV and FSYNC operations",
+            "NOP result injection, descriptor and registered-buffer validation, task-work acceptance and CQE32 payloads",
             "probe and disabled-ring registration",
             "completion eventfd registration and notification",
             "single-shot and multishot poll completions with update operations",
@@ -79,12 +81,14 @@ EDGEOS_ASSESSMENTS = [
             "user-provided pinned wait regions and SQPOLL wait control",
             "pending asynchronous descriptor leases across close and reuse",
             "notification-pipe semantics",
+            "mixed SQE/CQE layouts and application-provided ring memory",
             "provided-buffer page pinning and owner-mm-independent lifetime across unmap and exit",
             "remaining supported VFS and socket operations",
             "ia32 and x32 compatibility layouts",
         ],
         "runtime_tests": [
             "tools/tests/io_uring_abi_probe.c",
+            "tools/tests/io_uring_extended_entries_abi_probe.c",
             "tools/tests/io_uring_fixed_files_abi_probe.c",
             "tools/tests/io_uring_provided_buffers_abi_probe.c",
             "tools/tests/io_uring_pbuf_ring_abi_probe.c",
@@ -98,7 +102,9 @@ EDGEOS_ASSESSMENTS = [
             "status": "partial",
             "reference": REFERENCE_COMMIT,
             "scope": (
-                "setup, mmap, NOP, eventfd, poll, timeout, cancellation, "
+                "setup, mmap, 128-byte SQE and 32-byte CQE layouts, NOP, "
+                "NOP128, extended NOP flags, frozen opcode numbering, "
+                "eventfd, poll, timeout, cancellation, "
                 "openat, openat2, close, statx, fallocate, send, recv, "
                 "sendmsg, recvmsg, shutdown, connect, accept, fadvise, "
                 "madvise, epoll_ctl, tee, renameat, unlinkat, mkdirat, "
@@ -289,6 +295,34 @@ def enum_symbols(path: Path, prefixes: tuple[str, ...]) -> list[dict[str, str]]:
     return sorted(symbols.values(), key=lambda item: item["name"])
 
 
+def enum_sequence(path: Path, enum_name: str,
+                  prefix: str) -> list[dict[str, object]]:
+    entries: list[dict[str, object]] = []
+    start = re.compile(rf"^\s*enum\s+{re.escape(enum_name)}\s*\{{")
+    token = re.compile(
+        rf"^\s*({re.escape(prefix)}[A-Z0-9_]+)"
+        r"\s*(?:=\s*([^,]+))?,?\s*(?:/\*.*)?$"
+    )
+    in_enum = False
+    value = -1
+    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not in_enum:
+            in_enum = start.match(raw) is not None
+            continue
+        if "}" in raw:
+            break
+        match = token.match(raw)
+        if not match:
+            continue
+        expression = match.group(2)
+        if expression is None:
+            value += 1
+        else:
+            value = int(expression.strip().rstrip("uUlL"), 0)
+        entries.append({"name": match.group(1), "value": value})
+    return entries
+
+
 def syscall_table(path: Path, accepted_abis: set[str]) -> list[dict[str, object]]:
     entries: list[dict[str, object]] = []
     for raw in path.read_text(encoding="utf-8").splitlines():
@@ -396,6 +430,12 @@ def build_inventory(tree: Path) -> dict[str, object]:
         name: symbol_domain(tree, headers, require_ioctl=True)
         for name, headers in IOCTL_HEADERS.items()
     }
+    io_uring_header = tree / "include/uapi/linux/io_uring.h"
+    io_uring_domain = symbol_domain(
+        tree, ("include/uapi/linux/io_uring.h",),
+        prefixes=("IORING_", "IOSQE_"), include_enums=True)
+    io_uring_domain["opcodes"] = enum_sequence(
+        io_uring_header, "io_uring_op", "IORING_OP_")
     return {
         "schema": 1,
         "reference": {
@@ -443,9 +483,7 @@ def build_inventory(tree: Path) -> dict[str, object]:
             "socket_options": symbol_domain(
                 tree, SOCKET_HEADERS, prefixes=SOCKET_PREFIXES,
                 include_enums=True),
-            "io_uring": symbol_domain(
-                tree, ("include/uapi/linux/io_uring.h",),
-                prefixes=("IORING_", "IOSQE_"), include_enums=True),
+            "io_uring": io_uring_domain,
             "netlink": symbol_domain(
                 tree, NETLINK_HEADERS, prefixes=NETLINK_PREFIXES,
                 include_enums=True),

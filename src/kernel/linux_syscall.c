@@ -8103,10 +8103,12 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_OP_FTRUNCATE 55u
 #define EDGE_LINUX_IORING_OP_BIND      56u
 #define EDGE_LINUX_IORING_OP_LISTEN    57u
-#define EDGE_LINUX_IORING_OP_PIPE      60u
-#define EDGE_LINUX_IORING_OP_READV_FIXED 61u
-#define EDGE_LINUX_IORING_OP_WRITEV_FIXED 62u
-#define EDGE_LINUX_IORING_OP_LAST      63u
+#define EDGE_LINUX_IORING_OP_READV_FIXED 60u
+#define EDGE_LINUX_IORING_OP_WRITEV_FIXED 61u
+#define EDGE_LINUX_IORING_OP_PIPE      62u
+#define EDGE_LINUX_IORING_OP_NOP128    63u
+#define EDGE_LINUX_IORING_OP_URING_CMD128 64u
+#define EDGE_LINUX_IORING_OP_LAST      65u
 
 #define EDGE_LINUX_IOSQE_FIXED_FILE       (1u << 0)
 #define EDGE_LINUX_IOSQE_IO_DRAIN         (1u << 1)
@@ -8124,6 +8126,23 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_CQE_F_BUFFER (1u << 0)
 #define EDGE_LINUX_IORING_CQE_F_BUF_MORE (1u << 4)
 #define EDGE_LINUX_IORING_CQE_BUFFER_SHIFT 16u
+
+#define EDGE_LINUX_IORING_SETUP_SQE128 (1u << 10)
+#define EDGE_LINUX_IORING_SETUP_CQE32  (1u << 11)
+
+#define EDGE_LINUX_IORING_NOP_INJECT_RESULT (1u << 0)
+#define EDGE_LINUX_IORING_NOP_FILE          (1u << 1)
+#define EDGE_LINUX_IORING_NOP_FIXED_FILE    (1u << 2)
+#define EDGE_LINUX_IORING_NOP_FIXED_BUFFER  (1u << 3)
+#define EDGE_LINUX_IORING_NOP_TASK_WORK     (1u << 4)
+#define EDGE_LINUX_IORING_NOP_CQE32         (1u << 5)
+#define EDGE_LINUX_IORING_NOP_SUPPORTED \
+    (EDGE_LINUX_IORING_NOP_INJECT_RESULT | \
+     EDGE_LINUX_IORING_NOP_FILE | \
+     EDGE_LINUX_IORING_NOP_FIXED_FILE | \
+     EDGE_LINUX_IORING_NOP_FIXED_BUFFER | \
+     EDGE_LINUX_IORING_NOP_TASK_WORK | \
+     EDGE_LINUX_IORING_NOP_CQE32)
 
 #define EDGE_LINUX_IORING_ENTER_GETEVENTS (1u << 0)
 #define EDGE_LINUX_IORING_ENTER_SQ_WAKEUP (1u << 1)
@@ -8912,12 +8931,44 @@ static int32_t edge_linux_io_uring_execute_descriptor(
         return -EDGE_LINUX_EINVAL;
     switch (submission->opcode) {
     case EDGE_LINUX_IORING_OP_NOP:
-        result = submission->operation_flags || submission->offset ||
-                 submission->address ||
-                 submission->length || submission->buffer_index ||
-                 submission->splice_descriptor ?
-                 -EDGE_LINUX_EINVAL : 0;
+    case EDGE_LINUX_IORING_OP_NOP128: {
+        uint32_t setup_flags;
+        uint32_t nop_flags = submission->operation_flags;
+
+        result = kernel_io_uring_setup_flags(ring_id, &setup_flags);
+        if (result < 0) break;
+        if (submission->opcode == EDGE_LINUX_IORING_OP_NOP128 &&
+            !(setup_flags & EDGE_LINUX_IORING_SETUP_SQE128)) {
+            result = -EDGE_LINUX_EINVAL;
+            break;
+        }
+        if (nop_flags & ~EDGE_LINUX_IORING_NOP_SUPPORTED) {
+            result = -EDGE_LINUX_EINVAL;
+            break;
+        }
+        if ((nop_flags & EDGE_LINUX_IORING_NOP_CQE32) &&
+            !(setup_flags & EDGE_LINUX_IORING_SETUP_CQE32)) {
+            result = -EDGE_LINUX_EINVAL;
+            break;
+        }
+        if (nop_flags & EDGE_LINUX_IORING_NOP_FILE) {
+            if (nop_flags & EDGE_LINUX_IORING_NOP_FIXED_FILE)
+                result = kernel_io_uring_fixed_file_registered(
+                    ring_id, (uint32_t)submission->descriptor);
+            else
+                result = kernel_fd_is_open(submission->descriptor) ?
+                    0 : -EDGE_LINUX_EBADF;
+            if (result < 0) break;
+        }
+        if (nop_flags & EDGE_LINUX_IORING_NOP_FIXED_BUFFER) {
+            result = kernel_io_uring_fixed_buffer_registered(
+                ring_id, submission->buffer_index);
+            if (result < 0) break;
+        }
+        result = (nop_flags & EDGE_LINUX_IORING_NOP_INJECT_RESULT) ?
+            (int32_t)submission->length : 0;
         break;
+    }
     case EDGE_LINUX_IORING_OP_READ:
     case EDGE_LINUX_IORING_OP_WRITE:
         if (submission->buffer_index || submission->splice_descriptor)
@@ -9758,10 +9809,20 @@ static int64_t edge_linux_sys_io_uring_enter(
                                &completion_flags);
         if (operation_result != EDGE_LINUX_IORING_PENDING_RESULT &&
             (!(submission.flags & EDGE_LINUX_IOSQE_CQE_SKIP_SUCCESS) ||
-             operation_result < 0))
-            (void)kernel_io_uring_completion_add(
-                ring_id, submission.user_data, operation_result,
-                completion_flags);
+             operation_result < 0)) {
+            if ((submission.opcode == EDGE_LINUX_IORING_OP_NOP ||
+                 submission.opcode == EDGE_LINUX_IORING_OP_NOP128) &&
+                (submission.operation_flags &
+                 EDGE_LINUX_IORING_NOP_CQE32))
+                (void)kernel_io_uring_completion_add32(
+                    ring_id, submission.user_data, operation_result,
+                    completion_flags, submission.offset,
+                    submission.address);
+            else
+                (void)kernel_io_uring_completion_add(
+                    ring_id, submission.user_data, operation_result,
+                    completion_flags);
+        }
         if (operation_result == 0 &&
             ((submission.opcode == EDGE_LINUX_IORING_OP_POLL_REMOVE &&
               submission.length == 0u) ||
@@ -9842,6 +9903,7 @@ finish:
 
 static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
     return opcode == EDGE_LINUX_IORING_OP_NOP ||
+           opcode == EDGE_LINUX_IORING_OP_NOP128 ||
            opcode == EDGE_LINUX_IORING_OP_READV ||
            opcode == EDGE_LINUX_IORING_OP_WRITEV ||
            opcode == EDGE_LINUX_IORING_OP_FSYNC ||

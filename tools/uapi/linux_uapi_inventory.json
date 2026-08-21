@@ -38,7 +38,9 @@
       },
       "implemented": [
         "setup and mapped submission/completion rings",
+        "128-byte SQE and 32-byte CQE ring layouts with Linux opcode numbering through NOP128",
         "NOP, READ, WRITE, READV, WRITEV and FSYNC operations",
+        "NOP result injection, descriptor and registered-buffer validation, task-work acceptance and CQE32 payloads",
         "probe and disabled-ring registration",
         "completion eventfd registration and notification",
         "single-shot and multishot poll completions with update operations",
@@ -91,12 +93,14 @@
         "user-provided pinned wait regions and SQPOLL wait control",
         "pending asynchronous descriptor leases across close and reuse",
         "notification-pipe semantics",
+        "mixed SQE/CQE layouts and application-provided ring memory",
         "provided-buffer page pinning and owner-mm-independent lifetime across unmap and exit",
         "remaining supported VFS and socket operations",
         "ia32 and x32 compatibility layouts"
       ],
       "runtime_tests": [
         "tools/tests/io_uring_abi_probe.c",
+        "tools/tests/io_uring_extended_entries_abi_probe.c",
         "tools/tests/io_uring_fixed_files_abi_probe.c",
         "tools/tests/io_uring_provided_buffers_abi_probe.c",
         "tools/tests/io_uring_pbuf_ring_abi_probe.c",
@@ -109,7 +113,7 @@
       "linux_oracle": {
         "status": "partial",
         "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309",
-        "scope": "setup, mmap, NOP, eventfd, poll, timeout, cancellation, openat, openat2, close, statx, fallocate, send, recv, sendmsg, recvmsg, shutdown, connect, accept, fadvise, madvise, epoll_ctl, tee, renameat, unlinkat, mkdirat, symlinkat, linkat, socket, bind, listen, fsetxattr, setxattr, fgetxattr, getxattr, ftruncate, sync_file_range, futex_wake, fixed-file registration, retained lifetime, register and submission-queue updates, extended resource layouts, tag completion events, fixed-file installation, frozen opcode extent, registered-ring descriptor lifetime, timeout update, finite and updated multishot timeouts, relative and absolute enter deadlines, minimum-wait batching, registered wait layouts and errors from the frozen source oracle, poll update, multishot poll, per-ring clock, fixed-file allocation range, operation probe, pipe creation and direct fixed-file allocation, plus packet-pipe record boundaries, short-read truncation and splice with ordinary or fixed input and output descriptors, plus MSG_RING data, flag forwarding, disabled targets and buffered CQ overflow, plus registered-file transfer with explicit and allocated slots, skipped target completions and retained lifetime after source-table removal, plus legacy and extended fixed-buffer registration, tagged updates, range errors and real pipe data through READ_FIXED and WRITE_FIXED, plus frozen-source READV_FIXED and WRITEV_FIXED layouts with EdgeOS runtime data, plus legacy provided-buffer add, remove, empty-group, READ and single-iovec READV selection behavior with returned buffer IDs, plus user-provided buffer-ring registration, READ and READV selection, returned IDs, head status, user and kernel-allocated mmap ring lifetime, unregistration and legacy-versus-ring failed-I/O buffer consumption, plus incremental address and length updates, min-left retirement and BUF_MORE completions on kernel-allocated and user-provided rings"
+        "scope": "setup, mmap, 128-byte SQE and 32-byte CQE layouts, NOP, NOP128, extended NOP flags, frozen opcode numbering, eventfd, poll, timeout, cancellation, openat, openat2, close, statx, fallocate, send, recv, sendmsg, recvmsg, shutdown, connect, accept, fadvise, madvise, epoll_ctl, tee, renameat, unlinkat, mkdirat, symlinkat, linkat, socket, bind, listen, fsetxattr, setxattr, fgetxattr, getxattr, ftruncate, sync_file_range, futex_wake, fixed-file registration, retained lifetime, register and submission-queue updates, extended resource layouts, tag completion events, fixed-file installation, frozen opcode extent, registered-ring descriptor lifetime, timeout update, finite and updated multishot timeouts, relative and absolute enter deadlines, minimum-wait batching, registered wait layouts and errors from the frozen source oracle, poll update, multishot poll, per-ring clock, fixed-file allocation range, operation probe, pipe creation and direct fixed-file allocation, plus packet-pipe record boundaries, short-read truncation and splice with ordinary or fixed input and output descriptors, plus MSG_RING data, flag forwarding, disabled targets and buffered CQ overflow, plus registered-file transfer with explicit and allocated slots, skipped target completions and retained lifetime after source-table removal, plus legacy and extended fixed-buffer registration, tagged updates, range errors and real pipe data through READ_FIXED and WRITE_FIXED, plus frozen-source READV_FIXED and WRITEV_FIXED layouts with EdgeOS runtime data, plus legacy provided-buffer add, remove, empty-group, READ and single-iovec READV selection behavior with returned buffer IDs, plus user-provided buffer-ring registration, READ and READV selection, returned IDs, head status, user and kernel-allocated mmap ring lifetime, unregistration and legacy-versus-ring failed-I/O buffer consumption, plus incremental address and length updates, min-left retirement and BUF_MORE completions on kernel-allocated and user-provided rings"
       }
     },
     {
@@ -14176,6 +14180,272 @@
           "name": "IOSQE_IO_LINK_BIT",
           "header": "include/uapi/linux/io_uring.h",
           "expression": "auto"
+        }
+      ],
+      "opcodes": [
+        {
+          "name": "IORING_OP_NOP",
+          "value": 0
+        },
+        {
+          "name": "IORING_OP_READV",
+          "value": 1
+        },
+        {
+          "name": "IORING_OP_WRITEV",
+          "value": 2
+        },
+        {
+          "name": "IORING_OP_FSYNC",
+          "value": 3
+        },
+        {
+          "name": "IORING_OP_READ_FIXED",
+          "value": 4
+        },
+        {
+          "name": "IORING_OP_WRITE_FIXED",
+          "value": 5
+        },
+        {
+          "name": "IORING_OP_POLL_ADD",
+          "value": 6
+        },
+        {
+          "name": "IORING_OP_POLL_REMOVE",
+          "value": 7
+        },
+        {
+          "name": "IORING_OP_SYNC_FILE_RANGE",
+          "value": 8
+        },
+        {
+          "name": "IORING_OP_SENDMSG",
+          "value": 9
+        },
+        {
+          "name": "IORING_OP_RECVMSG",
+          "value": 10
+        },
+        {
+          "name": "IORING_OP_TIMEOUT",
+          "value": 11
+        },
+        {
+          "name": "IORING_OP_TIMEOUT_REMOVE",
+          "value": 12
+        },
+        {
+          "name": "IORING_OP_ACCEPT",
+          "value": 13
+        },
+        {
+          "name": "IORING_OP_ASYNC_CANCEL",
+          "value": 14
+        },
+        {
+          "name": "IORING_OP_LINK_TIMEOUT",
+          "value": 15
+        },
+        {
+          "name": "IORING_OP_CONNECT",
+          "value": 16
+        },
+        {
+          "name": "IORING_OP_FALLOCATE",
+          "value": 17
+        },
+        {
+          "name": "IORING_OP_OPENAT",
+          "value": 18
+        },
+        {
+          "name": "IORING_OP_CLOSE",
+          "value": 19
+        },
+        {
+          "name": "IORING_OP_FILES_UPDATE",
+          "value": 20
+        },
+        {
+          "name": "IORING_OP_STATX",
+          "value": 21
+        },
+        {
+          "name": "IORING_OP_READ",
+          "value": 22
+        },
+        {
+          "name": "IORING_OP_WRITE",
+          "value": 23
+        },
+        {
+          "name": "IORING_OP_FADVISE",
+          "value": 24
+        },
+        {
+          "name": "IORING_OP_MADVISE",
+          "value": 25
+        },
+        {
+          "name": "IORING_OP_SEND",
+          "value": 26
+        },
+        {
+          "name": "IORING_OP_RECV",
+          "value": 27
+        },
+        {
+          "name": "IORING_OP_OPENAT2",
+          "value": 28
+        },
+        {
+          "name": "IORING_OP_EPOLL_CTL",
+          "value": 29
+        },
+        {
+          "name": "IORING_OP_SPLICE",
+          "value": 30
+        },
+        {
+          "name": "IORING_OP_PROVIDE_BUFFERS",
+          "value": 31
+        },
+        {
+          "name": "IORING_OP_REMOVE_BUFFERS",
+          "value": 32
+        },
+        {
+          "name": "IORING_OP_TEE",
+          "value": 33
+        },
+        {
+          "name": "IORING_OP_SHUTDOWN",
+          "value": 34
+        },
+        {
+          "name": "IORING_OP_RENAMEAT",
+          "value": 35
+        },
+        {
+          "name": "IORING_OP_UNLINKAT",
+          "value": 36
+        },
+        {
+          "name": "IORING_OP_MKDIRAT",
+          "value": 37
+        },
+        {
+          "name": "IORING_OP_SYMLINKAT",
+          "value": 38
+        },
+        {
+          "name": "IORING_OP_LINKAT",
+          "value": 39
+        },
+        {
+          "name": "IORING_OP_MSG_RING",
+          "value": 40
+        },
+        {
+          "name": "IORING_OP_FSETXATTR",
+          "value": 41
+        },
+        {
+          "name": "IORING_OP_SETXATTR",
+          "value": 42
+        },
+        {
+          "name": "IORING_OP_FGETXATTR",
+          "value": 43
+        },
+        {
+          "name": "IORING_OP_GETXATTR",
+          "value": 44
+        },
+        {
+          "name": "IORING_OP_SOCKET",
+          "value": 45
+        },
+        {
+          "name": "IORING_OP_URING_CMD",
+          "value": 46
+        },
+        {
+          "name": "IORING_OP_SEND_ZC",
+          "value": 47
+        },
+        {
+          "name": "IORING_OP_SENDMSG_ZC",
+          "value": 48
+        },
+        {
+          "name": "IORING_OP_READ_MULTISHOT",
+          "value": 49
+        },
+        {
+          "name": "IORING_OP_WAITID",
+          "value": 50
+        },
+        {
+          "name": "IORING_OP_FUTEX_WAIT",
+          "value": 51
+        },
+        {
+          "name": "IORING_OP_FUTEX_WAKE",
+          "value": 52
+        },
+        {
+          "name": "IORING_OP_FUTEX_WAITV",
+          "value": 53
+        },
+        {
+          "name": "IORING_OP_FIXED_FD_INSTALL",
+          "value": 54
+        },
+        {
+          "name": "IORING_OP_FTRUNCATE",
+          "value": 55
+        },
+        {
+          "name": "IORING_OP_BIND",
+          "value": 56
+        },
+        {
+          "name": "IORING_OP_LISTEN",
+          "value": 57
+        },
+        {
+          "name": "IORING_OP_RECV_ZC",
+          "value": 58
+        },
+        {
+          "name": "IORING_OP_EPOLL_WAIT",
+          "value": 59
+        },
+        {
+          "name": "IORING_OP_READV_FIXED",
+          "value": 60
+        },
+        {
+          "name": "IORING_OP_WRITEV_FIXED",
+          "value": 61
+        },
+        {
+          "name": "IORING_OP_PIPE",
+          "value": 62
+        },
+        {
+          "name": "IORING_OP_NOP128",
+          "value": 63
+        },
+        {
+          "name": "IORING_OP_URING_CMD128",
+          "value": 64
+        },
+        {
+          "name": "IORING_OP_LAST",
+          "value": 65
         }
       ]
     },
