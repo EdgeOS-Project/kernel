@@ -502,6 +502,7 @@ extern int vfs_chown_nofollow(const char *path, uint32_t uid, uint32_t gid);
 #define LINUX_O_EXCL 0x80u
 #define LINUX_O_NOCTTY 0x100u
 #define LINUX_O_NONBLOCK 0x800u
+#define LINUX_O_DIRECT 0x10000u
 #define LINUX_O_DIRECTORY 0x4000u
 #define LINUX_O_NOFOLLOW 0x8000u
 #define LINUX_O_TMPFILE 0x404000u
@@ -16644,6 +16645,15 @@ static int pipe_prepare(
     if (pipe_index < 0) return pipe_index;
     kernel_pipe_metadata_initialize(
         &g_pipes[pipe_index], task->euid, task->egid, 0600u);
+    if (flags & LINUX_O_DIRECT) {
+        result = kernel_pipe_packet_mode_set(
+            &g_pipes[pipe_index], 1);
+        if (result < 0) {
+            bytes_zero(
+                &g_pipes[pipe_index], sizeof(g_pipes[pipe_index]));
+            return result;
+        }
+    }
     result = fd_reserve_pair_thread_group(
         task, &read_number, &write_number);
     if (result < 0) {
@@ -16661,7 +16671,8 @@ static int pipe_prepare(
     }
     task->fds[read_fd].kind = KERNEL_FD_PIPE_READ;
     task->fds[read_fd].pipe_index = (uint16_t)pipe_index;
-    task->fds[read_fd].status_flags = flags & LINUX_O_NONBLOCK;
+    task->fds[read_fd].status_flags =
+        flags & (LINUX_O_NONBLOCK | LINUX_O_DIRECT);
     task->fds[read_fd].fd_flags =
         (flags & LINUX_O_CLOEXEC) ? LINUX_FD_CLOEXEC : 0u;
     {
@@ -16676,7 +16687,7 @@ static int pipe_prepare(
     task->fds[write_fd].kind = KERNEL_FD_PIPE_WRITE;
     task->fds[write_fd].pipe_index = (uint16_t)pipe_index;
     task->fds[write_fd].status_flags = LINUX_O_WRONLY |
-        (flags & LINUX_O_NONBLOCK);
+        (flags & (LINUX_O_NONBLOCK | LINUX_O_DIRECT));
     task->fds[write_fd].fd_flags =
         (flags & LINUX_O_CLOEXEC) ? LINUX_FD_CLOEXEC : 0u;
     {
@@ -32154,6 +32165,7 @@ static const edge_linux_syscall_arch_ops_t arm64_linux_syscall_ops = {
     .copy_stat_to_user = edge_arm64_linux_stat_to_user,
     .copy_epoll_event_from_user = arm64_linux_copy_epoll_event_from_user,
     .fcntl_setfl_mask = 0x00050000u, /* O_DIRECT | O_NOATIME */
+    .open_direct_flag = 0x00010000u,
     .machine = "aarch64",
     .release = CONFIG_LINUX_ABI_RELEASE,
     .version = EDGEOS_LINUX_ABI_VERSION,

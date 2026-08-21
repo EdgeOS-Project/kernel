@@ -12,6 +12,8 @@
 #include "kernel/namespace_runtime.h"
 
 #define KERNEL_PIPE_NONBLOCK 0x00000800u
+#define KERNEL_PIPE_DIRECT_X86_64 0x00004000u
+#define KERNEL_PIPE_DIRECT_ARM64  0x00010000u
 #define KERNEL_PIPE_CLOEXEC  0x00080000u
 
 int kernel_fd_pipe_prepare(
@@ -21,7 +23,10 @@ int kernel_fd_pipe_prepare(
         return -EDGE_LINUX_EINVAL;
     descriptors[0] = -1;
     descriptors[1] = -1;
-    if (flags & ~(KERNEL_PIPE_NONBLOCK | KERNEL_PIPE_CLOEXEC))
+    if (flags & ~(KERNEL_PIPE_NONBLOCK |
+                  KERNEL_PIPE_DIRECT_X86_64 |
+                  KERNEL_PIPE_DIRECT_ARM64 |
+                  KERNEL_PIPE_CLOEXEC))
         return -EDGE_LINUX_EINVAL;
     if (publication->active)
         return -EDGE_LINUX_EBUSY;

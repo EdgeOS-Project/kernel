@@ -46,6 +46,7 @@ typedef struct edge_linux_syscall_arch_ops {
                                       uint64_t user_source,
                                       kernel_epoll_event_t *event);
     uint32_t fcntl_setfl_mask;
+    uint32_t open_direct_flag;
     const char *machine;
     const char *release;
     const char *version;

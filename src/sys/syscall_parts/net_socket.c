@@ -7423,6 +7423,13 @@ int arch_fd_pipe_prepare(
     if (pid < 0) return -ENFILE;
     kernel_pipe_metadata_initialize(
         &g_pipes[pid], cur ? cur->euid : 0u, cur ? cur->egid : 0u, 0600u);
+    if (flags & LINUX_O_DIRECT) {
+        status = kernel_pipe_packet_mode_set(&g_pipes[pid], 1);
+        if (status < 0) {
+            memset(&g_pipes[pid], 0, sizeof(g_pipes[pid]));
+            return status;
+        }
+    }
 
     int rfd = fd_alloc(p, 0);
     if (rfd < 0) {
@@ -7438,7 +7445,7 @@ int arch_fd_pipe_prepare(
 
     p->fds[rfd].kind = FD_PIPE_R;
     p->fds[rfd].file_ref = file_ref_alloc(
-        (flags & LINUX_O_NONBLOCK) ? LINUX_O_NONBLOCK : 0);
+        flags & (LINUX_O_NONBLOCK | LINUX_O_DIRECT));
     if (!p->fds[rfd].file_ref) {
         fd_abort_reserved(p, rfd);
         fd_abort_reserved(p, wfd);
@@ -7446,12 +7453,13 @@ int arch_fd_pipe_prepare(
         return -ENFILE;
     }
     p->fds[rfd].pipe_id = pid;
-    p->fds[rfd].flags = (flags & LINUX_O_NONBLOCK) ? LINUX_O_NONBLOCK : 0;
+    p->fds[rfd].flags =
+        flags & (LINUX_O_NONBLOCK | LINUX_O_DIRECT);
     p->fds[rfd].fd_flags = (flags & LINUX_O_CLOEXEC) ? LINUX_FD_CLOEXEC : 0;
     p->fds[wfd].kind = FD_PIPE_W;
     p->fds[wfd].file_ref = file_ref_alloc(
         LINUX_O_WRONLY |
-        ((flags & LINUX_O_NONBLOCK) ? LINUX_O_NONBLOCK : 0));
+        (flags & (LINUX_O_NONBLOCK | LINUX_O_DIRECT)));
     if (!p->fds[wfd].file_ref) {
         (void)file_ref_put(p->fds[rfd].file_ref);
         fd_abort_reserved(p, rfd);
@@ -7460,7 +7468,8 @@ int arch_fd_pipe_prepare(
         return -ENFILE;
     }
     p->fds[wfd].pipe_id = pid;
-    p->fds[wfd].flags = LINUX_O_WRONLY | ((flags & LINUX_O_NONBLOCK) ? LINUX_O_NONBLOCK : 0);
+    p->fds[wfd].flags = LINUX_O_WRONLY |
+        (flags & (LINUX_O_NONBLOCK | LINUX_O_DIRECT));
     p->fds[wfd].fd_flags = (flags & LINUX_O_CLOEXEC) ? LINUX_FD_CLOEXEC : 0;
 
     if (kernel_pipe_endpoint_retain(&g_pipes[pid], 1, 1) < 0) {

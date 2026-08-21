@@ -213,6 +213,7 @@ static const edge_linux_syscall_arch_ops_t x86_linux_syscall_ops = {
     .copy_stat_to_user = edge_x86_64_linux_stat_to_user,
     .copy_epoll_event_from_user = x86_linux_copy_epoll_event_from_user,
     .fcntl_setfl_mask = 0x00044000u, /* O_DIRECT | O_NOATIME */
+    .open_direct_flag = 0x00004000u,
     .machine = "x86_64",
     .release = CONFIG_LINUX_ABI_RELEASE,
     .version = EDGEOS_LINUX_ABI_VERSION,

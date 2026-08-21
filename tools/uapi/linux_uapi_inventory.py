@@ -56,6 +56,7 @@ EDGEOS_ASSESSMENTS = [
             "per-ring monotonic or boottime enter clocks",
             "fixed-file automatic allocation range registration",
             "pipe creation with ordinary descriptors and explicit or automatic fixed-file slots",
+            "architecture-correct O_DIRECT packet pipes with record truncation semantics",
         ],
         "missing": [
             "asynchronous worker execution",
@@ -63,7 +64,7 @@ EDGEOS_ASSESSMENTS = [
             "scheduler-native enter suspension without polling",
             "user-provided pinned wait regions and SQPOLL wait control",
             "pending asynchronous descriptor leases across close and reuse",
-            "pipe packet mode and notification-pipe semantics",
+            "notification-pipe semantics",
             "remaining supported VFS and socket operations",
             "ia32 and x32 compatibility layouts",
         ],
@@ -95,7 +96,8 @@ EDGEOS_ASSESSMENTS = [
                 "batching, registered wait layouts and errors from the frozen "
                 "source oracle, poll update, multishot poll, per-ring clock, "
                 "fixed-file allocation range, operation probe, pipe creation "
-                "and direct fixed-file allocation"
+                "and direct fixed-file allocation, plus packet-pipe record "
+                "boundaries and short-read truncation"
             ),
         },
     },

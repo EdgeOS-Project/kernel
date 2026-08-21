@@ -8152,13 +8152,11 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_RESOURCE_SPARSE       (1u << 0)
 #define EDGE_LINUX_IO_URING_OP_SUPPORTED        1u
 #define EDGE_LINUX_IORING_FIXED_FD_NO_CLOEXEC   (1u << 0)
-#define EDGE_LINUX_IORING_PIPE_O_DIRECT          0x00004000u
 #define EDGE_LINUX_IORING_PIPE_O_NOTIFICATION    0x00000080u
 #define EDGE_LINUX_IORING_PIPE_O_NONBLOCK        0x00000800u
 #define EDGE_LINUX_IORING_PIPE_O_CLOEXEC         0x00080000u
-#define EDGE_LINUX_IORING_PIPE_FLAGS \
-    (EDGE_LINUX_IORING_PIPE_O_DIRECT | \
-     EDGE_LINUX_IORING_PIPE_O_NOTIFICATION | \
+#define EDGE_LINUX_IORING_PIPE_COMMON_FLAGS \
+    (EDGE_LINUX_IORING_PIPE_O_NOTIFICATION | \
      EDGE_LINUX_IORING_PIPE_O_NONBLOCK | \
      EDGE_LINUX_IORING_PIPE_O_CLOEXEC)
 #define EDGE_LINUX_IORING_FSYNC_DATASYNC        1u
@@ -8929,6 +8927,8 @@ static int32_t edge_linux_io_uring_pipe(
     int32_t user_descriptors[2];
     uint32_t file_slot = (uint32_t)submission->splice_descriptor;
     uint32_t pipe_flags = submission->operation_flags;
+    uint32_t direct_flag = context && context->arch_ops ?
+        context->arch_ops->open_direct_flag : 0u;
     int result;
 
     if (submission->flags & ~EDGE_LINUX_IOSQE_KNOWN)
@@ -8940,10 +8940,10 @@ static int32_t edge_linux_io_uring_pipe(
         submission->address3 || submission->reserved2 ||
         submission->personality)
         return -EDGE_LINUX_EINVAL;
-    if (pipe_flags & ~EDGE_LINUX_IORING_PIPE_FLAGS)
+    if (pipe_flags & ~(EDGE_LINUX_IORING_PIPE_COMMON_FLAGS |
+                       direct_flag))
         return -EDGE_LINUX_EINVAL;
-    if (pipe_flags & (EDGE_LINUX_IORING_PIPE_O_DIRECT |
-                      EDGE_LINUX_IORING_PIPE_O_NOTIFICATION))
+    if (pipe_flags & EDGE_LINUX_IORING_PIPE_O_NOTIFICATION)
         return -EDGE_LINUX_EOPNOTSUPP;
     if (file_slot &&
         (pipe_flags & EDGE_LINUX_IORING_PIPE_O_CLOEXEC))
@@ -10454,10 +10454,13 @@ static int64_t edge_linux_sys_pipe(
     edge_linux_syscall_context_t *context) {
     uint32_t flags = context->id == EDGE_LINUX_SYS_pipe2 ?
                      (uint32_t)context->arguments[1] : 0u;
+    uint32_t direct_flag = context->arch_ops ?
+        context->arch_ops->open_direct_flag : 0u;
     kernel_fd_publication_t publication = {0};
     int32_t descriptors[2];
     int status;
-    if (flags & ~(EDGE_LINUX_O_NONBLOCK | EDGE_LINUX_O_CLOEXEC))
+    if (flags & ~(EDGE_LINUX_O_NONBLOCK | EDGE_LINUX_O_CLOEXEC |
+                  direct_flag))
         return -EDGE_LINUX_EINVAL;
     status = kernel_fd_pipe_prepare(
         flags, descriptors, &publication);

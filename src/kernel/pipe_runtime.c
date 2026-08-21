@@ -75,6 +75,43 @@ int kernel_pipe_metadata_chown(kernel_pipe_runtime_t *pipe,
     return 0;
 }
 
+int kernel_pipe_packet_mode_set(kernel_pipe_runtime_t *pipe, int enabled) {
+    if (!pipe || !pipe->used) return -EDGE_LINUX_EBADF;
+    if (pipe->count || pipe->packet_count) return -EDGE_LINUX_EBUSY;
+    pipe->packet_mode = enabled != 0;
+    pipe->packet_head = 0u;
+    pipe->packet_count = 0u;
+    pipe_bytes_zero(pipe->packet_lengths, sizeof(pipe->packet_lengths));
+    return 0;
+}
+
+static uint32_t kernel_pipe_packet_front(
+        const kernel_pipe_runtime_t *pipe) {
+    if (!pipe || !pipe->packet_mode || !pipe->packet_count)
+        return 0u;
+    return pipe->packet_lengths[pipe->packet_head];
+}
+
+static void kernel_pipe_packet_push(kernel_pipe_runtime_t *pipe,
+                                    uint32_t length) {
+    uint32_t index;
+    if (!pipe || !length ||
+        pipe->packet_count >= KERNEL_PIPE_RUNTIME_PACKET_SLOTS)
+        return;
+    index = (pipe->packet_head + pipe->packet_count) %
+        KERNEL_PIPE_RUNTIME_PACKET_SLOTS;
+    pipe->packet_lengths[index] = (uint16_t)length;
+    ++pipe->packet_count;
+}
+
+static void kernel_pipe_packet_pop(kernel_pipe_runtime_t *pipe) {
+    if (!pipe || !pipe->packet_count) return;
+    pipe->packet_lengths[pipe->packet_head] = 0u;
+    pipe->packet_head = (uint8_t)((pipe->packet_head + 1u) %
+        KERNEL_PIPE_RUNTIME_PACKET_SLOTS);
+    --pipe->packet_count;
+}
+
 int kernel_pipe_object_allocate(kernel_pipe_runtime_t *objects,
                                 uint32_t object_count) {
     uint32_t index;
@@ -199,6 +236,10 @@ kernel_pipe_io_decision_t kernel_pipe_write_decide(
     if (!remaining) return KERNEL_PIPE_IO_COMPLETE;
     readers = __atomic_load_n(&pipe->readers, __ATOMIC_ACQUIRE);
     if (!readers) return KERNEL_PIPE_IO_BROKEN;
+    if (pipe->packet_mode &&
+        pipe->packet_count >= KERNEL_PIPE_RUNTIME_PACKET_SLOTS)
+        return nonblocking ?
+            KERNEL_PIPE_IO_WOULD_BLOCK : KERNEL_PIPE_IO_WAIT;
     available = KERNEL_PIPE_RUNTIME_CAPACITY - pipe->count;
     if (available && (!atomic_write || available >= remaining))
         return KERNEL_PIPE_IO_READY;
@@ -227,7 +268,10 @@ uint32_t kernel_pipe_poll_events(
         } else if (!__atomic_load_n(
                        &write_pipe->readers, __ATOMIC_ACQUIRE)) {
             events |= KERNEL_PIPE_POLL_ERR;
-        } else if (write_pipe->count < KERNEL_PIPE_RUNTIME_CAPACITY) {
+        } else if (write_pipe->count < KERNEL_PIPE_RUNTIME_CAPACITY &&
+                   (!write_pipe->packet_mode ||
+                    write_pipe->packet_count <
+                        KERNEL_PIPE_RUNTIME_PACKET_SLOTS)) {
             events |= KERNEL_PIPE_POLL_OUT;
         }
     }
@@ -250,7 +294,9 @@ int kernel_pipe_read_wake_ready(const kernel_pipe_runtime_t *pipe,
 
 int kernel_pipe_write_wake_ready(const kernel_pipe_runtime_t *pipe) {
     if (!pipe || !pipe->used) return 1;
-    return pipe->count < KERNEL_PIPE_RUNTIME_CAPACITY ||
+    return (pipe->count < KERNEL_PIPE_RUNTIME_CAPACITY &&
+            (!pipe->packet_mode ||
+             pipe->packet_count < KERNEL_PIPE_RUNTIME_PACKET_SLOTS)) ||
         !__atomic_load_n(&pipe->readers, __ATOMIC_ACQUIRE);
 }
 
@@ -262,6 +308,33 @@ int64_t kernel_pipe_read_user(kernel_pipe_runtime_t *pipe,
     if (!pipe || !pipe->used) return -EDGE_LINUX_EBADF;
     if (!copy_to_user) return -EDGE_LINUX_EINVAL;
     if (!destination && length) return -EDGE_LINUX_EFAULT;
+    if (pipe->packet_mode && length && pipe->count) {
+        uint32_t packet_length = kernel_pipe_packet_front(pipe);
+        uint32_t copied = length < packet_length ?
+            (uint32_t)length : packet_length;
+        uint32_t first = copied;
+        uint32_t contiguous =
+            KERNEL_PIPE_RUNTIME_CAPACITY - pipe->read_position;
+
+        if (!packet_length || packet_length > pipe->count)
+            return -EDGE_LINUX_EIO;
+        if (first > contiguous) first = contiguous;
+        if (first && copy_to_user(
+                copy_context, destination,
+                pipe->data + pipe->read_position, first) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (copied > first && copy_to_user(
+                copy_context, destination + first, pipe->data,
+                copied - first) < 0)
+            return -EDGE_LINUX_EFAULT;
+        pipe->read_position =
+            (pipe->read_position + packet_length) %
+                KERNEL_PIPE_RUNTIME_CAPACITY;
+        pipe->count -= packet_length;
+        kernel_pipe_packet_pop(pipe);
+        kernel_pipe_sequence_advance(&pipe->write_ready_sequence);
+        return (int64_t)copied;
+    }
 
     while (done < length && pipe->count) {
         uint64_t count = length - done;
@@ -293,6 +366,37 @@ int64_t kernel_pipe_write_user(kernel_pipe_runtime_t *pipe,
     if (!pipe || !pipe->used) return -EDGE_LINUX_EBADF;
     if (!copy_from_user) return -EDGE_LINUX_EINVAL;
     if (!source && length) return -EDGE_LINUX_EFAULT;
+    if (pipe->packet_mode && length) {
+        uint32_t count = length < KERNEL_PIPE_RUNTIME_BUF ?
+            (uint32_t)length : KERNEL_PIPE_RUNTIME_BUF;
+        uint32_t available =
+            KERNEL_PIPE_RUNTIME_CAPACITY - pipe->count;
+        uint32_t first = count;
+        uint32_t contiguous =
+            KERNEL_PIPE_RUNTIME_CAPACITY - pipe->write_position;
+
+        if (pipe->packet_count >= KERNEL_PIPE_RUNTIME_PACKET_SLOTS ||
+            !available)
+            return 0;
+        if (count > available) count = available;
+        if (first > count) first = count;
+        if (first > contiguous) first = contiguous;
+        if (first && copy_from_user(
+                copy_context, pipe->data + pipe->write_position,
+                source, first) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (count > first && copy_from_user(
+                copy_context, pipe->data, source + first,
+                count - first) < 0)
+            return -EDGE_LINUX_EFAULT;
+        pipe->write_position =
+            (pipe->write_position + count) %
+                KERNEL_PIPE_RUNTIME_CAPACITY;
+        pipe->count += count;
+        kernel_pipe_packet_push(pipe, count);
+        kernel_pipe_sequence_advance(&pipe->read_ready_sequence);
+        return (int64_t)count;
+    }
 
     while (done < length &&
            pipe->count < KERNEL_PIPE_RUNTIME_CAPACITY) {
@@ -331,6 +435,11 @@ uint32_t kernel_pipe_peek_kernel(const kernel_pipe_runtime_t *pipe,
     position =
         (pipe->read_position + skip) % KERNEL_PIPE_RUNTIME_CAPACITY;
     available = pipe->count - skip;
+    if (pipe->packet_mode) {
+        uint32_t packet_length = kernel_pipe_packet_front(pipe);
+        if (!packet_length || skip >= packet_length) return 0;
+        available = packet_length - skip;
+    }
     while (done < length && available) {
         uint32_t count = length - done;
         uint32_t contiguous = KERNEL_PIPE_RUNTIME_CAPACITY - position;
@@ -346,11 +455,16 @@ uint32_t kernel_pipe_peek_kernel(const kernel_pipe_runtime_t *pipe,
 
 uint32_t kernel_pipe_read_kernel(kernel_pipe_runtime_t *pipe,
                                  void *destination, uint32_t length) {
+    uint32_t consumed;
     uint32_t done = kernel_pipe_peek_kernel(pipe, destination, length, 0);
     if (!pipe || !done) return done;
+    consumed = pipe->packet_mode ?
+        kernel_pipe_packet_front(pipe) : done;
+    if (!consumed || consumed > pipe->count) return 0;
     pipe->read_position =
-        (pipe->read_position + done) % KERNEL_PIPE_RUNTIME_CAPACITY;
-    pipe->count -= done;
+        (pipe->read_position + consumed) % KERNEL_PIPE_RUNTIME_CAPACITY;
+    pipe->count -= consumed;
+    if (pipe->packet_mode) kernel_pipe_packet_pop(pipe);
     kernel_pipe_sequence_advance(&pipe->write_ready_sequence);
     return done;
 }
@@ -360,6 +474,33 @@ uint32_t kernel_pipe_write_kernel(kernel_pipe_runtime_t *pipe,
     const uint8_t *input = source;
     uint32_t done = 0;
     if (!pipe || !pipe->used || (!input && length)) return 0;
+    if (pipe->packet_mode && length) {
+        uint32_t count = length < KERNEL_PIPE_RUNTIME_BUF ?
+            length : KERNEL_PIPE_RUNTIME_BUF;
+        uint32_t available =
+            KERNEL_PIPE_RUNTIME_CAPACITY - pipe->count;
+        uint32_t first = count;
+        uint32_t contiguous =
+            KERNEL_PIPE_RUNTIME_CAPACITY - pipe->write_position;
+
+        if (pipe->packet_count >= KERNEL_PIPE_RUNTIME_PACKET_SLOTS ||
+            !available)
+            return 0;
+        if (count > available) count = available;
+        if (first > count) first = count;
+        if (first > contiguous) first = contiguous;
+        pipe_bytes_copy(
+            pipe->data + pipe->write_position, input, first);
+        if (count > first)
+            pipe_bytes_copy(pipe->data, input + first, count - first);
+        pipe->write_position =
+            (pipe->write_position + count) %
+                KERNEL_PIPE_RUNTIME_CAPACITY;
+        pipe->count += count;
+        kernel_pipe_packet_push(pipe, count);
+        kernel_pipe_sequence_advance(&pipe->read_ready_sequence);
+        return count;
+    }
     while (done < length &&
            pipe->count < KERNEL_PIPE_RUNTIME_CAPACITY) {
         uint32_t count = length - done;

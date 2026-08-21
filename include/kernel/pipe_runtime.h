@@ -14,6 +14,8 @@
 
 #define KERNEL_PIPE_RUNTIME_CAPACITY (64u * 1024u)
 #define KERNEL_PIPE_RUNTIME_BUF 4096u
+#define KERNEL_PIPE_RUNTIME_PACKET_SLOTS \
+    (KERNEL_PIPE_RUNTIME_CAPACITY / KERNEL_PIPE_RUNTIME_BUF)
 
 typedef struct kernel_pipe_runtime {
     uint8_t used;
@@ -42,6 +44,11 @@ typedef struct kernel_pipe_runtime {
     uint32_t read_position;
     uint32_t write_position;
     uint32_t count;
+    uint16_t packet_lengths[KERNEL_PIPE_RUNTIME_PACKET_SLOTS];
+    uint8_t packet_head;
+    uint8_t packet_count;
+    uint8_t packet_mode;
+    uint8_t packet_reserved;
     /*
      * Zero is reserved for callers that cannot provide transition tracking.
      * Live shared pipe objects always keep both sequences nonzero.
@@ -91,6 +98,7 @@ int kernel_pipe_metadata_snapshot(kernel_pipe_runtime_t *pipe,
                                   kernel_pipe_metadata_t *metadata);
 int kernel_pipe_metadata_chown(kernel_pipe_runtime_t *pipe,
                                uint32_t uid, uint32_t gid);
+int kernel_pipe_packet_mode_set(kernel_pipe_runtime_t *pipe, int enabled);
 
 int kernel_pipe_endpoint_retain(kernel_pipe_runtime_t *pipe,
                                 int reader, int writer);

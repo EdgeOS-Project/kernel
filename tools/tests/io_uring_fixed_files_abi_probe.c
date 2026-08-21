@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #if defined(__x86_64__)
+#define SYS_read 0
 #define SYS_close 3
 #define SYS_fcntl 72
 #define SYS_mmap 9
@@ -11,14 +12,19 @@
 #define SYS_exit 60
 #define SYS_write 1
 #define SYS_eventfd2 290
+#define SYS_pipe2 293
+#define O_DIRECT 0x4000u
 #elif defined(__aarch64__)
+#define SYS_read 63
 #define SYS_close 57
 #define SYS_fcntl 25
 #define SYS_write 64
 #define SYS_exit 93
 #define SYS_eventfd2 19
+#define SYS_pipe2 59
 #define SYS_munmap 215
 #define SYS_mmap 222
+#define O_DIRECT 0x10000u
 #else
 #error "io_uring_fixed_files_abi_probe requires a Linux 64-bit architecture"
 #endif
@@ -217,6 +223,43 @@ static int expect(long actual, long expected) {
     return actual == expected ? 0 : 1;
 }
 
+static int test_pipe2_packet_mode(void) {
+    static const char first_packet[] = "abcdef";
+    static const char second_packet[] = "WXYZ";
+    int32_t descriptors[2] = {-1, -1};
+    char output[8];
+    int failures = 0;
+
+    bytes_zero(output, sizeof(output));
+    failures += expect(raw_syscall6(
+        SYS_pipe2, (long)descriptors, O_DIRECT, 0, 0, 0, 0), 0);
+    if (descriptors[0] < 0 || descriptors[1] < 0) return failures + 1;
+    failures += expect(raw_syscall6(
+        SYS_write, descriptors[1], (long)first_packet,
+        sizeof(first_packet) - 1u, 0, 0, 0),
+        sizeof(first_packet) - 1u);
+    failures += expect(raw_syscall6(
+        SYS_write, descriptors[1], (long)second_packet,
+        sizeof(second_packet) - 1u, 0, 0, 0),
+        sizeof(second_packet) - 1u);
+    failures += expect(raw_syscall6(
+        SYS_read, descriptors[0], (long)output, 3u, 0, 0, 0), 3);
+    failures += expect(output[0], 'a');
+    failures += expect(output[1], 'b');
+    failures += expect(output[2], 'c');
+    bytes_zero(output, sizeof(output));
+    failures += expect(raw_syscall6(
+        SYS_read, descriptors[0], (long)output, sizeof(output),
+        0, 0, 0), sizeof(second_packet) - 1u);
+    failures += expect(output[0], 'W');
+    failures += expect(output[1], 'X');
+    failures += expect(output[2], 'Y');
+    failures += expect(output[3], 'Z');
+    (void)raw_syscall6(SYS_close, descriptors[0], 0, 0, 0, 0, 0);
+    (void)raw_syscall6(SYS_close, descriptors[1], 0, 0, 0, 0, 0);
+    return failures;
+}
+
 static void *map_ring(long descriptor, uint64_t offset) {
     long result = raw_syscall6(
         SYS_mmap, 0, PAGE_SIZE, PROT_READ | PROT_WRITE,
@@ -275,7 +318,8 @@ static int submit_fixed_write(
 static int submit_fixed_read(
         long ring_descriptor, struct io_uring_params *parameters,
         void *sq_ring, void *cq_ring, struct io_uring_sqe *sqes,
-        int32_t fixed_index, uint64_t *value, int32_t expected) {
+        int32_t fixed_index, uint64_t *value, uint32_t length,
+        int32_t expected) {
     volatile uint32_t *sq_head = (volatile uint32_t *)(
         (uint8_t *)sq_ring + parameters->sq_off.head);
     volatile uint32_t *sq_tail = (volatile uint32_t *)(
@@ -304,7 +348,7 @@ static int submit_fixed_read(
     sqes[submission_slot].descriptor = fixed_index;
     sqes[submission_slot].offset = UINT64_MAX;
     sqes[submission_slot].address = (uint64_t)(uintptr_t)value;
-    sqes[submission_slot].length = sizeof(*value);
+    sqes[submission_slot].length = length;
     sqes[submission_slot].user_data = 0x4649584544524541ull;
     sq_array[submission_slot] = submission_slot;
     __atomic_store_n(sq_tail, submission + 1u, __ATOMIC_RELEASE);
@@ -503,6 +547,7 @@ static int run_probe(void) {
     struct io_uring_resource_update2 update2;
     uint64_t value = 1u;
     uint64_t pipe_value = 0u;
+    uint64_t second_pipe_value = 2u;
     uint64_t tag;
     long ring;
     long eventfd;
@@ -510,6 +555,8 @@ static int run_probe(void) {
     long installed;
     int32_t installed_result;
     int failures = 0;
+
+    failures += test_pipe2_packet_mode();
 
     bytes_zero(&parameters, sizeof(parameters));
     ring = raw_syscall6(
@@ -676,7 +723,7 @@ static int run_probe(void) {
 
     installed_result = submit_pipe(
         ring, &parameters, sq_ring, cq_ring, sqes,
-        IORING_FILE_INDEX_ALLOC, 0u,
+        IORING_FILE_INDEX_ALLOC, O_DIRECT,
         update_descriptors, &failures);
     failures += expect(installed_result, 0);
     failures += expect(update_descriptors[0], 0);
@@ -684,10 +731,20 @@ static int run_probe(void) {
     failures += submit_fixed_write(
         ring, &parameters, sq_ring, cq_ring, sqes,
         1, &value, (int32_t)sizeof(value));
+    failures += submit_fixed_write(
+        ring, &parameters, sq_ring, cq_ring, sqes,
+        1, &second_pipe_value,
+        (int32_t)sizeof(second_pipe_value));
     failures += submit_fixed_read(
         ring, &parameters, sq_ring, cq_ring, sqes,
-        0, &pipe_value, (int32_t)sizeof(pipe_value));
+        0, &pipe_value, 4u, 4);
     failures += expect((long)pipe_value, (long)value);
+    pipe_value = 0u;
+    failures += submit_fixed_read(
+        ring, &parameters, sq_ring, cq_ring, sqes,
+        0, &pipe_value, sizeof(pipe_value),
+        (int32_t)sizeof(pipe_value));
+    failures += expect((long)pipe_value, (long)second_pipe_value);
     update_descriptors[0] = -1;
     update_descriptors[1] = -1;
     update.offset = 0u;

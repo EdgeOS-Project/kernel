@@ -2,6 +2,7 @@
 /* Host-side regression tests for the shared EdgeOS pipe ring core. */
 
 #include "kernel/pipe_runtime.h"
+#include "kernel/linux_errno.h"
 #include <assert.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -248,6 +249,65 @@ static void test_readable_byte_query(void) {
     assert(kernel_pipe_readable_bytes(0) == 0u);
 }
 
+static void test_packet_mode(void) {
+    kernel_pipe_runtime_t pipe;
+    copy_fault_context_t context;
+    uint8_t large[KERNEL_PIPE_RUNTIME_BUF + 32u];
+    uint8_t output[32];
+
+    memset(large, 0x6b, sizeof(large));
+    memset(output, 0, sizeof(output));
+    kernel_pipe_object_initialize(&pipe);
+    assert(kernel_pipe_packet_mode_set(&pipe, 1) == 0);
+    assert(pipe.packet_mode);
+    assert(kernel_pipe_endpoint_retain(&pipe, 1, 1) == 0);
+
+    assert(kernel_pipe_write_kernel(&pipe, "abcdef", 6u) == 6u);
+    assert(kernel_pipe_write_kernel(&pipe, "WXYZ", 4u) == 4u);
+    assert(pipe.packet_count == 2u);
+    assert(kernel_pipe_read_kernel(&pipe, output, 3u) == 3u);
+    assert(memcmp(output, "abc", 3u) == 0);
+    assert(pipe.count == 4u);
+    assert(pipe.packet_count == 1u);
+    assert(kernel_pipe_read_kernel(&pipe, output, sizeof(output)) == 4u);
+    assert(memcmp(output, "WXYZ", 4u) == 0);
+
+    assert(kernel_pipe_write_kernel(&pipe, large, sizeof(large)) ==
+           KERNEL_PIPE_RUNTIME_BUF);
+    assert(pipe.count == KERNEL_PIPE_RUNTIME_BUF);
+    assert(kernel_pipe_read_kernel(&pipe, output, sizeof(output)) ==
+           sizeof(output));
+    assert(pipe.count == 0u);
+    assert(pipe.packet_count == 0u);
+
+    pipe.read_position = KERNEL_PIPE_RUNTIME_CAPACITY - 2u;
+    pipe.write_position = KERNEL_PIPE_RUNTIME_CAPACITY - 2u;
+    assert(kernel_pipe_write_kernel(&pipe, "wrap", 4u) == 4u);
+    assert(kernel_pipe_read_kernel(&pipe, output, 4u) == 4u);
+    assert(memcmp(output, "wrap", 4u) == 0);
+
+    assert(kernel_pipe_write_kernel(&pipe, "fault", 5u) == 5u);
+    context.fail_at = (uint64_t)(uintptr_t)output;
+    assert(kernel_pipe_read_user(
+               &pipe, (uint64_t)(uintptr_t)output, sizeof(output),
+               test_copy_to_user, &context) == -EDGE_LINUX_EFAULT);
+    assert(pipe.count == 5u);
+    assert(pipe.packet_count == 1u);
+    assert(kernel_pipe_read_kernel(&pipe, output, sizeof(output)) == 5u);
+
+    for (uint32_t index = 0;
+         index < KERNEL_PIPE_RUNTIME_PACKET_SLOTS; ++index)
+        assert(kernel_pipe_write_kernel(&pipe, "x", 1u) == 1u);
+    assert(kernel_pipe_write_kernel(&pipe, "x", 1u) == 0u);
+    assert(kernel_pipe_write_decide(&pipe, 1u, 1, 0) ==
+           KERNEL_PIPE_IO_WAIT);
+    assert(!(kernel_pipe_poll_events(&pipe, &pipe, 0, 1) &
+             KERNEL_PIPE_POLL_OUT));
+    assert(!kernel_pipe_write_wake_ready(&pipe));
+    assert(kernel_pipe_read_kernel(&pipe, output, 1u) == 1u);
+    assert(kernel_pipe_write_wake_ready(&pipe));
+}
+
 static void test_readiness_sequences(void) {
     kernel_pipe_runtime_t pipe;
     copy_fault_context_t context;
@@ -323,6 +383,7 @@ int main(void) {
     test_io_decisions();
     test_poll_and_wake_policy();
     test_readable_byte_query();
+    test_packet_mode();
     test_readiness_sequences();
     puts("pipe_runtime_unit: PASS");
     return 0;
