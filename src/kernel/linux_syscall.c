@@ -8116,6 +8116,8 @@ static int64_t edge_linux_sys_aio(
 
 #define EDGE_LINUX_IORING_REGISTER_EVENTFD      4u
 #define EDGE_LINUX_IORING_UNREGISTER_EVENTFD    5u
+#define EDGE_LINUX_IORING_REGISTER_FILES        2u
+#define EDGE_LINUX_IORING_UNREGISTER_FILES      3u
 #define EDGE_LINUX_IORING_REGISTER_EVENTFD_ASYNC 7u
 #define EDGE_LINUX_IORING_REGISTER_PROBE        8u
 #define EDGE_LINUX_IORING_REGISTER_ENABLE_RINGS 12u
@@ -8562,7 +8564,7 @@ static int64_t edge_linux_io_uring_execute_socket(
     }
 }
 
-static int32_t edge_linux_io_uring_execute(
+static int32_t edge_linux_io_uring_execute_descriptor(
         edge_linux_syscall_context_t *context,
         int32_t ring_id,
         const struct edge_linux_io_uring_sqe *submission) {
@@ -8698,6 +8700,58 @@ static int32_t edge_linux_io_uring_execute(
     if (result < INT32_MIN) return INT32_MIN;
     if (result > INT32_MAX) return INT32_MAX;
     return (int32_t)result;
+}
+
+static int edge_linux_io_uring_fixed_file_supported(uint8_t opcode) {
+    switch (opcode) {
+    case EDGE_LINUX_IORING_OP_READV:
+    case EDGE_LINUX_IORING_OP_WRITEV:
+    case EDGE_LINUX_IORING_OP_FSYNC:
+    case EDGE_LINUX_IORING_OP_SYNC_FILE_RANGE:
+    case EDGE_LINUX_IORING_OP_SENDMSG:
+    case EDGE_LINUX_IORING_OP_RECVMSG:
+    case EDGE_LINUX_IORING_OP_ACCEPT:
+    case EDGE_LINUX_IORING_OP_CONNECT:
+    case EDGE_LINUX_IORING_OP_FALLOCATE:
+    case EDGE_LINUX_IORING_OP_READ:
+    case EDGE_LINUX_IORING_OP_WRITE:
+    case EDGE_LINUX_IORING_OP_FADVISE:
+    case EDGE_LINUX_IORING_OP_SEND:
+    case EDGE_LINUX_IORING_OP_RECV:
+    case EDGE_LINUX_IORING_OP_SHUTDOWN:
+    case EDGE_LINUX_IORING_OP_FTRUNCATE:
+    case EDGE_LINUX_IORING_OP_BIND:
+    case EDGE_LINUX_IORING_OP_LISTEN:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static int32_t edge_linux_io_uring_execute(
+        edge_linux_syscall_context_t *context,
+        int32_t ring_id,
+        const struct edge_linux_io_uring_sqe *submission) {
+    struct edge_linux_io_uring_sqe resolved;
+    int32_t descriptor = -1;
+    int32_t result;
+
+    if (!(submission->flags & EDGE_LINUX_IOSQE_FIXED_FILE))
+        return edge_linux_io_uring_execute_descriptor(
+            context, ring_id, submission);
+    if ((submission->flags & ~EDGE_LINUX_IOSQE_KNOWN) ||
+        !edge_linux_io_uring_fixed_file_supported(submission->opcode))
+        return -EDGE_LINUX_EINVAL;
+    result = kernel_io_uring_fixed_file_materialize(
+        ring_id, (uint32_t)submission->descriptor, &descriptor);
+    if (result < 0) return result;
+    resolved = *submission;
+    resolved.flags &= ~EDGE_LINUX_IOSQE_FIXED_FILE;
+    resolved.descriptor = descriptor;
+    result = edge_linux_io_uring_execute_descriptor(
+        context, ring_id, &resolved);
+    (void)kernel_fd_close(descriptor);
+    return result;
 }
 
 static int64_t edge_linux_sys_io_uring_setup(
@@ -8954,6 +9008,30 @@ static int64_t edge_linux_sys_io_uring_register(
     ring_id = kernel_anonymous_fd_descriptor_object_id(
         descriptor, KERNEL_ANONYMOUS_FD_IO_URING);
     if (ring_id < 0) return -EDGE_LINUX_EBADF;
+    if (opcode == EDGE_LINUX_IORING_REGISTER_FILES) {
+        int32_t descriptors[KERNEL_IO_URING_MAX_FIXED_FILES];
+        if (!argument) return -EDGE_LINUX_EFAULT;
+        if (!operation_count) return -EDGE_LINUX_EINVAL;
+        if (operation_count > KERNEL_IO_URING_MAX_FIXED_FILES)
+            return -EDGE_LINUX_EMFILE;
+        for (uint32_t index = 0; index < operation_count; ++index) {
+            if (edge_linux_copy_from_user(
+                    context, &descriptors[index],
+                    argument + (uint64_t)index * sizeof(int32_t),
+                    sizeof(int32_t)) < 0)
+                return -EDGE_LINUX_EFAULT;
+            if (descriptors[index] >= 0 &&
+                kernel_anonymous_fd_descriptor_object_id(
+                    descriptors[index], KERNEL_ANONYMOUS_FD_IO_URING) >= 0)
+                return -EDGE_LINUX_EBADF;
+        }
+        return kernel_io_uring_files_register(
+            ring_id, descriptors, operation_count);
+    }
+    if (opcode == EDGE_LINUX_IORING_UNREGISTER_FILES) {
+        if (argument || operation_count) return -EDGE_LINUX_EINVAL;
+        return kernel_io_uring_files_unregister(ring_id);
+    }
     if (opcode == EDGE_LINUX_IORING_REGISTER_EVENTFD ||
         opcode == EDGE_LINUX_IORING_REGISTER_EVENTFD_ASYNC) {
         uint32_t event_descriptor;

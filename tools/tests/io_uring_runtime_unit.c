@@ -6,6 +6,7 @@
 #include <stdio.h>
 
 #include "kernel/io_uring_runtime.h"
+#include "kernel/fd_runtime.h"
 #include "kernel/io_runtime.h"
 #include "kernel/linux_errno.h"
 
@@ -15,6 +16,37 @@ static uint8_t g_pages[TEST_PAGE_COUNT][KERNEL_IO_URING_PAGE_SIZE]
     __attribute__((aligned(KERNEL_IO_URING_PAGE_SIZE)));
 static uint32_t g_references[TEST_PAGE_COUNT];
 static int32_t g_ready_descriptor = -1;
+static uint32_t g_fixed_file_references;
+
+int kernel_fd_operation_acquire(
+        int32_t descriptor, kernel_fd_operation_lease_t *lease) {
+    if (!lease || descriptor < 0 || descriptor == 99)
+        return -EDGE_LINUX_EBADF;
+    *(int32_t *)(void *)lease = descriptor + 1;
+    ++g_fixed_file_references;
+    return 0;
+}
+
+int kernel_fd_operation_release(kernel_fd_operation_lease_t *lease) {
+    if (!lease || *(int32_t *)(void *)lease <= 0)
+        return -EDGE_LINUX_EBADF;
+    *(int32_t *)(void *)lease = 0;
+    assert(g_fixed_file_references != 0u);
+    --g_fixed_file_references;
+    return 0;
+}
+
+int kernel_fd_operation_materialize(
+        const kernel_fd_operation_lease_t *source,
+        uint32_t descriptor_flags, int32_t *descriptor) {
+    int32_t stored;
+    assert(descriptor_flags == KERNEL_FD_CLOEXEC);
+    if (!source || !descriptor) return -EDGE_LINUX_EINVAL;
+    stored = *(const int32_t *)(const void *)source;
+    if (stored <= 0) return -EDGE_LINUX_EBADF;
+    *descriptor = stored - 1;
+    return 0;
+}
 
 int kernel_eventfd_retain(int event_id) {
     (void)event_id;
@@ -88,6 +120,8 @@ int main(void) {
     kernel_io_uring_page_t cq_ring;
     kernel_io_uring_page_t sqes;
     uint32_t pages;
+    const int32_t fixed_files[] = {4, -1, 7};
+    int32_t materialized = -1;
     int32_t ring_id;
 
     assert(kernel_io_uring_page_allocator_register(&allocator) == 0);
@@ -96,6 +130,23 @@ int main(void) {
     assert(parameters.cq_entries == 16);
     assert(parameters.sq_off.array == 64);
     assert(parameters.cq_off.cqes == 64);
+    assert(kernel_io_uring_files_register(
+               ring_id, fixed_files, 3u) == 0);
+    assert(g_fixed_file_references == 2u);
+    assert(kernel_io_uring_files_register(
+               ring_id, fixed_files, 3u) == -EDGE_LINUX_EBUSY);
+    assert(kernel_io_uring_fixed_file_materialize(
+               ring_id, 0u, &materialized) == 0 && materialized == 4);
+    assert(kernel_io_uring_fixed_file_materialize(
+               ring_id, 1u, &materialized) == -EDGE_LINUX_EBADF);
+    assert(kernel_io_uring_fixed_file_materialize(
+               ring_id, 2u, &materialized) == 0 && materialized == 7);
+    assert(kernel_io_uring_files_unregister(ring_id) == 0);
+    assert(g_fixed_file_references == 0u);
+    assert(kernel_io_uring_files_unregister(ring_id) ==
+           -EDGE_LINUX_ENXIO);
+    assert(kernel_io_uring_files_register(
+               ring_id, fixed_files, 3u) == 0);
     assert(kernel_io_uring_mmap_info(
                ring_id, KERNEL_IO_URING_OFF_SQ_RING,
                KERNEL_IO_URING_PAGE_SIZE, &pages) == 0);
@@ -151,6 +202,7 @@ int main(void) {
     test_page_release(0, &cq_ring);
     test_page_release(0, &sqes);
     kernel_io_uring_release(ring_id);
+    assert(g_fixed_file_references == 0u);
     for (uint32_t index = 0; index < TEST_PAGE_COUNT; ++index)
         assert(g_references[index] == 0);
 

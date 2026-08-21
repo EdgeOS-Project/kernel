@@ -64,7 +64,9 @@ struct linux_epoll_event {
 #define MAP_PRIVATE 2
 #define MAP_ANONYMOUS 0x20
 #define PAGE_SIZE 4096u
+#define ENXIO 6
 #define EBADF 9
+#define EBUSY 16
 #define EEXIST 17
 #define EINVAL 22
 #define ERANGE 34
@@ -75,7 +77,10 @@ struct linux_epoll_event {
 #define O_TRUNC 512u
 #define IORING_ENTER_GETEVENTS 1u
 #define IORING_ENTER_EXT_ARG (1u << 3)
+#define IOSQE_FIXED_FILE (1u << 0)
 #define IOSQE_IO_LINK (1u << 2)
+#define IORING_REGISTER_FILES 2u
+#define IORING_UNREGISTER_FILES 3u
 #define IORING_REGISTER_PROBE 8u
 #define IORING_REGISTER_EVENTFD 4u
 #define IORING_UNREGISTER_EVENTFD 5u
@@ -455,6 +460,7 @@ static int run_tests(void) {
     };
     uint64_t temporary_signal_mask = 0;
     uint32_t futex_word = 0;
+    int32_t fixed_files[2] = {-1, -1};
     int failures = 0;
 
     memset(&parameters, 0, sizeof(parameters));
@@ -1503,6 +1509,54 @@ static int run_tests(void) {
         0x4655544558424144ull, "submit invalid futex wake", &path_result);
     failures += expect("invalid futex wake completion", path_result,
                        -EINVAL);
+
+    fixed_files[0] = (int32_t)descriptor;
+    failures += expect("reject ring as fixed file", raw_syscall6(
+        SYS_io_uring_register, descriptor, IORING_REGISTER_FILES,
+        (long)fixed_files, 1, 0, 0), -EBADF);
+    event_descriptor = raw_syscall6(
+        SYS_eventfd2, 0, 0, 0, 0, 0, 0);
+    failures += expect_true("fixed file eventfd", event_descriptor >= 0);
+    if (event_descriptor >= 0) {
+        fixed_files[0] = (int32_t)event_descriptor;
+        fixed_files[1] = -1;
+        failures += expect("register fixed files", raw_syscall6(
+            SYS_io_uring_register, descriptor, IORING_REGISTER_FILES,
+            (long)fixed_files, 2, 0, 0), 0);
+        failures += expect("reject duplicate fixed files", raw_syscall6(
+            SYS_io_uring_register, descriptor, IORING_REGISTER_FILES,
+            (long)fixed_files, 2, 0, 0), -EBUSY);
+        (void)raw_syscall6(
+            SYS_close, event_descriptor, 0, 0, 0, 0, 0);
+        event_descriptor = -1;
+        event_value = 1u;
+        memset(&path_request, 0, sizeof(path_request));
+        path_request.opcode = IORING_OP_WRITE;
+        path_request.flags = IOSQE_FIXED_FILE;
+        path_request.descriptor = 0;
+        path_request.offset = UINT64_MAX;
+        path_request.address = (uint64_t)(uintptr_t)&event_value;
+        path_request.length = sizeof(event_value);
+        failures += submit_one(
+            descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &path_request,
+            0x464958454446494cull, "submit fixed file write", &path_result);
+        failures += expect("fixed file write completion", path_result,
+                           sizeof(event_value));
+        path_request.descriptor = 1;
+        failures += submit_one(
+            descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &path_request,
+            0x4649584544535041ull, "submit sparse fixed file", &path_result);
+        failures += expect("sparse fixed file completion", path_result,
+                           -EBADF);
+        failures += expect("unregister fixed files", raw_syscall6(
+            SYS_io_uring_register, descriptor, IORING_UNREGISTER_FILES,
+            0, 0, 0, 0), 0);
+        failures += expect("repeat unregister fixed files", raw_syscall6(
+            SYS_io_uring_register, descriptor, IORING_UNREGISTER_FILES,
+            0, 0, 0, 0), -ENXIO);
+    }
 
     (void)raw_syscall6(SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
     (void)raw_syscall6(SYS_munmap, (long)cq_ring, PAGE_SIZE, 0, 0, 0, 0);

@@ -5,6 +5,7 @@
 
 #include "kernel/io_uring_runtime.h"
 #include "kernel/eventfd.h"
+#include "kernel/fd_runtime.h"
 #include "kernel/io_runtime.h"
 #include "kernel/linux_errno.h"
 #include "string.h"
@@ -46,6 +47,13 @@
 #define IORING_CQ_FLAGS_OFFSET       20u
 #define IORING_CQ_CQES_OFFSET        64u
 
+#define IO_URING_FIXED_FILES_PER_PAGE \
+    (KERNEL_IO_URING_PAGE_SIZE / sizeof(kernel_fd_operation_lease_t))
+#define IO_URING_FIXED_FILE_PAGES \
+    ((KERNEL_IO_URING_MAX_FIXED_FILES + \
+      IO_URING_FIXED_FILES_PER_PAGE - 1u) / \
+     IO_URING_FIXED_FILES_PER_PAGE)
+
 typedef struct kernel_io_uring_pending {
     uint8_t used;
     uint8_t kind;
@@ -78,6 +86,10 @@ typedef struct kernel_io_uring {
     kernel_io_uring_page_t
         cq_ring[KERNEL_IO_URING_MAX_CQ_RING_PAGES];
     kernel_io_uring_page_t sqes[KERNEL_IO_URING_MAX_SQE_PAGES];
+    kernel_io_uring_page_t fixed_file_pages[IO_URING_FIXED_FILE_PAGES];
+    uint8_t fixed_file_used[KERNEL_IO_URING_MAX_FIXED_FILES];
+    uint32_t fixed_file_count;
+    uint32_t fixed_file_page_count;
     kernel_io_uring_pending_t pending[KERNEL_IO_URING_MAX_PENDING];
 } kernel_io_uring_t;
 
@@ -146,12 +158,37 @@ static void io_uring_release_pages(kernel_io_uring_page_t *pages,
     }
 }
 
+static kernel_fd_operation_lease_t *io_uring_fixed_file_lease(
+        kernel_io_uring_page_t *pages, uint32_t index) {
+    uint32_t page = index / IO_URING_FIXED_FILES_PER_PAGE;
+    uint32_t within = index % IO_URING_FIXED_FILES_PER_PAGE;
+
+    if (page >= IO_URING_FIXED_FILE_PAGES || !pages[page].address)
+        return 0;
+    return &((kernel_fd_operation_lease_t *)pages[page].address)[within];
+}
+
+static void io_uring_release_fixed_files(
+        kernel_io_uring_page_t *pages, const uint8_t *used,
+        uint32_t count, uint32_t page_count) {
+    for (uint32_t index = 0; index < count; ++index) {
+        kernel_fd_operation_lease_t *lease;
+        if (!used[index]) continue;
+        lease = io_uring_fixed_file_lease(pages, index);
+        if (lease) (void)kernel_fd_operation_release(lease);
+    }
+    io_uring_release_pages(pages, page_count);
+}
+
 static void io_uring_release_storage(kernel_io_uring_t *ring) {
     if (ring->event_id >= 0)
         kernel_eventfd_release(ring->event_id);
     io_uring_release_pages(ring->sq_ring, ring->sq_ring_pages);
     io_uring_release_pages(ring->cq_ring, ring->cq_ring_pages);
     io_uring_release_pages(ring->sqes, ring->sqe_pages);
+    io_uring_release_fixed_files(
+        ring->fixed_file_pages, ring->fixed_file_used,
+        ring->fixed_file_count, ring->fixed_file_page_count);
 }
 
 static kernel_io_uring_t *io_uring_lookup_locked(int32_t ring_id) {
@@ -373,6 +410,123 @@ int kernel_io_uring_eventfd_unregister(int32_t ring_id) {
     }
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     if (event_id >= 0) kernel_eventfd_release(event_id);
+    return result;
+}
+
+int kernel_io_uring_files_register(int32_t ring_id,
+                                   const int32_t *descriptors,
+                                   uint32_t count) {
+    kernel_io_uring_page_t pages[IO_URING_FIXED_FILE_PAGES] = {{0}};
+    uint8_t used[KERNEL_IO_URING_MAX_FIXED_FILES] = {0};
+    kernel_io_uring_t *ring;
+    uint32_t page_count;
+    uint64_t flags;
+    int result;
+
+    if (!descriptors || !count) return -EDGE_LINUX_EINVAL;
+    if (count > KERNEL_IO_URING_MAX_FIXED_FILES)
+        return -EDGE_LINUX_EMFILE;
+    page_count = (count + IO_URING_FIXED_FILES_PER_PAGE - 1u) /
+                 IO_URING_FIXED_FILES_PER_PAGE;
+    result = io_uring_allocate_pages(pages, page_count);
+    if (result < 0) return result;
+    for (uint32_t index = 0; index < count; ++index) {
+        kernel_fd_operation_lease_t *lease;
+        if (descriptors[index] == -1) continue;
+        if (descriptors[index] < 0) {
+            result = -EDGE_LINUX_EBADF;
+            goto release_new;
+        }
+        lease = io_uring_fixed_file_lease(pages, index);
+        if (!lease) {
+            result = -EDGE_LINUX_ENOMEM;
+            goto release_new;
+        }
+        result = kernel_fd_operation_acquire(descriptors[index], lease);
+        if (result < 0) goto release_new;
+        used[index] = 1u;
+    }
+
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+    } else if (ring->fixed_file_count) {
+        result = -EDGE_LINUX_EBUSY;
+    } else {
+        memcpy(ring->fixed_file_pages, pages, sizeof(pages));
+        memcpy(ring->fixed_file_used, used, sizeof(used));
+        ring->fixed_file_count = count;
+        ring->fixed_file_page_count = page_count;
+        memset(pages, 0, sizeof(pages));
+        memset(used, 0, sizeof(used));
+        result = 0;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+
+release_new:
+    if (result < 0)
+        io_uring_release_fixed_files(pages, used, count, page_count);
+    return result;
+}
+
+int kernel_io_uring_files_unregister(int32_t ring_id) {
+    kernel_io_uring_page_t pages[IO_URING_FIXED_FILE_PAGES] = {{0}};
+    uint8_t used[KERNEL_IO_URING_MAX_FIXED_FILES] = {0};
+    kernel_io_uring_t *ring;
+    uint32_t count = 0u;
+    uint32_t page_count = 0u;
+    uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
+    int result = 0;
+
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+    } else if (!ring->fixed_file_count) {
+        result = -EDGE_LINUX_ENXIO;
+    } else {
+        memcpy(pages, ring->fixed_file_pages, sizeof(pages));
+        memcpy(used, ring->fixed_file_used, sizeof(used));
+        count = ring->fixed_file_count;
+        page_count = ring->fixed_file_page_count;
+        memset(ring->fixed_file_pages, 0,
+               sizeof(ring->fixed_file_pages));
+        memset(ring->fixed_file_used, 0,
+               sizeof(ring->fixed_file_used));
+        ring->fixed_file_count = 0u;
+        ring->fixed_file_page_count = 0u;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (result == 0)
+        io_uring_release_fixed_files(pages, used, count, page_count);
+    return result;
+}
+
+int kernel_io_uring_fixed_file_materialize(int32_t ring_id,
+                                           uint32_t index,
+                                           int32_t *descriptor) {
+    kernel_io_uring_t *ring;
+    kernel_fd_operation_lease_t *lease;
+    uint64_t flags;
+    int result;
+
+    if (!descriptor) return -EDGE_LINUX_EINVAL;
+    *descriptor = -1;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+    } else if (index >= ring->fixed_file_count ||
+               !ring->fixed_file_used[index]) {
+        result = -EDGE_LINUX_EBADF;
+    } else {
+        lease = io_uring_fixed_file_lease(
+            ring->fixed_file_pages, index);
+        result = lease ? kernel_fd_operation_materialize(
+                             lease, KERNEL_FD_CLOEXEC, descriptor) :
+                         -EDGE_LINUX_EBADF;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
     return result;
 }
 

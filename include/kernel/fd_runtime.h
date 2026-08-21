@@ -187,6 +187,9 @@ int kernel_fd_operation_transfer_from_backend(
     kernel_fd_operation_lease_t *destination);
 int kernel_fd_operation_release(
     kernel_fd_operation_lease_t *lease);
+int kernel_fd_operation_materialize(
+    const kernel_fd_operation_lease_t *source,
+    uint32_t descriptor_flags, int32_t *descriptor);
 
 #define KERNEL_FD_TRANSFER_MAX 253u
 #define KERNEL_FD_TRANSFER_TARGET_STORAGE_SIZE 64u

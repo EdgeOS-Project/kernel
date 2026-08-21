@@ -16,6 +16,7 @@
 #define KERNEL_IO_URING_MAX_CQ_RING_PAGES 3u
 #define KERNEL_IO_URING_MAX_SQE_PAGES 4u
 #define KERNEL_IO_URING_MAX_PENDING 128u
+#define KERNEL_IO_URING_MAX_FIXED_FILES 256u
 
 #define KERNEL_IO_URING_OFF_SQ_RING 0x00000000ull
 #define KERNEL_IO_URING_OFF_CQ_RING 0x08000000ull
@@ -45,6 +46,13 @@ int kernel_io_uring_disabled(int32_t ring_id);
 int kernel_io_uring_eventfd_register(int32_t ring_id, int32_t event_id,
                                      int asynchronous_only);
 int kernel_io_uring_eventfd_unregister(int32_t ring_id);
+int kernel_io_uring_files_register(int32_t ring_id,
+                                   const int32_t *descriptors,
+                                   uint32_t count);
+int kernel_io_uring_files_unregister(int32_t ring_id);
+int kernel_io_uring_fixed_file_materialize(int32_t ring_id,
+                                           uint32_t index,
+                                           int32_t *descriptor);
 int kernel_io_uring_timeout_add(int32_t ring_id, uint64_t user_data,
                                 uint64_t deadline_us,
                                 uint32_t completion_target,

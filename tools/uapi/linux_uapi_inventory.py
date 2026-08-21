@@ -43,18 +43,21 @@ EDGEOS_ASSESSMENTS = [
             "FSETXATTR, SETXATTR, FGETXATTR, GETXATTR and FTRUNCATE through shared VFS handlers",
             "SYNC_FILE_RANGE through the shared bounded writeback policy",
             "FUTEX_WAKE through the shared futex2 handler",
+            "fixed-file registration, sparse tables and retained descriptor lifetime",
         ],
         "missing": [
             "asynchronous worker execution",
-            "fixed files and buffers",
+            "fixed-file updates and registered-ring descriptor management",
+            "fixed buffers with user-page pinning",
             "multishot poll and timeout update operations",
             "fully interruptible enter suspension and extended wait deadlines",
-            "descriptor leases across close and reuse",
+            "pending asynchronous descriptor leases across close and reuse",
             "remaining supported VFS and socket operations",
             "ia32 and x32 compatibility layouts",
         ],
         "runtime_tests": [
             "tools/tests/io_uring_abi_probe.c",
+            "tools/tests/io_uring_fixed_files_abi_probe.c",
             "tools/tests/io_uring_runtime_unit.c",
         ],
         "linux_oracle": {
@@ -67,7 +70,8 @@ EDGEOS_ASSESSMENTS = [
                 "madvise, epoll_ctl, tee, renameat, unlinkat, mkdirat, "
                 "symlinkat, linkat, socket, bind, listen, fsetxattr, "
                 "setxattr, fgetxattr, getxattr, ftruncate, sync_file_range, "
-                "futex_wake and operation probe"
+                "futex_wake, fixed-file registration and retained lifetime, "
+                "and operation probe"
             ),
         },
     },

@@ -1382,6 +1382,46 @@ cleanup:
     return 0;
 }
 
+int kernel_fd_operation_materialize(
+        const kernel_fd_operation_lease_t *source,
+        uint32_t descriptor_flags, int32_t *descriptor) {
+    kernel_fd_transfer_target_t target = {0};
+    int target_active = 0;
+    int prepared = 0;
+    int published = 0;
+    int status;
+    int cleanup_status;
+
+    if (!source || !descriptor) return -EDGE_LINUX_EINVAL;
+    *descriptor = -1;
+    status = kernel_fd_transfer_target_capture(&target);
+    if (status < 0) return status;
+    target_active = 1;
+    status = kernel_fd_transfer_target_prepare(
+        &target, source, descriptor_flags, descriptor);
+    if (status < 0) goto cleanup;
+    prepared = 1;
+    status = kernel_fd_transfer_target_publish_many(
+        &target, descriptor, 1u);
+    if (status < 0) goto cleanup;
+    prepared = 0;
+    published = 1;
+
+cleanup:
+    if (prepared) {
+        cleanup_status = kernel_fd_transfer_target_abort_all(&target);
+        if (!published && status >= 0 && cleanup_status < 0)
+            status = cleanup_status;
+    }
+    if (target_active) {
+        cleanup_status = kernel_fd_transfer_target_release(&target);
+        if (!published && status >= 0 && cleanup_status < 0)
+            status = cleanup_status;
+    }
+    if (status < 0) *descriptor = -1;
+    return status;
+}
+
 int kernel_process_fd_description_id(int32_t pid, int32_t descriptor,
                                      uint64_t *description_id) {
     kernel_fd_operation_lease_t lease = {0};
