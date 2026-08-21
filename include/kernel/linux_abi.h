@@ -671,6 +671,12 @@ struct edge_linux_io_uring_files_update {
     uint64_t descriptors;
 };
 
+struct edge_linux_io_uring_resource_update {
+    uint32_t offset;
+    uint32_t reserved;
+    uint64_t data;
+};
+
 struct edge_linux_io_uring_resource_register {
     uint32_t count;
     uint32_t flags;
@@ -748,6 +754,8 @@ _Static_assert(sizeof(struct edge_linux_io_uring_getevents_arg) == 24,
                "Linux io_uring getevents argument size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_files_update) == 16,
                "Linux io_uring files update size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_uring_resource_update) == 16,
+               "Linux io_uring resource update size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_resource_register) == 32,
                "Linux io_uring resource registration size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_resource_update2) == 32,

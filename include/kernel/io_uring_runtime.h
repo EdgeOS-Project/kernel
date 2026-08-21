@@ -17,6 +17,8 @@
 #define KERNEL_IO_URING_MAX_SQE_PAGES 4u
 #define KERNEL_IO_URING_MAX_PENDING 128u
 #define KERNEL_IO_URING_MAX_FIXED_FILES 256u
+#define KERNEL_IO_URING_REGISTERED_RINGS 16u
+#define KERNEL_IO_URING_REGISTERED_RING_ALLOC UINT32_MAX
 #define KERNEL_IO_URING_REGISTER_FILES_SKIP (-2)
 
 #define KERNEL_IO_URING_OFF_SQ_RING 0x00000000ull
@@ -42,6 +44,13 @@ int kernel_io_uring_create(uint32_t entries,
                            int32_t *ring_id);
 int kernel_io_uring_retain(int32_t ring_id);
 void kernel_io_uring_release(int32_t ring_id);
+int kernel_io_uring_task_ring_register(int32_t task_id, int32_t ring_id,
+                                       uint32_t requested,
+                                       uint32_t *assigned);
+int kernel_io_uring_task_ring_unregister(int32_t task_id, uint32_t index);
+int kernel_io_uring_task_ring_lookup(int32_t task_id, uint32_t index,
+                                     int32_t *ring_id);
+void kernel_io_uring_task_release(int32_t task_id);
 int kernel_io_uring_enable(int32_t ring_id);
 int kernel_io_uring_disabled(int32_t ring_id);
 int kernel_io_uring_eventfd_register(int32_t ring_id, int32_t event_id,

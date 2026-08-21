@@ -9,6 +9,7 @@
 #include "kernel/fd_runtime.h"
 #include "kernel/io_runtime.h"
 #include "kernel/linux_errno.h"
+#include "kernel/runtime_limits.h"
 #include "string.h"
 #include "sys/spinlock.h"
 
@@ -95,6 +96,12 @@ typedef struct kernel_io_uring {
     kernel_io_uring_pending_t pending[KERNEL_IO_URING_MAX_PENDING];
 } kernel_io_uring_t;
 
+typedef struct kernel_io_uring_task_registry {
+    uint8_t used;
+    int32_t task_id;
+    int32_t ring_ids[KERNEL_IO_URING_REGISTERED_RINGS];
+} kernel_io_uring_task_registry_t;
+
 static int io_uring_completion_add_locked(
     kernel_io_uring_t *ring, uint64_t user_data,
     int32_t result, uint32_t cqe_flags);
@@ -112,8 +119,39 @@ static int32_t io_uring_event_retain_locked(
 #define IO_URING_PENDING_POLL    2u
 
 static kernel_io_uring_t g_io_urings[KERNEL_IO_URING_MAX_RINGS];
+static kernel_io_uring_task_registry_t
+    g_io_uring_task_registries[EDGE_RUNTIME_MAX_TASKS];
 static kernel_io_uring_page_allocator_t g_io_uring_allocator;
 static spinlock_t g_io_uring_lock;
+
+static kernel_io_uring_task_registry_t *io_uring_task_registry_locked(
+        int32_t task_id, int create) {
+    kernel_io_uring_task_registry_t *free_registry = 0;
+
+    for (uint32_t index = 0; index < EDGE_RUNTIME_MAX_TASKS; ++index) {
+        kernel_io_uring_task_registry_t *registry =
+            &g_io_uring_task_registries[index];
+        if (registry->used && registry->task_id == task_id)
+            return registry;
+        if (!registry->used && !free_registry) free_registry = registry;
+    }
+    if (!create || !free_registry) return 0;
+    memset(free_registry, 0, sizeof(*free_registry));
+    free_registry->used = 1u;
+    free_registry->task_id = task_id;
+    for (uint32_t index = 0;
+         index < KERNEL_IO_URING_REGISTERED_RINGS; ++index)
+        free_registry->ring_ids[index] = -1;
+    return free_registry;
+}
+
+static int io_uring_task_registry_empty(
+        const kernel_io_uring_task_registry_t *registry) {
+    for (uint32_t index = 0;
+         index < KERNEL_IO_URING_REGISTERED_RINGS; ++index)
+        if (registry->ring_ids[index] >= 0) return 0;
+    return 1;
+}
 
 static uint32_t io_uring_page_count(uint64_t bytes) {
     return (uint32_t)((bytes + KERNEL_IO_URING_PAGE_SIZE - 1u) /
@@ -357,6 +395,116 @@ void kernel_io_uring_release(int32_t ring_id) {
         memset(ring, 0, sizeof(*ring));
     }
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
+}
+
+int kernel_io_uring_task_ring_register(int32_t task_id, int32_t ring_id,
+                                       uint32_t requested,
+                                       uint32_t *assigned) {
+    kernel_io_uring_task_registry_t *registry;
+    uint32_t slot;
+    uint64_t flags;
+    int result;
+
+    if (task_id <= 0 || !assigned)
+        return -EDGE_LINUX_EINVAL;
+    if (requested != KERNEL_IO_URING_REGISTERED_RING_ALLOC &&
+        requested >= KERNEL_IO_URING_REGISTERED_RINGS)
+        return -EDGE_LINUX_EINVAL;
+    result = kernel_io_uring_retain(ring_id);
+    if (result < 0) return result;
+
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    registry = io_uring_task_registry_locked(task_id, 1);
+    if (!registry) {
+        result = -EDGE_LINUX_ENOMEM;
+        goto unlock;
+    }
+    if (requested == KERNEL_IO_URING_REGISTERED_RING_ALLOC) {
+        for (slot = 0; slot < KERNEL_IO_URING_REGISTERED_RINGS; ++slot)
+            if (registry->ring_ids[slot] < 0) break;
+        if (slot == KERNEL_IO_URING_REGISTERED_RINGS) {
+            result = -EDGE_LINUX_EBUSY;
+            goto unlock;
+        }
+    } else {
+        slot = requested;
+        if (registry->ring_ids[slot] >= 0) {
+            result = -EDGE_LINUX_EBUSY;
+            goto unlock;
+        }
+    }
+    registry->ring_ids[slot] = ring_id;
+    *assigned = slot;
+    result = 0;
+unlock:
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (result < 0) kernel_io_uring_release(ring_id);
+    return result;
+}
+
+int kernel_io_uring_task_ring_unregister(int32_t task_id, uint32_t index) {
+    kernel_io_uring_task_registry_t *registry;
+    int32_t ring_id = -1;
+    uint64_t flags;
+
+    if (task_id <= 0 || index >= KERNEL_IO_URING_REGISTERED_RINGS)
+        return -EDGE_LINUX_EINVAL;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    registry = io_uring_task_registry_locked(task_id, 0);
+    if (registry) {
+        ring_id = registry->ring_ids[index];
+        registry->ring_ids[index] = -1;
+        if (io_uring_task_registry_empty(registry))
+            memset(registry, 0, sizeof(*registry));
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (ring_id >= 0) kernel_io_uring_release(ring_id);
+    return 0;
+}
+
+int kernel_io_uring_task_ring_lookup(int32_t task_id, uint32_t index,
+                                     int32_t *ring_id) {
+    kernel_io_uring_task_registry_t *registry;
+    uint64_t flags;
+    int result;
+
+    if (task_id <= 0 || !ring_id ||
+        index >= KERNEL_IO_URING_REGISTERED_RINGS)
+        return -EDGE_LINUX_EINVAL;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    registry = io_uring_task_registry_locked(task_id, 0);
+    if (!registry || registry->ring_ids[index] < 0) {
+        result = -EDGE_LINUX_EBADF;
+    } else {
+        *ring_id = registry->ring_ids[index];
+        result = 0;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+void kernel_io_uring_task_release(int32_t task_id) {
+    kernel_io_uring_task_registry_t *registry;
+    int32_t ring_ids[KERNEL_IO_URING_REGISTERED_RINGS];
+    uint64_t flags;
+
+    if (task_id <= 0) return;
+    for (uint32_t index = 0;
+         index < KERNEL_IO_URING_REGISTERED_RINGS; ++index)
+        ring_ids[index] = -1;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    registry = io_uring_task_registry_locked(task_id, 0);
+    if (registry) {
+        for (uint32_t index = 0;
+             index < KERNEL_IO_URING_REGISTERED_RINGS; ++index)
+            ring_ids[index] = registry->ring_ids[index];
+        memset(registry, 0, sizeof(*registry));
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    for (uint32_t index = 0;
+         index < KERNEL_IO_URING_REGISTERED_RINGS; ++index)
+        if (ring_ids[index] >= 0)
+            kernel_io_uring_release(ring_ids[index]);
 }
 
 int kernel_io_uring_enable(int32_t ring_id) {

@@ -8109,10 +8109,12 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_ENTER_GETEVENTS (1u << 0)
 #define EDGE_LINUX_IORING_ENTER_SQ_WAKEUP (1u << 1)
 #define EDGE_LINUX_IORING_ENTER_EXT_ARG   (1u << 3)
+#define EDGE_LINUX_IORING_ENTER_REGISTERED_RING (1u << 4)
 #define EDGE_LINUX_IORING_ENTER_SUPPORTED \
     (EDGE_LINUX_IORING_ENTER_GETEVENTS | \
      EDGE_LINUX_IORING_ENTER_SQ_WAKEUP | \
-     EDGE_LINUX_IORING_ENTER_EXT_ARG)
+     EDGE_LINUX_IORING_ENTER_EXT_ARG | \
+     EDGE_LINUX_IORING_ENTER_REGISTERED_RING)
 
 #define EDGE_LINUX_IORING_REGISTER_EVENTFD      4u
 #define EDGE_LINUX_IORING_UNREGISTER_EVENTFD    5u
@@ -8124,6 +8126,9 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_REGISTER_ENABLE_RINGS 12u
 #define EDGE_LINUX_IORING_REGISTER_FILES2       13u
 #define EDGE_LINUX_IORING_REGISTER_FILES_UPDATE2 14u
+#define EDGE_LINUX_IORING_REGISTER_RING_FDS      20u
+#define EDGE_LINUX_IORING_UNREGISTER_RING_FDS    21u
+#define EDGE_LINUX_IORING_REGISTER_USE_REGISTERED_RING (1u << 31)
 #define EDGE_LINUX_IORING_RESOURCE_SPARSE       (1u << 0)
 #define EDGE_LINUX_IO_URING_OP_SUPPORTED        1u
 #define EDGE_LINUX_IORING_FSYNC_DATASYNC        1u
@@ -8793,6 +8798,23 @@ static int64_t edge_linux_sys_io_uring_setup(
     return descriptor;
 }
 
+static int edge_linux_io_uring_resolve_ring_descriptor(
+        int32_t descriptor, int registered, int32_t *ring_id) {
+    int32_t resolved;
+
+    if (!ring_id) return -EDGE_LINUX_EINVAL;
+    if (registered)
+        return kernel_io_uring_task_ring_lookup(
+            kernel_current_pid(), (uint32_t)descriptor, ring_id);
+    resolved = kernel_anonymous_fd_descriptor_object_id(
+        descriptor, KERNEL_ANONYMOUS_FD_IO_URING);
+    if (resolved < 0)
+        return kernel_fd_is_open(descriptor) ?
+               -EDGE_LINUX_EOPNOTSUPP : -EDGE_LINUX_EBADF;
+    *ring_id = resolved;
+    return 0;
+}
+
 static int64_t edge_linux_sys_io_uring_enter(
         edge_linux_syscall_context_t *context) {
     kernel_signal_runtime_state_t signal_state;
@@ -8811,6 +8833,7 @@ static int64_t edge_linux_sys_io_uring_enter(
     int use_temporary_mask = 0;
     kernel_linux_thread_state_t *thread_state = 0;
     int64_t final_result;
+    int result;
 
     if (context->arguments[1] != to_submit ||
         context->arguments[2] != minimum ||
@@ -8851,9 +8874,11 @@ static int64_t edge_linux_sys_io_uring_enter(
             return -EDGE_LINUX_EFAULT;
         use_temporary_mask = 1;
     }
-    ring_id = kernel_anonymous_fd_descriptor_object_id(
-        descriptor, KERNEL_ANONYMOUS_FD_IO_URING);
-    if (ring_id < 0) return -EDGE_LINUX_EBADF;
+    result = edge_linux_io_uring_resolve_ring_descriptor(
+        descriptor,
+        (flags & EDGE_LINUX_IORING_ENTER_REGISTERED_RING) != 0,
+        &ring_id);
+    if (result < 0) return result;
     if (kernel_io_uring_disabled(ring_id) != 0)
         return -EDGE_LINUX_EBADFD;
     if (kernel_arch_current_linux_thread_state(&thread_state) == 0 &&
@@ -9043,6 +9068,85 @@ static int64_t edge_linux_io_uring_files_update_user(
         ring_id, offset, descriptors, user_tags ? tags : 0, copied);
 }
 
+static int64_t edge_linux_io_uring_register_ring_fds(
+        edge_linux_syscall_context_t *context, uint64_t argument,
+        uint32_t operation_count) {
+    uint32_t processed = 0u;
+    int result = 0;
+    int32_t task_id = kernel_current_pid();
+
+    if (!operation_count ||
+        operation_count > KERNEL_IO_URING_REGISTERED_RINGS)
+        return -EDGE_LINUX_EINVAL;
+    if (!argument) return -EDGE_LINUX_EFAULT;
+    for (; processed < operation_count; ++processed) {
+        struct edge_linux_io_uring_resource_update update;
+        int32_t target_ring_id;
+        uint32_t assigned;
+
+        if (edge_linux_copy_from_user(
+                context, &update,
+                argument + (uint64_t)processed * sizeof(update),
+                sizeof(update)) < 0) {
+            result = -EDGE_LINUX_EFAULT;
+            break;
+        }
+        if (update.reserved) {
+            result = -EDGE_LINUX_EINVAL;
+            break;
+        }
+        result = edge_linux_io_uring_resolve_ring_descriptor(
+            (int32_t)(uint32_t)update.data, 0, &target_ring_id);
+        if (result < 0) break;
+        result = kernel_io_uring_task_ring_register(
+            task_id, target_ring_id, update.offset, &assigned);
+        if (result < 0) break;
+        update.offset = assigned;
+        if (edge_linux_copy_to_user(
+                context,
+                argument + (uint64_t)processed * sizeof(update),
+                &update, sizeof(update)) < 0) {
+            (void)kernel_io_uring_task_ring_unregister(task_id, assigned);
+            result = -EDGE_LINUX_EFAULT;
+            break;
+        }
+    }
+    return processed ? (int64_t)processed : (int64_t)result;
+}
+
+static int64_t edge_linux_io_uring_unregister_ring_fds(
+        edge_linux_syscall_context_t *context, uint64_t argument,
+        uint32_t operation_count) {
+    uint32_t processed = 0u;
+    int result = 0;
+    int32_t task_id = kernel_current_pid();
+
+    if (!operation_count ||
+        operation_count > KERNEL_IO_URING_REGISTERED_RINGS)
+        return -EDGE_LINUX_EINVAL;
+    if (!argument) return -EDGE_LINUX_EFAULT;
+    for (; processed < operation_count; ++processed) {
+        struct edge_linux_io_uring_resource_update update;
+
+        if (edge_linux_copy_from_user(
+                context, &update,
+                argument + (uint64_t)processed * sizeof(update),
+                sizeof(update)) < 0) {
+            result = -EDGE_LINUX_EFAULT;
+            break;
+        }
+        if (update.reserved || update.data ||
+            update.offset >= KERNEL_IO_URING_REGISTERED_RINGS) {
+            result = -EDGE_LINUX_EINVAL;
+            break;
+        }
+        result = kernel_io_uring_task_ring_unregister(
+            task_id, update.offset);
+        if (result < 0) break;
+    }
+    return processed ? (int64_t)processed : (int64_t)result;
+}
+
 static int64_t edge_linux_sys_io_uring_register(
         edge_linux_syscall_context_t *context) {
     struct edge_linux_io_uring_probe probe;
@@ -9051,14 +9155,24 @@ static int64_t edge_linux_sys_io_uring_register(
     uint32_t operation_count = (uint32_t)context->arguments[3];
     uint64_t argument = context->arguments[2];
     int32_t ring_id;
+    int result;
+    int registered;
 
     if (context->arguments[1] != opcode ||
-        context->arguments[3] != operation_count ||
-        (opcode & (1u << 31)))
+        context->arguments[3] != operation_count)
         return -EDGE_LINUX_EINVAL;
-    ring_id = kernel_anonymous_fd_descriptor_object_id(
-        descriptor, KERNEL_ANONYMOUS_FD_IO_URING);
-    if (ring_id < 0) return -EDGE_LINUX_EBADF;
+    registered =
+        (opcode & EDGE_LINUX_IORING_REGISTER_USE_REGISTERED_RING) != 0;
+    opcode &= ~EDGE_LINUX_IORING_REGISTER_USE_REGISTERED_RING;
+    result = edge_linux_io_uring_resolve_ring_descriptor(
+        descriptor, registered, &ring_id);
+    if (result < 0) return result;
+    if (opcode == EDGE_LINUX_IORING_REGISTER_RING_FDS)
+        return edge_linux_io_uring_register_ring_fds(
+            context, argument, operation_count);
+    if (opcode == EDGE_LINUX_IORING_UNREGISTER_RING_FDS)
+        return edge_linux_io_uring_unregister_ring_fds(
+            context, argument, operation_count);
     if (opcode == EDGE_LINUX_IORING_REGISTER_FILES) {
         int32_t descriptors[KERNEL_IO_URING_MAX_FIXED_FILES];
         if (!argument) return -EDGE_LINUX_EFAULT;

@@ -132,6 +132,9 @@ int main(void) {
     };
     int32_t materialized = -1;
     int32_t ring_id;
+    int32_t second_ring_id;
+    int32_t looked_up_ring = -1;
+    uint32_t registered_slot = UINT32_MAX;
 
     assert(kernel_io_uring_page_allocator_register(&allocator) == 0);
     assert(kernel_io_uring_create(8, &parameters, &ring_id) == 0);
@@ -139,6 +142,36 @@ int main(void) {
     assert(parameters.cq_entries == 16);
     assert(parameters.sq_off.array == 64);
     assert(parameters.cq_off.cqes == 64);
+    {
+        struct edge_linux_io_uring_params second_parameters = {0};
+        assert(kernel_io_uring_create(
+                   2, &second_parameters, &second_ring_id) == 0);
+    }
+    assert(kernel_io_uring_task_ring_register(
+               41, second_ring_id, 3u, &registered_slot) == 0);
+    assert(registered_slot == 3u);
+    assert(kernel_io_uring_task_ring_lookup(
+               41, 3u, &looked_up_ring) == 0);
+    assert(looked_up_ring == second_ring_id);
+    assert(kernel_io_uring_task_ring_register(
+               41, second_ring_id, 3u, &registered_slot) ==
+           -EDGE_LINUX_EBUSY);
+    assert(kernel_io_uring_task_ring_register(
+               41, second_ring_id,
+               KERNEL_IO_URING_REGISTERED_RING_ALLOC,
+               &registered_slot) == 0);
+    assert(registered_slot == 0u);
+    assert(kernel_io_uring_task_ring_unregister(41, 3u) == 0);
+    assert(kernel_io_uring_task_ring_lookup(
+               41, 3u, &looked_up_ring) == -EDGE_LINUX_EBADF);
+    assert(kernel_io_uring_task_ring_unregister(41, 3u) == 0);
+    assert(kernel_io_uring_task_ring_lookup(
+               41, KERNEL_IO_URING_REGISTERED_RINGS,
+               &looked_up_ring) == -EDGE_LINUX_EINVAL);
+    kernel_io_uring_task_release(41);
+    assert(kernel_io_uring_task_ring_lookup(
+               41, 0u, &looked_up_ring) == -EDGE_LINUX_EBADF);
+    kernel_io_uring_release(second_ring_id);
     assert(kernel_io_uring_files_register(
                ring_id, fixed_files, 3u) == 0);
     assert(g_fixed_file_references == 2u);

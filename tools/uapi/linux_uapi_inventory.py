@@ -46,10 +46,10 @@ EDGEOS_ASSESSMENTS = [
             "fixed-file registration, sparse tables and retained descriptor lifetime",
             "fixed-file replacement, clearing and skip updates with partial progress",
             "FILES2 sparse registration, UPDATE2 layouts and resource tag completion events",
+            "per-task registered-ring descriptors for enter and register operations",
         ],
         "missing": [
             "asynchronous worker execution",
-            "registered-ring descriptor management",
             "fixed buffers with user-page pinning",
             "multishot poll and timeout update operations",
             "fully interruptible enter suspension and extended wait deadlines",
@@ -60,6 +60,7 @@ EDGEOS_ASSESSMENTS = [
         "runtime_tests": [
             "tools/tests/io_uring_abi_probe.c",
             "tools/tests/io_uring_fixed_files_abi_probe.c",
+            "tools/tests/io_uring_registered_rings_abi_probe.c",
             "tools/tests/io_uring_runtime_unit.c",
         ],
         "linux_oracle": {
@@ -73,7 +74,8 @@ EDGEOS_ASSESSMENTS = [
                 "symlinkat, linkat, socket, bind, listen, fsetxattr, "
                 "setxattr, fgetxattr, getxattr, ftruncate, sync_file_range, "
                 "futex_wake, fixed-file registration, retained lifetime, updates, "
-                "extended resource layouts, tag completion events and operation probe"
+                "extended resource layouts, tag completion events, registered-ring "
+                "descriptor lifetime and operation probe"
             ),
         },
     },

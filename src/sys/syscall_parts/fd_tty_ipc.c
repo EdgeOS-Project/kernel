@@ -4998,6 +4998,7 @@ static void robust_futex_cleanup_task(task_t *t) {
 
 static void syscall_task_exit_cleanup(task_t *t) {
     if (!t) return;
+    kernel_io_uring_task_release(t->pid);
     kernel_epoll_wait_lease_release(&t->epoll_wait_lease);
     tty_session_release_task(t);
     futex_waiter_cancel_pid(t->pid);

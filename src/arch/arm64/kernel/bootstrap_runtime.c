@@ -21559,6 +21559,7 @@ static __attribute__((noreturn)) void task_finish(kernel_task_t *task,
     }
     orphan_reaper = task_orphan_reaper(task);
     task_tty_release_exiting_group(task, whole_group);
+    kernel_io_uring_task_release(task->pid);
     edge_linux_file_lock_task_exit(task->pid);
     kernel_sysv_sem_task_exit(task->pid);
     signal_group = task_group_id(task);
@@ -21604,6 +21605,7 @@ static __attribute__((noreturn)) void task_finish(kernel_task_t *task,
                 parent_signal = sibling->exit_signal;
             }
             task_reparent_children(sibling->pid, orphan_reaper, 1);
+            kernel_io_uring_task_release(sibling->pid);
             edge_linux_file_lock_task_exit(sibling->pid);
             kernel_sysv_sem_task_exit(sibling->pid);
             arm64_ptrace_tracer_exit(sibling->pid);
@@ -31846,6 +31848,7 @@ int process_exec_arch_de_thread(kernel_exec_state_t *state) {
             continue;
         exited_pid = peer->pid;
         task_reparent_children(peer->pid, task->pid, 0);
+        kernel_io_uring_task_release(peer->pid);
         edge_linux_file_lock_task_exit(peer->pid);
         kernel_sysv_sem_task_exit(peer->pid);
         arm64_ptrace_tracer_exit(peer->pid);
