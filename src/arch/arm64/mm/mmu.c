@@ -59,6 +59,7 @@ static uint16_t g_l2_slot[ARM64_MAX_L0_TABLES][ARM64_TABLE_ENTRIES];
 static uint32_t g_l1_count;
 static uint32_t g_l2_count;
 static int g_translation_tables_initialized;
+static volatile unsigned int g_device_map_lock;
 
 static uint64_t arm64_cache_line_size(void) {
     uint64_t ctr;
@@ -167,6 +168,74 @@ static int map_range(uint64_t start, uint64_t size, uint32_t attr_index) {
         addr += ARM64_L2_BLOCK_SIZE;
     }
     return 0;
+}
+
+static uint64_t *lookup_l2_entry(uint64_t address) {
+    uint32_t l0_index = (uint32_t)(address / ARM64_L0_REGION_SIZE);
+    uint32_t l1_index =
+        (uint32_t)((address / ARM64_L1_REGION_SIZE) & 0x1ffULL);
+    uint32_t l2_index =
+        (uint32_t)((address / ARM64_L2_BLOCK_SIZE) & 0x1ffULL);
+    uint16_t l1_slot;
+    uint16_t l2_slot;
+
+    if (l0_index >= ARM64_TABLE_ENTRIES)
+        return 0;
+    l1_slot = g_l0_slot[l0_index];
+    if (l1_slot == 0)
+        return 0;
+    l2_slot = g_l2_slot[l1_slot - 1u][l1_index];
+    if (l2_slot == 0)
+        return 0;
+    return &g_l2[l2_slot - 1u][l2_index];
+}
+
+int edgeos_arm64_mmu_map_device_range(uint64_t start, uint64_t size) {
+    uint64_t first;
+    uint64_t end;
+    int result = -1;
+
+    if (!g_translation_tables_initialized || size == 0 ||
+        start >= (UINT64_C(1) << 48) ||
+        size - 1u > UINT64_MAX - start ||
+        start + size > (UINT64_C(1) << 48))
+        return -1;
+    first = align_down(start, ARM64_L2_BLOCK_SIZE);
+    end = align_up(start + size, ARM64_L2_BLOCK_SIZE);
+    if (end == 0)
+        return -1;
+
+    while (__atomic_test_and_set(&g_device_map_lock, __ATOMIC_ACQUIRE))
+        __asm__ __volatile__("yield");
+    for (uint64_t address = first; address < end;
+         address += ARM64_L2_BLOCK_SIZE) {
+        uint64_t *entry = lookup_l2_entry(address);
+        uint64_t descriptor;
+
+        if (!entry || !((*entry) & ARM64_DESC_VALID))
+            continue;
+        descriptor = *entry;
+        if ((descriptor &
+                UINT64_C(0x0000fffffffff000) &
+                ~(ARM64_L2_BLOCK_SIZE - 1u)) != address ||
+            ((descriptor >> 2) & 7u) != 1u)
+            goto out;
+    }
+    if (map_range(start, size, 1u) < 0)
+        goto out;
+    arm64_clean_range(g_l0, sizeof(g_l0));
+    arm64_clean_range(g_l1, sizeof(g_l1));
+    arm64_clean_range(g_l2, sizeof(g_l2));
+    __asm__ __volatile__(
+        "dsb ishst\n\t"
+        "tlbi vmalle1is\n\t"
+        "dsb ish\n\t"
+        "isb"
+        ::: "memory");
+    result = 0;
+out:
+    __atomic_clear(&g_device_map_lock, __ATOMIC_RELEASE);
+    return result;
 }
 
 static int map_efi_descriptors(const edgeos_arm64_bootinfo_t *bootinfo, int mmio_only) {

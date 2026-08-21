@@ -11,6 +11,8 @@
 #include "kernel/arch_cpu.h"
 #if defined(__x86_64__)
 #include "sys/mmio.h"
+#elif defined(__aarch64__)
+#include "arch/arm64/mmu.h"
 #endif
 #endif
 
@@ -187,6 +189,10 @@ default_map(void *opaque_kind, bus_addr_t address, bus_size_t size,
     if (!edge_mmio_phys_range_mapped(address, size))
         return BSD_BUS_SPACE_ENXIO;
     *handle = (bus_space_handle_t)edge_mmio_low_alias(address);
+#elif defined(__aarch64__)
+    if (edgeos_arm64_mmu_map_device_range(address, size) < 0)
+        return BSD_BUS_SPACE_ENXIO;
+    *handle = (bus_space_handle_t)address;
 #else
     *handle = (bus_space_handle_t)address;
 #endif
