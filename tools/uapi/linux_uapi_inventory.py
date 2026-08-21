@@ -57,6 +57,7 @@ EDGEOS_ASSESSMENTS = [
             "fixed-file automatic allocation range registration",
             "pipe creation with ordinary descriptors and explicit or automatic fixed-file slots",
             "architecture-correct O_DIRECT packet pipes with record truncation semantics",
+            "splice with immediate offsets and ordinary or fixed input and output descriptors",
         ],
         "missing": [
             "asynchronous worker execution",
@@ -97,7 +98,8 @@ EDGEOS_ASSESSMENTS = [
                 "source oracle, poll update, multishot poll, per-ring clock, "
                 "fixed-file allocation range, operation probe, pipe creation "
                 "and direct fixed-file allocation, plus packet-pipe record "
-                "boundaries and short-read truncation"
+                "boundaries, short-read truncation and splice with ordinary "
+                "or fixed input and output descriptors"
             ),
         },
     },

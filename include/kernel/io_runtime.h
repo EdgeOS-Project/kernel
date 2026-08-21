@@ -110,6 +110,12 @@ int64_t kernel_io_splice_current(int32_t input_descriptor,
                                  uint64_t output_offset_user,
                                  uint64_t length, uint32_t flags,
                                  void *user_registers);
+int64_t kernel_io_splice_values_current(int32_t input_descriptor,
+                                        uint64_t input_offset,
+                                        int32_t output_descriptor,
+                                        uint64_t output_offset,
+                                        uint64_t length, uint32_t flags,
+                                        void *user_registers);
 int arch_io_descriptor_ready(int32_t descriptor,
                              kernel_io_operation_t operation);
 int64_t arch_io_user_transfer(int32_t descriptor, uint64_t user_buffer,
@@ -133,6 +139,12 @@ int64_t arch_io_splice_current(int32_t input_descriptor,
                                uint64_t output_offset_user,
                                uint64_t length, uint32_t flags,
                                void *user_registers);
+int64_t arch_io_splice_values_current(int32_t input_descriptor,
+                                      uint64_t input_offset,
+                                      int32_t output_descriptor,
+                                      uint64_t output_offset,
+                                      uint64_t length, uint32_t flags,
+                                      void *user_registers);
 int kernel_io_file_range_query(int32_t descriptor,
                                kernel_io_file_range_info_t *information);
 int kernel_io_file_range_current_scratch(

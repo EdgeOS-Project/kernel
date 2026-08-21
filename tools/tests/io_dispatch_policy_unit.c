@@ -17,6 +17,7 @@ static int g_vector_calls;
 static int g_write_calls;
 static int g_tee_calls;
 static int g_splice_calls;
+static int g_splice_values_calls;
 
 static void expect_true(const char *name, int condition) {
     if (condition) return;
@@ -87,6 +88,19 @@ int64_t arch_io_splice_current(int32_t input_descriptor,
            output_descriptor == 24 && output_offset_user == 25u &&
            length == 26u && flags == 27u &&
            user_registers == (void *)(uintptr_t)28u ? 25 : -1;
+}
+
+int64_t arch_io_splice_values_current(int32_t input_descriptor,
+                                      uint64_t input_offset,
+                                      int32_t output_descriptor,
+                                      uint64_t output_offset,
+                                      uint64_t length, uint32_t flags,
+                                      void *user_registers) {
+    ++g_splice_values_calls;
+    return input_descriptor == 29 && input_offset == 30u &&
+           output_descriptor == 31 && output_offset == 32u &&
+           length == 33u && flags == 34u &&
+           user_registers == (void *)(uintptr_t)35u ? 36 : -1;
 }
 
 static void test_readiness_and_transfer(void) {
@@ -189,6 +203,16 @@ static void test_kernel_and_pipe_dispatch(void) {
                     22, 23, 24, 25, 26, 27,
                     (void *)(uintptr_t)28u) == 25 &&
                 g_splice_calls == 1);
+    expect_true("splice values negative input",
+                kernel_io_splice_values_current(
+                    -1, 30, 31, 32, 33, 34,
+                    (void *)(uintptr_t)35u) == -EDGE_LINUX_EBADF &&
+                g_splice_values_calls == 0);
+    expect_true("splice values dispatch",
+                kernel_io_splice_values_current(
+                    29, 30, 31, 32, 33, 34,
+                    (void *)(uintptr_t)35u) == 36 &&
+                g_splice_values_calls == 1);
 }
 
 int main(void) {

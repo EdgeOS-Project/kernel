@@ -8080,6 +8080,7 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_OP_RECV      27u
 #define EDGE_LINUX_IORING_OP_OPENAT2   28u
 #define EDGE_LINUX_IORING_OP_EPOLL_CTL 29u
+#define EDGE_LINUX_IORING_OP_SPLICE    30u
 #define EDGE_LINUX_IORING_OP_TEE       33u
 #define EDGE_LINUX_IORING_OP_SHUTDOWN  34u
 #define EDGE_LINUX_IORING_OP_RENAMEAT  35u
@@ -8152,6 +8153,12 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_RESOURCE_SPARSE       (1u << 0)
 #define EDGE_LINUX_IO_URING_OP_SUPPORTED        1u
 #define EDGE_LINUX_IORING_FIXED_FD_NO_CLOEXEC   (1u << 0)
+#define EDGE_LINUX_IORING_SPLICE_F_FD_IN_FIXED  (1u << 31)
+#define EDGE_LINUX_SPLICE_F_MOVE                 0x01u
+#define EDGE_LINUX_SPLICE_F_NONBLOCK             0x02u
+#define EDGE_LINUX_SPLICE_F_MORE                 0x04u
+#define EDGE_LINUX_SPLICE_F_GIFT                 0x08u
+#define EDGE_LINUX_SPLICE_F_ALL                  0x0fu
 #define EDGE_LINUX_IORING_PIPE_O_NOTIFICATION    0x00000080u
 #define EDGE_LINUX_IORING_PIPE_O_NONBLOCK        0x00000800u
 #define EDGE_LINUX_IORING_PIPE_O_CLOEXEC         0x00080000u
@@ -8534,6 +8541,33 @@ static int64_t edge_linux_io_uring_execute_vfs(
         nested.arguments[2] = submission->offset;
         nested.arguments[3] = submission->address;
         return edge_linux_sys_epoll(&nested);
+    case EDGE_LINUX_IORING_OP_SPLICE: {
+        int32_t input_descriptor = submission->splice_descriptor;
+        uint32_t splice_flags = submission->operation_flags;
+        int temporary_input = 0;
+        int64_t result;
+
+        if (submission->buffer_index ||
+            (splice_flags & ~(EDGE_LINUX_SPLICE_F_ALL |
+                              EDGE_LINUX_IORING_SPLICE_F_FD_IN_FIXED)))
+            return -EDGE_LINUX_EINVAL;
+        if (splice_flags & EDGE_LINUX_IORING_SPLICE_F_FD_IN_FIXED) {
+            result = kernel_io_uring_fixed_file_materialize(
+                ring_id, (uint32_t)submission->splice_descriptor,
+                &input_descriptor);
+            if (result < 0) return result;
+            temporary_input = 1;
+            splice_flags &= ~EDGE_LINUX_IORING_SPLICE_F_FD_IN_FIXED;
+        }
+        result = kernel_io_splice_values_current(
+            input_descriptor, submission->address,
+            submission->descriptor, submission->offset,
+            submission->length, splice_flags,
+            context->user_registers);
+        if (temporary_input)
+            (void)kernel_fd_close(input_descriptor);
+        return result;
+    }
     case EDGE_LINUX_IORING_OP_TEE:
         if (submission->offset || submission->address ||
             submission->buffer_index)
@@ -8855,6 +8889,7 @@ static int32_t edge_linux_io_uring_execute_descriptor(
     case EDGE_LINUX_IORING_OP_FADVISE:
     case EDGE_LINUX_IORING_OP_MADVISE:
     case EDGE_LINUX_IORING_OP_EPOLL_CTL:
+    case EDGE_LINUX_IORING_OP_SPLICE:
     case EDGE_LINUX_IORING_OP_TEE:
     case EDGE_LINUX_IORING_OP_RENAMEAT:
     case EDGE_LINUX_IORING_OP_UNLINKAT:
@@ -8911,6 +8946,7 @@ static int edge_linux_io_uring_fixed_file_supported(uint8_t opcode) {
     case EDGE_LINUX_IORING_OP_FTRUNCATE:
     case EDGE_LINUX_IORING_OP_BIND:
     case EDGE_LINUX_IORING_OP_LISTEN:
+    case EDGE_LINUX_IORING_OP_SPLICE:
         return 1;
     default:
         return 0;
@@ -9413,6 +9449,7 @@ static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
            opcode == EDGE_LINUX_IORING_OP_RECV ||
            opcode == EDGE_LINUX_IORING_OP_OPENAT2 ||
            opcode == EDGE_LINUX_IORING_OP_EPOLL_CTL ||
+           opcode == EDGE_LINUX_IORING_OP_SPLICE ||
            opcode == EDGE_LINUX_IORING_OP_TEE ||
            opcode == EDGE_LINUX_IORING_OP_SHUTDOWN ||
            opcode == EDGE_LINUX_IORING_OP_RENAMEAT ||
@@ -10474,12 +10511,6 @@ static int64_t edge_linux_sys_pipe(
     if (status < 0) return status;
     return 0;
 }
-
-#define EDGE_LINUX_SPLICE_F_MOVE     0x01u
-#define EDGE_LINUX_SPLICE_F_NONBLOCK 0x02u
-#define EDGE_LINUX_SPLICE_F_MORE     0x04u
-#define EDGE_LINUX_SPLICE_F_GIFT     0x08u
-#define EDGE_LINUX_SPLICE_F_ALL      0x0fu
 
 static int64_t edge_linux_sys_vmsplice(
     edge_linux_syscall_context_t *context) {

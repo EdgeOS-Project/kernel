@@ -10553,9 +10553,9 @@ int64_t arch_io_pipe_tee_current(int32_t input_descriptor,
 }
 
 static int64_t splice_copy_current(int32_t input_descriptor,
-                                   uint64_t input_offset_user,
+                                   uint64_t *input_offset,
                                    int32_t output_descriptor,
-                                   uint64_t output_offset_user,
+                                   uint64_t *output_offset,
                                    uint64_t length, uint32_t flags,
                                    edge_fd_t *input, edge_fd_t *output) {
     uint8_t buf[8192];
@@ -10564,13 +10564,11 @@ static int64_t splice_copy_current(int32_t input_descriptor,
     int64_t terminal_error = 0;
     int restore_in = 0, restore_out = 0;
     if (length == 0) return 0;
-    if (input_offset_user) {
-        uint64_t off;
+    if (input_offset) {
+        uint64_t off = *input_offset;
         uint64_t cur = do_sys_lseek((uint64_t)input_descriptor, 0,
                                     LINUX_SEEK_CUR);
         if ((int64_t)cur < 0) return (int64_t)cur;
-        if (copy_from_user(&off, input_offset_user, sizeof(off)) < 0)
-            return -EFAULT;
         if ((int64_t)off < 0) return -EINVAL;
         if ((int64_t)do_sys_lseek((uint64_t)input_descriptor, off,
                                   LINUX_SEEK_SET) < 0)
@@ -10578,8 +10576,8 @@ static int64_t splice_copy_current(int32_t input_descriptor,
         in_saved = cur;
         restore_in = 1;
     }
-    if (output_offset_user) {
-        uint64_t off;
+    if (output_offset) {
+        uint64_t off = *output_offset;
         uint64_t cur = do_sys_lseek((uint64_t)output_descriptor, 0,
                                     LINUX_SEEK_CUR);
         if ((int64_t)cur < 0) {
@@ -10587,12 +10585,6 @@ static int64_t splice_copy_current(int32_t input_descriptor,
                 (void)do_sys_lseek((uint64_t)input_descriptor, in_saved,
                                    LINUX_SEEK_SET);
             return (int64_t)cur;
-        }
-        if (copy_from_user(&off, output_offset_user, sizeof(off)) < 0) {
-            if (restore_in)
-                (void)do_sys_lseek((uint64_t)input_descriptor, in_saved,
-                                   LINUX_SEEK_SET);
-            return -EFAULT;
         }
         if ((int64_t)off < 0 ||
             (int64_t)do_sys_lseek((uint64_t)output_descriptor, off,
@@ -10692,17 +10684,15 @@ static int64_t splice_copy_current(int32_t input_descriptor,
         done += w;
         if (w < r) break;
     }
-    if (input_offset_user) {
+    if (input_offset) {
         uint64_t pos = do_sys_lseek((uint64_t)input_descriptor, 0,
                                     LINUX_SEEK_CUR);
-        if (copy_to_user(input_offset_user, &pos, sizeof(pos)) < 0 && !done)
-            terminal_error = -EFAULT;
+        *input_offset = pos;
     }
-    if (output_offset_user) {
+    if (output_offset) {
         uint64_t pos = do_sys_lseek((uint64_t)output_descriptor, 0,
                                     LINUX_SEEK_CUR);
-        if (copy_to_user(output_offset_user, &pos, sizeof(pos)) < 0 && !done)
-            terminal_error = -EFAULT;
+        *output_offset = pos;
     }
     if (restore_in)
         (void)do_sys_lseek((uint64_t)input_descriptor, in_saved,
@@ -10883,6 +10873,11 @@ int64_t arch_io_splice_current(int32_t input_descriptor,
     edge_fd_proc_t *process = fd_proc_with_stdio();
     edge_fd_t *input;
     edge_fd_t *output;
+    uint64_t input_offset = 0;
+    uint64_t output_offset = 0;
+    uint64_t *input_offset_pointer = 0;
+    uint64_t *output_offset_pointer = 0;
+    int64_t result;
     int input_pipe;
     int output_pipe;
     (void)user_registers;
@@ -10906,19 +10901,84 @@ int64_t arch_io_splice_current(int32_t input_descriptor,
     if ((input_pipe && input_offset_user) ||
         (output_pipe && output_offset_user))
         return -ESPIPE;
-    {
-        int64_t result = splice_copy_current(
-            input_descriptor, input_offset_user,
-            output_descriptor, output_offset_user,
-            length, flags, input, output);
-        if (result == -EPIPE) {
-            task_t *current = process_current_task();
-            if (current)
-                (void)process_send_signal(current->pid,
-                                          EDGE_LINUX_SIGPIPE);
-        }
-        return result;
+    if (input_offset_user) {
+        if (copy_from_user(&input_offset, input_offset_user,
+                           sizeof(input_offset)) < 0 ||
+            copy_to_user(input_offset_user, &input_offset,
+                         sizeof(input_offset)) < 0)
+            return -EFAULT;
+        input_offset_pointer = &input_offset;
     }
+    if (output_offset_user) {
+        if (copy_from_user(&output_offset, output_offset_user,
+                           sizeof(output_offset)) < 0 ||
+            copy_to_user(output_offset_user, &output_offset,
+                         sizeof(output_offset)) < 0)
+            return -EFAULT;
+        output_offset_pointer = &output_offset;
+    }
+    result = splice_copy_current(
+        input_descriptor, input_offset_pointer,
+        output_descriptor, output_offset_pointer,
+        length, flags, input, output);
+    if (input_offset_user &&
+        copy_to_user(input_offset_user, &input_offset,
+                     sizeof(input_offset)) < 0 && result <= 0)
+        result = -EFAULT;
+    if (output_offset_user &&
+        copy_to_user(output_offset_user, &output_offset,
+                     sizeof(output_offset)) < 0 && result <= 0)
+        result = -EFAULT;
+    if (result == -EPIPE) {
+        task_t *current = process_current_task();
+        if (current)
+            (void)process_send_signal(current->pid,
+                                      EDGE_LINUX_SIGPIPE);
+    }
+    return result;
+}
+
+int64_t arch_io_splice_values_current(int32_t input_descriptor,
+                                      uint64_t input_offset,
+                                      int32_t output_descriptor,
+                                      uint64_t output_offset,
+                                      uint64_t length, uint32_t flags,
+                                      void *user_registers) {
+    edge_fd_proc_t *process = fd_proc_with_stdio();
+    edge_fd_t *input;
+    edge_fd_t *output;
+    uint64_t *input_offset_pointer =
+        input_offset == UINT64_MAX ? 0 : &input_offset;
+    uint64_t *output_offset_pointer =
+        output_offset == UINT64_MAX ? 0 : &output_offset;
+    int input_pipe;
+    int output_pipe;
+    int64_t result;
+    (void)user_registers;
+
+    if (!process) return -EBADF;
+    input = fd_get(process, input_descriptor);
+    output = fd_get(process, output_descriptor);
+    if (!input || !output) return -EBADF;
+    if (input->kind == FD_PIPE_W || output->kind == FD_PIPE_R)
+        return -EBADF;
+    input_pipe = input->kind == FD_PIPE_R || input->kind == FD_PIPE_RW;
+    output_pipe = output->kind == FD_PIPE_W || output->kind == FD_PIPE_RW;
+    if (!input_pipe && !output_pipe) return -EINVAL;
+    if ((input_pipe && input_offset_pointer) ||
+        (output_pipe && output_offset_pointer))
+        return -ESPIPE;
+    result = splice_copy_current(
+        input_descriptor, input_offset_pointer,
+        output_descriptor, output_offset_pointer,
+        length, flags, input, output);
+    if (result == -EPIPE) {
+        task_t *current = process_current_task();
+        if (current)
+            (void)process_send_signal(current->pid,
+                                      EDGE_LINUX_SIGPIPE);
+    }
+    return result;
 }
 
 static int alloc_special_fd(edge_fd_kind_t kind, int obj_id, int flags) {

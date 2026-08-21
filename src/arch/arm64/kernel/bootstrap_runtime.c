@@ -1072,6 +1072,8 @@ typedef struct {
     uint64_t splice_fd_out;
     uint64_t splice_off_in_user;
     uint64_t splice_off_out_user;
+    uint8_t splice_off_in_present;
+    uint8_t splice_off_out_present;
     uint64_t splice_off_in;
     uint64_t splice_off_out;
     uint64_t splice_length;
@@ -15533,6 +15535,8 @@ static void splice_state_clear(kernel_task_t *task) {
     task->splice_fd_out = 0;
     task->splice_off_in_user = 0;
     task->splice_off_out_user = 0;
+    task->splice_off_in_present = 0;
+    task->splice_off_out_present = 0;
     task->splice_off_in = 0;
     task->splice_off_out = 0;
     task->splice_length = 0;
@@ -15730,7 +15734,7 @@ static int64_t splice_transfer(kernel_task_t *task) {
             else
                 moved = fd_splice_write_kernel(task, output, buffer, count,
                     &task->splice_off_out,
-                    task->splice_off_out_user != 0);
+                    task->splice_off_out_present != 0);
             if (moved == -LINUX_EAGAIN && !transferred &&
                 output->kind == KERNEL_FD_SOCKET) {
                 task->splice_wait_kind = 4u;
@@ -15772,7 +15776,7 @@ static int64_t splice_transfer(kernel_task_t *task) {
             if (count > available) count = available;
             output_was_empty = !output_pipe->count;
             moved = fd_splice_read_kernel(task, input, buffer, count,
-                &task->splice_off_in, task->splice_off_in_user != 0);
+                &task->splice_off_in, task->splice_off_in_present != 0);
             if (moved == -LINUX_EAGAIN && !transferred &&
                 input->kind == KERNEL_FD_SOCKET) {
                 task->splice_wait_kind = 3u;
@@ -15833,6 +15837,8 @@ int64_t arch_io_splice_current(int32_t input_descriptor,
     task->splice_fd_out = (uint32_t)output_descriptor;
     task->splice_off_in_user = input_offset_user;
     task->splice_off_out_user = output_offset_user;
+    task->splice_off_in_present = input_offset_user != 0;
+    task->splice_off_out_present = output_offset_user != 0;
     task->splice_length = length;
     task->splice_flags = flags;
     task->splice_operation = 1u;
@@ -15874,6 +15880,66 @@ int64_t arch_io_splice_current(int32_t input_descriptor,
         }
         arch_copy_frame(&task->frame, frame);
         /* Close the readiness transition after publishing the splice waiter. */
+        splice_recheck_wait(task);
+        task_resume_next();
+    }
+    splice_state_clear(task);
+    return result;
+}
+
+int64_t arch_io_splice_values_current(int32_t input_descriptor,
+                                      uint64_t input_offset,
+                                      int32_t output_descriptor,
+                                      uint64_t output_offset,
+                                      uint64_t length, uint32_t flags,
+                                      void *user_registers) {
+    kernel_task_t *task = current_task();
+    arch_user_frame_t *frame = (arch_user_frame_t *)user_registers;
+    bootstrap_fd_t *input;
+    bootstrap_fd_t *output;
+    int input_pipe;
+    int output_pipe;
+    int64_t result;
+
+    if (!task || input_descriptor < 0 || output_descriptor < 0 ||
+        (uint32_t)input_descriptor >= KERNEL_BOOTSTRAP_FD_MAX ||
+        (uint32_t)output_descriptor >= KERNEL_BOOTSTRAP_FD_MAX ||
+        !fd_slot_is_open(task, (uint32_t)input_descriptor) ||
+        !fd_slot_is_open(task, (uint32_t)output_descriptor))
+        return -LINUX_EBADF;
+    input = &task->fds[input_descriptor];
+    output = &task->fds[output_descriptor];
+    if (input->kind == KERNEL_FD_PIPE_WRITE ||
+        output->kind == KERNEL_FD_PIPE_READ)
+        return -LINUX_EBADF;
+    input_pipe = fd_pipe_read_index(input);
+    output_pipe = fd_pipe_write_index(output);
+    if (input_pipe < 0 && output_pipe < 0) return -LINUX_EINVAL;
+    if (input_pipe >= 0 && input_offset != UINT64_MAX)
+        return -LINUX_ESPIPE;
+    if (output_pipe >= 0 && output_offset != UINT64_MAX)
+        return -LINUX_ESPIPE;
+    if ((input_offset != UINT64_MAX && (int64_t)input_offset < 0) ||
+        (output_offset != UINT64_MAX && (int64_t)output_offset < 0))
+        return -LINUX_EINVAL;
+
+    splice_state_clear(task);
+    task->splice_fd_in = (uint32_t)input_descriptor;
+    task->splice_fd_out = (uint32_t)output_descriptor;
+    task->splice_off_in_present = input_offset != UINT64_MAX;
+    task->splice_off_out_present = output_offset != UINT64_MAX;
+    task->splice_off_in = input_offset == UINT64_MAX ? 0 : input_offset;
+    task->splice_off_out = output_offset == UINT64_MAX ? 0 : output_offset;
+    task->splice_length = length;
+    task->splice_flags = flags;
+    task->splice_operation = 1u;
+    result = splice_transfer(task);
+    if (result == -LINUX_EAGAIN && splice_arm_wait(task) == 0) {
+        if (!frame) {
+            splice_state_clear(task);
+            return -LINUX_EINVAL;
+        }
+        arch_copy_frame(&task->frame, frame);
         splice_recheck_wait(task);
         task_resume_next();
     }

@@ -66,6 +66,7 @@ struct linux_epoll_event {
 #define PAGE_SIZE 4096u
 #define ENXIO 6
 #define EBADF 9
+#define ESPIPE 29
 #define EBUSY 16
 #define EEXIST 17
 #define EINVAL 22
@@ -104,6 +105,7 @@ struct linux_epoll_event {
 #define IORING_OP_STATX 21u
 #define IORING_OP_OPENAT2 28u
 #define IORING_OP_EPOLL_CTL 29u
+#define IORING_OP_SPLICE 30u
 #define IORING_OP_SEND 26u
 #define IORING_OP_RECV 27u
 #define IORING_OP_TEE 33u
@@ -141,6 +143,7 @@ struct linux_epoll_event {
 #define SYNC_FILE_RANGE_WRITE 2u
 #define SYNC_FILE_RANGE_WAIT_AFTER 4u
 #define FUTEX2_SIZE_U32 2u
+#define SPLICE_F_FD_IN_FIXED (1u << 31)
 
 struct kernel_timespec {
     int64_t seconds;
@@ -293,6 +296,14 @@ void *memset(void *destination, int value, unsigned long length) {
     return destination;
 }
 
+void *memcpy(void *destination, const void *source, unsigned long length) {
+    unsigned char *output = destination;
+    const unsigned char *input = source;
+    for (unsigned long index = 0; index < length; ++index)
+        output[index] = input[index];
+    return destination;
+}
+
 static unsigned long text_length(const char *text) {
     unsigned long length = 0;
     while (text[length]) ++length;
@@ -383,6 +394,138 @@ static int submit_one(
     return failures;
 }
 
+static int run_splice_only(
+        long ring_descriptor, struct io_uring_params *parameters,
+        void *sq_ring, void *cq_ring, struct io_uring_sqe *sqes) {
+    volatile uint32_t *sq_tail = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.tail);
+    volatile uint32_t *sq_mask = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.ring_mask);
+    volatile uint32_t *sq_array = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.array);
+    volatile uint32_t *cq_head = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters->cq_off.head);
+    volatile uint32_t *cq_tail = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters->cq_off.tail);
+    volatile uint32_t *cq_mask = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters->cq_off.ring_mask);
+    struct io_uring_cqe *cqes = (struct io_uring_cqe *)(
+        (uint8_t *)cq_ring + parameters->cq_off.cqes);
+    static const char data[] = "splice!";
+    char output[sizeof(data)] = {0};
+    int32_t input_pipe[2] = {-1, -1};
+    int32_t output_pipe[2] = {-1, -1};
+    int32_t fixed_files[2];
+    struct io_uring_sqe request;
+    int32_t result = -1;
+    int files_registered = 0;
+    int failures = 0;
+
+    failures += expect("splice-only input pipe", raw_syscall6(
+        SYS_pipe2, (long)input_pipe, 0, 0, 0, 0, 0), 0);
+    failures += expect("splice-only output pipe", raw_syscall6(
+        SYS_pipe2, (long)output_pipe, 0, 0, 0, 0, 0), 0);
+    if (input_pipe[0] < 0 || input_pipe[1] < 0 ||
+        output_pipe[0] < 0 || output_pipe[1] < 0)
+        goto cleanup;
+    failures += expect("splice-only input write", raw_syscall6(
+        SYS_write, input_pipe[1], (long)data, sizeof(data), 0, 0, 0),
+        sizeof(data));
+    memset(&request, 0, sizeof(request));
+    request.opcode = IORING_OP_SPLICE;
+    request.descriptor = output_pipe[1];
+    request.offset = UINT64_MAX;
+    request.address = UINT64_MAX;
+    request.length = sizeof(data);
+    request.splice_descriptor = input_pipe[0];
+    failures += submit_one(
+        ring_descriptor, sq_tail, sq_mask, sq_array, sqes,
+        cq_head, cq_tail, cq_mask, cqes, &request,
+        0x53504c4943454e4full, "splice-only submit", &result);
+    failures += expect("splice-only completion", result, sizeof(data));
+    failures += expect("splice-only output read", raw_syscall6(
+        SYS_read, output_pipe[0], (long)output, sizeof(output), 0, 0, 0),
+        sizeof(data));
+    for (uint32_t index = 0; index < sizeof(data); ++index)
+        failures += expect_true("splice-only output data",
+                                output[index] == data[index]);
+
+    request.address = 0;
+    request.length = 1u;
+    failures += submit_one(
+        ring_descriptor, sq_tail, sq_mask, sq_array, sqes,
+        cq_head, cq_tail, cq_mask, cqes, &request,
+        0x53504c4943454552ull, "splice-only pipe offset", &result);
+    failures += expect("splice-only pipe offset completion",
+                       result, -ESPIPE);
+
+    for (uint32_t index = 0; index < 2u; ++index) {
+        (void)raw_syscall6(SYS_close, input_pipe[index], 0, 0, 0, 0, 0);
+        (void)raw_syscall6(SYS_close, output_pipe[index], 0, 0, 0, 0, 0);
+        input_pipe[index] = -1;
+        output_pipe[index] = -1;
+    }
+    failures += expect("splice-only fixed input pipe", raw_syscall6(
+        SYS_pipe2, (long)input_pipe, 0, 0, 0, 0, 0), 0);
+    failures += expect("splice-only fixed output pipe", raw_syscall6(
+        SYS_pipe2, (long)output_pipe, 0, 0, 0, 0, 0), 0);
+    if (input_pipe[0] < 0 || input_pipe[1] < 0 ||
+        output_pipe[0] < 0 || output_pipe[1] < 0)
+        goto cleanup;
+    failures += expect("splice-only fixed input write", raw_syscall6(
+        SYS_write, input_pipe[1], (long)data, sizeof(data), 0, 0, 0),
+        sizeof(data));
+    fixed_files[0] = input_pipe[0];
+    fixed_files[1] = output_pipe[1];
+    failures += expect("splice-only register files", raw_syscall6(
+        SYS_io_uring_register, ring_descriptor, IORING_REGISTER_FILES,
+        (long)fixed_files, 2, 0, 0), 0);
+    files_registered = 1;
+    memset(&request, 0, sizeof(request));
+    request.opcode = IORING_OP_SPLICE;
+    request.flags = IOSQE_FIXED_FILE;
+    request.descriptor = 1;
+    request.offset = UINT64_MAX;
+    request.address = UINT64_MAX;
+    request.length = sizeof(data);
+    request.operation_flags = SPLICE_F_FD_IN_FIXED;
+    request.splice_descriptor = 0;
+    failures += submit_one(
+        ring_descriptor, sq_tail, sq_mask, sq_array, sqes,
+        cq_head, cq_tail, cq_mask, cqes, &request,
+        0x53504c4943454658ull, "splice-only fixed submit", &result);
+    failures += expect("splice-only fixed completion", result, sizeof(data));
+    memset(output, 0, sizeof(output));
+    failures += expect("splice-only fixed output read", raw_syscall6(
+        SYS_read, output_pipe[0], (long)output, sizeof(output), 0, 0, 0),
+        sizeof(data));
+    for (uint32_t index = 0; index < sizeof(data); ++index)
+        failures += expect_true("splice-only fixed output data",
+                                output[index] == data[index]);
+    request.splice_descriptor = 2;
+    request.length = 0;
+    failures += submit_one(
+        ring_descriptor, sq_tail, sq_mask, sq_array, sqes,
+        cq_head, cq_tail, cq_mask, cqes, &request,
+        0x53504c4943454244ull, "splice-only bad fixed input", &result);
+    failures += expect("splice-only bad fixed completion", result, -EBADF);
+
+cleanup:
+    if (files_registered)
+        failures += expect("splice-only unregister files", raw_syscall6(
+            SYS_io_uring_register, ring_descriptor, IORING_UNREGISTER_FILES,
+            0, 0, 0, 0), 0);
+    for (uint32_t index = 0; index < 2u; ++index) {
+        if (input_pipe[index] >= 0)
+            (void)raw_syscall6(
+                SYS_close, input_pipe[index], 0, 0, 0, 0, 0);
+        if (output_pipe[index] >= 0)
+            (void)raw_syscall6(
+                SYS_close, output_pipe[index], 0, 0, 0, 0, 0);
+    }
+    return failures;
+}
+
 static int run_tests(void) {
     struct io_uring_probe probe;
     struct io_uring_params parameters;
@@ -430,9 +573,13 @@ static int run_tests(void) {
     int32_t control_event_descriptor = -1;
     int32_t tee_input[2] = {-1, -1};
     int32_t tee_output[2] = {-1, -1};
+    int32_t splice_input[2] = {-1, -1};
+    int32_t splice_output[2] = {-1, -1};
     uint64_t advice_address = 0;
     char tee_buffer[5] = {0};
     static const char tee_data[] = "tee!";
+    char splice_buffer[8] = {0};
+    static const char splice_data[] = "splice!";
     static const char path_directory[] = "/tmp/edgeos-uring-path";
     static const char path_source[] = "/tmp/edgeos-uring-path/source";
     static const char path_renamed[] = "/tmp/edgeos-uring-path/renamed";
@@ -585,6 +732,8 @@ static int run_tests(void) {
          IO_URING_OP_SUPPORTED) != 0 &&
         (probe.operations[IORING_OP_EPOLL_CTL].flags &
          IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_SPLICE].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
         (probe.operations[IORING_OP_TEE].flags &
          IO_URING_OP_SUPPORTED) != 0);
     failures += expect_true("probe path operations",
@@ -622,6 +771,16 @@ static int run_tests(void) {
     failures += expect_true("probe futex wake",
         (probe.operations[IORING_OP_FUTEX_WAKE].flags &
          IO_URING_OP_SUPPORTED) != 0);
+
+#ifdef EDGEOS_IO_URING_SPLICE_ONLY
+    failures += run_splice_only(
+        descriptor, &parameters, sq_ring, cq_ring, sqes);
+    (void)raw_syscall6(SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
+    (void)raw_syscall6(SYS_munmap, (long)cq_ring, PAGE_SIZE, 0, 0, 0, 0);
+    (void)raw_syscall6(SYS_munmap, (long)sqes, PAGE_SIZE, 0, 0, 0, 0);
+    (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+    return failures;
+#endif
 
     event_descriptor = raw_syscall6(
         SYS_eventfd2, 0, 0, 0, 0, 0, 0);
@@ -1181,6 +1340,45 @@ static int run_tests(void) {
             tee_buffer[0] == tee_data[0] &&
             tee_buffer[sizeof(tee_buffer) - 1u] == 0);
     }
+    failures += expect("splice input pipe", raw_syscall6(
+        SYS_pipe2, (long)splice_input, 0, 0, 0, 0, 0), 0);
+    failures += expect("splice output pipe", raw_syscall6(
+        SYS_pipe2, (long)splice_output, 0, 0, 0, 0, 0), 0);
+    if (splice_input[0] >= 0 && splice_input[1] >= 0 &&
+        splice_output[0] >= 0 && splice_output[1] >= 0) {
+        failures += expect("splice input write", raw_syscall6(
+            SYS_write, splice_input[1], (long)splice_data,
+            sizeof(splice_data), 0, 0, 0), sizeof(splice_data));
+        memset(&path_request, 0, sizeof(path_request));
+        path_request.opcode = IORING_OP_SPLICE;
+        path_request.descriptor = splice_output[1];
+        path_request.offset = UINT64_MAX;
+        path_request.address = UINT64_MAX;
+        path_request.length = sizeof(splice_data);
+        path_request.splice_descriptor = splice_input[0];
+        failures += submit_one(
+            descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &path_request,
+            0x53504c4943453031ull, "submit splice", &path_result);
+        failures += expect("splice completion", path_result,
+                           sizeof(splice_data));
+        failures += expect("splice output read", raw_syscall6(
+            SYS_read, splice_output[0], (long)splice_buffer,
+            sizeof(splice_buffer), 0, 0, 0), sizeof(splice_data));
+        failures += expect_true("splice output data",
+            splice_buffer[0] == splice_data[0] &&
+            splice_buffer[sizeof(splice_data) - 1u] == 0);
+
+        path_request.address = 0;
+        path_request.length = 1u;
+        failures += submit_one(
+            descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &path_request,
+            0x53504c4943454552ull, "submit splice pipe offset",
+            &path_result);
+        failures += expect("splice pipe offset completion",
+                           path_result, -ESPIPE);
+    }
     if ((int64_t)advice_address > 0)
         (void)raw_syscall6(SYS_munmap, (long)advice_address,
                            PAGE_SIZE, 0, 0, 0, 0);
@@ -1193,6 +1391,14 @@ static int run_tests(void) {
             (void)raw_syscall6(SYS_close, tee_input[index], 0, 0, 0, 0, 0);
         if (tee_output[index] >= 0)
             (void)raw_syscall6(SYS_close, tee_output[index], 0, 0, 0, 0, 0);
+        if (splice_input[index] >= 0) {
+            (void)raw_syscall6(SYS_close, splice_input[index], 0, 0, 0, 0, 0);
+            splice_input[index] = -1;
+        }
+        if (splice_output[index] >= 0) {
+            (void)raw_syscall6(SYS_close, splice_output[index], 0, 0, 0, 0, 0);
+            splice_output[index] = -1;
+        }
     }
 
     memset(&path_request, 0, sizeof(path_request));
@@ -1509,6 +1715,59 @@ static int run_tests(void) {
         0x4655544558424144ull, "submit invalid futex wake", &path_result);
     failures += expect("invalid futex wake completion", path_result,
                        -EINVAL);
+
+    failures += expect("fixed splice input pipe", raw_syscall6(
+        SYS_pipe2, (long)splice_input, 0, 0, 0, 0, 0), 0);
+    failures += expect("fixed splice output pipe", raw_syscall6(
+        SYS_pipe2, (long)splice_output, 0, 0, 0, 0, 0), 0);
+    if (splice_input[0] >= 0 && splice_input[1] >= 0 &&
+        splice_output[0] >= 0 && splice_output[1] >= 0) {
+        failures += expect("fixed splice input write", raw_syscall6(
+            SYS_write, splice_input[1], (long)splice_data,
+            sizeof(splice_data), 0, 0, 0), sizeof(splice_data));
+        fixed_files[0] = splice_input[0];
+        fixed_files[1] = splice_output[1];
+        failures += expect("register fixed splice files", raw_syscall6(
+            SYS_io_uring_register, descriptor, IORING_REGISTER_FILES,
+            (long)fixed_files, 2, 0, 0), 0);
+        memset(&path_request, 0, sizeof(path_request));
+        path_request.opcode = IORING_OP_SPLICE;
+        path_request.flags = IOSQE_FIXED_FILE;
+        path_request.descriptor = 1;
+        path_request.offset = UINT64_MAX;
+        path_request.address = UINT64_MAX;
+        path_request.length = sizeof(splice_data);
+        path_request.operation_flags = SPLICE_F_FD_IN_FIXED;
+        path_request.splice_descriptor = 0;
+        failures += submit_one(
+            descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &path_request,
+            0x53504c4943454658ull, "submit fixed splice", &path_result);
+        failures += expect("fixed splice completion", path_result,
+                           sizeof(splice_data));
+        memset(splice_buffer, 0, sizeof(splice_buffer));
+        failures += expect("fixed splice output read", raw_syscall6(
+            SYS_read, splice_output[0], (long)splice_buffer,
+            sizeof(splice_buffer), 0, 0, 0), sizeof(splice_data));
+        failures += expect_true("fixed splice output data",
+            splice_buffer[0] == splice_data[0] &&
+            splice_buffer[sizeof(splice_data) - 1u] == 0);
+        failures += expect("unregister fixed splice files", raw_syscall6(
+            SYS_io_uring_register, descriptor, IORING_UNREGISTER_FILES,
+            0, 0, 0, 0), 0);
+    }
+    for (uint32_t index = 0; index < 2u; ++index) {
+        if (splice_input[index] >= 0) {
+            (void)raw_syscall6(
+                SYS_close, splice_input[index], 0, 0, 0, 0, 0);
+            splice_input[index] = -1;
+        }
+        if (splice_output[index] >= 0) {
+            (void)raw_syscall6(
+                SYS_close, splice_output[index], 0, 0, 0, 0, 0);
+            splice_output[index] = -1;
+        }
+    }
 
     fixed_files[0] = (int32_t)descriptor;
     failures += expect("reject ring as fixed file", raw_syscall6(

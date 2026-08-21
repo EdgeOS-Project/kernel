@@ -84,3 +84,17 @@ int64_t kernel_io_splice_current(int32_t input_descriptor,
         output_descriptor, output_offset_user,
         length, flags, user_registers);
 }
+
+int64_t kernel_io_splice_values_current(int32_t input_descriptor,
+                                        uint64_t input_offset,
+                                        int32_t output_descriptor,
+                                        uint64_t output_offset,
+                                        uint64_t length, uint32_t flags,
+                                        void *user_registers) {
+    if (input_descriptor < 0 || output_descriptor < 0)
+        return -EDGE_LINUX_EBADF;
+    return arch_io_splice_values_current(
+        input_descriptor, input_offset,
+        output_descriptor, output_offset,
+        length, flags, user_registers);
+}
