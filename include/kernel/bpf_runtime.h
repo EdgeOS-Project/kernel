@@ -19,6 +19,8 @@
 
 #define KERNEL_BPF_MAP_TYPE_HASH  1u
 #define KERNEL_BPF_MAP_TYPE_ARRAY 2u
+#define KERNEL_BPF_MAP_TYPE_PERCPU_HASH 5u
+#define KERNEL_BPF_MAP_TYPE_PERCPU_ARRAY 6u
 #define KERNEL_BPF_MAP_TYPE_LRU_HASH 9u
 #define KERNEL_BPF_MAP_TYPE_QUEUE 22u
 #define KERNEL_BPF_MAP_TYPE_STACK 23u
@@ -103,6 +105,7 @@ typedef struct kernel_bpf_cgroup_device_context {
     uint32_t minor;
 } kernel_bpf_cgroup_device_context_t;
 
+uint32_t kernel_bpf_possible_cpu_count(void);
 int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request);
 int kernel_bpf_program_create(
     const kernel_bpf_program_create_request_t *request,
@@ -118,6 +121,8 @@ int kernel_bpf_object_next_user_id(kernel_bpf_object_kind_t kind,
                                    uint32_t *next_id);
 
 int kernel_bpf_map_info(int object_id, kernel_bpf_map_info_t *info);
+int kernel_bpf_map_value_buffer_size(int object_id, uint64_t flags,
+                                     uint32_t *size_out);
 int kernel_bpf_program_info(int object_id, kernel_bpf_program_info_t *info);
 int kernel_bpf_program_copy_instructions(int object_id, void *buffer,
                                          uint32_t capacity,

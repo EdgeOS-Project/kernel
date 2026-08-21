@@ -9,6 +9,7 @@
 #include "kernel/bpf_runtime.h"
 #include "kernel/linux_errno.h"
 #include "kernel/runtime_limits.h"
+#include "kernel/smp.h"
 #include "mm/arch_vm.h"
 #include "string.h"
 
@@ -67,6 +68,8 @@ typedef struct kernel_bpf_map {
     uint32_t storage_pages;
     uint32_t queue_head;
     uint32_t queue_tail;
+    uint32_t value_stride;
+    uint32_t possible_cpu_count;
     uint64_t access_sequence;
     uint8_t frozen;
     uint8_t *storage;
@@ -135,7 +138,23 @@ static uint32_t bpf_align8(uint32_t value) {
 static int bpf_map_is_hash(const kernel_bpf_map_t *map) {
     return map &&
         (map->type == KERNEL_BPF_MAP_TYPE_HASH ||
+         map->type == KERNEL_BPF_MAP_TYPE_PERCPU_HASH ||
          map->type == KERNEL_BPF_MAP_TYPE_LRU_HASH);
+}
+
+static int bpf_map_is_array(const kernel_bpf_map_t *map) {
+    return map &&
+        (map->type == KERNEL_BPF_MAP_TYPE_ARRAY ||
+         map->type == KERNEL_BPF_MAP_TYPE_PERCPU_ARRAY);
+}
+
+static int bpf_map_type_is_percpu(uint32_t type) {
+    return type == KERNEL_BPF_MAP_TYPE_PERCPU_HASH ||
+           type == KERNEL_BPF_MAP_TYPE_PERCPU_ARRAY;
+}
+
+static int bpf_map_is_percpu(const kernel_bpf_map_t *map) {
+    return map && bpf_map_type_is_percpu(map->type);
 }
 
 static int bpf_map_is_lru_hash(const kernel_bpf_map_t *map) {
@@ -149,6 +168,20 @@ static int bpf_map_type_is_queue_stack(uint32_t type) {
 
 static int bpf_map_is_queue_stack(const kernel_bpf_map_t *map) {
     return map && bpf_map_type_is_queue_stack(map->type);
+}
+
+uint32_t kernel_bpf_possible_cpu_count(void) {
+    uint32_t count = edge_smp_nr_cpu_ids();
+
+    return count ? count : 1u;
+}
+
+static uint32_t bpf_map_value_buffer_size_locked(
+        const kernel_bpf_map_t *map) {
+    if (!map) return 0u;
+    if (bpf_map_is_percpu(map))
+        return map->value_stride * map->possible_cpu_count;
+    return map->value_size;
 }
 
 static int bpf_name_valid(const char *name) {
@@ -216,6 +249,8 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
     kernel_bpf_object_t *object;
     uint32_t pages;
     uint32_t stride;
+    uint32_t value_stride;
+    uint32_t possible_cpu_count;
     uint64_t bytes;
     uint8_t *storage;
     int object_id;
@@ -232,14 +267,24 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
     } else if (!request->key_size) {
         return -EDGE_LINUX_EINVAL;
     }
-    if (request->type == KERNEL_BPF_MAP_TYPE_ARRAY) {
+    value_stride = bpf_align8(request->value_size);
+    possible_cpu_count = bpf_map_type_is_percpu(request->type) ?
+        kernel_bpf_possible_cpu_count() : 1u;
+    if (!possible_cpu_count) possible_cpu_count = 1u;
+    if (request->type == KERNEL_BPF_MAP_TYPE_ARRAY ||
+        request->type == KERNEL_BPF_MAP_TYPE_PERCPU_ARRAY) {
         if (request->key_size != sizeof(uint32_t) || request->flags)
             return -EDGE_LINUX_EINVAL;
-        stride = bpf_align8(request->value_size);
-    } else if (request->type == KERNEL_BPF_MAP_TYPE_HASH) {
+        stride = request->type == KERNEL_BPF_MAP_TYPE_PERCPU_ARRAY ?
+            value_stride * possible_cpu_count : value_stride;
+    } else if (request->type == KERNEL_BPF_MAP_TYPE_HASH ||
+               request->type == KERNEL_BPF_MAP_TYPE_PERCPU_HASH) {
         if (request->flags & ~KERNEL_BPF_MAP_NO_PREALLOC)
             return -EDGE_LINUX_EINVAL;
-        stride = bpf_align8(1u + request->key_size + request->value_size);
+        stride = request->type == KERNEL_BPF_MAP_TYPE_PERCPU_HASH ?
+            bpf_align8(1u + request->key_size) +
+                value_stride * possible_cpu_count :
+            bpf_align8(1u + request->key_size + request->value_size);
     } else if (request->type == KERNEL_BPF_MAP_TYPE_LRU_HASH) {
         if (request->flags & KERNEL_BPF_MAP_NO_PREALLOC)
             return -EDGE_LINUX_ENOTSUPP;
@@ -270,6 +315,8 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
         object->value.map.max_entries = request->max_entries;
         object->value.map.flags = request->flags;
         object->value.map.entry_stride = stride;
+        object->value.map.value_stride = value_stride;
+        object->value.map.possible_cpu_count = possible_cpu_count;
         object->value.map.storage_pages = pages;
         object->value.map.storage = storage;
         memcpy(object->value.map.name, request->name,
@@ -667,6 +714,23 @@ int kernel_bpf_map_info(int object_id, kernel_bpf_map_info_t *info) {
     return 0;
 }
 
+int kernel_bpf_map_value_buffer_size(int object_id, uint64_t flags,
+                                     uint32_t *size_out) {
+    kernel_bpf_object_t *object;
+
+    (void)flags;
+    if (!size_out) return -EDGE_LINUX_EINVAL;
+    bpf_lock();
+    object = bpf_object_locked(object_id);
+    if (!object || object->kind != KERNEL_BPF_OBJECT_MAP) {
+        bpf_unlock();
+        return -EDGE_LINUX_EBADF;
+    }
+    *size_out = bpf_map_value_buffer_size_locked(&object->value.map);
+    bpf_unlock();
+    return 0;
+}
+
 int kernel_bpf_program_info(int object_id, kernel_bpf_program_info_t *info) {
     kernel_bpf_object_t *object;
 
@@ -721,6 +785,52 @@ int kernel_bpf_program_copy_instructions(int object_id, void *buffer,
 
 static uint8_t *bpf_map_entry(kernel_bpf_map_t *map, uint32_t index) {
     return map->storage + (uint64_t)index * map->entry_stride;
+}
+
+static uint8_t *bpf_map_value(kernel_bpf_map_t *map, uint32_t index) {
+    uint8_t *entry = bpf_map_entry(map, index);
+
+    if (bpf_map_is_array(map) || bpf_map_is_queue_stack(map)) return entry;
+    if (bpf_map_is_percpu(map))
+        return entry + bpf_align8(1u + map->key_size);
+    return entry + 1u + map->key_size;
+}
+
+static void bpf_map_copy_value_out(kernel_bpf_map_t *map, uint32_t index,
+                                   void *value) {
+    uint8_t *source = bpf_map_value(map, index);
+
+    if (!bpf_map_is_percpu(map)) {
+        memcpy(value, source, map->value_size);
+        return;
+    }
+    for (uint32_t cpu = 0; cpu < map->possible_cpu_count; ++cpu) {
+        uint8_t *destination = (uint8_t *)value +
+            (uint64_t)cpu * map->value_stride;
+
+        memset(destination, 0, map->value_stride);
+        memcpy(destination, source + (uint64_t)cpu * map->value_stride,
+               map->value_size);
+    }
+}
+
+static void bpf_map_copy_value_in(kernel_bpf_map_t *map, uint32_t index,
+                                  const void *value) {
+    uint8_t *destination = bpf_map_value(map, index);
+
+    if (!bpf_map_is_percpu(map)) {
+        memcpy(destination, value, map->value_size);
+        return;
+    }
+    for (uint32_t cpu = 0; cpu < map->possible_cpu_count; ++cpu) {
+        const uint8_t *source = (const uint8_t *)value +
+            (uint64_t)cpu * map->value_stride;
+
+        memset(destination + (uint64_t)cpu * map->value_stride, 0,
+               map->value_stride);
+        memcpy(destination + (uint64_t)cpu * map->value_stride, source,
+               map->value_size);
+    }
 }
 
 static uint64_t *bpf_map_lru_sequence(
@@ -854,18 +964,17 @@ int kernel_bpf_map_lookup(int object_id, const void *key, void *value) {
         status = bpf_map_queue_stack_get(map, value, 0);
     } else if (!key) {
         status = -EDGE_LINUX_EFAULT;
-    } else if (map->type == KERNEL_BPF_MAP_TYPE_ARRAY) {
+    } else if (bpf_map_is_array(map)) {
         status = bpf_map_array_index(map, key, &index);
         if (status < 0) goto out;
-        memcpy(value, bpf_map_entry(map, index), map->value_size);
+        bpf_map_copy_value_out(map, index, value);
     } else {
         bpf_map_hash_find(map, key, &index, &free_slot);
         if (index == UINT32_MAX) {
             status = -EDGE_LINUX_ENOENT;
             goto out;
         }
-        memcpy(value, bpf_map_entry(map, index) + 1u + map->key_size,
-               map->value_size);
+        bpf_map_copy_value_out(map, index, value);
         bpf_map_lru_touch(map, index);
     }
 out:
@@ -917,14 +1026,14 @@ int kernel_bpf_map_update(int object_id, const void *key, const void *value,
         map->queue_head = (map->queue_head + 1u) % map->max_entries;
     } else if (!key) {
         status = -EDGE_LINUX_EFAULT;
-    } else if (map->type == KERNEL_BPF_MAP_TYPE_ARRAY) {
+    } else if (bpf_map_is_array(map)) {
         if (flags == KERNEL_BPF_NOEXIST) {
             status = -EDGE_LINUX_EEXIST;
             goto out;
         }
         status = bpf_map_array_index(map, key, &index);
         if (status < 0) goto out;
-        memcpy(bpf_map_entry(map, index), value, map->value_size);
+        bpf_map_copy_value_in(map, index, value);
     } else {
         bpf_map_hash_find(map, key, &index, &free_slot);
         if (index != UINT32_MAX && flags == KERNEL_BPF_NOEXIST) {
@@ -953,7 +1062,7 @@ int kernel_bpf_map_update(int object_id, const void *key, const void *value,
         entry = bpf_map_entry(map, index);
         entry[0] = 1u;
         memcpy(entry + 1u, key, map->key_size);
-        memcpy(entry + 1u + map->key_size, value, map->value_size);
+        bpf_map_copy_value_in(map, index, value);
         bpf_map_lru_touch(map, index);
     }
 out:
@@ -1002,8 +1111,7 @@ int kernel_bpf_map_lookup_and_delete(int object_id, const void *key,
         status = -EDGE_LINUX_ENOENT;
         goto out;
     }
-    memcpy(value, bpf_map_entry(map, index) + 1u + map->key_size,
-           map->value_size);
+    bpf_map_copy_value_out(map, index, value);
     memset(bpf_map_entry(map, index), 0, map->entry_stride);
     if (map->entry_count) --map->entry_count;
 out:
@@ -1037,7 +1145,7 @@ int kernel_bpf_map_delete(int object_id, const void *key) {
         status = -EDGE_LINUX_EFAULT;
         goto out;
     }
-    if (map->type == KERNEL_BPF_MAP_TYPE_ARRAY) {
+    if (bpf_map_is_array(map)) {
         status = -EDGE_LINUX_EINVAL;
         goto out;
     }
@@ -1073,7 +1181,7 @@ int kernel_bpf_map_next_key(int object_id, const void *key, void *next_key) {
         status = -EDGE_LINUX_EINVAL;
         goto out;
     }
-    if (map->type == KERNEL_BPF_MAP_TYPE_ARRAY) {
+    if (bpf_map_is_array(map)) {
         if (key) {
             memcpy(&index, key, sizeof(index));
             next = index < map->max_entries ? index + 1u : 0u;
@@ -1130,13 +1238,13 @@ int kernel_bpf_map_batch_next(int object_id, uint32_t *cursor,
         goto out;
     }
     index = *cursor;
-    if (map->type == KERNEL_BPF_MAP_TYPE_ARRAY) {
+    if (bpf_map_is_array(map)) {
         if (index >= map->max_entries) {
             status = -EDGE_LINUX_ENOENT;
             goto out;
         }
         memcpy(key, &index, sizeof(index));
-        memcpy(value, bpf_map_entry(map, index), map->value_size);
+        bpf_map_copy_value_out(map, index, value);
     } else {
         while (index < map->max_entries && !bpf_map_entry(map, index)[0])
             ++index;
@@ -1145,9 +1253,7 @@ int kernel_bpf_map_batch_next(int object_id, uint32_t *cursor,
             goto out;
         }
         memcpy(key, bpf_map_entry(map, index) + 1u, map->key_size);
-        memcpy(value,
-               bpf_map_entry(map, index) + 1u + map->key_size,
-               map->value_size);
+        bpf_map_copy_value_out(map, index, value);
         if (!delete_element) bpf_map_lru_touch(map, index);
         if (delete_element) {
             memset(bpf_map_entry(map, index), 0, map->entry_stride);
@@ -1156,7 +1262,7 @@ int kernel_bpf_map_batch_next(int object_id, uint32_t *cursor,
     }
     *cursor = index + 1u;
     *has_more = 0;
-    if (map->type == KERNEL_BPF_MAP_TYPE_ARRAY) {
+    if (bpf_map_is_array(map)) {
         *has_more = *cursor < map->max_entries;
     } else {
         index = *cursor;

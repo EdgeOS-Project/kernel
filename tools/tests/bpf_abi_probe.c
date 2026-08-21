@@ -50,6 +50,8 @@
 
 #define BPF_MAP_TYPE_HASH 1u
 #define BPF_MAP_TYPE_ARRAY 2u
+#define BPF_MAP_TYPE_PERCPU_HASH 5u
+#define BPF_MAP_TYPE_PERCPU_ARRAY 6u
 #define BPF_MAP_TYPE_LRU_HASH 9u
 #define BPF_MAP_TYPE_QUEUE 22u
 #define BPF_MAP_TYPE_STACK 23u
@@ -656,6 +658,62 @@ static int test_queue_stack_maps(void) {
     return failures;
 }
 
+static int test_percpu_maps(void) {
+    uint64_t values[256];
+    uint64_t output[256];
+    uint32_t array_key = 1u;
+    uint32_t hash_key = 7u;
+    long array = create_map(
+        BPF_MAP_TYPE_PERCPU_ARRAY, 2u, "percpu_array");
+    long hash;
+    int failures = 0;
+
+    for (uint32_t cpu = 0; cpu < 256u; ++cpu) {
+        values[cpu] = 1000u + cpu;
+        output[cpu] = ~0ULL;
+    }
+    failures += expect_true("percpu array create", array >= 0);
+    if (array < 0) return failures + 1;
+    failures += expect("percpu array zero lookup", map_element(
+        BPF_MAP_LOOKUP_ELEM, array, &array_key, output, 0), 0);
+    failures += expect_true("percpu array cpu0 zero", output[0] == 0u);
+    failures += expect_true("percpu array cpu1 zero", output[1] == 0u);
+    failures += expect("percpu array update", map_element(
+        BPF_MAP_UPDATE_ELEM, array, &array_key, values, BPF_ANY), 0);
+    clear_bytes(output, sizeof(output));
+    failures += expect("percpu array lookup", map_element(
+        BPF_MAP_LOOKUP_ELEM, array, &array_key, output, 0), 0);
+    failures += expect_true(
+        "percpu array cpu values",
+        output[0] == values[0] && output[1] == values[1]);
+    failures += expect("percpu array noexist", map_element(
+        BPF_MAP_UPDATE_ELEM, array, &array_key, values, BPF_NOEXIST),
+        -EEXIST);
+    (void)raw_syscall6(SYS_close, array, 0, 0, 0, 0, 0);
+
+    hash = create_map(BPF_MAP_TYPE_PERCPU_HASH, 2u, "percpu_hash");
+    failures += expect_true("percpu hash create", hash >= 0);
+    if (hash < 0) return failures + 1;
+    failures += expect("percpu hash update", map_element(
+        BPF_MAP_UPDATE_ELEM, hash, &hash_key, values, BPF_ANY), 0);
+    clear_bytes(output, sizeof(output));
+    failures += expect("percpu hash lookup", map_element(
+        BPF_MAP_LOOKUP_ELEM, hash, &hash_key, output, 0), 0);
+    failures += expect_true(
+        "percpu hash cpu values",
+        output[0] == values[0] && output[1] == values[1]);
+    clear_bytes(output, sizeof(output));
+    failures += expect("percpu hash lookup delete", map_element(
+        BPF_MAP_LOOKUP_AND_DELETE_ELEM, hash, &hash_key, output, 0), 0);
+    failures += expect_true(
+        "percpu hash deleted values",
+        output[0] == values[0] && output[1] == values[1]);
+    failures += expect("percpu hash missing", map_element(
+        BPF_MAP_LOOKUP_ELEM, hash, &hash_key, output, 0), -ENOENT);
+    (void)raw_syscall6(SYS_close, hash, 0, 0, 0, 0, 0);
+    return failures;
+}
+
 static uint32_t batch_pair_mask(const uint32_t *keys,
                                 const uint64_t *values, uint32_t count) {
     uint32_t observed_mask = 0u;
@@ -988,6 +1046,7 @@ START_ATTRIBUTES void _start(void) {
     failures += test_hash_map();
     failures += test_lru_hash_map();
     failures += test_queue_stack_maps();
+    failures += test_percpu_maps();
     failures += test_batch_and_freeze();
     failures += test_program();
     failures += test_attribute_tail();
