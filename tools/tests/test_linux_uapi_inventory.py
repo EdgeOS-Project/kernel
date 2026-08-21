@@ -138,6 +138,37 @@ class LinuxUapiInventoryTests(unittest.TestCase):
             self.assertIn(name, frozen)
             self.assertEqual(int(value), frozen[name], name)
 
+    def test_edgeos_io_uring_setup_bits_match_frozen_inventory(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        inventory = json.loads(
+            (root / "tools/uapi/linux_uapi_inventory.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        frozen = {
+            entry["name"]: entry["expression"]
+            for entry in inventory["domains"]["io_uring"]["items"]
+            if entry["name"].startswith("IORING_SETUP_")
+        }
+        source = (root / "src/kernel/linux_syscall.c").read_text(
+            encoding="utf-8"
+        )
+        definitions = re.findall(
+            r"^#define\s+EDGE_LINUX_(IORING_SETUP_[A-Z0-9_]+)\s+"
+            r"\(1u << ([0-9]+)\)$",
+            source,
+            re.MULTILINE,
+        )
+        self.assertTrue(definitions)
+        for name, bit in definitions:
+            self.assertIn(name, frozen)
+            frozen_bit = re.fullmatch(
+                r"\(1U << ([0-9]+)\)(?:\s*/\*.*\*/)?",
+                frozen[name],
+            )
+            self.assertIsNotNone(frozen_bit, name)
+            self.assertEqual(int(bit), int(frozen_bit.group(1)), name)
+
 
 if __name__ == "__main__":
     unittest.main()

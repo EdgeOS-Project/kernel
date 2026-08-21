@@ -332,8 +332,15 @@ int main(void) {
         mapped_sqe->user_data = 0x535145313238u;
         *page_u32(&extended_sq_ring, 64u) = 1u;
         *page_u32(&extended_sq_ring, 4u) = 1u;
-        assert(kernel_io_uring_take_submission(
-                   second_ring_id, &extended_submission) == 0);
+        {
+            uint32_t entries_consumed = 0u;
+            int32_t layout_result = 0;
+            assert(kernel_io_uring_take_submission(
+                       second_ring_id, 1u, &extended_submission,
+                       &entries_consumed, &layout_result) == 0);
+            assert(entries_consumed == 1u);
+            assert(layout_result == 0);
+        }
         assert(extended_submission.opcode == 63u);
         assert(extended_submission.user_data == 0x535145313238u);
         assert(kernel_io_uring_completion_add32(
@@ -352,6 +359,121 @@ int main(void) {
         test_page_release(0, &extended_sq_ring);
         test_page_release(0, &extended_cq_ring);
         test_page_release(0, &extended_sqes);
+        kernel_io_uring_release(second_ring_id);
+    }
+    {
+        struct edge_linux_io_uring_params invalid_mixed_parameters = {
+            .flags = (1u << 10) | (1u << 19),
+        };
+        struct edge_linux_io_uring_params mixed_parameters = {
+            .flags = (1u << 18) | (1u << 19),
+        };
+        struct edge_linux_io_uring_sqe mixed_submission = {0};
+        struct edge_linux_io_uring_cqe *mixed_completion;
+        kernel_io_uring_page_t mixed_sq_ring;
+        kernel_io_uring_page_t mixed_cq_ring;
+        kernel_io_uring_page_t mixed_sqes;
+        uint64_t *completion_extra;
+        uint32_t entries_consumed;
+        int32_t layout_result;
+
+        assert(kernel_io_uring_create(
+                   2u, &invalid_mixed_parameters,
+                   &second_ring_id) == -EDGE_LINUX_EINVAL);
+        invalid_mixed_parameters.flags = (1u << 11) | (1u << 18);
+        assert(kernel_io_uring_create(
+                   2u, &invalid_mixed_parameters,
+                   &second_ring_id) == -EDGE_LINUX_EINVAL);
+        invalid_mixed_parameters.flags = (1u << 19);
+        assert(kernel_io_uring_create(
+                   1u, &invalid_mixed_parameters,
+                   &second_ring_id) == -EDGE_LINUX_EOVERFLOW);
+
+        assert(kernel_io_uring_create(
+                   4u, &mixed_parameters, &second_ring_id) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_SQ_RING,
+                   0u, &mixed_sq_ring) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_CQ_RING,
+                   0u, &mixed_cq_ring) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_SQES,
+                   0u, &mixed_sqes) == 0);
+
+        mapped_sqe = (struct edge_linux_io_uring_sqe *)(void *)(
+            (uint8_t *)mixed_sqes.address + 2u * 64u);
+        memset(mapped_sqe, 0, 2u * sizeof(*mapped_sqe));
+        mapped_sqe->opcode = 63u;
+        mapped_sqe->user_data = 0x4d49584544535145ull;
+        *page_u32(&mixed_sq_ring, 64u) = 2u;
+        *page_u32(&mixed_sq_ring, 68u) = 3u;
+        *page_u32(&mixed_sq_ring, 4u) = 2u;
+        entries_consumed = 0u;
+        layout_result = 0;
+        assert(kernel_io_uring_take_submission(
+                   second_ring_id, 2u, &mixed_submission,
+                   &entries_consumed, &layout_result) == 0);
+        assert(entries_consumed == 2u);
+        assert(layout_result == 0);
+        assert(mixed_submission.user_data == 0x4d49584544535145ull);
+        assert(*page_u32(&mixed_sq_ring, 0u) == 2u);
+
+        mapped_sqe = (struct edge_linux_io_uring_sqe *)(void *)
+            mixed_sqes.address;
+        memset(mapped_sqe, 0, sizeof(*mapped_sqe));
+        mapped_sqe->opcode = 63u;
+        mapped_sqe->user_data = 0x4d49584544424144ull;
+        *page_u32(&mixed_sq_ring, 72u) = 0u;
+        *page_u32(&mixed_sq_ring, 4u) = 3u;
+        entries_consumed = 0u;
+        layout_result = 0;
+        assert(kernel_io_uring_take_submission(
+                   second_ring_id, 1u, &mixed_submission,
+                   &entries_consumed, &layout_result) == 0);
+        assert(entries_consumed == 1u);
+        assert(layout_result == -EDGE_LINUX_EINVAL);
+        assert(*page_u32(&mixed_sq_ring, 0u) == 3u);
+
+        assert(kernel_io_uring_completion_add(
+                   second_ring_id, 0x4d49584544435131ull,
+                   1, 0u) == 0);
+        assert(kernel_io_uring_completion_add32(
+                   second_ring_id, 0x4d49584544435132ull,
+                   2, 0u, 0x1111222233334444ull,
+                   0x5555666677778888ull) == 0);
+        assert(*page_u32(&mixed_cq_ring, 4u) == 3u);
+        mixed_completion =
+            (struct edge_linux_io_uring_cqe *)(void *)(
+                (uint8_t *)mixed_cq_ring.address + 64u + 16u);
+        completion_extra = (uint64_t *)(void *)(mixed_completion + 1);
+        assert(mixed_completion->user_data == 0x4d49584544435132ull);
+        assert(mixed_completion->result == 2);
+        assert(mixed_completion->flags == (1u << 15));
+        assert(completion_extra[0] == 0x1111222233334444ull);
+        assert(completion_extra[1] == 0x5555666677778888ull);
+
+        *page_u32(&mixed_cq_ring, 0u) = 7u;
+        *page_u32(&mixed_cq_ring, 4u) = 7u;
+        assert(kernel_io_uring_completion_add32(
+                   second_ring_id, 0x4d49584544575250ull,
+                   3, 0u, 9u, 10u) == 0);
+        assert(*page_u32(&mixed_cq_ring, 4u) == 10u);
+        mixed_completion =
+            (struct edge_linux_io_uring_cqe *)(void *)(
+                (uint8_t *)mixed_cq_ring.address + 64u + 7u * 16u);
+        assert(mixed_completion->user_data == 0u);
+        assert(mixed_completion->result == 0);
+        assert(mixed_completion->flags == (1u << 5));
+        mixed_completion =
+            (struct edge_linux_io_uring_cqe *)(void *)(
+                (uint8_t *)mixed_cq_ring.address + 64u);
+        assert(mixed_completion->user_data == 0x4d49584544575250ull);
+        assert(mixed_completion->flags == (1u << 15));
+
+        test_page_release(0, &mixed_sq_ring);
+        test_page_release(0, &mixed_cq_ring);
+        test_page_release(0, &mixed_sqes);
         kernel_io_uring_release(second_ring_id);
     }
     assert(kernel_io_uring_files_register(
@@ -525,7 +647,15 @@ int main(void) {
     mapped_sqe[0].user_data = 0x12345678u;
     page_u32(&sq_ring, parameters.sq_off.array)[0] = 0;
     *page_u32(&sq_ring, parameters.sq_off.tail) = 1;
-    assert(kernel_io_uring_take_submission(ring_id, &submission) == 0);
+    {
+        uint32_t entries_consumed = 0u;
+        int32_t layout_result = 0;
+        assert(kernel_io_uring_take_submission(
+                   ring_id, 1u, &submission,
+                   &entries_consumed, &layout_result) == 0);
+        assert(entries_consumed == 1u);
+        assert(layout_result == 0);
+    }
     assert(submission.opcode == 0 &&
            submission.user_data == 0x12345678u);
     assert(*page_u32(&sq_ring, parameters.sq_off.head) == 1);

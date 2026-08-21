@@ -27,6 +27,7 @@ EDGEOS_ASSESSMENTS = [
         "implemented": [
             "setup and mapped submission/completion rings",
             "128-byte SQE and 32-byte CQE ring layouts with Linux opcode numbering through NOP128",
+            "mixed 64/128-byte SQE and 16/32-byte CQE rings with double-slot accounting and wrap padding",
             "NOP, READ, WRITE, READV, WRITEV and FSYNC operations",
             "NOP result injection, descriptor and registered-buffer validation, task-work acceptance and CQE32 payloads",
             "probe and disabled-ring registration",
@@ -81,7 +82,7 @@ EDGEOS_ASSESSMENTS = [
             "user-provided pinned wait regions and SQPOLL wait control",
             "pending asynchronous descriptor leases across close and reuse",
             "notification-pipe semantics",
-            "mixed SQE/CQE layouts and application-provided ring memory",
+            "application-provided ring memory",
             "provided-buffer page pinning and owner-mm-independent lifetime across unmap and exit",
             "remaining supported VFS and socket operations",
             "ia32 and x32 compatibility layouts",
@@ -103,7 +104,7 @@ EDGEOS_ASSESSMENTS = [
             "reference": REFERENCE_COMMIT,
             "scope": (
                 "setup, mmap, 128-byte SQE and 32-byte CQE layouts, NOP, "
-                "NOP128, extended NOP flags, frozen opcode numbering, "
+                "NOP128, extended NOP flags, fixed and mixed SQE/CQE layouts, frozen opcode numbering, "
                 "eventfd, poll, timeout, cancellation, "
                 "openat, openat2, close, statx, fallocate, send, recv, "
                 "sendmsg, recvmsg, shutdown, connect, accept, fadvise, "

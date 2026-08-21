@@ -8129,6 +8129,8 @@ static int64_t edge_linux_sys_aio(
 
 #define EDGE_LINUX_IORING_SETUP_SQE128 (1u << 10)
 #define EDGE_LINUX_IORING_SETUP_CQE32  (1u << 11)
+#define EDGE_LINUX_IORING_SETUP_CQE_MIXED (1u << 18)
+#define EDGE_LINUX_IORING_SETUP_SQE_MIXED (1u << 19)
 
 #define EDGE_LINUX_IORING_NOP_INJECT_RESULT (1u << 0)
 #define EDGE_LINUX_IORING_NOP_FILE          (1u << 1)
@@ -8938,7 +8940,8 @@ static int32_t edge_linux_io_uring_execute_descriptor(
         result = kernel_io_uring_setup_flags(ring_id, &setup_flags);
         if (result < 0) break;
         if (submission->opcode == EDGE_LINUX_IORING_OP_NOP128 &&
-            !(setup_flags & EDGE_LINUX_IORING_SETUP_SQE128)) {
+            !(setup_flags & (EDGE_LINUX_IORING_SETUP_SQE128 |
+                             EDGE_LINUX_IORING_SETUP_SQE_MIXED))) {
             result = -EDGE_LINUX_EINVAL;
             break;
         }
@@ -8947,7 +8950,8 @@ static int32_t edge_linux_io_uring_execute_descriptor(
             break;
         }
         if ((nop_flags & EDGE_LINUX_IORING_NOP_CQE32) &&
-            !(setup_flags & EDGE_LINUX_IORING_SETUP_CQE32)) {
+            !(setup_flags & (EDGE_LINUX_IORING_SETUP_CQE32 |
+                             EDGE_LINUX_IORING_SETUP_CQE_MIXED))) {
             result = -EDGE_LINUX_EINVAL;
             break;
         }
@@ -9788,8 +9792,11 @@ static int64_t edge_linux_sys_io_uring_enter(
     }
 
     while (submitted < to_submit) {
+        uint32_t entries_consumed = 1u;
+        int32_t layout_result = 0;
         int take_result = kernel_io_uring_take_submission(
-            ring_id, &submission);
+            ring_id, to_submit - submitted, &submission,
+            &entries_consumed, &layout_result);
         int32_t operation_result;
         uint32_t completion_flags = 0u;
         int linked;
@@ -9804,6 +9811,7 @@ static int64_t edge_linux_sys_io_uring_enter(
         hard_linked =
             (submission.flags & EDGE_LINUX_IOSQE_IO_HARDLINK) != 0;
         operation_result = cancel_link ? -EDGE_LINUX_ECANCELED :
+                           layout_result < 0 ? layout_result :
                            edge_linux_io_uring_execute(
                                context, ring_id, &submission,
                                &completion_flags);
@@ -9834,7 +9842,7 @@ static int64_t edge_linux_sys_io_uring_enter(
         if (cancel_link) cancel_link = linked || hard_linked;
         else if (operation_result < 0 && linked && !hard_linked)
             cancel_link = 1;
-        ++submitted;
+        submitted += entries_consumed;
         if (thread_state)
             thread_state->io_uring_wait_submitted = submitted;
     }

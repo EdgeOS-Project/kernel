@@ -30,6 +30,9 @@
 
 #define IORING_SETUP_SQE128 (1u << 10)
 #define IORING_SETUP_CQE32 (1u << 11)
+#define IORING_SETUP_CQSIZE (1u << 3)
+#define IORING_SETUP_CQE_MIXED (1u << 18)
+#define IORING_SETUP_SQE_MIXED (1u << 19)
 #define IORING_ENTER_GETEVENTS 1u
 #define IORING_OP_NOP 0u
 #define IORING_OP_NOP128 63u
@@ -39,6 +42,8 @@
 #define IORING_NOP_FIXED_BUFFER (1u << 3)
 #define IORING_NOP_TASK_WORK (1u << 4)
 #define IORING_NOP_CQE32 (1u << 5)
+#define IORING_CQE_F_SKIP (1u << 5)
+#define IORING_CQE_F_32 (1u << 15)
 #define IORING_REGISTER_BUFFERS 0u
 #define IORING_REGISTER_FILES 2u
 #define IORING_OFF_SQ_RING 0x00000000ull
@@ -112,7 +117,9 @@ struct linux_iovec {
     uint64_t length;
 };
 
+#ifndef EDGE_PROBE_LAYOUT_ONLY
 static uint8_t g_fixed_buffer[16];
+#endif
 
 static long raw_syscall6(long number, long a0, long a1, long a2,
                          long a3, long a4, long a5) {
@@ -304,11 +311,205 @@ done:
     return failures;
 }
 
+#ifndef EDGE_PROBE_LAYOUT_ONLY
+static int mixed_expect(int condition, const char *failure) {
+    if (condition) return 0;
+    print_text(failure);
+    return 1;
+}
+
+static int submit_mixed(long descriptor,
+                        struct io_uring_params *parameters,
+                        void *sq_ring, void *sqes,
+                        uint32_t physical_slot,
+                        const struct io_uring_sqe *request,
+                        uint32_t submission_entries,
+                        long expected_enter_result) {
+    volatile uint32_t *sq_tail = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.tail);
+    volatile uint32_t *sq_mask = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.ring_mask);
+    volatile uint32_t *sq_array = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.array);
+    uint32_t tail = __atomic_load_n(sq_tail, __ATOMIC_ACQUIRE);
+    struct io_uring_sqe *slot = (struct io_uring_sqe *)(
+        (uint8_t *)sqes + (uint64_t)physical_slot * 64u);
+
+    bytes_zero(slot, submission_entries * 64u);
+    bytes_copy(slot, request, sizeof(*request));
+    sq_array[tail & *sq_mask] = physical_slot;
+    if (submission_entries == 2u)
+        sq_array[(tail + 1u) & *sq_mask] = physical_slot + 1u;
+    __atomic_store_n(
+        sq_tail, tail + submission_entries, __ATOMIC_RELEASE);
+    return raw_syscall6(
+               SYS_io_uring_enter, descriptor, submission_entries,
+               0, 0, 0, 0) == expected_enter_result ? 0 : 1;
+}
+
+static int run_mixed_probe(void) {
+    struct io_uring_params parameters;
+    struct io_uring_sqe request;
+    volatile uint32_t *cq_head;
+    volatile uint32_t *cq_tail;
+    volatile uint32_t *cq_mask;
+    struct io_uring_cqe32 *completion;
+    uint8_t *cqes;
+    void *sq_ring = 0;
+    void *cq_ring = 0;
+    void *sqes = 0;
+    long descriptor;
+    int failures = 0;
+
+    bytes_zero(&parameters, sizeof(parameters));
+    parameters.flags = IORING_SETUP_SQE128 | IORING_SETUP_SQE_MIXED;
+    failures += mixed_expect(raw_syscall6(
+        SYS_io_uring_setup, 8, (long)&parameters,
+        0, 0, 0, 0) == -22, "MIXED_FAIL_SETUP_SQE_CONFLICT\n");
+    bytes_zero(&parameters, sizeof(parameters));
+    parameters.flags = IORING_SETUP_CQE32 | IORING_SETUP_CQE_MIXED;
+    failures += mixed_expect(raw_syscall6(
+        SYS_io_uring_setup, 8, (long)&parameters,
+        0, 0, 0, 0) == -22, "MIXED_FAIL_SETUP_CQE_CONFLICT\n");
+
+    bytes_zero(&parameters, sizeof(parameters));
+    parameters.flags = IORING_SETUP_CQSIZE |
+        IORING_SETUP_SQE_MIXED | IORING_SETUP_CQE_MIXED;
+    parameters.cq_entries = 8u;
+    descriptor = raw_syscall6(
+        SYS_io_uring_setup, 8, (long)&parameters, 0, 0, 0, 0);
+    if (descriptor < 0) {
+        print_text("MIXED_FAIL_SETUP\n");
+        return failures + 1;
+    }
+    sq_ring = map_ring(descriptor, IORING_OFF_SQ_RING);
+    cq_ring = map_ring(descriptor, IORING_OFF_CQ_RING);
+    sqes = map_ring(descriptor, IORING_OFF_SQES);
+    if (!sq_ring || !cq_ring || !sqes) {
+        ++failures;
+        goto done;
+    }
+    cq_head = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters.cq_off.head);
+    cq_tail = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters.cq_off.tail);
+    cq_mask = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters.cq_off.ring_mask);
+    cqes = (uint8_t *)cq_ring + parameters.cq_off.cqes;
+
+    bytes_zero(&request, sizeof(request));
+    request.opcode = IORING_OP_NOP;
+    request.user_data = 0x4d495845444e4f50ull;
+    failures += mixed_expect(submit_mixed(
+        descriptor, &parameters, sq_ring, sqes,
+        0u, &request, 1u, 1) == 0, "MIXED_FAIL_NOP_ENTER\n");
+    failures += mixed_expect(
+        __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == 1u,
+        "MIXED_FAIL_NOP_TAIL\n");
+    completion = (struct io_uring_cqe32 *)(void *)cqes;
+    failures += mixed_expect(
+        completion->user_data == request.user_data &&
+        completion->result == 0 && completion->flags == 0u,
+        "MIXED_FAIL_NOP_CQE\n");
+
+    bytes_zero(&request, sizeof(request));
+    request.opcode = IORING_OP_NOP128;
+    request.offset = 0x1111222233334444ull;
+    request.address = 0x5555666677778888ull;
+    request.operation_flags = IORING_NOP_CQE32;
+    request.user_data = 0x4d49584544313238ull;
+    failures += mixed_expect(submit_mixed(
+        descriptor, &parameters, sq_ring, sqes,
+        2u, &request, 2u, 2) == 0, "MIXED_FAIL_NOP128_ENTER\n");
+    failures += mixed_expect(
+        __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == 3u,
+        "MIXED_FAIL_NOP128_TAIL\n");
+    completion = (struct io_uring_cqe32 *)(void *)(cqes + 16u);
+    failures += mixed_expect(
+        completion->user_data == request.user_data &&
+        completion->result == 0 &&
+        completion->flags == IORING_CQE_F_32 &&
+        completion->extra1 == request.offset &&
+        completion->extra2 == request.address,
+        "MIXED_FAIL_NOP128_CQE\n");
+
+    bytes_zero(&request, sizeof(request));
+    request.opcode = IORING_OP_NOP128;
+    request.user_data = 0x4d49584544424144ull;
+    failures += mixed_expect(submit_mixed(
+        descriptor, &parameters, sq_ring, sqes,
+        4u, &request, 1u, 1) == 0, "MIXED_FAIL_SHORT_ENTER\n");
+    failures += mixed_expect(
+        __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == 4u,
+        "MIXED_FAIL_SHORT_TAIL\n");
+    completion = (struct io_uring_cqe32 *)(void *)(cqes + 3u * 16u);
+    failures += mixed_expect(
+        completion->user_data == request.user_data &&
+        completion->result == -22 && completion->flags == 0u,
+        "MIXED_FAIL_SHORT_CQE\n");
+
+    for (uint32_t index = 0u; index < 3u; ++index) {
+        bytes_zero(&request, sizeof(request));
+        request.opcode = IORING_OP_NOP;
+        request.user_data = 0x4d4958454446494cull + index;
+        failures += mixed_expect(submit_mixed(
+            descriptor, &parameters, sq_ring, sqes,
+            index, &request, 1u, 1) == 0, "MIXED_FAIL_FILL_ENTER\n");
+    }
+    failures += mixed_expect(
+        __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == 7u,
+        "MIXED_FAIL_FILL_TAIL\n");
+    __atomic_store_n(cq_head, 7u, __ATOMIC_RELEASE);
+
+    bytes_zero(&request, sizeof(request));
+    request.opcode = IORING_OP_NOP128;
+    request.offset = 9u;
+    request.address = 10u;
+    request.operation_flags = IORING_NOP_CQE32;
+    request.user_data = 0x4d49584544575250ull;
+    failures += mixed_expect(submit_mixed(
+        descriptor, &parameters, sq_ring, sqes,
+        5u, &request, 2u, 2) == 0, "MIXED_FAIL_WRAP_ENTER\n");
+    failures += mixed_expect(
+        __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == 10u,
+        "MIXED_FAIL_WRAP_TAIL\n");
+    completion = (struct io_uring_cqe32 *)(void *)(
+        cqes + ((*cq_mask) * 16u));
+    failures += mixed_expect(
+        completion->user_data == 0u && completion->result == 0 &&
+        completion->flags == IORING_CQE_F_SKIP,
+        "MIXED_FAIL_WRAP_SKIP\n");
+    completion = (struct io_uring_cqe32 *)(void *)cqes;
+    failures += mixed_expect(
+        completion->user_data == request.user_data &&
+        completion->result == 0 &&
+        completion->flags == IORING_CQE_F_32 &&
+        completion->extra1 == 9u && completion->extra2 == 10u,
+        "MIXED_FAIL_WRAP_CQE\n");
+
+done:
+    if (sq_ring)
+        (void)raw_syscall6(
+            SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
+    if (cq_ring)
+        (void)raw_syscall6(
+            SYS_munmap, (long)cq_ring, PAGE_SIZE, 0, 0, 0, 0);
+    if (sqes)
+        (void)raw_syscall6(
+            SYS_munmap, (long)sqes, PAGE_SIZE, 0, 0, 0, 0);
+    (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+    return failures;
+}
+#endif
+
 #if defined(__x86_64__)
 __attribute__((force_align_arg_pointer))
 #endif
 void _start(void) {
     int failures = run_probe();
+#ifndef EDGE_PROBE_LAYOUT_ONLY
+    failures += run_mixed_probe();
+#endif
     print_text(failures ?
         "IO_URING_EXTENDED_ENTRIES_ABI_PROBE_FAIL\n" :
         "IO_URING_EXTENDED_ENTRIES_ABI_PROBE_PASS\n");

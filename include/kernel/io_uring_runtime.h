@@ -218,7 +218,9 @@ int kernel_io_uring_mmap_page(int32_t ring_id, uint64_t offset,
                               uint32_t page_index,
                               kernel_io_uring_page_t *page);
 int kernel_io_uring_take_submission(
-    int32_t ring_id, struct edge_linux_io_uring_sqe *submission);
+    int32_t ring_id, uint32_t submission_limit,
+    struct edge_linux_io_uring_sqe *submission,
+    uint32_t *entries_consumed, int32_t *layout_result);
 int kernel_io_uring_completion_add(int32_t ring_id, uint64_t user_data,
                                    int32_t result, uint32_t flags);
 int kernel_io_uring_completion_add32(
