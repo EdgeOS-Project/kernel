@@ -91,6 +91,18 @@ int kernel_current_linux_identity(kernel_linux_identity_t *identity) {
         &view, view.pid_namespace_id, identity);
 }
 
+int kernel_current_cgroup_id(uint32_t *cgroup_id) {
+    kernel_task_identity_view_t identity;
+    kernel_proc_task_view_t task;
+
+    if (!cgroup_id ||
+        kernel_arch_current_identity_sample(&identity) < 0 ||
+        kernel_arch_proc_task_lookup(identity.tid, &task) < 0)
+        return -1;
+    *cgroup_id = task.cgroup_id;
+    return 0;
+}
+
 int kernel_process_linux_identity(int32_t pid,
                                   kernel_linux_identity_t *identity) {
     kernel_task_identity_view_t caller_view;

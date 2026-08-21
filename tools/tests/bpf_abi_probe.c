@@ -7,14 +7,22 @@
 #define SYS_write 1
 #define SYS_close 3
 #define SYS_fcntl 72
+#define SYS_openat 257
+#define SYS_mkdirat 258
+#define SYS_mount 165
 #define SYS_exit 60
 #define SYS_bpf 321
+#define START_ATTRIBUTES __attribute__((noreturn, force_align_arg_pointer))
 #elif defined(__aarch64__)
 #define SYS_fcntl 25
 #define SYS_close 57
 #define SYS_write 64
 #define SYS_exit 93
 #define SYS_bpf 280
+#define SYS_openat 56
+#define SYS_mkdirat 34
+#define SYS_mount 40
+#define START_ATTRIBUTES __attribute__((noreturn))
 #else
 #error "bpf_abi_probe requires a Linux 64-bit architecture"
 #endif
@@ -25,11 +33,14 @@
 #define BPF_MAP_DELETE_ELEM 3u
 #define BPF_MAP_GET_NEXT_KEY 4u
 #define BPF_PROG_LOAD 5u
+#define BPF_PROG_ATTACH 8u
+#define BPF_PROG_DETACH 9u
 #define BPF_PROG_GET_NEXT_ID 11u
 #define BPF_MAP_GET_NEXT_ID 12u
 #define BPF_PROG_GET_FD_BY_ID 13u
 #define BPF_MAP_GET_FD_BY_ID 14u
 #define BPF_OBJ_GET_INFO_BY_FD 15u
+#define BPF_PROG_QUERY 16u
 #define BPF_MAP_LOOKUP_AND_DELETE_ELEM 21u
 #define BPF_MAP_FREEZE 22u
 #define BPF_MAP_LOOKUP_BATCH 24u
@@ -40,12 +51,16 @@
 #define BPF_MAP_TYPE_HASH 1u
 #define BPF_MAP_TYPE_ARRAY 2u
 #define BPF_PROG_TYPE_CGROUP_DEVICE 15u
+#define BPF_CGROUP_DEVICE 6u
 #define BPF_ANY 0u
 #define BPF_NOEXIST 1u
 #define BPF_EXIST 2u
 
 #define F_GETFD 1
 #define FD_CLOEXEC 1
+#define AT_FDCWD -100
+#define O_RDONLY 0
+#define O_DIRECTORY 00200000
 
 #define E2BIG 7
 #define EBADF 9
@@ -94,6 +109,28 @@ union bpf_attr {
         uint32_t prog_ifindex;
         uint32_t expected_attach_type;
     } prog_load;
+    struct {
+        uint32_t target_fd;
+        uint32_t attach_bpf_fd;
+        uint32_t attach_type;
+        uint32_t attach_flags;
+        uint32_t replace_bpf_fd;
+        uint32_t relative_fd;
+        uint64_t expected_revision;
+    } prog_attach;
+    struct {
+        uint32_t target_fd;
+        uint32_t attach_type;
+        uint32_t query_flags;
+        uint32_t attach_flags;
+        uint64_t prog_ids;
+        uint32_t prog_count;
+        uint32_t padding;
+        uint64_t prog_attach_flags;
+        uint64_t link_ids;
+        uint64_t link_attach_flags;
+        uint64_t revision;
+    } prog_query;
     struct {
         uint32_t start_or_object_id;
         uint32_t next_id;
@@ -615,6 +652,9 @@ static int test_program(void) {
     struct bpf_insn translated[2];
     uint8_t oversized_info[240];
     uint32_t program_id;
+    uint32_t queried_id = 0u;
+    uint32_t queried_flags = UINT32_MAX;
+    long cgroup_descriptor;
     long descriptor;
     long reopened;
     int failures = 0;
@@ -687,6 +727,67 @@ static int test_program(void) {
     failures += expect_true("program reopen", reopened >= 0);
     if (reopened >= 0)
         (void)raw_syscall6(SYS_close, reopened, 0, 0, 0, 0, 0);
+
+    (void)raw_syscall6(
+        SYS_mkdirat, AT_FDCWD, (long)"/sys/fs", 0755, 0, 0, 0);
+    (void)raw_syscall6(
+        SYS_mkdirat, AT_FDCWD, (long)"/sys/fs/cgroup", 0755, 0, 0, 0);
+    (void)raw_syscall6(
+        SYS_mount, (long)"none", (long)"/sys/fs/cgroup",
+        (long)"cgroup2", 0, 0, 0);
+    cgroup_descriptor = raw_syscall6(
+        SYS_openat, AT_FDCWD, (long)"/sys/fs/cgroup",
+        O_RDONLY | O_DIRECTORY, 0, 0, 0);
+    failures += expect_true("open cgroup root", cgroup_descriptor >= 0);
+    if (cgroup_descriptor >= 0) {
+        clear_bytes(&attribute, sizeof(attribute));
+        attribute.prog_attach.target_fd = (uint32_t)cgroup_descriptor;
+        attribute.prog_attach.attach_bpf_fd = (uint32_t)descriptor;
+        attribute.prog_attach.attach_type = UINT32_MAX;
+        failures += expect("attach invalid type", bpf_call(
+            BPF_PROG_ATTACH, &attribute), -EINVAL);
+        attribute.prog_attach.attach_type = BPF_CGROUP_DEVICE;
+        failures += expect("attach cgroup device", bpf_call(
+            BPF_PROG_ATTACH, &attribute), 0);
+
+        clear_bytes(&attribute, sizeof(attribute));
+        attribute.prog_query.target_fd = (uint32_t)cgroup_descriptor;
+        attribute.prog_query.attach_type = BPF_CGROUP_DEVICE;
+        failures += expect("query cgroup size", bpf_call(
+            BPF_PROG_QUERY, &attribute), 0);
+        failures += expect("query cgroup count",
+                           attribute.prog_query.prog_count, 1);
+        attribute.prog_query.prog_ids =
+            (uint64_t)(uintptr_t)&queried_id;
+        attribute.prog_query.prog_count = 1u;
+        attribute.prog_query.prog_attach_flags =
+            (uint64_t)(uintptr_t)&queried_flags;
+        failures += expect("query cgroup program", bpf_call(
+            BPF_PROG_QUERY, &attribute), 0);
+        failures += expect_true(
+            "query cgroup values",
+            attribute.prog_query.prog_count == 1u &&
+            queried_id == program_id && queried_flags == 0u);
+
+        clear_bytes(&attribute, sizeof(attribute));
+        attribute.prog_attach.target_fd = (uint32_t)cgroup_descriptor;
+        attribute.prog_attach.attach_bpf_fd = (uint32_t)descriptor;
+        attribute.prog_attach.attach_type = BPF_CGROUP_DEVICE;
+        failures += expect("detach cgroup device", bpf_call(
+            BPF_PROG_DETACH, &attribute), 0);
+        clear_bytes(&attribute, sizeof(attribute));
+        attribute.prog_query.target_fd = (uint32_t)cgroup_descriptor;
+        attribute.prog_query.attach_type = BPF_CGROUP_DEVICE;
+        attribute.prog_query.prog_ids =
+            (uint64_t)(uintptr_t)&queried_id;
+        attribute.prog_query.prog_count = 1u;
+        failures += expect("query cgroup empty", bpf_call(
+            BPF_PROG_QUERY, &attribute), 0);
+        failures += expect("query cgroup empty count",
+                           attribute.prog_query.prog_count, 0);
+        (void)raw_syscall6(
+            SYS_close, cgroup_descriptor, 0, 0, 0, 0, 0);
+    }
     (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
     return failures;
 }
@@ -706,7 +807,7 @@ static int test_attribute_tail(void) {
                BPF_MAP_CREATE, &attribute, 4097u), -E2BIG);
 }
 
-__attribute__((noreturn)) void _start(void) {
+START_ATTRIBUTES void _start(void) {
     int failures = test_array_map();
 
     if (failures == 77) {

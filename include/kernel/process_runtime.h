@@ -448,6 +448,7 @@ __attribute__((noreturn)) void arch_current_exit(int32_t code,
                                                  int whole_thread_group);
 int kernel_current_identity(int32_t *pid, uint32_t *euid, uint32_t *egid);
 int kernel_current_linux_identity(kernel_linux_identity_t *identity);
+int kernel_current_cgroup_id(uint32_t *cgroup_id);
 int kernel_current_no_new_privileges(void);
 int kernel_process_linux_identity(int32_t pid,
                                   kernel_linux_identity_t *identity);

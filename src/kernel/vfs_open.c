@@ -7,6 +7,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "fs/cgroupfs.h"
+#include "kernel/file_metadata.h"
 #include "kernel/inotify.h"
 #include "kernel/landlock_runtime.h"
 #include "kernel/linux_errno.h"
@@ -35,6 +37,40 @@ static uint64_t kernel_vfs_landlock_open_access(
     if (request->flags & KERNEL_VFS_OPEN_TRUNCATE)
         access |= EDGE_LINUX_LANDLOCK_ACCESS_FS_TRUNCATE;
     return access;
+}
+
+static int kernel_vfs_cgroup_device_open(
+        const kernel_vfs_open_request_t *request,
+        const vfs_inode_t *inode, int *checked) {
+    kernel_bpf_cgroup_device_context_t context;
+    uint32_t cgroup_id;
+    uint16_t kind;
+    uint32_t access = 0u;
+
+    if (checked) *checked = 0;
+    if (!request || !inode ||
+        (request->flags & KERNEL_VFS_OPEN_PATH))
+        return 0;
+    kind = inode->mode & 0xf000u;
+    if (kind != VFS_INODE_CHR && kind != VFS_INODE_BLK)
+        return 0;
+    if (checked) *checked = 1;
+    if (request->access_mode == KERNEL_VFS_OPEN_READ_ONLY ||
+        request->access_mode == KERNEL_VFS_OPEN_READ_WRITE)
+        access |= KERNEL_BPF_DEVCG_ACC_READ;
+    if (request->access_mode == KERNEL_VFS_OPEN_WRITE_ONLY ||
+        request->access_mode == KERNEL_VFS_OPEN_READ_WRITE)
+        access |= KERNEL_BPF_DEVCG_ACC_WRITE;
+    if (kernel_current_cgroup_id(&cgroup_id) < 0)
+        return -EDGE_LINUX_ESRCH;
+    memset(&context, 0, sizeof(context));
+    context.access_type = (access << 16) |
+        (kind == VFS_INODE_CHR ? KERNEL_BPF_DEVCG_DEV_CHAR :
+                                KERNEL_BPF_DEVCG_DEV_BLOCK);
+    context.major = kernel_file_device_major(inode->rdev);
+    context.minor = kernel_file_device_minor(inode->rdev);
+    return cgroupfs_bpf_device_allowed(cgroup_id, &context) ?
+           0 : -EDGE_LINUX_EPERM;
 }
 
 #define EDGE_RESOLVE_NO_XDEV       0x01u
@@ -469,6 +505,7 @@ int64_t kernel_vfs_open_at(const kernel_vfs_open_request_t *request) {
     int64_t special_result;
     int64_t magic_result;
     int handled = 0;
+    int device_checked = 0;
     int created = 0;
     int descriptor;
     int status;
@@ -500,6 +537,14 @@ int64_t kernel_vfs_open_at(const kernel_vfs_open_request_t *request) {
             request->directory, request->path,
             scratch.workspace, scratch.capacity);
         if (status < 0) return status;
+    }
+    {
+        vfs_inode_t early_inode;
+        if (vfs_resolve(scratch.workspace, &early_inode, 0, 0, 0) == 0) {
+            status = kernel_vfs_cgroup_device_open(
+                request, &early_inode, &device_checked);
+            if (status < 0) return status;
+        }
     }
     magic_result = kernel_vfs_open_magic_fd(
         request, scratch.workspace, &handled);
@@ -562,6 +607,11 @@ int64_t kernel_vfs_open_at(const kernel_vfs_open_request_t *request) {
         (target.inode->mode & 0xf000u) == VFS_INODE_DIR &&
         request->access_mode != KERNEL_VFS_OPEN_READ_ONLY)
         return -EDGE_LINUX_EISDIR;
+    if (!device_checked) {
+        status = kernel_vfs_cgroup_device_open(
+            request, target.inode, &device_checked);
+        if (status < 0) return status;
+    }
     if (!(request->flags & KERNEL_VFS_OPEN_PATH) &&
         (target.inode->mode & 0xf000u) == VFS_INODE_FILE &&
         request->access_mode != KERNEL_VFS_OPEN_READ_ONLY &&

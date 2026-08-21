@@ -182,7 +182,12 @@ static void test_program(void) {
         .minor = 3u,
     };
     uint32_t result = 0;
+    uint32_t count = 0;
+    uint32_t flags[4];
+    int objects[4];
     int object;
+    int deny_object;
+    int replacement_object;
 
     strcpy(request.name, "allow_dev");
     object = kernel_bpf_program_create(&request, instructions);
@@ -195,6 +200,69 @@ static void test_program(void) {
     assert(kernel_bpf_program_run_cgroup_device(
                object, &context, &result) == 0);
     assert(result == 1u);
+    assert(kernel_bpf_cgroup_attach(3u, object, 0u, -1) == 0);
+    assert(kernel_bpf_cgroup_attach(3u, object, 0u, -1) < 0);
+    assert(kernel_bpf_cgroup_query(
+               3u, objects, flags, 4u, &count, 0) == 0);
+    assert(count == 1u && objects[0] == object && flags[0] == 0u);
+    result = 0u;
+    assert(kernel_bpf_cgroup_device_run(
+               3u, &context, &result) == 0 && result == 1u);
+    assert(kernel_bpf_cgroup_detach(3u, object) == 0);
+
+    request.expected_attach_type = KERNEL_BPF_CGROUP_DEVICE;
+    strcpy(request.name, "deny_dev");
+    {
+        const kernel_bpf_instruction_t deny_instructions[] = {
+            { .code = 0xb7u, .registers = 0u,
+              .offset = 0, .immediate = 0 },
+            { .code = 0x95u, .registers = 0u,
+              .offset = 0, .immediate = 0 },
+        };
+        deny_object = kernel_bpf_program_create(
+            &request, deny_instructions);
+    }
+    assert(deny_object >= 0);
+    strcpy(request.name, "replacement");
+    replacement_object = kernel_bpf_program_create(
+        &request, instructions);
+    assert(replacement_object >= 0);
+    assert(kernel_bpf_cgroup_attach(
+               3u, object, KERNEL_BPF_F_ALLOW_MULTI, -1) == 0);
+    assert(kernel_bpf_cgroup_attach(
+               3u, deny_object, KERNEL_BPF_F_ALLOW_MULTI, -1) == 0);
+    result = 1u;
+    assert(kernel_bpf_cgroup_device_run(
+               3u, &context, &result) == 0 && result == 0u);
+    assert(kernel_bpf_cgroup_attach(
+               3u, replacement_object,
+               KERNEL_BPF_F_ALLOW_MULTI | KERNEL_BPF_F_REPLACE,
+               deny_object) == 0);
+    result = 0u;
+    assert(kernel_bpf_cgroup_device_run(
+               3u, &context, &result) == 0 && result == 1u);
+    count = 0u;
+    assert(kernel_bpf_cgroup_query(
+               3u, 0, 0, 0u, &count, 0) < 0 && count == 2u);
+    kernel_bpf_cgroup_release(3u);
+    count = 1u;
+    assert(kernel_bpf_cgroup_query(
+               3u, objects, flags, 4u, &count, 0) == 0 && count == 0u);
+    assert(kernel_bpf_cgroup_attach(
+               4u, object, KERNEL_BPF_F_ALLOW_MULTI, -1) == 0);
+    assert(kernel_bpf_cgroup_attach(
+               4u, deny_object, KERNEL_BPF_F_ALLOW_MULTI, -1) == 0);
+    assert(kernel_bpf_cgroup_detach(4u, object) == 0);
+    assert(kernel_bpf_cgroup_attach(
+               4u, replacement_object, KERNEL_BPF_F_ALLOW_MULTI, -1) == 0);
+    count = 0u;
+    assert(kernel_bpf_cgroup_query(
+               4u, objects, flags, 4u, &count, 0) == 0);
+    assert(count == 2u && objects[0] == deny_object &&
+           objects[1] == replacement_object);
+    kernel_bpf_cgroup_release(4u);
+    kernel_bpf_object_release(deny_object);
+    kernel_bpf_object_release(replacement_object);
     kernel_bpf_object_release(object);
 }
 

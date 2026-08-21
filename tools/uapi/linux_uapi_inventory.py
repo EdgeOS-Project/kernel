@@ -88,10 +88,12 @@ EDGEOS_ASSESSMENTS = [
             "map information queries",
             "program information, translated instruction and SHA-256 tag queries",
             "bounded cgroup-device program verification and execution",
+            "cgroup-device attachment, detachment and direct or effective queries",
+            "hierarchical cgroup-device checks for device open and creation",
         ],
         "missing": [
-            "program attachment, detachment and query enforcement",
-            "additional map and program types",
+            "additional attachment families, map types and program types",
+            "complete allow-override, multi-position and link semantics",
             "BTF objects, pinning and link objects",
             "ia32 and x32 compatibility layouts",
         ],
@@ -106,7 +108,7 @@ EDGEOS_ASSESSMENTS = [
                 "array and hash maps, map element operations, object IDs, "
                 "descriptor reopening, map and program information, "
                 "translated instructions, SHA-256 tags and cgroup-device "
-                "program loading"
+                "program loading, attachment, detachment and query behavior"
             ),
         },
     },

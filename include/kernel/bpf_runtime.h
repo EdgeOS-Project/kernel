@@ -9,10 +9,13 @@
 
 #include <stdint.h>
 
+#include "kernel/runtime_limits.h"
+
 #define KERNEL_BPF_OBJECT_NAME_LENGTH 16u
 #define KERNEL_BPF_MAX_KEY_SIZE 4096u
 #define KERNEL_BPF_MAX_VALUE_SIZE 4096u
 #define KERNEL_BPF_MAX_INSTRUCTIONS 4096u
+#define KERNEL_BPF_MAX_ATTACHMENTS EDGE_RUNTIME_MAX_BPF_ATTACHMENTS
 
 #define KERNEL_BPF_MAP_TYPE_HASH  1u
 #define KERNEL_BPF_MAP_TYPE_ARRAY 2u
@@ -26,6 +29,16 @@
 
 #define KERNEL_BPF_PROG_TYPE_CGROUP_DEVICE 15u
 #define KERNEL_BPF_CGROUP_DEVICE 6u
+
+#define KERNEL_BPF_F_ALLOW_OVERRIDE (1u << 0)
+#define KERNEL_BPF_F_ALLOW_MULTI    (1u << 1)
+#define KERNEL_BPF_F_REPLACE        (1u << 2)
+
+#define KERNEL_BPF_DEVCG_ACC_MKNOD (1u << 0)
+#define KERNEL_BPF_DEVCG_ACC_READ  (1u << 1)
+#define KERNEL_BPF_DEVCG_ACC_WRITE (1u << 2)
+#define KERNEL_BPF_DEVCG_DEV_BLOCK (1u << 0)
+#define KERNEL_BPF_DEVCG_DEV_CHAR  (1u << 1)
 
 typedef enum kernel_bpf_object_kind {
     KERNEL_BPF_OBJECT_MAP = 1,
@@ -121,6 +134,17 @@ int kernel_bpf_map_freeze(int object_id);
 int kernel_bpf_program_run_cgroup_device(
     int object_id, const kernel_bpf_cgroup_device_context_t *context,
     uint32_t *result);
+int kernel_bpf_cgroup_attach(uint32_t cgroup_id, int object_id,
+                             uint32_t flags, int replace_object_id);
+int kernel_bpf_cgroup_detach(uint32_t cgroup_id, int object_id);
+int kernel_bpf_cgroup_query(uint32_t cgroup_id, int *object_ids,
+                            uint32_t *attach_flags, uint32_t capacity,
+                            uint32_t *count, uint64_t *revision);
+int kernel_bpf_cgroup_device_run(
+    uint32_t cgroup_id,
+    const kernel_bpf_cgroup_device_context_t *context,
+    uint32_t *result);
+void kernel_bpf_cgroup_release(uint32_t cgroup_id);
 
 int kernel_bpf_create_descriptor(int object_id);
 int kernel_bpf_descriptor_object(int32_t descriptor,

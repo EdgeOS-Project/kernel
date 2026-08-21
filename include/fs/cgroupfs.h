@@ -7,6 +7,7 @@
 #define EDGEOS_FS_CGROUPFS_H
 
 #include <stdint.h>
+#include "kernel/bpf_runtime.h"
 #include "kernel/scheduler_policy.h"
 #include "vfs/vfs.h"
 
@@ -16,6 +17,22 @@ int cgroupfs_proc_pid_snapshot(int32_t pid, char *buffer,
                                uint32_t capacity);
 int cgroupfs_directory_valid(vfs_superblock_t *sb,
                              const vfs_inode_t *inode);
+int cgroupfs_bpf_program_attach(vfs_superblock_t *sb,
+                                const vfs_inode_t *inode,
+                                int object_id, uint32_t flags,
+                                int replace_object_id);
+int cgroupfs_bpf_program_detach(vfs_superblock_t *sb,
+                                const vfs_inode_t *inode,
+                                int object_id);
+int cgroupfs_bpf_program_query(vfs_superblock_t *sb,
+                               const vfs_inode_t *inode,
+                               int effective, int *object_ids,
+                               uint32_t *attach_flags,
+                               uint32_t capacity, uint32_t *count,
+                               uint64_t *revision);
+int cgroupfs_bpf_device_allowed(
+    uint32_t cgroup_id,
+    const kernel_bpf_cgroup_device_context_t *context);
 int cgroupfs_attach_process(vfs_superblock_t *sb,
                             const vfs_inode_t *inode, int32_t pid);
 void cgroupfs_task_state_changed(uint32_t cgroup_id);

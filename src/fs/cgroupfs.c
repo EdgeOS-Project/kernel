@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include "block/block.h"
 #include "fs/cgroupfs.h"
+#include "kernel/bpf_runtime.h"
 #include "kernel/inotify.h"
 #include "kernel/linux_errno.h"
 #include "kernel/mm_runtime.h"
@@ -3492,6 +3493,7 @@ static int cgroupfs_rmdir(vfs_superblock_t *sb, vfs_inode_t *dir,
         cgroupfs_unlock(&g_cgroupfs_lock);
         return VFS_PATH_ERR_BUSY;
     }
+    kernel_bpf_cgroup_release((uint32_t)child);
     memset(&g_cgroupfs.nodes[child], 0, sizeof(g_cgroupfs.nodes[child]));
     cgroupfs_unlock(&g_cgroupfs_lock);
     return 0;
@@ -3777,6 +3779,137 @@ int cgroupfs_directory_valid(vfs_superblock_t *sb,
             cgroupfs_inode_node(inode, &node) == 0;
     cgroupfs_unlock(&g_cgroupfs_lock);
     return valid;
+}
+
+static int cgroupfs_bpf_target_node_locked(
+        vfs_superblock_t *sb, const vfs_inode_t *inode,
+        uint32_t *node_out) {
+    uint32_t node;
+
+    if (!sb || sb->ops != &g_cgroupfs_ops ||
+        sb->fs_private != &g_cgroupfs || !inode || !node_out ||
+        inode->fs_private[0] != CGROUPFS_INODE_DIRECTORY ||
+        cgroupfs_inode_node(inode, &node) < 0)
+        return -EDGE_LINUX_EBADF;
+    *node_out = node;
+    return 0;
+}
+
+int cgroupfs_bpf_program_attach(vfs_superblock_t *sb,
+                                const vfs_inode_t *inode,
+                                int object_id, uint32_t flags,
+                                int replace_object_id) {
+    uint32_t node;
+    int status;
+
+    cgroupfs_initialize();
+    cgroupfs_lock(&g_cgroupfs_lock);
+    status = cgroupfs_bpf_target_node_locked(sb, inode, &node);
+    if (status == 0)
+        status = kernel_bpf_cgroup_attach(
+            node, object_id, flags, replace_object_id);
+    cgroupfs_unlock(&g_cgroupfs_lock);
+    return status;
+}
+
+int cgroupfs_bpf_program_detach(vfs_superblock_t *sb,
+                                const vfs_inode_t *inode,
+                                int object_id) {
+    uint32_t node;
+    int status;
+
+    cgroupfs_initialize();
+    cgroupfs_lock(&g_cgroupfs_lock);
+    status = cgroupfs_bpf_target_node_locked(sb, inode, &node);
+    if (status == 0)
+        status = kernel_bpf_cgroup_detach(node, object_id);
+    cgroupfs_unlock(&g_cgroupfs_lock);
+    return status;
+}
+
+int cgroupfs_bpf_program_query(vfs_superblock_t *sb,
+                               const vfs_inode_t *inode,
+                               int effective, int *object_ids,
+                               uint32_t *attach_flags,
+                               uint32_t capacity, uint32_t *count,
+                               uint64_t *revision) {
+    uint32_t chain[CGROUPFS_MAX_NODES];
+    uint32_t chain_count = 0u;
+    uint32_t node;
+    uint32_t total = 0u;
+    int status;
+    int overflow = 0;
+
+    if (!count || (capacity && !object_ids))
+        return -EDGE_LINUX_EINVAL;
+    if (revision) *revision = 0u;
+    cgroupfs_initialize();
+    cgroupfs_lock(&g_cgroupfs_lock);
+    status = cgroupfs_bpf_target_node_locked(sb, inode, &node);
+    if (status < 0) {
+        cgroupfs_unlock(&g_cgroupfs_lock);
+        return status;
+    }
+    chain[chain_count++] = node;
+    while (effective && node && chain_count < CGROUPFS_MAX_NODES) {
+        node = g_cgroupfs.nodes[node].parent;
+        chain[chain_count++] = node;
+    }
+    cgroupfs_unlock(&g_cgroupfs_lock);
+
+    while (chain_count) {
+        uint32_t local_count = 0u;
+        uint32_t remaining = total < capacity ? capacity - total : 0u;
+        uint64_t local_revision = 0u;
+
+        node = effective ? chain[--chain_count] : chain[0];
+        status = kernel_bpf_cgroup_query(
+            node, remaining ? object_ids + total : 0,
+            remaining && attach_flags ? attach_flags + total : 0,
+            remaining, &local_count, &local_revision);
+        if (status < 0 && status != -EDGE_LINUX_ENOSPC) return status;
+        if (status == -EDGE_LINUX_ENOSPC) overflow = 1;
+        if (!effective && revision) *revision = local_revision;
+        if (effective && attach_flags) {
+            uint32_t copied = local_count < remaining ?
+                              local_count : remaining;
+            for (uint32_t index = 0u; index < copied; ++index)
+                attach_flags[total + index] = 0u;
+        }
+        if (local_count > UINT32_MAX - total)
+            return -EDGE_LINUX_EOVERFLOW;
+        total += local_count;
+        if (!effective) break;
+    }
+    *count = total;
+    return overflow || total > capacity ? -EDGE_LINUX_ENOSPC : 0;
+}
+
+int cgroupfs_bpf_device_allowed(
+    uint32_t cgroup_id,
+    const kernel_bpf_cgroup_device_context_t *context) {
+    uint32_t chain[CGROUPFS_MAX_NODES];
+    uint32_t count = 0u;
+    uint32_t node;
+
+    if (!context) return 0;
+    cgroupfs_initialize();
+    cgroupfs_lock(&g_cgroupfs_lock);
+    node = cgroupfs_node_valid(cgroup_id, 0) ? cgroup_id : 0u;
+    chain[count++] = node;
+    while (node && count < CGROUPFS_MAX_NODES) {
+        node = g_cgroupfs.nodes[node].parent;
+        chain[count++] = node;
+    }
+    cgroupfs_unlock(&g_cgroupfs_lock);
+
+    while (count) {
+        uint32_t result = 1u;
+        if (kernel_bpf_cgroup_device_run(
+                chain[--count], context, &result) < 0 || !result)
+            return 0;
+    }
+    return 1;
 }
 
 int cgroupfs_attach_process(vfs_superblock_t *sb,
