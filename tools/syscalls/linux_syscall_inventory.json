@@ -2183,22 +2183,22 @@
       "shared_handler": "edge_linux_sys_get_mempolicy",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/mempolicy_abi_probe.c"
+        "tools/tests/numa_policy_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 239,
           "status": "implemented",
           "route": "shared:edge_linux_sys_get_mempolicy",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 236,
           "status": "implemented",
           "route": "shared:edge_linux_sys_get_mempolicy",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -4089,21 +4089,23 @@
       "semantic_id": "mbind",
       "shared_handler": "edge_linux_sys_numa_policy",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/numa_policy_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 237,
           "status": "implemented",
           "route": "shared:edge_linux_sys_numa_policy",
-          "evidence_status": "static-route-only"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 235,
           "status": "implemented",
           "route": "shared:edge_linux_sys_numa_policy",
-          "evidence_status": "static-route-only"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -4187,21 +4189,23 @@
       "semantic_id": "migrate_pages",
       "shared_handler": "edge_linux_sys_numa_policy",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/numa_policy_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 256,
           "status": "implemented",
           "route": "shared:edge_linux_sys_numa_policy",
-          "evidence_status": "static-route-only"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 238,
           "status": "implemented",
           "route": "shared:edge_linux_sys_numa_policy",
-          "evidence_status": "static-route-only"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -4522,21 +4526,23 @@
       "semantic_id": "move_pages",
       "shared_handler": "edge_linux_sys_numa_policy",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/numa_policy_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 279,
           "status": "implemented",
           "route": "shared:edge_linux_sys_numa_policy",
-          "evidence_status": "static-route-only"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 239,
           "status": "implemented",
           "route": "shared:edge_linux_sys_numa_policy",
-          "evidence_status": "static-route-only"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -7254,21 +7260,23 @@
       "semantic_id": "set_mempolicy",
       "shared_handler": "edge_linux_sys_numa_policy",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/numa_policy_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 238,
           "status": "implemented",
           "route": "shared:edge_linux_sys_numa_policy",
-          "evidence_status": "static-route-only"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 237,
           "status": "implemented",
           "route": "shared:edge_linux_sys_numa_policy",
-          "evidence_status": "static-route-only"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -7277,21 +7285,23 @@
       "semantic_id": "set_mempolicy_home_node",
       "shared_handler": "edge_linux_sys_numa_policy",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/numa_policy_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 450,
           "status": "implemented",
           "route": "shared:edge_linux_sys_numa_policy",
-          "evidence_status": "static-route-only"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 450,
           "status": "implemented",
           "route": "shared:edge_linux_sys_numa_policy",
-          "evidence_status": "static-route-only"
+          "evidence_status": "oracle-verified"
         }
       }
     },

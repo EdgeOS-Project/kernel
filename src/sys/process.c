@@ -8481,6 +8481,13 @@ int process_fork(const edge_trap_frame_t *parent_tf,
         task_release_unused(child);
         return -1;
     }
+    if (kernel_mm_mempolicy_clone(vm_parent->cr3, child->cr3) < 0) {
+        kernel_mm_lock_space_release(child->cr3);
+        process_user_mmap_reset(child);
+        task_child_unlink(child);
+        task_release_unused(child);
+        return -1;
+    }
     if (process_x86_ldt_clone(child, vm_parent) < 0) {
         kernel_mm_lock_space_release(child->cr3);
         process_user_mmap_reset(child);

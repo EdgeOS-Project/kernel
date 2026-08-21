@@ -1448,11 +1448,16 @@ static int64_t edge_linux_sys_get_mempolicy(
         if (kernel_mm_query_residency(page, 1u, &resident) < 0)
             return -EDGE_LINUX_EFAULT;
     }
-    if (!(flags & (mpol_f_node | mpol_f_mems_allowed)) &&
-        kernel_mm_mempolicy_get(
-            arch_mm_current_address_space(), &mode, &mode_flags,
-            &policy_nodes) < 0)
-        return -EDGE_LINUX_EINVAL;
+    if (!(flags & (mpol_f_node | mpol_f_mems_allowed))) {
+        int status = flags & mpol_f_addr ?
+            kernel_mm_mempolicy_range_get(
+                arch_mm_current_address_space(), address,
+                &mode, &mode_flags, &policy_nodes) :
+            kernel_mm_mempolicy_get(
+                arch_mm_current_address_space(), &mode, &mode_flags,
+                &policy_nodes);
+        if (status < 0) return -EDGE_LINUX_EINVAL;
+    }
     mode |= (int32_t)mode_flags;
 
     if (mode_user && edge_linux_copy_to_user(
@@ -1485,8 +1490,9 @@ static int64_t edge_linux_sys_get_mempolicy(
 #define EDGE_LINUX_MPOL_MODE_MASK          0x000000ffu
 #define EDGE_LINUX_MPOL_F_STATIC_NODES     0x00008000u
 #define EDGE_LINUX_MPOL_F_RELATIVE_NODES   0x00004000u
-#define EDGE_LINUX_MPOL_MF_MOVE            0x00000001u
-#define EDGE_LINUX_MPOL_MF_MOVE_ALL        0x00000002u
+#define EDGE_LINUX_MPOL_MF_STRICT          0x00000001u
+#define EDGE_LINUX_MPOL_MF_MOVE            0x00000002u
+#define EDGE_LINUX_MPOL_MF_MOVE_ALL        0x00000004u
 
 static int edge_linux_mempolicy_mask_validate(
         edge_linux_syscall_context_t *context, uint64_t mask_user,
@@ -1560,6 +1566,22 @@ static int edge_linux_mempolicy_mode_validate(
     return 0;
 }
 
+static int edge_linux_mempolicy_range_validate(
+        uint64_t address, uint64_t length) {
+    uint8_t residency[64];
+    uint64_t pages = length / KERNEL_MM_USER_PAGE_SIZE;
+
+    while (pages) {
+        uint32_t count = pages > sizeof(residency) ?
+                         (uint32_t)sizeof(residency) : (uint32_t)pages;
+        if (kernel_mm_query_residency(address, count, residency) < 0)
+            return -EDGE_LINUX_EFAULT;
+        address += (uint64_t)count * KERNEL_MM_USER_PAGE_SIZE;
+        pages -= count;
+    }
+    return 0;
+}
+
 static int64_t edge_linux_sys_numa_policy(
         edge_linux_syscall_context_t *context) {
     kernel_linux_identity_t identity;
@@ -1589,23 +1611,35 @@ static int64_t edge_linux_sys_numa_policy(
         uint64_t address = context->arguments[0];
         uint64_t length = context->arguments[1];
         uint32_t move_flags = (uint32_t)context->arguments[5];
-        uint8_t resident;
+        uint64_t nodes = 0;
 
         if ((address & (KERNEL_MM_USER_PAGE_SIZE - 1u)) ||
             context->arguments[5] != move_flags ||
-            (move_flags & ~(EDGE_LINUX_MPOL_MF_MOVE |
+            (move_flags & ~(EDGE_LINUX_MPOL_MF_STRICT |
+                            EDGE_LINUX_MPOL_MF_MOVE |
                             EDGE_LINUX_MPOL_MF_MOVE_ALL)))
             return -EDGE_LINUX_EINVAL;
         if (!length) return 0;
-        if (length > UINT64_MAX - address)
+        if (length > UINT64_MAX -
+                         (KERNEL_MM_USER_PAGE_SIZE - 1u) ||
+            length + (KERNEL_MM_USER_PAGE_SIZE - 1u) >
+                UINT64_MAX - address)
             return -EDGE_LINUX_EINVAL;
+        length = (length + KERNEL_MM_USER_PAGE_SIZE - 1u) &
+                 ~(uint64_t)(KERNEL_MM_USER_PAGE_SIZE - 1u);
         status = edge_linux_mempolicy_mode_validate(
             context, context->arguments[2], context->arguments[3],
             context->arguments[4], &mode, &mode_flags);
         if (status < 0) return status;
-        if (kernel_mm_query_residency(address, 1u, &resident) < 0)
+        if (context->arguments[3] && edge_linux_copy_from_user(
+                context, &nodes, context->arguments[3],
+                sizeof(nodes)) < 0)
             return -EDGE_LINUX_EFAULT;
-        return 0;
+        status = edge_linux_mempolicy_range_validate(address, length);
+        if (status < 0) return status;
+        return kernel_mm_mempolicy_range_set(
+            arch_mm_current_address_space(), address, length,
+            mode, mode_flags, nodes & 1u);
     }
     case EDGE_LINUX_SYS_migrate_pages: {
         int32_t pid = (int32_t)context->arguments[0];
@@ -1670,13 +1704,14 @@ static int64_t edge_linux_sys_numa_policy(
         uint64_t length = context->arguments[1];
         uint64_t node = context->arguments[2];
         uint64_t flags = context->arguments[3];
-        uint8_t resident;
 
         if ((address & (KERNEL_MM_USER_PAGE_SIZE - 1u)) ||
-            !length || length > UINT64_MAX - address || node != 0u || flags)
+            length > UINT64_MAX - address || node != 0u || flags)
             return -EDGE_LINUX_EINVAL;
-        return kernel_mm_query_residency(address, 1u, &resident) < 0 ?
-            -EDGE_LINUX_EFAULT : 0;
+        if (!length) return 0;
+        return kernel_mm_mempolicy_home_node(
+            arch_mm_current_address_space(), address, length,
+            (uint32_t)node);
     }
     default:
         return -EDGE_LINUX_ENOSYS;

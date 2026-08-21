@@ -53,9 +53,15 @@ LINUX_RESERVED_SYSCALL_PROBE = (
     "tools/tests/linux_reserved_syscalls_abi_probe.c"
 )
 VERIFIED_SYSCALL_PROBES = {
+    "get_mempolicy": "tools/tests/numa_policy_abi_probe.c",
+    "mbind": "tools/tests/numa_policy_abi_probe.c",
     "memfd_secret": "tools/tests/memfd_secret_abi_probe.c",
+    "migrate_pages": "tools/tests/numa_policy_abi_probe.c",
     "modify_ldt": "tools/tests/modify_ldt_abi_probe.c",
+    "move_pages": "tools/tests/numa_policy_abi_probe.c",
     "remap_file_pages": "tools/tests/remap_file_pages_abi_probe.c",
+    "set_mempolicy": "tools/tests/numa_policy_abi_probe.c",
+    "set_mempolicy_home_node": "tools/tests/numa_policy_abi_probe.c",
     "sysfs": "tools/tests/sysfs_syscall_abi_probe.c",
 }
 PARTIAL_SYSCALL_PROBES = {

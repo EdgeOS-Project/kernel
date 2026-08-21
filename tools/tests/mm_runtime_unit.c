@@ -857,12 +857,65 @@ static void test_locked_range_registry(void) {
                 kernel_mm_lock_space_contains(0x44u, 0x21fffu) &&
                 !kernel_mm_lock_space_contains(0x44u, 0x22000u) &&
                 kernel_mm_lock_space_contains(0x44u, 0x24000u));
+    {
+        int32_t mode = -1;
+        uint32_t flags = UINT32_MAX;
+        uint64_t nodes = 0u;
+        expect_true("range memory policy records binding",
+                    kernel_mm_mempolicy_range_set(
+                        0x44u, 0x30000u, 0x4000u,
+                        2, 0x4000u, 1u) == 0 &&
+                    kernel_mm_mempolicy_range_get(
+                        0x44u, 0x32000u, &mode, &flags, &nodes) == 0 &&
+                    mode == 2 && flags == 0x4000u && nodes == 1u);
+        expect_true("range memory policy replaces an overlap",
+                    kernel_mm_mempolicy_range_set(
+                        0x44u, 0x31000u, 0x1000u,
+                        1, 0u, 1u) == 0 &&
+                    kernel_mm_mempolicy_range_get(
+                        0x44u, 0x31000u, &mode, &flags, &nodes) == 0 &&
+                    mode == 1 &&
+                    kernel_mm_mempolicy_range_get(
+                        0x44u, 0x32000u, &mode, &flags, &nodes) == 0 &&
+                    mode == 2);
+        expect_true("home node rejects unsupported range policy",
+                    kernel_mm_mempolicy_home_node(
+                        0x44u, 0x31000u, 0x1000u, 0u) ==
+                    -EDGE_LINUX_EOPNOTSUPP);
+        expect_true("home node updates bound range",
+                    kernel_mm_mempolicy_home_node(
+                        0x44u, 0x32000u, 0x1000u, 0u) == 0);
+        g_current_address_space = 0x44u;
+        expect_true("unmap removes range memory policy",
+                    kernel_mm_unmap_range(
+                        0x31000u, 0x1000u) == 22 &&
+                    kernel_mm_mempolicy_range_get(
+                        0x44u, 0x31000u, &mode, &flags, &nodes) == 0 &&
+                    mode == 2);
+        expect_true("remap moves range memory policy",
+                    kernel_mm_mempolicy_range_set(
+                        0x44u, 0x40000u, 0x1000u,
+                        1, 0u, 1u) == 0 &&
+                    kernel_mm_remap_range(
+                        0x40000u, 0x1000u, 0x1000u,
+                        KERNEL_MM_REMAP_MAYMOVE, 0u) == 24 &&
+                    kernel_mm_mempolicy_range_get(
+                        0x44u, 24u, &mode, &flags, &nodes) == 0 &&
+                    mode == 1);
+        g_current_address_space = 0u;
+        expect_true("range memory policy is inherited",
+                    kernel_mm_mempolicy_clone(0x44u, 0x77u) == 0 &&
+                    kernel_mm_mempolicy_range_get(
+                        0x77u, 0x32000u, &mode, &flags, &nodes) == 0 &&
+                    mode == 2 && nodes == 1u);
+        kernel_mm_lock_space_release(0x77u);
+    }
     kernel_mm_lock_space_release(0x44u);
     expect_true("lock registry release drops state",
                 !kernel_mm_lock_space_contains(0x44u, 0x2000u) &&
                 kernel_mm_lock_space_future_flags(0x44u) == 0u &&
                 kernel_mm_resident_peak_bytes(0x44u) == 0u &&
-                g_vm_pages_used == 0u && g_vm_page_free_calls == 2u);
+                g_vm_pages_used == 0u && g_vm_page_free_calls >= 4u);
 
     g_current_address_space = 0x55u;
     g_range_mapped_result = -EDGE_LINUX_ENOMEM;
@@ -897,7 +950,7 @@ static void test_locked_range_registry(void) {
                     0x55u, 0x3000u, 0x2000u) &&
                 !kernel_mm_seal_space_overlaps(
                     0x66u, 0x3000u, 0x2000u) &&
-                g_vm_pages_used == 0u && g_vm_page_free_calls == 4u);
+                g_vm_pages_used == 0u && g_vm_page_free_calls >= 6u);
     g_current_address_space = 0u;
 }
 

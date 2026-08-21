@@ -34941,6 +34941,21 @@ int process_clone_arch_prepare(const kernel_clone_prepare_t *prepare,
             task_zero(child);
             return -LINUX_ENOMEM;
         }
+        if (kernel_mm_mempolicy_clone(
+                task->ttbr0, child->ttbr0) < 0) {
+            printf("[arm64-task] clone failed pid=%d stage=mm-policy\n",
+                   task->pid);
+            kernel_mm_lock_space_release(child->ttbr0);
+            anon_mapping_address_space_release(child->ttbr0);
+            file_mapping_address_space_release(child->ttbr0);
+            tmpfs_mapping_address_space_release(child->ttbr0);
+            arch_vm_address_space_destroy(child->ttbr0);
+            vfs_inode_lifetime_finish_alias_release();
+            edge_namespaces_release(&child->namespaces);
+            edge_seccomp_state_release(&child->seccomp);
+            task_zero(child);
+            return -LINUX_ENOMEM;
+        }
     }
 
     child->pid = g_next_pid++;

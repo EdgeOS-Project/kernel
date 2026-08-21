@@ -126,6 +126,16 @@ typedef struct kernel_mm_locked_range {
     uint64_t end;
 } kernel_mm_locked_range_t;
 
+typedef struct kernel_mm_mempolicy_range {
+    uint64_t start;
+    uint64_t end;
+    uint64_t nodes;
+    int32_t mode;
+    uint32_t flags;
+    uint32_t home_node;
+    uint32_t reserved;
+} kernel_mm_mempolicy_range_t;
+
 typedef struct kernel_mm_lock_space {
     uint64_t address_space;
     uint64_t peak_resident_bytes;
@@ -137,6 +147,11 @@ typedef struct kernel_mm_lock_space {
     uint32_t range_capacity;
     uint32_t range_pages;
     uint32_t future_flags;
+    kernel_mm_mempolicy_range_t *policy_ranges;
+    uint32_t policy_range_count;
+    uint32_t policy_range_capacity;
+    uint32_t policy_range_pages;
+    uint32_t policy_reserved;
 } kernel_mm_lock_space_t;
 
 typedef struct kernel_mm_seal_space {
@@ -247,6 +262,18 @@ int kernel_mm_mempolicy_set(uint64_t address_space, int32_t mode,
                             uint32_t flags, uint64_t nodes);
 int kernel_mm_mempolicy_get(uint64_t address_space, int32_t *mode,
                             uint32_t *flags, uint64_t *nodes);
+int kernel_mm_mempolicy_range_set(uint64_t address_space,
+                                  uint64_t address, uint64_t length,
+                                  int32_t mode, uint32_t flags,
+                                  uint64_t nodes);
+int kernel_mm_mempolicy_range_get(uint64_t address_space,
+                                  uint64_t address, int32_t *mode,
+                                  uint32_t *flags, uint64_t *nodes);
+int kernel_mm_mempolicy_home_node(uint64_t address_space,
+                                  uint64_t address, uint64_t length,
+                                  uint32_t home_node);
+int kernel_mm_mempolicy_clone(uint64_t parent_address_space,
+                              uint64_t child_address_space);
 uint32_t kernel_mm_lock_space_future_flags(uint64_t address_space);
 int kernel_mm_lock_space_set_future(uint64_t address_space, uint32_t flags);
 void kernel_mm_lock_space_release(uint64_t address_space);

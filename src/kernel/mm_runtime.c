@@ -26,6 +26,7 @@ static volatile uint32_t g_kernel_mm_lock_registry_guard;
 #define KERNEL_MM_FILE_SHADOW_BUCKETS 4096u
 #define KERNEL_MM_FILE_SHADOW_WAYS 4u
 #define KERNEL_MM_FILE_SHADOW_RECENT_DISTANCE 4096u
+#define KERNEL_MM_MEMPOLICY_INITIAL_RANGES 64u
 
 typedef struct kernel_mm_file_shadow {
     uint64_t mapping_identity;
@@ -1175,6 +1176,442 @@ int kernel_mm_mempolicy_get(uint64_t address_space, int32_t *mode,
     return 0;
 }
 
+static int kernel_mm_mempolicy_range_reserve(
+        uint64_t address_space, uint32_t additional_ranges) {
+    kernel_mm_mempolicy_range_t *replacement;
+    kernel_mm_mempolicy_range_t *previous;
+    uint32_t previous_pages;
+    uint32_t required;
+    uint32_t new_capacity;
+    uint32_t new_pages;
+    uint64_t bytes;
+
+    if (!address_space) return -EDGE_LINUX_EINVAL;
+    if (!additional_ranges) return 0;
+    for (;;) {
+        kernel_mm_lock_space_t *space;
+
+        kernel_mm_registry_lock();
+        space = kernel_mm_lock_space_find_locked(address_space, 1);
+        if (!space || additional_ranges >
+                KERNEL_MM_VMA_MAX - space->policy_range_count) {
+            kernel_mm_registry_unlock();
+            return -EDGE_LINUX_ENOMEM;
+        }
+        required = space->policy_range_count + additional_ranges;
+        if (required <= space->policy_range_capacity) {
+            kernel_mm_registry_unlock();
+            return 0;
+        }
+        new_capacity = space->policy_range_capacity ?
+            space->policy_range_capacity :
+            KERNEL_MM_MEMPOLICY_INITIAL_RANGES;
+        while (new_capacity < required) {
+            uint32_t doubled = new_capacity > KERNEL_MM_VMA_MAX / 2u ?
+                               KERNEL_MM_VMA_MAX : new_capacity * 2u;
+            if (doubled <= new_capacity) {
+                kernel_mm_registry_unlock();
+                return -EDGE_LINUX_ENOMEM;
+            }
+            new_capacity = doubled;
+        }
+        kernel_mm_registry_unlock();
+
+        bytes = (uint64_t)new_capacity *
+                sizeof(kernel_mm_mempolicy_range_t);
+        new_pages = (uint32_t)((bytes + KERNEL_MM_USER_PAGE_SIZE - 1u) /
+                               KERNEL_MM_USER_PAGE_SIZE);
+        replacement = (kernel_mm_mempolicy_range_t *)
+            arch_vm_alloc_pages(new_pages);
+        if (!replacement) return -EDGE_LINUX_ENOMEM;
+        memset(replacement, 0, new_pages * KERNEL_MM_USER_PAGE_SIZE);
+
+        kernel_mm_registry_lock();
+        space = kernel_mm_lock_space_find_locked(address_space, 1);
+        if (!space) {
+            kernel_mm_registry_unlock();
+            kernel_mm_release_pages(replacement, new_pages);
+            return -EDGE_LINUX_ENOMEM;
+        }
+        if (space->policy_range_capacity >= required) {
+            kernel_mm_registry_unlock();
+            kernel_mm_release_pages(replacement, new_pages);
+            return 0;
+        }
+        if (space->policy_range_count)
+            memcpy(replacement, space->policy_ranges,
+                   space->policy_range_count *
+                       (uint32_t)sizeof(*replacement));
+        previous = space->policy_ranges;
+        previous_pages = space->policy_range_pages;
+        space->policy_ranges = replacement;
+        space->policy_range_capacity = new_capacity;
+        space->policy_range_pages = new_pages;
+        kernel_mm_registry_unlock();
+        kernel_mm_release_pages(previous, previous_pages);
+        return 0;
+    }
+}
+
+static int kernel_mm_mempolicy_equal(
+        const kernel_mm_mempolicy_range_t *left,
+        const kernel_mm_mempolicy_range_t *right) {
+    return left->mode == right->mode && left->flags == right->flags &&
+           left->nodes == right->nodes &&
+           left->home_node == right->home_node;
+}
+
+static void kernel_mm_mempolicy_sort_and_merge_locked(
+        kernel_mm_lock_space_t *space) {
+    uint32_t write;
+
+    if (!space || space->policy_range_count < 2u) return;
+    for (uint32_t index = 1u; index < space->policy_range_count; ++index) {
+        kernel_mm_mempolicy_range_t value = space->policy_ranges[index];
+        uint32_t position = index;
+        while (position &&
+               space->policy_ranges[position - 1u].start > value.start) {
+            space->policy_ranges[position] =
+                space->policy_ranges[position - 1u];
+            --position;
+        }
+        space->policy_ranges[position] = value;
+    }
+    write = 0u;
+    for (uint32_t read = 0u; read < space->policy_range_count; ++read) {
+        kernel_mm_mempolicy_range_t *current =
+            &space->policy_ranges[read];
+        if (current->end <= current->start) continue;
+        if (write && space->policy_ranges[write - 1u].end == current->start &&
+            kernel_mm_mempolicy_equal(
+                &space->policy_ranges[write - 1u], current)) {
+            space->policy_ranges[write - 1u].end = current->end;
+            continue;
+        }
+        if (write != read) space->policy_ranges[write] = *current;
+        ++write;
+    }
+    space->policy_range_count = write;
+}
+
+static void kernel_mm_mempolicy_remove_locked(
+        kernel_mm_lock_space_t *space, uint64_t start, uint64_t end) {
+    for (uint32_t index = 0u;
+         space && index < space->policy_range_count;) {
+        kernel_mm_mempolicy_range_t *range = &space->policy_ranges[index];
+        if (range->end <= start || range->start >= end) {
+            ++index;
+            continue;
+        }
+        if (range->start < start && range->end > end) {
+            kernel_mm_mempolicy_range_t right = *range;
+            right.start = end;
+            range->end = start;
+            if (index + 1u < space->policy_range_count)
+                memmove(&space->policy_ranges[index + 2u],
+                        &space->policy_ranges[index + 1u],
+                        (space->policy_range_count - index - 1u) *
+                            (uint32_t)sizeof(*range));
+            space->policy_ranges[index + 1u] = right;
+            ++space->policy_range_count;
+            return;
+        }
+        if (range->start < start) {
+            range->end = start;
+            ++index;
+            continue;
+        }
+        if (range->end > end) {
+            range->start = end;
+            ++index;
+            continue;
+        }
+        if (index + 1u < space->policy_range_count)
+            memmove(range, range + 1u,
+                    (space->policy_range_count - index - 1u) *
+                        (uint32_t)sizeof(*range));
+        --space->policy_range_count;
+    }
+}
+
+int kernel_mm_mempolicy_range_set(uint64_t address_space,
+                                  uint64_t address, uint64_t length,
+                                  int32_t mode, uint32_t flags,
+                                  uint64_t nodes) {
+    kernel_mm_lock_space_t *space;
+    uint64_t end;
+
+    if (!address_space || !length || length > UINT64_MAX - address)
+        return -EDGE_LINUX_EINVAL;
+    end = address + length;
+    if (kernel_mm_mempolicy_range_reserve(address_space, 3u) < 0)
+        return -EDGE_LINUX_ENOMEM;
+    kernel_mm_registry_lock();
+    space = kernel_mm_lock_space_find_locked(address_space, 1);
+    if (!space) {
+        kernel_mm_registry_unlock();
+        return -EDGE_LINUX_ENOMEM;
+    }
+    kernel_mm_mempolicy_remove_locked(space, address, end);
+    if (mode != 0 || flags || nodes) {
+        kernel_mm_mempolicy_range_t *range;
+        if (space->policy_range_count >= space->policy_range_capacity) {
+            kernel_mm_registry_unlock();
+            return -EDGE_LINUX_ENOMEM;
+        }
+        range = &space->policy_ranges[space->policy_range_count++];
+        memset(range, 0, sizeof(*range));
+        range->start = address;
+        range->end = end;
+        range->nodes = nodes;
+        range->mode = mode;
+        range->flags = flags;
+    }
+    kernel_mm_mempolicy_sort_and_merge_locked(space);
+    kernel_mm_registry_unlock();
+    return 0;
+}
+
+int kernel_mm_mempolicy_range_get(uint64_t address_space,
+                                  uint64_t address, int32_t *mode,
+                                  uint32_t *flags, uint64_t *nodes) {
+    kernel_mm_lock_space_t *space;
+
+    if (!address_space || !mode || !flags || !nodes)
+        return -EDGE_LINUX_EINVAL;
+    kernel_mm_registry_lock();
+    space = kernel_mm_lock_space_find_locked(address_space, 0);
+    if (space) {
+        for (uint32_t index = 0u;
+             index < space->policy_range_count; ++index) {
+            const kernel_mm_mempolicy_range_t *range =
+                &space->policy_ranges[index];
+            if (address < range->start) break;
+            if (address < range->end) {
+                *mode = range->mode;
+                *flags = range->flags;
+                *nodes = range->nodes;
+                kernel_mm_registry_unlock();
+                return 0;
+            }
+        }
+        *mode = space->mempolicy_mode;
+        *flags = space->mempolicy_flags;
+        *nodes = space->mempolicy_nodes;
+    } else {
+        *mode = 0;
+        *flags = 0u;
+        *nodes = 0u;
+    }
+    kernel_mm_registry_unlock();
+    return 0;
+}
+
+int kernel_mm_mempolicy_home_node(uint64_t address_space,
+                                  uint64_t address, uint64_t length,
+                                  uint32_t home_node) {
+    kernel_mm_lock_space_t *space;
+    uint64_t end;
+    int found = 0;
+
+    if (!address_space || length > UINT64_MAX - address)
+        return -EDGE_LINUX_EINVAL;
+    if (!length) return 0;
+    end = address + length;
+    kernel_mm_registry_lock();
+    space = kernel_mm_lock_space_find_locked(address_space, 0);
+    for (uint32_t index = 0u;
+         space && index < space->policy_range_count; ++index) {
+        kernel_mm_mempolicy_range_t *range = &space->policy_ranges[index];
+        if (range->end <= address) continue;
+        if (range->start >= end) break;
+        if (range->mode != 2 && range->mode != 5) {
+            kernel_mm_registry_unlock();
+            return -EDGE_LINUX_EOPNOTSUPP;
+        }
+        range->home_node = home_node;
+        found = 1;
+    }
+    kernel_mm_registry_unlock();
+    return found ? 0 : -EDGE_LINUX_ENOENT;
+}
+
+int kernel_mm_mempolicy_clone(uint64_t parent_address_space,
+                              uint64_t child_address_space) {
+    kernel_mm_lock_space_t *parent;
+    kernel_mm_lock_space_t *child;
+    uint32_t count;
+
+    if (!parent_address_space || !child_address_space)
+        return -EDGE_LINUX_EINVAL;
+    kernel_mm_registry_lock();
+    parent = kernel_mm_lock_space_find_locked(parent_address_space, 0);
+    count = parent ? parent->policy_range_count : 0u;
+    kernel_mm_registry_unlock();
+    if (count && kernel_mm_mempolicy_range_reserve(
+            child_address_space, count) < 0)
+        return -EDGE_LINUX_ENOMEM;
+    kernel_mm_registry_lock();
+    parent = kernel_mm_lock_space_find_locked(parent_address_space, 0);
+    child = kernel_mm_lock_space_find_locked(child_address_space, 1);
+    if (!child) {
+        kernel_mm_registry_unlock();
+        return -EDGE_LINUX_ENOMEM;
+    }
+    child->mempolicy_mode = parent ? parent->mempolicy_mode : 0;
+    child->mempolicy_flags = parent ? parent->mempolicy_flags : 0u;
+    child->mempolicy_nodes = parent ? parent->mempolicy_nodes : 0u;
+    count = parent ? parent->policy_range_count : 0u;
+    if (count > child->policy_range_capacity) {
+        kernel_mm_registry_unlock();
+        return -EDGE_LINUX_ENOMEM;
+    }
+    if (count)
+        memcpy(child->policy_ranges, parent->policy_ranges,
+               count * (uint32_t)sizeof(child->policy_ranges[0]));
+    child->policy_range_count = count;
+    kernel_mm_registry_unlock();
+    return 0;
+}
+
+static int kernel_mm_mempolicy_has_ranges(uint64_t address_space) {
+    kernel_mm_lock_space_t *space;
+    int result;
+
+    kernel_mm_registry_lock();
+    space = kernel_mm_lock_space_find_locked(address_space, 0);
+    result = space && space->policy_range_count;
+    kernel_mm_registry_unlock();
+    return result;
+}
+
+static void kernel_mm_mempolicy_range_remove(
+        uint64_t address_space, uint64_t address, uint64_t length) {
+    kernel_mm_lock_space_t *space;
+
+    if (!address_space || !length || length > UINT64_MAX - address) return;
+    kernel_mm_registry_lock();
+    space = kernel_mm_lock_space_find_locked(address_space, 0);
+    kernel_mm_mempolicy_remove_locked(space, address, address + length);
+    kernel_mm_mempolicy_sort_and_merge_locked(space);
+    kernel_mm_registry_unlock();
+}
+
+static int kernel_mm_mempolicy_range_remap(
+        uint64_t address_space, uint64_t old_address,
+        uint64_t old_length, uint64_t new_address,
+        uint64_t new_length) {
+    kernel_mm_lock_space_t *space;
+    uint64_t old_end;
+    uint64_t retained_length;
+    uint64_t retained_end;
+    uint64_t new_end;
+    int have_extension = 0;
+    kernel_mm_mempolicy_range_t extension;
+
+    if (!address_space || !old_length || !new_length ||
+        old_length > UINT64_MAX - old_address ||
+        new_length > UINT64_MAX - new_address)
+        return -EDGE_LINUX_EINVAL;
+    old_end = old_address + old_length;
+    retained_length = old_length < new_length ? old_length : new_length;
+    retained_end = old_address + retained_length;
+    new_end = new_address + new_length;
+
+    kernel_mm_registry_lock();
+    space = kernel_mm_lock_space_find_locked(address_space, 0);
+    if (!space || !space->policy_range_count) {
+        kernel_mm_registry_unlock();
+        return 0;
+    }
+
+    for (uint32_t index = 0u;
+         index < space->policy_range_count; ++index) {
+        const kernel_mm_mempolicy_range_t *range =
+            &space->policy_ranges[index];
+        if (range->start < old_end && range->end >= old_end) {
+            extension = *range;
+            have_extension = 1;
+            break;
+        }
+    }
+
+    if (new_address == old_address) {
+        if (new_length < old_length)
+            kernel_mm_mempolicy_remove_locked(
+                space, new_end, old_end);
+        if (new_length > old_length && have_extension) {
+            extension.start = old_end;
+            extension.end = new_end;
+            space->policy_ranges[space->policy_range_count++] = extension;
+        }
+        kernel_mm_mempolicy_sort_and_merge_locked(space);
+        kernel_mm_registry_unlock();
+        return 0;
+    }
+
+    /* A moved mapping replaces policy metadata at its destination. */
+    kernel_mm_mempolicy_remove_locked(space, new_address, new_end);
+    for (uint32_t index = 0u;
+         index < space->policy_range_count;) {
+        kernel_mm_mempolicy_range_t original =
+            space->policy_ranges[index];
+        kernel_mm_mempolicy_range_t pieces[3];
+        uint32_t piece_count = 0u;
+        uint64_t middle_start;
+        uint64_t middle_end;
+
+        if (original.end <= old_address || original.start >= old_end) {
+            ++index;
+            continue;
+        }
+        if (original.start < old_address) {
+            pieces[piece_count] = original;
+            pieces[piece_count++].end = old_address;
+        }
+        middle_start = original.start > old_address ?
+                       original.start : old_address;
+        middle_end = original.end < retained_end ?
+                     original.end : retained_end;
+        if (middle_end > middle_start) {
+            kernel_mm_mempolicy_range_t moved = original;
+            moved.start = new_address + (middle_start - old_address);
+            moved.end = new_address + (middle_end - old_address);
+            pieces[piece_count++] = moved;
+        }
+        if (original.end > old_end) {
+            pieces[piece_count] = original;
+            pieces[piece_count++].start = old_end;
+        }
+        if (piece_count > 1u && index + 1u < space->policy_range_count)
+            memmove(&space->policy_ranges[index + piece_count],
+                    &space->policy_ranges[index + 1u],
+                    (space->policy_range_count - index - 1u) *
+                        (uint32_t)sizeof(space->policy_ranges[0]));
+        if (!piece_count) {
+            if (index + 1u < space->policy_range_count)
+                memmove(&space->policy_ranges[index],
+                        &space->policy_ranges[index + 1u],
+                        (space->policy_range_count - index - 1u) *
+                            (uint32_t)sizeof(space->policy_ranges[0]));
+            --space->policy_range_count;
+            continue;
+        }
+        for (uint32_t piece = 0u; piece < piece_count; ++piece)
+            space->policy_ranges[index + piece] = pieces[piece];
+        space->policy_range_count += piece_count - 1u;
+        index += piece_count;
+    }
+    if (new_length > old_length && have_extension) {
+        extension.start = new_address + old_length;
+        extension.end = new_end;
+        space->policy_ranges[space->policy_range_count++] = extension;
+    }
+    kernel_mm_mempolicy_sort_and_merge_locked(space);
+    kernel_mm_registry_unlock();
+    return 0;
+}
+
 uint32_t kernel_mm_lock_space_future_flags(uint64_t address_space) {
     kernel_mm_lock_space_t *space;
     uint32_t flags = 0;
@@ -1209,8 +1646,10 @@ void kernel_mm_lock_space_release(uint64_t address_space) {
     kernel_mm_seal_space_t *seal_space;
     kernel_mm_locked_range_t *ranges = 0;
     kernel_mm_locked_range_t *seal_ranges = 0;
+    kernel_mm_mempolicy_range_t *policy_ranges = 0;
     uint32_t pages = 0;
     uint32_t seal_pages = 0;
+    uint32_t policy_pages = 0;
 
     if (!address_space) return;
     kernel_mm_registry_lock();
@@ -1218,6 +1657,8 @@ void kernel_mm_lock_space_release(uint64_t address_space) {
     if (space) {
         ranges = space->ranges;
         pages = space->range_pages;
+        policy_ranges = space->policy_ranges;
+        policy_pages = space->policy_range_pages;
         memset(space, 0, sizeof(*space));
     }
     seal_space = kernel_mm_seal_space_find_locked(address_space, 0);
@@ -1229,6 +1670,7 @@ void kernel_mm_lock_space_release(uint64_t address_space) {
     kernel_mm_registry_unlock();
     kernel_mm_release_pages(ranges, pages);
     kernel_mm_release_pages(seal_ranges, seal_pages);
+    kernel_mm_release_pages(policy_ranges, policy_pages);
 }
 
 void kernel_mm_lock_space_clear(uint64_t address_space) {
@@ -1240,6 +1682,7 @@ void kernel_mm_lock_space_clear(uint64_t address_space) {
     if (space) {
         space->range_count = 0u;
         space->future_flags = 0u;
+        space->policy_range_count = 0u;
     }
     kernel_mm_registry_unlock();
 }
@@ -1600,10 +2043,16 @@ int64_t kernel_mm_unmap_range(uint64_t address, uint64_t length) {
     address_space = arch_mm_current_address_space();
     if (kernel_mm_seal_space_overlaps(address_space, address, length))
         return -EDGE_LINUX_EPERM;
+    if (kernel_mm_mempolicy_has_ranges(address_space) &&
+        kernel_mm_mempolicy_range_reserve(address_space, 1u) < 0)
+        return -EDGE_LINUX_ENOMEM;
     result = arch_mm_unmap_range(address, length);
-    if (result >= 0)
+    if (result >= 0) {
         (void)kernel_mm_lock_space_remove(
             address_space, address, length);
+        kernel_mm_mempolicy_range_remove(
+            address_space, address, length);
+    }
     return result;
 }
 
@@ -1650,8 +2099,13 @@ int64_t kernel_mm_remap_range(uint64_t old_address, uint64_t old_length,
             return -EDGE_LINUX_EPERM;
         int had_locked_ranges =
             kernel_mm_lock_space_bytes(address_space) != 0u;
+        int had_policy_ranges =
+            kernel_mm_mempolicy_has_ranges(address_space);
         if (had_locked_ranges &&
             kernel_mm_lock_space_reserve(address_space, 3u) < 0)
+            return -EDGE_LINUX_ENOMEM;
+        if (had_policy_ranges &&
+            kernel_mm_mempolicy_range_reserve(address_space, 4u) < 0)
             return -EDGE_LINUX_ENOMEM;
         int64_t result = arch_mm_remap_range(
             old_address, old_length, new_length, (uint32_t)flags,
@@ -1661,6 +2115,12 @@ int64_t kernel_mm_remap_range(uint64_t old_address, uint64_t old_length,
                 address_space, old_address, old_length,
                 (uint64_t)result, new_length);
             if (lock_status < 0) return lock_status;
+        }
+        if (result >= 0 && had_policy_ranges) {
+            int policy_status = kernel_mm_mempolicy_range_remap(
+                address_space, old_address, old_length,
+                (uint64_t)result, new_length);
+            if (policy_status < 0) return policy_status;
         }
         return result;
     }

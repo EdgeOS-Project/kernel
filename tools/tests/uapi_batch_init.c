@@ -160,6 +160,7 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "bpf_abi_probe",
         "seccomp_abi_probe",
         "memfd_secret_abi_probe",
+        "numa_policy_abi_probe",
 #ifndef UAPI_BATCH_FREESTANDING_ONLY
         "clock_adjust_abi_probe",
         "module_abi_probe",
