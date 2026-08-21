@@ -525,8 +525,12 @@ acpica_register_device(ACPI_HANDLE handle, UINT32 depth, void *context,
     g_acpica_status.registered_device_count++;
     if (firmware.enabled)
         g_acpica_status.present_device_count++;
-    if (firmware.enabled && device_probe_and_attach(child) == 0)
-        g_acpica_status.matched_device_count++;
+    /* PCI ownership changes only through the bridge handoff transaction. */
+    if (firmware.enabled &&
+        (info->Flags & ACPI_PCI_ROOT_BRIDGE) == 0) {
+        if (device_probe_and_attach(child) == 0)
+            g_acpica_status.matched_device_count++;
+    }
     ACPI_FREE(info);
     return AE_OK;
 }
