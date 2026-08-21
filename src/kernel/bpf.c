@@ -165,6 +165,16 @@ static int bpf_map_is_lru_hash(const kernel_bpf_map_t *map) {
          map->type == KERNEL_BPF_MAP_TYPE_LRU_PERCPU_HASH);
 }
 
+static int bpf_map_type_is_lru_hash(uint32_t type) {
+    return type == KERNEL_BPF_MAP_TYPE_LRU_HASH ||
+           type == KERNEL_BPF_MAP_TYPE_LRU_PERCPU_HASH;
+}
+
+static int bpf_map_has_percpu_lru(const kernel_bpf_map_t *map) {
+    return map && bpf_map_is_lru_hash(map) &&
+           (map->flags & KERNEL_BPF_MAP_NO_COMMON_LRU);
+}
+
 static int bpf_map_type_is_queue_stack(uint32_t type) {
     return type == KERNEL_BPF_MAP_TYPE_QUEUE ||
            type == KERNEL_BPF_MAP_TYPE_STACK;
@@ -284,6 +294,7 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
     uint32_t stride;
     uint32_t value_stride;
     uint32_t possible_cpu_count;
+    uint32_t actual_max_entries;
     uint64_t bytes;
     uint8_t *storage;
     int object_id;
@@ -301,9 +312,13 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
         return -EDGE_LINUX_EINVAL;
     }
     value_stride = bpf_align8(request->value_size);
-    possible_cpu_count = bpf_map_type_is_percpu(request->type) ?
+    possible_cpu_count =
+        (bpf_map_type_is_percpu(request->type) ||
+         (bpf_map_type_is_lru_hash(request->type) &&
+          (request->flags & KERNEL_BPF_MAP_NO_COMMON_LRU))) ?
         kernel_bpf_possible_cpu_count() : 1u;
     if (!possible_cpu_count) possible_cpu_count = 1u;
+    actual_max_entries = request->max_entries;
     if (request->type == KERNEL_BPF_MAP_TYPE_ARRAY ||
         request->type == KERNEL_BPF_MAP_TYPE_PERCPU_ARRAY) {
         if (request->key_size != sizeof(uint32_t) || request->flags)
@@ -322,8 +337,19 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
                request->type == KERNEL_BPF_MAP_TYPE_LRU_PERCPU_HASH) {
         if (request->flags & KERNEL_BPF_MAP_NO_PREALLOC)
             return -EDGE_LINUX_ENOTSUPP;
-        if (request->flags)
+        if (request->flags & ~KERNEL_BPF_MAP_NO_COMMON_LRU)
             return -EDGE_LINUX_EINVAL;
+        if (request->flags & KERNEL_BPF_MAP_NO_COMMON_LRU) {
+            uint64_t rounded =
+                ((uint64_t)actual_max_entries + possible_cpu_count - 1u) /
+                possible_cpu_count * possible_cpu_count;
+
+            if (rounded > UINT32_MAX)
+                rounded = actual_max_entries -
+                    actual_max_entries % possible_cpu_count;
+            if (!rounded) return -EDGE_LINUX_E2BIG;
+            actual_max_entries = (uint32_t)rounded;
+        }
         stride = request->type == KERNEL_BPF_MAP_TYPE_LRU_PERCPU_HASH ?
             bpf_align8(1u + request->key_size) +
                 value_stride * possible_cpu_count + sizeof(uint64_t) :
@@ -335,7 +361,7 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
     } else {
         return -EDGE_LINUX_EINVAL;
     }
-    bytes = (uint64_t)stride * request->max_entries;
+    bytes = (uint64_t)stride * actual_max_entries;
     status = bpf_allocation_size(bytes, &pages);
     if (status < 0) return status;
     storage = (uint8_t *)arch_vm_alloc_pages(pages);
@@ -348,7 +374,7 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
         object->value.map.type = request->type;
         object->value.map.key_size = request->key_size;
         object->value.map.value_size = request->value_size;
-        object->value.map.max_entries = request->max_entries;
+        object->value.map.max_entries = actual_max_entries;
         object->value.map.flags = request->flags;
         object->value.map.entry_stride = stride;
         object->value.map.value_stride = value_stride;
@@ -935,11 +961,46 @@ static void bpf_map_lru_touch(kernel_bpf_map_t *map, uint32_t index) {
     *bpf_map_lru_sequence(map, index) = ++map->access_sequence;
 }
 
+static uint32_t bpf_map_lru_cpu(const kernel_bpf_map_t *map) {
+    uint32_t cpu = edge_smp_current_cpu();
+
+    return cpu < map->possible_cpu_count ? cpu : 0u;
+}
+
+static void bpf_map_lru_range(const kernel_bpf_map_t *map,
+                              uint32_t *first, uint32_t *last) {
+    if (bpf_map_has_percpu_lru(map)) {
+        uint32_t entries_per_cpu =
+            map->max_entries / map->possible_cpu_count;
+        uint32_t cpu = bpf_map_lru_cpu(map);
+
+        *first = cpu * entries_per_cpu;
+        *last = *first + entries_per_cpu;
+        return;
+    }
+    *first = 0u;
+    *last = map->max_entries;
+}
+
+static uint32_t bpf_map_lru_free_slot(kernel_bpf_map_t *map) {
+    uint32_t first;
+    uint32_t last;
+
+    bpf_map_lru_range(map, &first, &last);
+    for (uint32_t index = first; index < last; ++index) {
+        if (!bpf_map_entry(map, index)[0]) return index;
+    }
+    return UINT32_MAX;
+}
+
 static uint32_t bpf_map_lru_oldest(kernel_bpf_map_t *map) {
     uint32_t oldest = UINT32_MAX;
     uint64_t oldest_sequence = UINT64_MAX;
+    uint32_t first;
+    uint32_t last;
 
-    for (uint32_t index = 0; index < map->max_entries; ++index) {
+    bpf_map_lru_range(map, &first, &last);
+    for (uint32_t index = first; index < last; ++index) {
         uint8_t *entry = bpf_map_entry(map, index);
         uint64_t sequence;
 
@@ -1129,6 +1190,8 @@ int kernel_bpf_map_update(int object_id, const void *key, const void *value,
             goto out;
         }
         if (index == UINT32_MAX) {
+            if (bpf_map_has_percpu_lru(map))
+                free_slot = bpf_map_lru_free_slot(map);
             if (free_slot == UINT32_MAX) {
                 if (!bpf_map_is_lru_hash(map)) {
                     status = -EDGE_LINUX_E2BIG;

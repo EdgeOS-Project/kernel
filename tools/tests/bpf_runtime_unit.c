@@ -25,6 +25,12 @@ uint32_t edge_smp_nr_cpu_ids(void) {
     return 4u;
 }
 
+static uint32_t g_test_current_cpu;
+
+uint32_t edge_smp_current_cpu(void) {
+    return g_test_current_cpu;
+}
+
 static int create_map(uint32_t type, uint32_t key_size,
                       uint32_t value_size, uint32_t max_entries,
                       const char *name) {
@@ -427,6 +433,49 @@ static void test_lru_percpu_hash_map(void) {
     assert(kernel_bpf_map_create(&invalid) == -EDGE_LINUX_ENOTSUPP);
 }
 
+static void test_no_common_lru(void) {
+    kernel_bpf_map_create_request_t request = {
+        .type = KERNEL_BPF_MAP_TYPE_LRU_HASH,
+        .key_size = sizeof(uint32_t),
+        .value_size = sizeof(uint64_t),
+        .max_entries = 5u,
+        .flags = KERNEL_BPF_MAP_NO_COMMON_LRU,
+    };
+    kernel_bpf_map_info_t info;
+    uint32_t keys[] = { 51u, 52u, 53u, 54u };
+    uint64_t values[] = { 510u, 520u, 530u, 540u };
+    uint64_t output = 0u;
+    int object;
+
+    strcpy(request.name, "private_lru");
+    object = kernel_bpf_map_create(&request);
+    assert(object >= 0);
+    assert(kernel_bpf_map_info(object, &info) == 0);
+    assert(info.max_entries == 8u);
+    assert(info.flags == KERNEL_BPF_MAP_NO_COMMON_LRU);
+
+    g_test_current_cpu = 0u;
+    assert(kernel_bpf_map_update(
+               object, &keys[0], &values[0], KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_update(
+               object, &keys[1], &values[1], KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_lookup(object, &keys[0], &output) == 0);
+    assert(kernel_bpf_map_update(
+               object, &keys[2], &values[2], KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_lookup(object, &keys[1], &output) ==
+           -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_map_lookup(object, &keys[0], &output) == 0);
+
+    g_test_current_cpu = 1u;
+    assert(kernel_bpf_map_update(
+               object, &keys[3], &values[3], KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_lookup(object, &keys[3], &output) == 0);
+    g_test_current_cpu = 0u;
+    assert(kernel_bpf_map_lookup(object, &keys[0], &output) == 0);
+    assert(kernel_bpf_map_lookup(object, &keys[2], &output) == 0);
+    kernel_bpf_object_release(object);
+}
+
 static void test_batch_and_freeze(void) {
     uint32_t keys[] = { 1u, 2u, 3u };
     uint64_t values[] = { 11u, 22u, 33u };
@@ -610,6 +659,7 @@ int main(void) {
     test_queue_stack_maps();
     test_percpu_maps();
     test_lru_percpu_hash_map();
+    test_no_common_lru();
     test_batch_and_freeze();
     test_program();
     test_ids();

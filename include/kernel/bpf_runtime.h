@@ -27,6 +27,7 @@
 #define KERNEL_BPF_MAP_TYPE_STACK 23u
 
 #define KERNEL_BPF_MAP_NO_PREALLOC (1u << 0)
+#define KERNEL_BPF_MAP_NO_COMMON_LRU (1u << 1)
 
 #define KERNEL_BPF_ANY     0u
 #define KERNEL_BPF_NOEXIST 1u

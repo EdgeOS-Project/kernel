@@ -56,6 +56,7 @@
 #define BPF_MAP_TYPE_LRU_PERCPU_HASH 10u
 #define BPF_MAP_TYPE_QUEUE 22u
 #define BPF_MAP_TYPE_STACK 23u
+#define BPF_F_NO_COMMON_LRU (1u << 1)
 #define BPF_PROG_TYPE_CGROUP_DEVICE 15u
 #define BPF_CGROUP_DEVICE 6u
 #define BPF_ANY 0u
@@ -358,6 +359,22 @@ static long create_map(uint32_t type, uint32_t entries, const char *name) {
     attribute.map_create.key_size = 4u;
     attribute.map_create.value_size = 8u;
     attribute.map_create.max_entries = entries;
+    for (index = 0; name[index] && index + 1u < 16u; ++index)
+        attribute.map_create.map_name[index] = name[index];
+    return bpf_call(BPF_MAP_CREATE, &attribute);
+}
+
+static long create_map_flags(uint32_t type, uint32_t entries,
+                             uint32_t flags, const char *name) {
+    union bpf_attr attribute;
+    unsigned long index;
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.map_create.map_type = type;
+    attribute.map_create.key_size = 4u;
+    attribute.map_create.value_size = 8u;
+    attribute.map_create.max_entries = entries;
+    attribute.map_create.map_flags = flags;
     for (index = 0; name[index] && index + 1u < 16u; ++index)
         attribute.map_create.map_name[index] = name[index];
     return bpf_call(BPF_MAP_CREATE, &attribute);
@@ -818,6 +835,30 @@ static int test_lru_percpu_hash_map(void) {
     return failures;
 }
 
+static int test_no_common_lru(void) {
+    union bpf_attr attribute;
+    struct bpf_map_info info;
+    long descriptor = create_map_flags(
+        BPF_MAP_TYPE_LRU_HASH, 5u, BPF_F_NO_COMMON_LRU, "private_lru");
+    int failures = 0;
+
+    failures += expect_true("no common lru create", descriptor >= 0);
+    if (descriptor < 0) return failures + 1;
+    clear_bytes(&info, sizeof(info));
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.info.bpf_fd = (uint32_t)descriptor;
+    attribute.info.info_len = sizeof(info);
+    attribute.info.info = (uint64_t)(uintptr_t)&info;
+    failures += expect("no common lru info", bpf_call(
+        BPF_OBJ_GET_INFO_BY_FD, &attribute), 0);
+    failures += expect_true(
+        "no common lru info values",
+        info.type == BPF_MAP_TYPE_LRU_HASH && info.max_entries >= 5u &&
+        info.map_flags == BPF_F_NO_COMMON_LRU);
+    (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+    return failures;
+}
+
 static uint32_t batch_pair_mask(const uint32_t *keys,
                                 const uint64_t *values, uint32_t count) {
     uint32_t observed_mask = 0u;
@@ -1152,6 +1193,7 @@ START_ATTRIBUTES void _start(void) {
     failures += test_queue_stack_maps();
     failures += test_percpu_maps();
     failures += test_lru_percpu_hash_map();
+    failures += test_no_common_lru();
     failures += test_batch_and_freeze();
     failures += test_program();
     failures += test_attribute_tail();
