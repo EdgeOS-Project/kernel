@@ -45,10 +45,12 @@ EDGEOS_ASSESSMENTS = [
             "FUTEX_WAKE through the shared futex2 handler",
             "fixed-file registration, sparse tables and retained descriptor lifetime",
             "fixed-file replacement, clearing and skip updates with partial progress",
+            "untagged FILES2 sparse registration and UPDATE2 layouts",
         ],
         "missing": [
             "asynchronous worker execution",
             "registered-ring descriptor management",
+            "resource tag completion events",
             "fixed buffers with user-page pinning",
             "multishot poll and timeout update operations",
             "fully interruptible enter suspension and extended wait deadlines",
@@ -71,8 +73,8 @@ EDGEOS_ASSESSMENTS = [
                 "madvise, epoll_ctl, tee, renameat, unlinkat, mkdirat, "
                 "symlinkat, linkat, socket, bind, listen, fsetxattr, "
                 "setxattr, fgetxattr, getxattr, ftruncate, sync_file_range, "
-                "futex_wake, fixed-file registration, retained lifetime and updates, "
-                "and operation probe"
+                "futex_wake, fixed-file registration, retained lifetime, updates, "
+                "untagged extended resource layouts and operation probe"
             ),
         },
     },

@@ -8122,6 +8122,9 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_REGISTER_EVENTFD_ASYNC 7u
 #define EDGE_LINUX_IORING_REGISTER_PROBE        8u
 #define EDGE_LINUX_IORING_REGISTER_ENABLE_RINGS 12u
+#define EDGE_LINUX_IORING_REGISTER_FILES2       13u
+#define EDGE_LINUX_IORING_REGISTER_FILES_UPDATE2 14u
+#define EDGE_LINUX_IORING_RESOURCE_SPARSE       (1u << 0)
 #define EDGE_LINUX_IO_URING_OP_SUPPORTED        1u
 #define EDGE_LINUX_IORING_FSYNC_DATASYNC        1u
 #define EDGE_LINUX_IORING_TIMEOUT_ABS            (1u << 0)
@@ -8993,6 +8996,34 @@ static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
            opcode == EDGE_LINUX_IORING_OP_FTRUNCATE;
 }
 
+static int64_t edge_linux_io_uring_files_update_user(
+        edge_linux_syscall_context_t *context, int32_t ring_id,
+        uint32_t offset, uint64_t user_descriptors, uint32_t count) {
+    int32_t descriptors[KERNEL_IO_URING_MAX_FIXED_FILES];
+    uint32_t copied = 0u;
+    int result;
+
+    result = kernel_io_uring_files_update_validate(
+        ring_id, offset, count);
+    if (result < 0) return result;
+    if (!user_descriptors) return -EDGE_LINUX_EFAULT;
+    for (; copied < count; ++copied) {
+        uint64_t source;
+        if ((uint64_t)copied >
+            (UINT64_MAX - user_descriptors) / sizeof(int32_t))
+            break;
+        source = user_descriptors +
+                 (uint64_t)copied * sizeof(int32_t);
+        if (edge_linux_copy_from_user(
+                context, &descriptors[copied], source,
+                sizeof(descriptors[copied])) < 0)
+            break;
+    }
+    if (!copied) return -EDGE_LINUX_EFAULT;
+    return kernel_io_uring_files_update(
+        ring_id, offset, descriptors, copied);
+}
+
 static int64_t edge_linux_sys_io_uring_register(
         edge_linux_syscall_context_t *context) {
     struct edge_linux_io_uring_probe probe;
@@ -9035,9 +9066,6 @@ static int64_t edge_linux_sys_io_uring_register(
     }
     if (opcode == EDGE_LINUX_IORING_REGISTER_FILES_UPDATE) {
         struct edge_linux_io_uring_files_update update;
-        int32_t descriptors[KERNEL_IO_URING_MAX_FIXED_FILES];
-        uint32_t copied = 0u;
-        int result;
 
         if (!operation_count) return -EDGE_LINUX_EINVAL;
         if (!argument) return -EDGE_LINUX_EFAULT;
@@ -9045,26 +9073,65 @@ static int64_t edge_linux_sys_io_uring_register(
                 context, &update, argument, sizeof(update)) < 0)
             return -EDGE_LINUX_EFAULT;
         if (update.reserved) return -EDGE_LINUX_EINVAL;
-        result = kernel_io_uring_files_update_validate(
-            ring_id, update.offset, operation_count);
-        if (result < 0) return result;
-        if (!update.descriptors) return -EDGE_LINUX_EFAULT;
-        for (; copied < operation_count; ++copied) {
-            uint64_t source;
-            if ((uint64_t)copied >
-                (UINT64_MAX - update.descriptors) / sizeof(int32_t))
-                break;
-            source = update.descriptors +
-                     (uint64_t)copied * sizeof(int32_t);
-            if (edge_linux_copy_from_user(
-                    context, &descriptors[copied], source,
-                    sizeof(descriptors[copied])) < 0)
-                break;
+        return edge_linux_io_uring_files_update_user(
+            context, ring_id, update.offset, update.descriptors,
+            operation_count);
+    }
+    if (opcode == EDGE_LINUX_IORING_REGISTER_FILES2) {
+        struct edge_linux_io_uring_resource_register registration;
+        int32_t descriptors[KERNEL_IO_URING_MAX_FIXED_FILES];
+
+        if (operation_count != sizeof(registration))
+            return -EDGE_LINUX_EINVAL;
+        if (!argument) return -EDGE_LINUX_EFAULT;
+        if (edge_linux_copy_from_user(
+                context, &registration, argument,
+                sizeof(registration)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (!registration.count || registration.reserved ||
+            (registration.flags & ~EDGE_LINUX_IORING_RESOURCE_SPARSE) ||
+            ((registration.flags & EDGE_LINUX_IORING_RESOURCE_SPARSE) &&
+             registration.data))
+            return -EDGE_LINUX_EINVAL;
+        if (registration.tags) return -EDGE_LINUX_EOPNOTSUPP;
+        if (registration.count > KERNEL_IO_URING_MAX_FIXED_FILES)
+            return -EDGE_LINUX_EMFILE;
+        for (uint32_t index = 0; index < registration.count; ++index) {
+            uint64_t source = 0u;
+            descriptors[index] = -1;
+            if (registration.data) {
+                if ((uint64_t)index >
+                    (UINT64_MAX - registration.data) / sizeof(int32_t))
+                    return -EDGE_LINUX_EFAULT;
+                source = registration.data +
+                         (uint64_t)index * sizeof(int32_t);
+                if (edge_linux_copy_from_user(
+                        context, &descriptors[index], source,
+                        sizeof(descriptors[index])) < 0)
+                    return -EDGE_LINUX_EFAULT;
+            }
+            if (descriptors[index] >= 0 &&
+                kernel_anonymous_fd_descriptor_object_id(
+                    descriptors[index], KERNEL_ANONYMOUS_FD_IO_URING) >= 0)
+                return -EDGE_LINUX_EBADF;
         }
-        if (!copied) return -EDGE_LINUX_EFAULT;
-        result = kernel_io_uring_files_update(
-            ring_id, update.offset, descriptors, copied);
-        return result;
+        return kernel_io_uring_files_register(
+            ring_id, descriptors, registration.count);
+    }
+    if (opcode == EDGE_LINUX_IORING_REGISTER_FILES_UPDATE2) {
+        struct edge_linux_io_uring_resource_update2 update;
+
+        if (operation_count != sizeof(update))
+            return -EDGE_LINUX_EINVAL;
+        if (!argument) return -EDGE_LINUX_EFAULT;
+        if (edge_linux_copy_from_user(
+                context, &update, argument, sizeof(update)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (!update.count || update.reserved || update.reserved2)
+            return -EDGE_LINUX_EINVAL;
+        if (update.tags) return -EDGE_LINUX_EOPNOTSUPP;
+        return edge_linux_io_uring_files_update_user(
+            context, ring_id, update.offset, update.data, update.count);
     }
     if (opcode == EDGE_LINUX_IORING_REGISTER_EVENTFD ||
         opcode == EDGE_LINUX_IORING_REGISTER_EVENTFD_ASYNC) {

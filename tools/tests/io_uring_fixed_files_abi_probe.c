@@ -38,6 +38,9 @@
 #define IORING_REGISTER_FILES 2u
 #define IORING_UNREGISTER_FILES 3u
 #define IORING_REGISTER_FILES_UPDATE 6u
+#define IORING_REGISTER_FILES2 13u
+#define IORING_REGISTER_FILES_UPDATE2 14u
+#define IORING_RESOURCE_SPARSE (1u << 0)
 #define IORING_OP_WRITE 23u
 #define IORING_OFF_SQ_RING 0x00000000ull
 #define IORING_OFF_CQ_RING 0x08000000ull
@@ -109,6 +112,23 @@ struct io_uring_files_update {
     uint64_t descriptors;
 };
 
+struct io_uring_resource_register {
+    uint32_t count;
+    uint32_t flags;
+    uint64_t reserved;
+    uint64_t data;
+    uint64_t tags;
+};
+
+struct io_uring_resource_update2 {
+    uint32_t offset;
+    uint32_t reserved;
+    uint64_t data;
+    uint64_t tags;
+    uint32_t count;
+    uint32_t reserved2;
+};
+
 static long raw_syscall6(long number, long a0, long a1, long a2,
                          long a3, long a4, long a5) {
 #if defined(__x86_64__)
@@ -150,9 +170,19 @@ static uint32_t text_length(const char *text) {
     return length;
 }
 
-static void print_text(const char *text) {
-    (void)raw_syscall6(
+static long print_text(const char *text) {
+    return raw_syscall6(
         SYS_write, 1, (long)text, text_length(text), 0, 0, 0);
+}
+
+static void settle_console_output(void) {
+    for (volatile uint32_t index = 0; index < 1000000u; ++index) {
+#if defined(__x86_64__)
+        __asm__ volatile("pause");
+#else
+        __asm__ volatile("yield");
+#endif
+    }
 }
 
 static int expect(long actual, long expected) {
@@ -223,6 +253,8 @@ static int run_probe(void) {
     int32_t update_descriptor;
     int32_t update_descriptors[2];
     struct io_uring_files_update update;
+    struct io_uring_resource_register registration2;
+    struct io_uring_resource_update2 update2;
     uint64_t value = 1u;
     long ring;
     long eventfd;
@@ -322,6 +354,39 @@ static int run_probe(void) {
     failures += expect(raw_syscall6(
         SYS_io_uring_register, ring, IORING_UNREGISTER_FILES,
         0, 0, 0, 0), -ENXIO);
+    bytes_zero(&registration2, sizeof(registration2));
+    registration2.count = 2u;
+    registration2.flags = IORING_RESOURCE_SPARSE;
+    failures += expect(raw_syscall6(
+        SYS_io_uring_register, ring, IORING_REGISTER_FILES2,
+        (long)&registration2, sizeof(registration2), 0, 0), 0);
+    eventfd = raw_syscall6(SYS_eventfd2, 0, 0, 0, 0, 0, 0);
+    if (eventfd < 0) {
+        failures = 1;
+        goto close_eventfd;
+    }
+    update_descriptor = (int32_t)eventfd;
+    bytes_zero(&update2, sizeof(update2));
+    update2.data = (uint64_t)(uintptr_t)&update_descriptor;
+    update2.count = 1u;
+    failures += expect(raw_syscall6(
+        SYS_io_uring_register, ring, IORING_REGISTER_FILES_UPDATE2,
+        (long)&update2, sizeof(update2), 0, 0), 1);
+    (void)raw_syscall6(SYS_close, eventfd, 0, 0, 0, 0, 0);
+    eventfd = -1;
+    failures += submit_fixed_write(
+        ring, &parameters, sq_ring, cq_ring, sqes,
+        0, &value, (int32_t)sizeof(value));
+    failures += expect(raw_syscall6(
+        SYS_io_uring_register, ring, IORING_UNREGISTER_FILES,
+        0, 0, 0, 0), 0);
+    failures += expect(raw_syscall6(
+        SYS_io_uring_register, ring, IORING_REGISTER_FILES2,
+        (long)&registration2, sizeof(registration2) - 1u, 0, 0), -EINVAL);
+    registration2.data = (uint64_t)(uintptr_t)fixed_files;
+    failures += expect(raw_syscall6(
+        SYS_io_uring_register, ring, IORING_REGISTER_FILES2,
+        (long)&registration2, sizeof(registration2), 0, 0), -EINVAL);
 
 close_eventfd:
     if (second_eventfd >= 0)
@@ -343,8 +408,11 @@ __attribute__((force_align_arg_pointer))
 #endif
 void _start(void) {
     int failures = run_probe();
-    print_text(failures ? "IO_URING_FIXED_FILES_ABI_PROBE_FAIL\n" :
-                          "IO_URING_FIXED_FILES_ABI_PROBE_PASS\n");
+    const char *result = failures ?
+        "IO_URING_FIXED_FILES_ABI_PROBE_FAIL\n" :
+        "IO_URING_FIXED_FILES_ABI_PROBE_PASS\n";
+    settle_console_output();
+    if (print_text(result) != (long)text_length(result)) ++failures;
     raw_syscall6(SYS_exit, failures ? 1 : 0, 0, 0, 0, 0, 0);
     for (;;) { }
 }
