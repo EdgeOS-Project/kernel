@@ -74,6 +74,7 @@ EDGEOS_ASSESSMENTS = [
             "splice with immediate offsets and ordinary or fixed input and output descriptors",
             "MSG_RING data delivery, CQE flag forwarding and buffered target-CQ overflow",
             "MSG_RING registered-file transfer with explicit or allocated target slots, CQE skipping and retained lifetime",
+            "SEND_ZC and SENDMSG_ZC copy fallback for IPv4 and IPv6 sockets with Linux main and notification CQEs",
         ],
         "missing": [
             "asynchronous worker execution",
@@ -97,6 +98,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/io_uring_timeout_update_abi_probe.c",
             "tools/tests/io_uring_poll_multishot_abi_probe.c",
             "tools/tests/io_uring_registration_abi_probe.c",
+            "tools/tests/io_uring_send_zc_abi_probe.c",
             "tools/tests/io_uring_runtime_unit.c",
         ],
         "linux_oracle": {
@@ -137,7 +139,10 @@ EDGEOS_ASSESSMENTS = [
                 "mmap ring lifetime, unregistration and "
                 "legacy-versus-ring failed-I/O buffer consumption, plus "
                 "incremental address and length updates, min-left retirement "
-                "and BUF_MORE completions on kernel-allocated and user-provided rings"
+                "and BUF_MORE completions on kernel-allocated and user-provided rings, "
+                "plus SEND_ZC and SENDMSG_ZC copied sends, fixed-file and "
+                "fixed-buffer validation, vectorized payloads, notification CQEs "
+                "and report-usage results"
             ),
         },
     },

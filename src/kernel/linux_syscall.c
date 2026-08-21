@@ -8098,6 +8098,8 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_OP_FGETXATTR 43u
 #define EDGE_LINUX_IORING_OP_GETXATTR  44u
 #define EDGE_LINUX_IORING_OP_SOCKET    45u
+#define EDGE_LINUX_IORING_OP_SEND_ZC   47u
+#define EDGE_LINUX_IORING_OP_SENDMSG_ZC 48u
 #define EDGE_LINUX_IORING_OP_FUTEX_WAKE 52u
 #define EDGE_LINUX_IORING_OP_FIXED_FD_INSTALL 54u
 #define EDGE_LINUX_IORING_OP_FTRUNCATE 55u
@@ -8124,8 +8126,21 @@ static int64_t edge_linux_sys_aio(
      EDGE_LINUX_IOSQE_CQE_SKIP_SUCCESS)
 
 #define EDGE_LINUX_IORING_CQE_F_BUFFER (1u << 0)
+#define EDGE_LINUX_IORING_CQE_F_MORE   (1u << 1)
+#define EDGE_LINUX_IORING_CQE_F_NOTIF  (1u << 3)
 #define EDGE_LINUX_IORING_CQE_F_BUF_MORE (1u << 4)
 #define EDGE_LINUX_IORING_CQE_BUFFER_SHIFT 16u
+
+#define EDGE_LINUX_IORING_RECVSEND_POLL_FIRST (1u << 0)
+#define EDGE_LINUX_IORING_RECVSEND_FIXED_BUF  (1u << 2)
+#define EDGE_LINUX_IORING_SEND_ZC_REPORT_USAGE (1u << 3)
+#define EDGE_LINUX_IORING_SEND_VECTORIZED      (1u << 5)
+#define EDGE_LINUX_IORING_SEND_ZC_FLAGS \
+    (EDGE_LINUX_IORING_RECVSEND_POLL_FIRST | \
+     EDGE_LINUX_IORING_RECVSEND_FIXED_BUF | \
+     EDGE_LINUX_IORING_SEND_ZC_REPORT_USAGE | \
+     EDGE_LINUX_IORING_SEND_VECTORIZED)
+#define EDGE_LINUX_IORING_NOTIF_USAGE_ZC_COPIED (1u << 31)
 
 #define EDGE_LINUX_IORING_SETUP_SQE128 (1u << 10)
 #define EDGE_LINUX_IORING_SETUP_CQE32  (1u << 11)
@@ -8908,10 +8923,129 @@ static int64_t edge_linux_io_uring_msg_ring(
            -EDGE_LINUX_EOVERFLOW : status;
 }
 
+typedef struct edge_linux_io_uring_notification {
+    uint64_t user_data;
+    int32_t result;
+    uint8_t present;
+} edge_linux_io_uring_notification_t;
+
+static int edge_linux_io_uring_zc_fixed_message_validate(
+        int32_t ring_id, uint16_t buffer_index,
+        const kernel_socket_user_message_t *message) {
+    for (uint32_t index = 0;
+         index < (uint32_t)message->header.msg_iovlen; ++index) {
+        struct edge_linux_iovec vector;
+        int result = kernel_socket_message_iovec(
+            message, index, &vector);
+
+        if (result < 0) return result;
+        result = kernel_io_uring_fixed_buffer_validate(
+            ring_id, buffer_index, vector.iov_base, vector.iov_len);
+        if (result < 0) return result;
+    }
+    return 0;
+}
+
+static int64_t edge_linux_io_uring_execute_send_zc(
+        edge_linux_syscall_context_t *context, int32_t ring_id,
+        const struct edge_linux_io_uring_sqe *submission,
+        uint32_t *completion_flags,
+        edge_linux_io_uring_notification_t *notification) {
+    kernel_socket_descriptor_info_t descriptor_info;
+    kernel_socket_message_request_t message_request;
+    edge_linux_syscall_context_t nested = *context;
+    uint32_t address_length =
+        (uint32_t)submission->splice_descriptor & UINT16_MAX;
+    uint32_t zc_flags = submission->ioprio;
+    int vectorized =
+        submission->opcode == EDGE_LINUX_IORING_OP_SENDMSG_ZC ||
+        (zc_flags & EDGE_LINUX_IORING_SEND_VECTORIZED) != 0;
+    int result;
+
+    result = kernel_socket_describe_descriptor(
+        submission->descriptor, &descriptor_info);
+    if (result < 0) return result;
+    if (submission->flags & EDGE_LINUX_IOSQE_CQE_SKIP_SUCCESS)
+        return -EDGE_LINUX_EINVAL;
+
+    notification->present = 1u;
+    notification->user_data = submission->address3 ?
+        submission->address3 : submission->user_data;
+    notification->result =
+        (zc_flags & EDGE_LINUX_IORING_SEND_ZC_REPORT_USAGE) ?
+            (int32_t)EDGE_LINUX_IORING_NOTIF_USAGE_ZC_COPIED : 0;
+    *completion_flags |= EDGE_LINUX_IORING_CQE_F_MORE;
+
+    if (zc_flags & ~EDGE_LINUX_IORING_SEND_ZC_FLAGS)
+        return -EDGE_LINUX_EINVAL;
+    if (submission->opcode == EDGE_LINUX_IORING_OP_SENDMSG_ZC) {
+        if (submission->offset || submission->splice_descriptor)
+            return -EDGE_LINUX_EINVAL;
+    } else if (((uint32_t)submission->splice_descriptor >> 16u) != 0u) {
+        return -EDGE_LINUX_EINVAL;
+    }
+    if (descriptor_info.domain != EDGE_LINUX_AF_INET &&
+        descriptor_info.domain != EDGE_LINUX_AF_INET6)
+        return -EDGE_LINUX_EOPNOTSUPP;
+
+    if (!vectorized) {
+        if (zc_flags & EDGE_LINUX_IORING_RECVSEND_FIXED_BUF) {
+            result = kernel_io_uring_fixed_buffer_validate(
+                ring_id, submission->buffer_index,
+                submission->address, submission->length);
+            if (result < 0) return result;
+        }
+        memset(nested.arguments, 0, sizeof(nested.arguments));
+        nested.route_status = EDGE_LINUX_SYSCALL_IMPLEMENTED;
+        nested.id = EDGE_LINUX_SYS_sendto;
+        nested.arguments[0] = (uint32_t)submission->descriptor;
+        nested.arguments[1] = submission->address;
+        nested.arguments[2] = submission->length;
+        nested.arguments[3] = submission->operation_flags |
+            EDGE_LINUX_MSG_NOSIGNAL;
+        nested.arguments[4] = submission->offset;
+        nested.arguments[5] = address_length;
+        return edge_linux_sys_socket_buffer(&nested);
+    }
+
+    memset(&message_request, 0, sizeof(message_request));
+    if (submission->opcode == EDGE_LINUX_IORING_OP_SENDMSG_ZC) {
+        result = kernel_socket_message_import(
+            context->current_task, context->arch_ops->copy_from_user,
+            submission->address, &message_request.message);
+    } else {
+        result = kernel_socket_message_import_iovec(
+            context->current_task, context->arch_ops->copy_from_user,
+            submission->address, submission->length,
+            &message_request.message);
+        if (result == 0) {
+            message_request.message.header.msg_name = submission->offset;
+            message_request.message.header.msg_namelen = address_length;
+        }
+    }
+    if (result < 0) return result;
+    if (zc_flags & EDGE_LINUX_IORING_RECVSEND_FIXED_BUF) {
+        result = edge_linux_io_uring_zc_fixed_message_validate(
+            ring_id, submission->buffer_index,
+            &message_request.message);
+        if (result < 0) return result;
+    }
+    message_request.descriptor = submission->descriptor;
+    message_request.flags = submission->operation_flags |
+        EDGE_LINUX_MSG_NOSIGNAL;
+    message_request.copy_context = context->current_task;
+    message_request.copy_from_user = context->arch_ops->copy_from_user;
+    message_request.copy_to_user = context->arch_ops->copy_to_user;
+    message_request.user_registers = context->user_registers;
+    return kernel_socket_message_execute(&message_request);
+}
+
 static int32_t edge_linux_io_uring_execute_descriptor(
         edge_linux_syscall_context_t *context,
         int32_t ring_id,
-        const struct edge_linux_io_uring_sqe *submission) {
+        const struct edge_linux_io_uring_sqe *submission,
+        uint32_t *completion_flags,
+        edge_linux_io_uring_notification_t *notification) {
     int64_t result;
     if (submission->flags & ~EDGE_LINUX_IOSQE_KNOWN)
         return -EDGE_LINUX_EINVAL;
@@ -8929,7 +9063,9 @@ static int32_t edge_linux_io_uring_execute_descriptor(
         submission->opcode != EDGE_LINUX_IORING_OP_SETXATTR &&
         submission->opcode != EDGE_LINUX_IORING_OP_GETXATTR &&
         submission->opcode != EDGE_LINUX_IORING_OP_MSG_RING &&
-        submission->opcode != EDGE_LINUX_IORING_OP_FUTEX_WAKE)
+        submission->opcode != EDGE_LINUX_IORING_OP_FUTEX_WAKE &&
+        submission->opcode != EDGE_LINUX_IORING_OP_SEND_ZC &&
+        submission->opcode != EDGE_LINUX_IORING_OP_SENDMSG_ZC)
         return -EDGE_LINUX_EINVAL;
     switch (submission->opcode) {
     case EDGE_LINUX_IORING_OP_NOP:
@@ -9121,6 +9257,12 @@ static int32_t edge_linux_io_uring_execute_descriptor(
         result = edge_linux_io_uring_execute_socket(
             context, submission);
         break;
+    case EDGE_LINUX_IORING_OP_SEND_ZC:
+    case EDGE_LINUX_IORING_OP_SENDMSG_ZC:
+        result = edge_linux_io_uring_execute_send_zc(
+            context, ring_id, submission, completion_flags,
+            notification);
+        break;
     default:
         result = -EDGE_LINUX_EINVAL;
         break;
@@ -9139,6 +9281,7 @@ static int edge_linux_io_uring_fixed_file_supported(uint8_t opcode) {
     case EDGE_LINUX_IORING_OP_FSYNC:
     case EDGE_LINUX_IORING_OP_SYNC_FILE_RANGE:
     case EDGE_LINUX_IORING_OP_SENDMSG:
+    case EDGE_LINUX_IORING_OP_SENDMSG_ZC:
     case EDGE_LINUX_IORING_OP_RECVMSG:
     case EDGE_LINUX_IORING_OP_ACCEPT:
     case EDGE_LINUX_IORING_OP_CONNECT:
@@ -9149,6 +9292,7 @@ static int edge_linux_io_uring_fixed_file_supported(uint8_t opcode) {
     case EDGE_LINUX_IORING_OP_WRITE_FIXED:
     case EDGE_LINUX_IORING_OP_FADVISE:
     case EDGE_LINUX_IORING_OP_SEND:
+    case EDGE_LINUX_IORING_OP_SEND_ZC:
     case EDGE_LINUX_IORING_OP_RECV:
     case EDGE_LINUX_IORING_OP_SHUTDOWN:
     case EDGE_LINUX_IORING_OP_FTRUNCATE:
@@ -9464,7 +9608,8 @@ static int32_t edge_linux_io_uring_execute(
         edge_linux_syscall_context_t *context,
         int32_t ring_id,
         const struct edge_linux_io_uring_sqe *submission,
-        uint32_t *completion_flags) {
+        uint32_t *completion_flags,
+        edge_linux_io_uring_notification_t *notification) {
     struct edge_linux_io_uring_sqe resolved;
     kernel_io_uring_selected_buffer_t selected;
     uint32_t provided_ring_head = 0u;
@@ -9473,6 +9618,7 @@ static int32_t edge_linux_io_uring_execute(
     int32_t result;
 
     if (completion_flags) *completion_flags = 0u;
+    if (notification) memset(notification, 0, sizeof(*notification));
 
     if (submission->opcode == EDGE_LINUX_IORING_OP_PIPE)
         return edge_linux_io_uring_pipe(
@@ -9512,7 +9658,8 @@ static int32_t edge_linux_io_uring_execute(
             &provided_ring_head, &provided_ring);
         if (result < 0) return result;
         result = edge_linux_io_uring_execute_descriptor(
-            context, ring_id, &resolved);
+            context, ring_id, &resolved, completion_flags,
+            notification);
         edge_linux_io_uring_finish_buffer_selection(
             ring_id, result, &selected, provided_ring_head,
             provided_ring, completion_flags);
@@ -9535,7 +9682,8 @@ static int32_t edge_linux_io_uring_execute(
         return result;
     }
     result = edge_linux_io_uring_execute_descriptor(
-        context, ring_id, &resolved);
+        context, ring_id, &resolved, completion_flags,
+        notification);
     edge_linux_io_uring_finish_buffer_selection(
         ring_id, result, &selected, provided_ring_head,
         provided_ring, completion_flags);
@@ -9799,6 +9947,7 @@ static int64_t edge_linux_sys_io_uring_enter(
             &entries_consumed, &layout_result);
         int32_t operation_result;
         uint32_t completion_flags = 0u;
+        edge_linux_io_uring_notification_t notification = {0};
         int linked;
         int hard_linked;
         if (take_result == -EDGE_LINUX_EAGAIN) break;
@@ -9814,7 +9963,7 @@ static int64_t edge_linux_sys_io_uring_enter(
                            layout_result < 0 ? layout_result :
                            edge_linux_io_uring_execute(
                                context, ring_id, &submission,
-                               &completion_flags);
+                               &completion_flags, &notification);
         if (operation_result != EDGE_LINUX_IORING_PENDING_RESULT &&
             (!(submission.flags & EDGE_LINUX_IOSQE_CQE_SKIP_SUCCESS) ||
              operation_result < 0)) {
@@ -9831,6 +9980,10 @@ static int64_t edge_linux_sys_io_uring_enter(
                     ring_id, submission.user_data, operation_result,
                     completion_flags);
         }
+        if (notification.present)
+            (void)kernel_io_uring_completion_add(
+                ring_id, notification.user_data, notification.result,
+                EDGE_LINUX_IORING_CQE_F_NOTIF);
         if (operation_result == 0 &&
             ((submission.opcode == EDGE_LINUX_IORING_OP_POLL_REMOVE &&
               submission.length == 0u) ||
@@ -9921,6 +10074,7 @@ static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
            opcode == EDGE_LINUX_IORING_OP_POLL_ADD ||
            opcode == EDGE_LINUX_IORING_OP_POLL_REMOVE ||
            opcode == EDGE_LINUX_IORING_OP_SENDMSG ||
+           opcode == EDGE_LINUX_IORING_OP_SENDMSG_ZC ||
            opcode == EDGE_LINUX_IORING_OP_RECVMSG ||
            opcode == EDGE_LINUX_IORING_OP_TIMEOUT ||
            opcode == EDGE_LINUX_IORING_OP_TIMEOUT_REMOVE ||
@@ -9937,6 +10091,7 @@ static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
            opcode == EDGE_LINUX_IORING_OP_FADVISE ||
            opcode == EDGE_LINUX_IORING_OP_MADVISE ||
            opcode == EDGE_LINUX_IORING_OP_SEND ||
+           opcode == EDGE_LINUX_IORING_OP_SEND_ZC ||
            opcode == EDGE_LINUX_IORING_OP_RECV ||
            opcode == EDGE_LINUX_IORING_OP_OPENAT2 ||
            opcode == EDGE_LINUX_IORING_OP_EPOLL_CTL ||

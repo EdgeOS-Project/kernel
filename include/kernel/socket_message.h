@@ -150,6 +150,12 @@ int kernel_socket_message_import(
     void *copy_context, edge_linux_copy_from_user_fn copy_from_user,
     uint64_t user_header, kernel_socket_user_message_t *message);
 
+/* Import an iovec array as the payload of a headerless send request. */
+int kernel_socket_message_import_iovec(
+    void *copy_context, edge_linux_copy_from_user_fn copy_from_user,
+    uint64_t user_iovec, uint64_t vector_count,
+    kernel_socket_user_message_t *message);
+
 /*
  * Validates a Linux socket descriptor and imports one msghdr before entering
  * transport-specific mechanics.  This preserves Linux's EBADF/ENOTSOCK fault

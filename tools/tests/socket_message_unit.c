@@ -113,6 +113,62 @@ static int copy_from_user(void *context, void *destination,
     return 0;
 }
 
+static void test_message_iovec_import(void) {
+    const uint64_t header_address = TEST_USER_BASE;
+    const uint64_t vector_address = TEST_USER_BASE + 128u;
+    copy_mock_t mock;
+    kernel_socket_user_message_t message;
+    struct edge_linux_msghdr header;
+    struct edge_linux_iovec vectors[2];
+
+    copy_mock_initialize(&mock);
+    memset(&header, 0, sizeof(header));
+    vectors[0].iov_base = TEST_USER_BASE + 512u;
+    vectors[0].iov_len = 7u;
+    vectors[1].iov_base = TEST_USER_BASE + 768u;
+    vectors[1].iov_len = 11u;
+    header.msg_iov = vector_address;
+    header.msg_iovlen = 2u;
+    memcpy(mock.memory, &header, sizeof(header));
+    memcpy(mock.memory + 128u, vectors, sizeof(vectors));
+
+    assert(kernel_socket_message_import(
+               &mock, copy_from_user, header_address, &message) == 0);
+    assert(message.user_header == header_address);
+    assert(message.header.msg_iov == vector_address);
+    assert(message.header.msg_iovlen == 2u);
+    assert(message.payload_length == 18u);
+
+    memset(&message, TEST_SENTINEL, sizeof(message));
+    assert(kernel_socket_message_import_iovec(
+               &mock, copy_from_user, vector_address, 2u, &message) == 0);
+    assert(message.user_header == 0u);
+    assert(message.header.msg_iov == vector_address);
+    assert(message.header.msg_iovlen == 2u);
+    assert(message.payload_length == 18u);
+
+    assert(kernel_socket_message_import_iovec(
+               &mock, copy_from_user, 0u, 0u, &message) == 0);
+    assert(message.payload_length == 0u);
+    assert(kernel_socket_message_import_iovec(
+               &mock, copy_from_user, 0u, 1u, &message) ==
+           -EDGE_LINUX_EFAULT);
+    assert(kernel_socket_message_import_iovec(
+               &mock, copy_from_user, vector_address,
+               KERNEL_SOCKET_IOV_MAX + 1u, &message) ==
+           -EDGE_LINUX_EMSGSIZE);
+    assert(kernel_socket_message_import_iovec(
+               &mock, copy_from_user, UINT64_MAX - 8u, 1u,
+               &message) == -EDGE_LINUX_EFAULT);
+
+    vectors[0].iov_len = INT64_MAX;
+    vectors[1].iov_len = 1u;
+    memcpy(mock.memory + 128u, vectors, sizeof(vectors));
+    assert(kernel_socket_message_import_iovec(
+               &mock, copy_from_user, vector_address, 2u, &message) ==
+           -EDGE_LINUX_EINVAL);
+}
+
 static uint64_t control_length(uint32_t data_length) {
     return kernel_socket_control_align(
         sizeof(struct edge_linux_cmsghdr) + data_length);
@@ -1097,6 +1153,7 @@ void linux_timeval_from_microseconds(
 
 int main(void) {
     test_message_execute_entry();
+    test_message_iovec_import();
     test_rights_success();
     test_rights_linux_maximum();
     test_rights_capacity_truncation();
