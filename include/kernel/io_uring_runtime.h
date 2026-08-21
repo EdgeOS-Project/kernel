@@ -19,6 +19,8 @@
 #define KERNEL_IO_URING_MAX_PENDING 128u
 #define KERNEL_IO_URING_MAX_FIXED_FILES 256u
 #define KERNEL_IO_URING_MAX_FIXED_BUFFERS 256u
+#define KERNEL_IO_URING_MAX_PROVIDED_BUFFERS 256u
+#define KERNEL_IO_URING_MAX_BUFFER_GROUPS 256u
 #define KERNEL_IO_URING_MAX_WAIT_REGION_PAGES 64u
 #define KERNEL_IO_URING_REGISTERED_RINGS 16u
 #define KERNEL_IO_URING_REGISTERED_RING_ALLOC UINT32_MAX
@@ -48,6 +50,13 @@ typedef struct kernel_io_uring_fixed_file_reservation {
     uint8_t active;
     uint8_t reserved[3];
 } kernel_io_uring_fixed_file_reservation_t;
+
+typedef struct kernel_io_uring_selected_buffer {
+    uint64_t address;
+    uint32_t length;
+    uint16_t id;
+    uint16_t reserved;
+} kernel_io_uring_selected_buffer_t;
 
 int kernel_io_uring_page_allocator_register(
     const kernel_io_uring_page_allocator_t *allocator);
@@ -103,6 +112,14 @@ int kernel_io_uring_buffers_update(
 int kernel_io_uring_fixed_buffer_validate(
     int32_t ring_id, uint32_t index,
     uint64_t address, uint64_t length);
+int kernel_io_uring_provided_buffers_add(
+    int32_t ring_id, uint16_t group_id, uint16_t first_buffer_id,
+    uint64_t address, uint32_t length, uint32_t count);
+int kernel_io_uring_provided_buffers_remove(
+    int32_t ring_id, uint16_t group_id, uint32_t count);
+int kernel_io_uring_provided_buffer_select(
+    int32_t ring_id, uint16_t group_id, uint32_t requested_length,
+    kernel_io_uring_selected_buffer_t *selected);
 int kernel_io_uring_file_alloc_range_set(int32_t ring_id,
                                          uint32_t offset,
                                          uint32_t length);

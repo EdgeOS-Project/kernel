@@ -8083,6 +8083,8 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_OP_OPENAT2   28u
 #define EDGE_LINUX_IORING_OP_EPOLL_CTL 29u
 #define EDGE_LINUX_IORING_OP_SPLICE    30u
+#define EDGE_LINUX_IORING_OP_PROVIDE_BUFFERS 31u
+#define EDGE_LINUX_IORING_OP_REMOVE_BUFFERS 32u
 #define EDGE_LINUX_IORING_OP_TEE       33u
 #define EDGE_LINUX_IORING_OP_SHUTDOWN  34u
 #define EDGE_LINUX_IORING_OP_RENAMEAT  35u
@@ -8118,6 +8120,9 @@ static int64_t edge_linux_sys_aio(
      EDGE_LINUX_IOSQE_IO_LINK | EDGE_LINUX_IOSQE_IO_HARDLINK | \
      EDGE_LINUX_IOSQE_ASYNC | EDGE_LINUX_IOSQE_BUFFER_SELECT | \
      EDGE_LINUX_IOSQE_CQE_SKIP_SUCCESS)
+
+#define EDGE_LINUX_IORING_CQE_F_BUFFER (1u << 0)
+#define EDGE_LINUX_IORING_CQE_BUFFER_SHIFT 16u
 
 #define EDGE_LINUX_IORING_ENTER_GETEVENTS (1u << 0)
 #define EDGE_LINUX_IORING_ENTER_SQ_WAKEUP (1u << 1)
@@ -9162,16 +9167,122 @@ static int32_t edge_linux_io_uring_pipe(
     return result;
 }
 
-static int32_t edge_linux_io_uring_execute(
+static int32_t edge_linux_io_uring_manage_buffers(
         edge_linux_syscall_context_t *context,
         int32_t ring_id,
         const struct edge_linux_io_uring_sqe *submission) {
+    uint32_t count;
+
+    if (submission->flags & ~EDGE_LINUX_IOSQE_KNOWN)
+        return -EDGE_LINUX_EINVAL;
+    if (submission->flags & (EDGE_LINUX_IOSQE_FIXED_FILE |
+                             EDGE_LINUX_IOSQE_BUFFER_SELECT))
+        return -EDGE_LINUX_EOPNOTSUPP;
+    if (submission->ioprio || submission->personality ||
+        submission->splice_descriptor || submission->address3 ||
+        submission->reserved2 || submission->operation_flags)
+        return -EDGE_LINUX_EINVAL;
+    if (submission->descriptor <= 0 ||
+        (uint32_t)submission->descriptor > UINT16_MAX + 1u)
+        return -EDGE_LINUX_EINVAL;
+    count = (uint32_t)submission->descriptor;
+
+    if (submission->opcode == EDGE_LINUX_IORING_OP_REMOVE_BUFFERS) {
+        if (submission->offset || submission->address ||
+            submission->length)
+            return -EDGE_LINUX_EINVAL;
+        return kernel_io_uring_provided_buffers_remove(
+            ring_id, submission->buffer_index, count);
+    }
+    if (submission->opcode != EDGE_LINUX_IORING_OP_PROVIDE_BUFFERS)
+        return -EDGE_LINUX_EINVAL;
+    if (!submission->length) return -EDGE_LINUX_EINVAL;
+    if (submission->offset > UINT16_MAX)
+        return -EDGE_LINUX_E2BIG;
+    if (count > UINT16_MAX + 1u - (uint32_t)submission->offset)
+        return -EDGE_LINUX_EINVAL;
+    if ((uint64_t)count > UINT64_MAX / submission->length)
+        return -EDGE_LINUX_EOVERFLOW;
+    {
+        uint64_t total_length =
+            (uint64_t)count * submission->length;
+
+        if (submission->address > UINT64_MAX - total_length)
+            return -EDGE_LINUX_EOVERFLOW;
+        if (edge_linux_validate_user_range(
+                context, submission->address, total_length, 1) < 0)
+            return -EDGE_LINUX_EFAULT;
+    }
+    return kernel_io_uring_provided_buffers_add(
+        ring_id, submission->buffer_index,
+        (uint16_t)submission->offset, submission->address,
+        submission->length, count);
+}
+
+static int edge_linux_io_uring_select_buffer(
+        edge_linux_syscall_context_t *context,
+        int32_t ring_id,
+        const struct edge_linux_io_uring_sqe *submission,
+        struct edge_linux_io_uring_sqe *resolved,
+        uint32_t *completion_flags) {
+    kernel_io_uring_selected_buffer_t selected;
+    uint32_t requested_length = submission->length;
+    int result;
+
+    *resolved = *submission;
+    if (!(submission->flags & EDGE_LINUX_IOSQE_BUFFER_SELECT))
+        return 0;
+    if (submission->opcode != EDGE_LINUX_IORING_OP_READ &&
+        submission->opcode != EDGE_LINUX_IORING_OP_READV &&
+        submission->opcode != EDGE_LINUX_IORING_OP_RECV)
+        return -EDGE_LINUX_EOPNOTSUPP;
+    if (!kernel_fd_is_open(submission->descriptor))
+        return -EDGE_LINUX_EBADF;
+    if (submission->opcode == EDGE_LINUX_IORING_OP_READV) {
+        struct edge_linux_iovec vector;
+
+        if (submission->length != 1u) return -EDGE_LINUX_EINVAL;
+        if (edge_linux_copy_from_user(
+                context, &vector, submission->address,
+                sizeof(vector)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        requested_length = vector.iov_len > UINT32_MAX ?
+            UINT32_MAX : (uint32_t)vector.iov_len;
+    }
+    result = kernel_io_uring_provided_buffer_select(
+        ring_id, submission->buffer_index,
+        requested_length, &selected);
+    if (result < 0) return result;
+    resolved->flags &= ~EDGE_LINUX_IOSQE_BUFFER_SELECT;
+    resolved->address = selected.address;
+    resolved->length = selected.length;
+    resolved->buffer_index = 0u;
+    if (resolved->opcode == EDGE_LINUX_IORING_OP_READV)
+        resolved->opcode = EDGE_LINUX_IORING_OP_READ;
+    if (completion_flags)
+        *completion_flags = EDGE_LINUX_IORING_CQE_F_BUFFER |
+            ((uint32_t)selected.id <<
+             EDGE_LINUX_IORING_CQE_BUFFER_SHIFT);
+    return 0;
+}
+
+static int32_t edge_linux_io_uring_execute(
+        edge_linux_syscall_context_t *context,
+        int32_t ring_id,
+        const struct edge_linux_io_uring_sqe *submission,
+        uint32_t *completion_flags) {
     struct edge_linux_io_uring_sqe resolved;
     int32_t descriptor = -1;
     int32_t result;
 
+    if (completion_flags) *completion_flags = 0u;
+
     if (submission->opcode == EDGE_LINUX_IORING_OP_PIPE)
         return edge_linux_io_uring_pipe(
+            context, ring_id, submission);
+    if (submission->opcode == EDGE_LINUX_IORING_OP_PROVIDE_BUFFERS ||
+        submission->opcode == EDGE_LINUX_IORING_OP_REMOVE_BUFFERS)
+        return edge_linux_io_uring_manage_buffers(
             context, ring_id, submission);
     if (submission->opcode == EDGE_LINUX_IORING_OP_FIXED_FD_INSTALL) {
         uint32_t descriptor_flags;
@@ -9198,9 +9309,13 @@ static int32_t edge_linux_io_uring_execute(
             descriptor_flags, &descriptor);
         return result < 0 ? result : descriptor;
     }
-    if (!(submission->flags & EDGE_LINUX_IOSQE_FIXED_FILE))
+    if (!(submission->flags & EDGE_LINUX_IOSQE_FIXED_FILE)) {
+        result = edge_linux_io_uring_select_buffer(
+            context, ring_id, submission, &resolved, completion_flags);
+        if (result < 0) return result;
         return edge_linux_io_uring_execute_descriptor(
-            context, ring_id, submission);
+            context, ring_id, &resolved);
+    }
     if ((submission->flags & ~EDGE_LINUX_IOSQE_KNOWN) ||
         !edge_linux_io_uring_fixed_file_supported(submission->opcode))
         return -EDGE_LINUX_EINVAL;
@@ -9210,6 +9325,12 @@ static int32_t edge_linux_io_uring_execute(
     resolved = *submission;
     resolved.flags &= ~EDGE_LINUX_IOSQE_FIXED_FILE;
     resolved.descriptor = descriptor;
+    result = edge_linux_io_uring_select_buffer(
+        context, ring_id, &resolved, &resolved, completion_flags);
+    if (result < 0) {
+        (void)kernel_fd_close(descriptor);
+        return result;
+    }
     result = edge_linux_io_uring_execute_descriptor(
         context, ring_id, &resolved);
     (void)kernel_fd_close(descriptor);
@@ -9468,6 +9589,7 @@ static int64_t edge_linux_sys_io_uring_enter(
         int take_result = kernel_io_uring_take_submission(
             ring_id, &submission);
         int32_t operation_result;
+        uint32_t completion_flags = 0u;
         int linked;
         int hard_linked;
         if (take_result == -EDGE_LINUX_EAGAIN) break;
@@ -9481,12 +9603,14 @@ static int64_t edge_linux_sys_io_uring_enter(
             (submission.flags & EDGE_LINUX_IOSQE_IO_HARDLINK) != 0;
         operation_result = cancel_link ? -EDGE_LINUX_ECANCELED :
                            edge_linux_io_uring_execute(
-                               context, ring_id, &submission);
+                               context, ring_id, &submission,
+                               &completion_flags);
         if (operation_result != EDGE_LINUX_IORING_PENDING_RESULT &&
             (!(submission.flags & EDGE_LINUX_IOSQE_CQE_SKIP_SUCCESS) ||
              operation_result < 0))
             (void)kernel_io_uring_completion_add(
-                ring_id, submission.user_data, operation_result, 0);
+                ring_id, submission.user_data, operation_result,
+                completion_flags);
         if (operation_result == 0 &&
             ((submission.opcode == EDGE_LINUX_IORING_OP_POLL_REMOVE &&
               submission.length == 0u) ||
@@ -9596,6 +9720,8 @@ static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
            opcode == EDGE_LINUX_IORING_OP_OPENAT2 ||
            opcode == EDGE_LINUX_IORING_OP_EPOLL_CTL ||
            opcode == EDGE_LINUX_IORING_OP_SPLICE ||
+           opcode == EDGE_LINUX_IORING_OP_PROVIDE_BUFFERS ||
+           opcode == EDGE_LINUX_IORING_OP_REMOVE_BUFFERS ||
            opcode == EDGE_LINUX_IORING_OP_TEE ||
            opcode == EDGE_LINUX_IORING_OP_SHUTDOWN ||
            opcode == EDGE_LINUX_IORING_OP_RENAMEAT ||

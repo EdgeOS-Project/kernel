@@ -54,6 +54,8 @@ EDGEOS_ASSESSMENTS = [
             "bounded fixed-buffer registration, sparse entries, updates, tags and range validation",
             "READ_FIXED and WRITE_FIXED through shared synchronous descriptor I/O",
             "READV_FIXED and WRITEV_FIXED with registered-buffer range validation",
+            "bounded legacy provided-buffer groups with FIFO selection for READ, READV and RECV",
+            "PROVIDE_BUFFERS and REMOVE_BUFFERS with Linux buffer IDs and CQE flags",
             "per-task registered-ring descriptors for enter and register operations",
             "timeout removal and update with retained clock selection",
             "per-ring monotonic or boottime enter clocks",
@@ -77,6 +79,7 @@ EDGEOS_ASSESSMENTS = [
         "runtime_tests": [
             "tools/tests/io_uring_abi_probe.c",
             "tools/tests/io_uring_fixed_files_abi_probe.c",
+            "tools/tests/io_uring_provided_buffers_abi_probe.c",
             "tools/tests/io_uring_registered_rings_abi_probe.c",
             "tools/tests/io_uring_timeout_update_abi_probe.c",
             "tools/tests/io_uring_poll_multishot_abi_probe.c",
@@ -111,7 +114,9 @@ EDGEOS_ASSESSMENTS = [
                 "source-table removal, plus legacy and extended fixed-buffer "
                 "registration, tagged updates, range errors and real pipe data "
                 "through READ_FIXED and WRITE_FIXED, plus frozen-source "
-                "READV_FIXED and WRITEV_FIXED layouts with EdgeOS runtime data"
+                "READV_FIXED and WRITEV_FIXED layouts with EdgeOS runtime data, "
+                "plus legacy provided-buffer add, remove, empty-group, READ and "
+                "single-iovec READV selection behavior with returned buffer IDs"
             ),
         },
     },

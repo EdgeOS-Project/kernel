@@ -84,6 +84,22 @@ typedef struct kernel_io_uring_fixed_buffer {
     uint64_t tag;
 } kernel_io_uring_fixed_buffer_t;
 
+typedef struct kernel_io_uring_provided_buffer {
+    uint64_t address;
+    uint64_t sequence;
+    uint32_t length;
+    uint16_t group_id;
+    uint16_t buffer_id;
+    uint8_t used;
+    uint8_t reserved[7];
+} kernel_io_uring_provided_buffer_t;
+
+typedef struct kernel_io_uring_buffer_group {
+    uint16_t id;
+    uint8_t used;
+    uint8_t reserved;
+} kernel_io_uring_buffer_group_t;
+
 typedef struct kernel_io_uring {
     uint8_t used;
     uint8_t disabled;
@@ -122,6 +138,11 @@ typedef struct kernel_io_uring {
     kernel_io_uring_fixed_buffer_t
         fixed_buffers[KERNEL_IO_URING_MAX_FIXED_BUFFERS];
     uint32_t fixed_buffer_count;
+    kernel_io_uring_provided_buffer_t
+        provided_buffers[KERNEL_IO_URING_MAX_PROVIDED_BUFFERS];
+    kernel_io_uring_buffer_group_t
+        buffer_groups[KERNEL_IO_URING_MAX_BUFFER_GROUPS];
+    uint64_t next_provided_buffer_sequence;
     uint32_t clock_id;
     kernel_io_uring_pending_t pending[KERNEL_IO_URING_MAX_PENDING];
     struct edge_linux_io_uring_cqe
@@ -1187,6 +1208,157 @@ int kernel_io_uring_fixed_buffer_validate(
         limit = buffer->address + buffer->length;
         result = !buffer->address || address < buffer->address ||
                  end > limit ? -EDGE_LINUX_EFAULT : 0;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+static kernel_io_uring_buffer_group_t *io_uring_buffer_group_locked(
+        kernel_io_uring_t *ring, uint16_t group_id, int create) {
+    kernel_io_uring_buffer_group_t *available = 0;
+
+    for (uint32_t index = 0;
+         index < KERNEL_IO_URING_MAX_BUFFER_GROUPS; ++index) {
+        kernel_io_uring_buffer_group_t *group =
+            &ring->buffer_groups[index];
+
+        if (group->used && group->id == group_id) return group;
+        if (!group->used && !available) available = group;
+    }
+    if (!create || !available) return 0;
+    available->id = group_id;
+    available->used = 1u;
+    return available;
+}
+
+static kernel_io_uring_provided_buffer_t *
+io_uring_oldest_provided_buffer_locked(
+        kernel_io_uring_t *ring, uint16_t group_id) {
+    kernel_io_uring_provided_buffer_t *oldest = 0;
+
+    for (uint32_t index = 0;
+         index < KERNEL_IO_URING_MAX_PROVIDED_BUFFERS; ++index) {
+        kernel_io_uring_provided_buffer_t *buffer =
+            &ring->provided_buffers[index];
+
+        if (!buffer->used || buffer->group_id != group_id)
+            continue;
+        if (!oldest || buffer->sequence < oldest->sequence)
+            oldest = buffer;
+    }
+    return oldest;
+}
+
+int kernel_io_uring_provided_buffers_add(
+        int32_t ring_id, uint16_t group_id, uint16_t first_buffer_id,
+        uint64_t address, uint32_t length, uint32_t count) {
+    kernel_io_uring_t *ring;
+    uint64_t total_length;
+    uint64_t flags;
+    uint32_t added = 0u;
+    int result = 0;
+
+    if (!length || !count || count > UINT16_MAX + 1u)
+        return -EDGE_LINUX_EINVAL;
+    if (count > UINT16_MAX + 1u - (uint32_t)first_buffer_id)
+        return -EDGE_LINUX_EINVAL;
+    if ((uint64_t)count > UINT64_MAX / length)
+        return -EDGE_LINUX_EOVERFLOW;
+    total_length = (uint64_t)count * length;
+    if (address > UINT64_MAX - total_length)
+        return -EDGE_LINUX_EOVERFLOW;
+
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+        goto unlock;
+    }
+    if (!io_uring_buffer_group_locked(ring, group_id, 1)) {
+        result = -EDGE_LINUX_ENOMEM;
+        goto unlock;
+    }
+    for (uint32_t index = 0;
+         index < KERNEL_IO_URING_MAX_PROVIDED_BUFFERS && added < count;
+         ++index) {
+        kernel_io_uring_provided_buffer_t *buffer =
+            &ring->provided_buffers[index];
+
+        if (buffer->used) continue;
+        buffer->address = address + (uint64_t)added * length;
+        buffer->length = length;
+        buffer->group_id = group_id;
+        buffer->buffer_id = (uint16_t)(first_buffer_id + added);
+        buffer->sequence = ++ring->next_provided_buffer_sequence;
+        buffer->used = 1u;
+        ++added;
+    }
+    if (!added) result = -EDGE_LINUX_ENOMEM;
+
+unlock:
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_provided_buffers_remove(
+        int32_t ring_id, uint16_t group_id, uint32_t count) {
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    uint32_t removed = 0u;
+    int result;
+
+    if (!count || count > UINT16_MAX + 1u)
+        return -EDGE_LINUX_EINVAL;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+    } else if (!io_uring_buffer_group_locked(ring, group_id, 0)) {
+        result = -EDGE_LINUX_ENOENT;
+    } else {
+        while (removed < count) {
+            kernel_io_uring_provided_buffer_t *buffer =
+                io_uring_oldest_provided_buffer_locked(ring, group_id);
+
+            if (!buffer) break;
+            memset(buffer, 0, sizeof(*buffer));
+            ++removed;
+        }
+        result = (int)removed;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_provided_buffer_select(
+        int32_t ring_id, uint16_t group_id, uint32_t requested_length,
+        kernel_io_uring_selected_buffer_t *selected) {
+    kernel_io_uring_provided_buffer_t *buffer;
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    int result;
+
+    if (!selected) return -EDGE_LINUX_EINVAL;
+    memset(selected, 0, sizeof(*selected));
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+    } else if (!io_uring_buffer_group_locked(ring, group_id, 0)) {
+        result = -EDGE_LINUX_ENOBUFS;
+    } else {
+        buffer = io_uring_oldest_provided_buffer_locked(ring, group_id);
+        if (!buffer) {
+            result = -EDGE_LINUX_ENOBUFS;
+        } else {
+            selected->address = buffer->address;
+            selected->length = !requested_length ||
+                               requested_length > buffer->length ?
+                               buffer->length : requested_length;
+            selected->id = buffer->buffer_id;
+            memset(buffer, 0, sizeof(*buffer));
+            result = 0;
+        }
     }
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     return result;

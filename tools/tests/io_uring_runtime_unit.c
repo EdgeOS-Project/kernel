@@ -733,6 +733,41 @@ int main(void) {
         kernel_io_uring_release(second_ring_id);
     }
     {
+        struct edge_linux_io_uring_params provided_parameters = {0};
+        kernel_io_uring_selected_buffer_t selected;
+
+        assert(kernel_io_uring_create(
+                   4u, &provided_parameters, &second_ring_id) == 0);
+        assert(kernel_io_uring_provided_buffers_remove(
+                   second_ring_id, 7u, 1u) == -EDGE_LINUX_ENOENT);
+        assert(kernel_io_uring_provided_buffers_add(
+                   second_ring_id, 7u, 40u,
+                   0x1000u, 0x100u, 3u) == 0);
+        assert(kernel_io_uring_provided_buffer_select(
+                   second_ring_id, 7u, 0u, &selected) == 0);
+        assert(selected.address == 0x1000u &&
+               selected.length == 0x100u && selected.id == 40u);
+        assert(kernel_io_uring_provided_buffer_select(
+                   second_ring_id, 7u, 0x40u, &selected) == 0);
+        assert(selected.address == 0x1100u &&
+               selected.length == 0x40u && selected.id == 41u);
+        assert(kernel_io_uring_provided_buffers_remove(
+                   second_ring_id, 7u, 8u) == 1);
+        assert(kernel_io_uring_provided_buffers_remove(
+                   second_ring_id, 7u, 8u) == 0);
+        assert(kernel_io_uring_provided_buffer_select(
+                   second_ring_id, 7u, 1u, &selected) ==
+               -EDGE_LINUX_ENOBUFS);
+        assert(kernel_io_uring_provided_buffers_add(
+                   second_ring_id, 8u, UINT16_MAX,
+                   0x2000u, 0x20u, 2u) == -EDGE_LINUX_EINVAL);
+        assert(kernel_io_uring_provided_buffers_add(
+                   second_ring_id, 8u, 4u,
+                   UINT64_MAX - 0x10u, 0x20u, 1u) ==
+               -EDGE_LINUX_EOVERFLOW);
+        kernel_io_uring_release(second_ring_id);
+    }
+    {
         struct edge_linux_io_uring_params overflow_parameters = {0};
         kernel_io_uring_page_t overflow_cq;
         kernel_io_uring_page_t overflow_sq;
