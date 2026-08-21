@@ -18,7 +18,10 @@ typedef struct publication_mock {
     uint32_t expected_count;
     uint32_t publish_calls;
     uint32_t abort_calls;
+    uint32_t acquire_calls;
     int publish_result;
+    int acquire_result;
+    struct fd_backend_mock *backend;
 } publication_mock_t;
 
 typedef struct fd_operation_mock_snapshot {
@@ -723,6 +726,28 @@ static void mock_abort(void *opaque, const int32_t *descriptors,
     ++mock->abort_calls;
 }
 
+static int mock_publication_acquire(
+        void *opaque, int32_t descriptor, void *storage) {
+    publication_mock_t *mock = (publication_mock_t *)opaque;
+    fd_operation_mock_snapshot_t *snapshot =
+        (fd_operation_mock_snapshot_t *)storage;
+    fd_backend_mock_t *backend;
+
+    assert(mock);
+    assert(storage);
+    assert(mock->backend);
+    backend = mock->backend;
+    ++mock->acquire_calls;
+    backend->operation_descriptor = descriptor;
+    backend->operation_storage = storage;
+    snapshot->marker = FD_OPERATION_MOCK_MARKER;
+    snapshot->object_generation = backend->operation_generation;
+    snapshot->descriptor = descriptor;
+    if (!mock->acquire_result)
+        ++backend->operation_references;
+    return mock->acquire_result;
+}
+
 static void initialize_mock(publication_mock_t *mock,
                             const int32_t *descriptors,
                             uint32_t count, int publish_result) {
@@ -742,6 +767,7 @@ static void require_cleared(
     assert(!publication->context);
     assert(!publication->publish);
     assert(!publication->abort);
+    assert(!publication->acquire);
     assert(!publication->count);
     assert(!publication->active);
 }
@@ -1295,6 +1321,56 @@ static void test_operation_lease(void) {
     assert(kernel_fd_operation_release(&lease) == 0);
     assert(first.operation_release_calls == 3);
     assert(!kernel_fd_operation_view(&lease));
+}
+
+static void test_publication_acquire(void) {
+    int32_t descriptors[] = { 23, 29 };
+    kernel_fd_publication_t publication = {0};
+    kernel_fd_operation_lease_t lease = {0};
+    publication_mock_t publication_mock;
+    fd_backend_mock_t backend;
+    const fd_operation_mock_snapshot_t *snapshot;
+
+    memset(&backend, 0, sizeof(backend));
+    backend.allocation_limit = 64;
+    backend.operation_generation = 71;
+    backend.operation_lease = &lease;
+    initialize_mock(&publication_mock, descriptors, 2, 0);
+    publication_mock.backend = &backend;
+    assert(kernel_fd_backend_register(
+               &g_backend_ops, &backend) == 0);
+    assert(kernel_fd_operation_acquire_from_publication(
+               0, 0, &lease) == -EDGE_LINUX_EINVAL);
+    assert(kernel_fd_publication_initialize(
+               &publication, descriptors, 2, &publication_mock,
+               mock_publish, mock_abort) == 0);
+    assert(kernel_fd_operation_acquire_from_publication(
+               &publication, 0, &lease) == -EDGE_LINUX_EINVAL);
+    assert(kernel_fd_publication_set_acquire(
+               &publication, mock_publication_acquire) == 0);
+    assert(kernel_fd_operation_acquire_from_publication(
+               &publication, 2, &lease) == -EDGE_LINUX_EINVAL);
+    assert(kernel_fd_operation_acquire_from_publication(
+               &publication, 1, &lease) == 0);
+    assert(publication_mock.acquire_calls == 1);
+    assert(backend.operation_acquire_calls == 0);
+    snapshot = (const fd_operation_mock_snapshot_t *)
+        kernel_fd_operation_view(&lease);
+    assert(snapshot);
+    assert(snapshot->descriptor == 29);
+    assert(snapshot->object_generation == 71);
+    assert(kernel_fd_operation_release(&lease) == 0);
+    assert(backend.operation_release_calls == 1);
+    assert(backend.operation_references == 0);
+
+    publication_mock.acquire_result = -EDGE_LINUX_EIO;
+    assert(kernel_fd_operation_acquire_from_publication(
+               &publication, 0, &lease) == -EDGE_LINUX_EIO);
+    assert(publication_mock.acquire_calls == 2);
+    assert(!kernel_fd_operation_view(&lease));
+    assert(kernel_fd_publication_abort(&publication) == 0);
+    assert(publication_mock.abort_calls == 1);
+    require_cleared(&publication);
 }
 
 static void test_socket_operation_validation_and_support(void) {
@@ -2394,6 +2470,7 @@ int main(void) {
     test_pid_routed_descriptor_policy();
     test_file_range_policy();
     test_operation_lease();
+    test_publication_acquire();
     test_socket_operation_validation_and_support();
     test_socket_operation_all_opcodes();
     test_socket_descriptor_wrappers();

@@ -25,6 +25,8 @@ typedef int (*kernel_fd_publication_publish_fn)(
     void *context, const int32_t *descriptors, uint32_t count);
 typedef void (*kernel_fd_publication_abort_fn)(
     void *context, const int32_t *descriptors, uint32_t count);
+typedef int (*kernel_fd_publication_acquire_fn)(
+    void *context, int32_t descriptor, void *storage);
 
 /*
  * Descriptor-producing syscalls may need to copy descriptor numbers or an
@@ -41,12 +43,19 @@ typedef void (*kernel_fd_publication_abort_fn)(
  * The token must be zero-initialized before its first initialization. The
  * descriptor array and callback context remain owned by the caller and must
  * stay alive until commit or abort returns.
+ *
+ * A producer may also attach an acquire callback after initialization. It
+ * creates a retained operation lease from a fully constructed RESERVED entry
+ * without publishing the numeric descriptor. This is used by consumers such
+ * as io_uring direct descriptors that take ownership before abort removes the
+ * temporary table entries.
  */
 struct kernel_fd_publication {
     const int32_t *descriptors;
     void *context;
     kernel_fd_publication_publish_fn publish;
     kernel_fd_publication_abort_fn abort;
+    kernel_fd_publication_acquire_fn acquire;
     uint32_t count;
     uint8_t active;
     uint8_t reserved[3];
@@ -67,6 +76,9 @@ int kernel_fd_publication_commit(
     kernel_fd_publication_t *publication);
 int kernel_fd_publication_abort(
     kernel_fd_publication_t *publication);
+int kernel_fd_publication_set_acquire(
+    kernel_fd_publication_t *publication,
+    kernel_fd_publication_acquire_fn acquire);
 
 #define KERNEL_FD_OPERATION_LEASE_STORAGE_SIZE 512u
 #define KERNEL_FD_OPERATION_LEASE_STORAGE_ALIGNMENT 16u
@@ -141,6 +153,9 @@ int kernel_fd_operation_acquire_for_owner(
 int kernel_fd_operation_acquire_for_pid(
     int32_t pid, int32_t descriptor,
     kernel_fd_operation_lease_t *lease);
+int kernel_fd_operation_acquire_from_publication(
+    const kernel_fd_publication_t *publication,
+    uint32_t index, kernel_fd_operation_lease_t *lease);
 /* The returned snapshot view remains valid only until release begins. */
 const void *kernel_fd_operation_view(
     const kernel_fd_operation_lease_t *lease);

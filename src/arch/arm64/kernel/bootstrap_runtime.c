@@ -9647,6 +9647,42 @@ static void arm64_fd_publication_abort(
     }
 }
 
+static int arm64_fd_publication_acquire(
+        void *context, int32_t descriptor, void *storage) {
+    arm64_fd_table_t *table = (arm64_fd_table_t *)context;
+    bootstrap_fd_t *snapshot = (bootstrap_fd_t *)storage;
+    uint64_t irq_flags;
+    int retained = 0;
+    int result = 0;
+
+    if (!table || !snapshot || descriptor < 0 ||
+        (uint32_t)descriptor >= KERNEL_BOOTSTRAP_FD_MAX)
+        return -LINUX_EBADF;
+    bytes_zero(snapshot, sizeof(*snapshot));
+    irq_flags = kernel_fd_table_lock(&table->runtime);
+    if (kernel_fd_table_state_locked(
+            &table->runtime, (uint32_t)descriptor) !=
+            KERNEL_FD_SLOT_RESERVED ||
+        table->entries[descriptor].used ||
+        !table->entries[descriptor].open_description_id) {
+        result = -LINUX_EBADF;
+    } else {
+        *snapshot = table->entries[descriptor];
+        snapshot->used = 1;
+        result = fd_retain(snapshot);
+        retained = result == 0;
+    }
+    kernel_fd_table_unlock(&table->runtime, irq_flags);
+    if (result == 0)
+        result = fd_description_refresh_status(snapshot);
+    if (result < 0) {
+        if (retained)
+            fd_drop_reference(snapshot);
+        bytes_zero(snapshot, sizeof(*snapshot));
+    }
+    return result;
+}
+
 static int arm64_fd_publication_initialize(
     kernel_task_t *owner, const int32_t *descriptors, uint32_t count,
     kernel_fd_publication_t *publication) {
@@ -9660,6 +9696,9 @@ static int arm64_fd_publication_initialize(
     result = kernel_fd_publication_initialize(
         publication, descriptors, count, table,
         arm64_fd_publication_publish, arm64_fd_publication_abort);
+    if (result == 0)
+        result = kernel_fd_publication_set_acquire(
+            publication, arm64_fd_publication_acquire);
     if (result < 0)
         arm64_fd_publication_abort(
             table, descriptors, count);

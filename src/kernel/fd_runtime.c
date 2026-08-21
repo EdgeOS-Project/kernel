@@ -78,6 +78,8 @@ static void fd_operation_lease_clear(
 
 static int fd_operation_acquire_internal(
         const void *owner, int32_t pid, int acquire_for_pid,
+        kernel_fd_operation_acquire_fn publication_acquire,
+        void *publication_context,
         int32_t descriptor,
         kernel_fd_operation_lease_t *lease) {
     fd_operation_lease_internal_t *internal;
@@ -104,6 +106,10 @@ static int fd_operation_acquire_internal(
                (uint32_t)descriptor >=
                    ops->table_limit(context)) {
         result = -EDGE_LINUX_EBADF;
+    } else if (publication_acquire) {
+        result = publication_acquire(
+            publication_context, descriptor,
+            internal->backend_storage.bytes);
     } else if (owner) {
         result = ops->operation_acquire_for_owner ?
             ops->operation_acquire_for_owner(
@@ -149,21 +155,33 @@ int kernel_fd_operation_acquire(
         int32_t descriptor,
         kernel_fd_operation_lease_t *lease) {
     return fd_operation_acquire_internal(
-        0, 0, 0, descriptor, lease);
+        0, 0, 0, 0, 0, descriptor, lease);
 }
 
 int kernel_fd_operation_acquire_for_owner(
         const void *owner, int32_t descriptor,
         kernel_fd_operation_lease_t *lease) {
     return fd_operation_acquire_internal(
-        owner, 0, 0, descriptor, lease);
+        owner, 0, 0, 0, 0, descriptor, lease);
 }
 
 int kernel_fd_operation_acquire_for_pid(
         int32_t pid, int32_t descriptor,
         kernel_fd_operation_lease_t *lease) {
     return fd_operation_acquire_internal(
-        0, pid, 1, descriptor, lease);
+        0, pid, 1, 0, 0, descriptor, lease);
+}
+
+int kernel_fd_operation_acquire_from_publication(
+        const kernel_fd_publication_t *publication,
+        uint32_t index, kernel_fd_operation_lease_t *lease) {
+    if (!publication || !publication->active ||
+        !publication->descriptors || !publication->acquire ||
+        index >= publication->count)
+        return -EDGE_LINUX_EINVAL;
+    return fd_operation_acquire_internal(
+        0, 0, 0, publication->acquire,
+        publication->context, publication->descriptors[index], lease);
 }
 
 const void *kernel_fd_operation_view(
@@ -1033,6 +1051,7 @@ static void fd_publication_clear(
     publication->context = 0;
     publication->publish = 0;
     publication->abort = 0;
+    publication->acquire = 0;
     publication->count = 0;
     publication->active = 0;
     publication->reserved[0] = 0;
@@ -1094,6 +1113,15 @@ int kernel_fd_publication_commit(
         abort(context, descriptors, count);
     fd_publication_clear(publication);
     return result;
+}
+
+int kernel_fd_publication_set_acquire(
+        kernel_fd_publication_t *publication,
+        kernel_fd_publication_acquire_fn acquire) {
+    if (!publication || !publication->active || !acquire)
+        return -EDGE_LINUX_EINVAL;
+    publication->acquire = acquire;
+    return 0;
 }
 
 int kernel_fd_publication_abort(

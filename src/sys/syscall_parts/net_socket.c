@@ -1017,6 +1017,40 @@ static void x86_fd_publication_abort(
     }
 }
 
+static int x86_fd_publication_acquire(
+        void *context, int32_t descriptor, void *storage) {
+    edge_fd_proc_t *process = (edge_fd_proc_t *)context;
+    edge_fd_t *snapshot = (edge_fd_t *)storage;
+    uint64_t irq_flags;
+    int result = 0;
+
+    if (!process || !snapshot || descriptor < 0 ||
+        descriptor >= EDGE_MAX_FD)
+        return -EBADF;
+    memset(snapshot, 0, sizeof(*snapshot));
+    irq_flags = kernel_fd_table_lock(&process->table_runtime);
+    if (kernel_fd_table_state_locked(
+            &process->table_runtime, (uint32_t)descriptor) !=
+            KERNEL_FD_SLOT_RESERVED ||
+        __atomic_load_n(
+            &process->fds[descriptor].used, __ATOMIC_ACQUIRE) ||
+        process->fds[descriptor].file_ref <= 0) {
+        result = -EBADF;
+    } else {
+        *snapshot = process->fds[descriptor];
+        snapshot->used = 1;
+        if (file_ref_get(snapshot->file_ref) < 0) {
+            result = -ENOMEM;
+        } else if (fd_add_backing_object(snapshot) < 0) {
+            (void)file_ref_put(snapshot->file_ref);
+            result = -EBADF;
+        }
+    }
+    kernel_fd_table_unlock(&process->table_runtime, irq_flags);
+    if (result < 0) memset(snapshot, 0, sizeof(*snapshot));
+    return result;
+}
+
 static int x86_fd_publication_initialize(
     edge_fd_proc_t *process, const int32_t *descriptors, uint32_t count,
     kernel_fd_publication_t *publication) {
@@ -1024,6 +1058,9 @@ static int x86_fd_publication_initialize(
         publication, descriptors, count, process,
         x86_fd_publication_publish, x86_fd_publication_abort);
 
+    if (result == 0)
+        result = kernel_fd_publication_set_acquire(
+            publication, x86_fd_publication_acquire);
     if (result < 0)
         x86_fd_publication_abort(process, descriptors, count);
     return result;
