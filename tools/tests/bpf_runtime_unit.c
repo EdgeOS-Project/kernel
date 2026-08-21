@@ -484,8 +484,13 @@ static void test_map_in_map(void) {
         .max_entries = 2u,
     };
     uint32_t key = 0u;
+    uint32_t second_key = 1u;
     uint32_t inner_id = 0u;
+    uint32_t replacement_id = 0u;
     uint32_t output_id = 0u;
+    uint32_t cursor = 0u;
+    uint32_t output_key = UINT32_MAX;
+    int has_more = 0;
     uint64_t value = 11u;
     int inner = create_map(
         KERNEL_BPF_MAP_TYPE_ARRAY, sizeof(key), sizeof(value), 2u,
@@ -517,10 +522,23 @@ static void test_map_in_map(void) {
            -EDGE_LINUX_EINVAL);
     assert(kernel_bpf_map_update(
                outer, &key, &replacement, KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_object_user_id(replacement, &replacement_id) == 0);
+    assert(kernel_bpf_map_update(
+               outer, &second_key, &replacement, KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_batch_next(
+               outer, &cursor, &output_key, &output_id, 0,
+               &has_more) == 0);
+    assert(output_key == key && output_id == replacement_id && has_more);
     assert(kernel_bpf_map_info(inner, &(kernel_bpf_map_info_t){0}) ==
            -EDGE_LINUX_EBADF);
     assert(kernel_bpf_map_delete(outer, &key) == 0);
     assert(kernel_bpf_map_delete(outer, &key) == -EDGE_LINUX_ENOENT);
+    cursor = 0u;
+    assert(kernel_bpf_map_batch_next(
+               outer, &cursor, &output_key, &output_id, 0,
+               &has_more) == 0);
+    assert(output_key == second_key && output_id == replacement_id &&
+           !has_more);
     kernel_bpf_object_release(outer);
 
     outer_request.type = KERNEL_BPF_MAP_TYPE_HASH_OF_MAPS;
@@ -533,8 +551,11 @@ static void test_map_in_map(void) {
     assert(kernel_bpf_map_update(
                hash_outer, &key, &replacement, KERNEL_BPF_NOEXIST) ==
            -EDGE_LINUX_EEXIST);
-    assert(kernel_bpf_map_lookup_and_delete(
-               hash_outer, &key, &output_id) == 0);
+    cursor = 0u;
+    assert(kernel_bpf_map_batch_next(
+               hash_outer, &cursor, &output_key, &output_id, 1,
+               &has_more) == 0);
+    assert(output_key == key && output_id == replacement_id && !has_more);
     assert(kernel_bpf_map_lookup(hash_outer, &key, &output_id) ==
            -EDGE_LINUX_ENOENT);
     kernel_bpf_object_release(hash_outer);

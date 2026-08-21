@@ -1544,6 +1544,7 @@ int kernel_bpf_map_batch_next_flags(int object_id, uint32_t *cursor,
     kernel_bpf_object_t *object;
     kernel_bpf_map_t *map;
     uint32_t index;
+    int32_t released_inner = -1;
     int status = 0;
 
     if (!cursor || !key || !value || !has_more)
@@ -1574,12 +1575,29 @@ int kernel_bpf_map_batch_next_flags(int object_id, uint32_t *cursor,
     }
     index = *cursor;
     if (bpf_map_is_array(map)) {
+        if (bpf_map_is_map_in_map(map)) {
+            int32_t inner = -1;
+
+            while (index < map->max_entries) {
+                memcpy(&inner, bpf_map_value(map, index), sizeof(inner));
+                if (inner >= 0) break;
+                ++index;
+            }
+        }
         if (index >= map->max_entries) {
             status = -EDGE_LINUX_ENOENT;
             goto out;
         }
         memcpy(key, &index, sizeof(index));
-        bpf_map_copy_value_out(map, index, value, flags);
+        if (bpf_map_is_map_in_map(map)) {
+            int32_t inner;
+            memcpy(&inner, bpf_map_value(map, index), sizeof(inner));
+            status = bpf_map_inner_user_id_locked(
+                inner, (uint32_t *)value);
+            if (status < 0) goto out;
+        } else {
+            bpf_map_copy_value_out(map, index, value, flags);
+        }
     } else {
         while (index < map->max_entries && !bpf_map_entry(map, index)[0])
             ++index;
@@ -1588,7 +1606,16 @@ int kernel_bpf_map_batch_next_flags(int object_id, uint32_t *cursor,
             goto out;
         }
         memcpy(key, bpf_map_entry(map, index) + 1u, map->key_size);
-        bpf_map_copy_value_out(map, index, value, flags);
+        if (bpf_map_is_map_in_map(map)) {
+            int32_t inner;
+            memcpy(&inner, bpf_map_value(map, index), sizeof(inner));
+            status = bpf_map_inner_user_id_locked(
+                inner, (uint32_t *)value);
+            if (status < 0) goto out;
+            if (delete_element) released_inner = inner;
+        } else {
+            bpf_map_copy_value_out(map, index, value, flags);
+        }
         if (!delete_element && !bpf_map_is_percpu(map))
             bpf_map_lru_touch(map, index);
         if (delete_element) {
@@ -1599,7 +1626,16 @@ int kernel_bpf_map_batch_next_flags(int object_id, uint32_t *cursor,
     *cursor = index + 1u;
     *has_more = 0;
     if (bpf_map_is_array(map)) {
-        *has_more = *cursor < map->max_entries;
+        index = *cursor;
+        if (bpf_map_is_map_in_map(map)) {
+            while (index < map->max_entries) {
+                int32_t inner;
+                memcpy(&inner, bpf_map_value(map, index), sizeof(inner));
+                if (inner >= 0) break;
+                ++index;
+            }
+        }
+        *has_more = index < map->max_entries;
     } else {
         index = *cursor;
         while (index < map->max_entries && !bpf_map_entry(map, index)[0])
@@ -1608,6 +1644,8 @@ int kernel_bpf_map_batch_next_flags(int object_id, uint32_t *cursor,
     }
 out:
     bpf_unlock();
+    if (released_inner >= 0)
+        kernel_bpf_object_release(released_inner);
     return status;
 }
 

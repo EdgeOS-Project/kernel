@@ -4492,9 +4492,6 @@ static int64_t edge_linux_bpf_map_batch(
     if (object_id < 0) return object_id;
     status = kernel_bpf_map_info(object_id, &info);
     if (status < 0) return status;
-    if (info.type == KERNEL_BPF_MAP_TYPE_ARRAY_OF_MAPS ||
-        info.type == KERNEL_BPF_MAP_TYPE_HASH_OF_MAPS)
-        return -EDGE_LINUX_ENOTSUPP;
     if (!info.key_size) return -EDGE_LINUX_ENOTSUPP;
     status = kernel_bpf_map_value_buffer_size(
         object_id, attribute.element_flags, &value_size);
@@ -4569,6 +4566,21 @@ static int64_t edge_linux_bpf_map_batch(
                         value_size) < 0) {
                     status = -EDGE_LINUX_EFAULT;
                     break;
+                }
+                if (info.type == KERNEL_BPF_MAP_TYPE_ARRAY_OF_MAPS ||
+                    info.type == KERNEL_BPF_MAP_TYPE_HASH_OF_MAPS) {
+                    int32_t inner_descriptor;
+                    int32_t inner_object;
+
+                    memcpy(&inner_descriptor, value,
+                           sizeof(inner_descriptor));
+                    inner_object = kernel_bpf_descriptor_object(
+                        inner_descriptor, KERNEL_BPF_OBJECT_MAP);
+                    if (inner_object < 0) {
+                        status = inner_object;
+                        break;
+                    }
+                    memcpy(value, &inner_object, sizeof(inner_object));
                 }
                 status = kernel_bpf_map_update(
                     object_id, key, value, attribute.element_flags);

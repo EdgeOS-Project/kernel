@@ -164,7 +164,7 @@ EDGEOS_ASSESSMENTS = [
             "per-CPU array and hash maps with possible-CPU value layouts, padded value slots and explicit CPU access modes",
             "per-CPU LRU hash maps with shared eviction order and possible-CPU values",
             "no-common-LRU maps with rounded capacity and independent per-CPU eviction domains",
-            "array-of-maps and hash-of-maps creation, template validation, element operations and referenced-map lifetime",
+            "array-of-maps and hash-of-maps creation, template validation, element and batch operations and referenced-map lifetime",
             "map and program ID enumeration and descriptor reopening",
             "map information queries",
             "program information, translated instruction and SHA-256 tag queries",
@@ -173,7 +173,7 @@ EDGEOS_ASSESSMENTS = [
             "hierarchical cgroup-device checks for device open and creation",
         ],
         "missing": [
-            "map-in-map batch operations, ring buffers and remaining map types",
+            "ring buffers and remaining map types",
             "remaining specialized map families and their concurrency semantics",
             "additional attachment families and program types",
             "complete allow-override, multi-position and link semantics",
@@ -191,7 +191,7 @@ EDGEOS_ASSESSMENTS = [
                 "array and hash maps, map element operations, object IDs, "
                 "LRU hash creation, access-order eviction, element operations, "
                 "queue and stack creation, push, peek, pop and replacement, "
-                "per-CPU array, hash and LRU hash layouts, CPU selection, all-CPU updates, no-common-LRU eviction domains and map-in-map element operations, "
+                "per-CPU array, hash and LRU hash layouts, CPU selection, all-CPU updates, no-common-LRU eviction domains and map-in-map element and batch operations, "
                 "descriptor reopening, map and program information, "
                 "translated instructions, SHA-256 tags and cgroup-device "
                 "program loading, attachment, detachment and query behavior"

@@ -882,6 +882,12 @@ static int test_map_in_map(void) {
     union bpf_attr attribute;
     struct bpf_map_info info;
     uint32_t key = 0u;
+    uint32_t keys[2] = { 0u, 1u };
+    uint32_t descriptors[2];
+    uint32_t output_keys[2] = { UINT32_MAX, UINT32_MAX };
+    uint32_t output_ids[2] = { 0u, 0u };
+    uint32_t next_cursor = 0u;
+    uint32_t count;
     uint32_t inner_id = 0u;
     uint32_t output_id = 0u;
     uint32_t inner_descriptor;
@@ -911,13 +917,30 @@ static int test_map_in_map(void) {
     failures += expect("array of maps update", map_element(
         BPF_MAP_UPDATE_ELEM, outer, &key,
         (uint64_t *)(uintptr_t)&inner_descriptor, BPF_ANY), 0);
+    descriptors[0] = inner_descriptor;
+    descriptors[1] = inner_descriptor;
+    count = 2u;
+    failures += expect("array of maps update batch", map_batch(
+        BPF_MAP_UPDATE_BATCH, outer, 0, 0, keys,
+        (uint64_t *)(uintptr_t)descriptors, &count, BPF_ANY), 0);
+    failures += expect("array of maps update batch count", count, 2);
     (void)raw_syscall6(SYS_close, inner, 0, 0, 0, 0, 0);
     failures += expect("array of maps lookup", map_element(
         BPF_MAP_LOOKUP_ELEM, outer, &key,
         (uint64_t *)(uintptr_t)&output_id, 0), 0);
     failures += expect_true("array of maps id", output_id == inner_id);
-    failures += expect("array of maps delete", map_element(
-        BPF_MAP_DELETE_ELEM, outer, &key, 0, 0), 0);
+    count = 2u;
+    failures += expect("array of maps lookup batch", map_batch(
+        BPF_MAP_LOOKUP_BATCH, outer, 0, &next_cursor, output_keys,
+        (uint64_t *)(uintptr_t)output_ids, &count, 0), -ENOENT);
+    failures += expect("array of maps lookup batch count", count, 2);
+    failures += expect_true(
+        "array of maps lookup batch ids",
+        output_ids[0] == inner_id && output_ids[1] == inner_id);
+    count = 2u;
+    failures += expect("array of maps delete batch", map_batch(
+        BPF_MAP_DELETE_BATCH, outer, 0, 0, keys, 0, &count, 0), 0);
+    failures += expect("array of maps delete batch count", count, 2);
     failures += expect("array of maps empty", map_element(
         BPF_MAP_LOOKUP_ELEM, outer, &key,
         (uint64_t *)(uintptr_t)&output_id, 0), -ENOENT);
