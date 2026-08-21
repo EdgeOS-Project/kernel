@@ -147,6 +147,8 @@ typedef struct probe_ring {
 } probe_ring_t;
 
 static uint8_t g_buffer_ring[PAGE_SIZE] __attribute__((aligned(PAGE_SIZE)));
+static uint8_t g_incremental_ring[PAGE_SIZE]
+    __attribute__((aligned(PAGE_SIZE)));
 static uint8_t g_first_buffer[16];
 static uint8_t g_second_buffer[16];
 static uint8_t g_third_buffer[16];
@@ -306,6 +308,7 @@ static int run_probe(void) {
 
     bytes_zero(&ring, sizeof(ring));
     bytes_zero(g_buffer_ring, sizeof(g_buffer_ring));
+    bytes_zero(g_incremental_ring, sizeof(g_incremental_ring));
     bytes_zero(g_first_buffer, sizeof(g_first_buffer));
     bytes_zero(g_second_buffer, sizeof(g_second_buffer));
     bytes_zero(g_third_buffer, sizeof(g_third_buffer));
@@ -596,6 +599,86 @@ static int run_probe(void) {
     }
     bytes_zero(&registration, sizeof(registration));
     registration.buffer_group = 12u;
+    failures += expect(raw_syscall6(
+        SYS_io_uring_register, ring.descriptor,
+        IORING_UNREGISTER_PBUF_RING,
+        (long)&registration, 1, 0, 0), 0);
+
+    bytes_zero(&registration, sizeof(registration));
+    registration.ring_address =
+        (uint64_t)(uintptr_t)g_incremental_ring;
+    registration.ring_entries = 8u;
+    registration.buffer_group = 13u;
+    registration.flags = IOU_PBUF_RING_INC;
+    registration.minimum_left = 4u;
+    failures += expect(raw_syscall6(
+        SYS_io_uring_register, ring.descriptor,
+        IORING_REGISTER_PBUF_RING, (long)&registration, 1, 0, 0), 0);
+    {
+        struct io_uring_buf *buffers =
+            (struct io_uring_buf *)g_incremental_ring;
+        uint64_t original_address =
+            (uint64_t)(uintptr_t)g_third_buffer;
+
+        bytes_zero(g_third_buffer, sizeof(g_third_buffer));
+        publish_buffer(
+            g_incremental_ring, 0u, g_third_buffer,
+            8u, 80u, 1u);
+        failures += expect(raw_syscall6(
+            SYS_write, pipes[1], (long)incremental_first,
+            sizeof(incremental_first) - 1u, 0, 0, 0),
+            sizeof(incremental_first) - 1u);
+        bytes_zero(&request, sizeof(request));
+        request.opcode = IORING_OP_READ;
+        request.flags = IOSQE_BUFFER_SELECT;
+        request.descriptor = pipes[0];
+        request.offset = UINT64_MAX;
+        request.length = sizeof(incremental_first) - 1u;
+        request.buffer_index = 13u;
+        request.user_data = 11u;
+        failures += submit(
+            &ring, &request, sizeof(incremental_first) - 1u,
+            IORING_CQE_F_BUFFER | IORING_CQE_F_BUF_MORE |
+                (80u << IORING_CQE_BUFFER_SHIFT));
+        failures += expect(buffers[0].address,
+                           original_address + 3u);
+        failures += expect(buffers[0].length, 5u);
+        bytes_zero(&status, sizeof(status));
+        status.buffer_group = 13u;
+        failures += expect(raw_syscall6(
+            SYS_io_uring_register, ring.descriptor,
+            IORING_REGISTER_PBUF_STATUS,
+            (long)&status, 1, 0, 0), 0);
+        failures += expect(status.head, 0u);
+
+        failures += expect(raw_syscall6(
+            SYS_write, pipes[1], (long)incremental_second,
+            sizeof(incremental_second) - 1u, 0, 0, 0),
+            sizeof(incremental_second) - 1u);
+        request.user_data = 12u;
+        failures += submit(
+            &ring, &request, sizeof(incremental_second) - 1u,
+            IORING_CQE_F_BUFFER |
+                (80u << IORING_CQE_BUFFER_SHIFT));
+        failures += expect(buffers[0].address,
+                           original_address + 3u);
+        failures += expect(buffers[0].length, 0u);
+        failures += expect(g_third_buffer[0], 'a');
+        failures += expect(g_third_buffer[1], 'b');
+        failures += expect(g_third_buffer[2], 'c');
+        failures += expect(g_third_buffer[3], 'd');
+        failures += expect(g_third_buffer[4], 'e');
+        failures += expect(g_third_buffer[5], 'f');
+        bytes_zero(&status, sizeof(status));
+        status.buffer_group = 13u;
+        failures += expect(raw_syscall6(
+            SYS_io_uring_register, ring.descriptor,
+            IORING_REGISTER_PBUF_STATUS,
+            (long)&status, 1, 0, 0), 0);
+        failures += expect(status.head, 1u);
+    }
+    bytes_zero(&registration, sizeof(registration));
+    registration.buffer_group = 13u;
     failures += expect(raw_syscall6(
         SYS_io_uring_register, ring.descriptor,
         IORING_UNREGISTER_PBUF_RING,

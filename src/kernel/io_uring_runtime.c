@@ -96,6 +96,7 @@ typedef struct kernel_io_uring_provided_buffer {
 
 typedef struct kernel_io_uring_buffer_group {
     uint64_t ring_address;
+    uint64_t ring_address_space;
     uint32_t ring_entries;
     uint32_t minimum_left;
     uint16_t ring_head;
@@ -1400,6 +1401,7 @@ int kernel_io_uring_provided_buffer_select(
 
 int kernel_io_uring_pbuf_ring_register(
         int32_t ring_id, uint16_t group_id, uint64_t address,
+        uint64_t address_space,
         uint32_t entries, int kernel_allocated,
         int incremental, uint32_t minimum_left) {
     kernel_io_uring_buffer_group_t *group;
@@ -1410,6 +1412,8 @@ int kernel_io_uring_pbuf_ring_register(
 
     if ((!address && !kernel_allocated) ||
         (address && kernel_allocated) ||
+        (!address_space && !kernel_allocated) ||
+        (address_space && kernel_allocated) ||
         !entries || entries > UINT16_MAX)
         return -EDGE_LINUX_EINVAL;
     page_count = io_uring_page_count(
@@ -1479,6 +1483,7 @@ int kernel_io_uring_pbuf_ring_register(
         }
     }
     group->ring_address = address;
+    group->ring_address_space = address_space;
     group->ring_entries = entries;
     group->minimum_left = minimum_left;
     group->ring_page_count = kernel_allocated ?
@@ -1555,6 +1560,7 @@ int kernel_io_uring_pbuf_ring_snapshot(
         result = -EDGE_LINUX_EINVAL;
     } else {
         snapshot->address = group->ring_address;
+        snapshot->address_space = group->ring_address_space;
         snapshot->entries = group->ring_entries;
         snapshot->head = group->ring_head;
         snapshot->minimum_left = group->minimum_left;

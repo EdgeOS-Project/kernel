@@ -767,7 +767,7 @@ int main(void) {
                    UINT64_MAX - 0x10u, 0x20u, 1u) ==
                -EDGE_LINUX_EOVERFLOW);
         assert(kernel_io_uring_pbuf_ring_register(
-                   second_ring_id, 9u, 0x4000u, 8u,
+                   second_ring_id, 9u, 0x4000u, 1u, 8u,
                    0, 0, 0u) == 0);
         {
             kernel_io_uring_pbuf_ring_t snapshot;
@@ -775,6 +775,7 @@ int main(void) {
             assert(kernel_io_uring_pbuf_ring_snapshot(
                        second_ring_id, 9u, &snapshot) == 0);
             assert(snapshot.address == 0x4000u &&
+                   snapshot.address_space == 1u &&
                    snapshot.entries == 8u && snapshot.head == 0u &&
                    !snapshot.kernel_allocated);
             assert(kernel_io_uring_pbuf_ring_commit(
@@ -804,7 +805,7 @@ int main(void) {
         assert(kernel_io_uring_pbuf_ring_unregister(
                    second_ring_id, 9u) == -EDGE_LINUX_ENOENT);
         assert(kernel_io_uring_pbuf_ring_register(
-                   second_ring_id, 10u, 0u, 8u,
+                   second_ring_id, 10u, 0u, 0u, 8u,
                    1, 0, 0u) == 0);
         {
             struct edge_linux_io_uring_buf buffer = {0};
@@ -847,7 +848,7 @@ int main(void) {
         assert(kernel_io_uring_pbuf_ring_unregister(
                    second_ring_id, 10u) == 0);
         assert(kernel_io_uring_pbuf_ring_register(
-                   second_ring_id, 12u, 0u, 8u,
+                   second_ring_id, 12u, 0u, 0u, 8u,
                    1, 1, 4u) == 0);
         {
             struct edge_linux_io_uring_buf buffer = {0};

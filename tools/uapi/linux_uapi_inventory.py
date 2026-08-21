@@ -57,8 +57,10 @@ EDGEOS_ASSESSMENTS = [
             "bounded legacy provided-buffer groups with FIFO selection for READ, READV and RECV",
             "PROVIDE_BUFFERS and REMOVE_BUFFERS with Linux buffer IDs and CQE flags",
             "user-provided buffer-ring registration, status, unregistration and 16-bit head wrap",
+            "owner-address-space access for user-provided buffer rings",
             "kernel-allocated mmap buffer rings with shared page lifetime",
             "kernel-allocated incremental buffer consumption with min-left thresholds and BUF_MORE completions",
+            "user-provided incremental buffer consumption while the owner address space remains live",
             "buffer-ring selection for READ, READV and RECV with Linux CQE buffer IDs",
             "per-task registered-ring descriptors for enter and register operations",
             "timeout removal and update with retained clock selection",
@@ -77,8 +79,7 @@ EDGEOS_ASSESSMENTS = [
             "user-provided pinned wait regions and SQPOLL wait control",
             "pending asynchronous descriptor leases across close and reuse",
             "notification-pipe semantics",
-            "incremental consumption for user-provided rings without pinned-page backing",
-            "provided-buffer page pinning for cross-address-space ring use",
+            "provided-buffer page pinning and owner-mm-independent lifetime across unmap and exit",
             "remaining supported VFS and socket operations",
             "ia32 and x32 compatibility layouts",
         ],
@@ -129,7 +130,7 @@ EDGEOS_ASSESSMENTS = [
                 "mmap ring lifetime, unregistration and "
                 "legacy-versus-ring failed-I/O buffer consumption, plus "
                 "incremental address and length updates, min-left retirement "
-                "and BUF_MORE completions on kernel-allocated rings"
+                "and BUF_MORE completions on kernel-allocated and user-provided rings"
             ),
         },
     },

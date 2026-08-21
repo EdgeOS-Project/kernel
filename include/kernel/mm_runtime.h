@@ -325,6 +325,9 @@ int kernel_mm_file_install_race_satisfied(
 /* Resolve a demand-paged shared mapping for architecture user-copy helpers. */
 int kernel_mm_resolve_user_page(uint64_t address_space, uint64_t address,
                                 uint32_t access);
+int kernel_mm_address_space_copy(
+    uint64_t address_space, uint64_t address, void *buffer,
+    uint64_t size, kernel_mm_process_vm_operation_t operation);
 uint32_t kernel_mm_reclaim_pages(uint32_t cgroup_id, uint32_t target_pages);
 uint32_t kernel_mm_reclaim_cgroup_pressure(uint32_t cgroup_id);
 uint32_t kernel_mm_prepare_cgroup_charge(uint32_t cgroup_id,

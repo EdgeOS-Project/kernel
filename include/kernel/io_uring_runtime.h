@@ -57,6 +57,8 @@ typedef struct kernel_io_uring_fixed_file_reservation {
 
 typedef struct kernel_io_uring_selected_buffer {
     uint64_t address;
+    uint64_t ring_entry_address;
+    uint64_t ring_address_space;
     uint32_t length;
     uint32_t capacity;
     uint16_t id;
@@ -65,6 +67,7 @@ typedef struct kernel_io_uring_selected_buffer {
 
 typedef struct kernel_io_uring_pbuf_ring {
     uint64_t address;
+    uint64_t address_space;
     uint32_t entries;
     uint32_t head;
     uint32_t minimum_left;
@@ -137,6 +140,7 @@ int kernel_io_uring_provided_buffer_select(
     kernel_io_uring_selected_buffer_t *selected);
 int kernel_io_uring_pbuf_ring_register(
     int32_t ring_id, uint16_t group_id, uint64_t address,
+    uint64_t address_space,
     uint32_t entries, int kernel_allocated,
     int incremental, uint32_t minimum_left);
 int kernel_io_uring_pbuf_ring_unregister(

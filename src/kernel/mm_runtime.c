@@ -146,6 +146,13 @@ int kernel_mm_resolve_user_page(uint64_t address_space, uint64_t address,
     return arch_mm_resolve_user_page(address_space, address, access);
 }
 
+int kernel_mm_address_space_copy(
+        uint64_t address_space, uint64_t address, void *buffer,
+        uint64_t size, kernel_mm_process_vm_operation_t operation) {
+    return arch_mm_address_space_copy(
+        address_space, address, buffer, size, operation);
+}
+
 uint32_t kernel_mm_reclaim_pages(uint32_t cgroup_id, uint32_t target_pages) {
     uint64_t scanned_pages = 0;
     uint64_t started_us;
