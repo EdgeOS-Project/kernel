@@ -3972,6 +3972,12 @@ static int64_t edge_linux_sys_memfd_create(
 #define EDGE_LINUX_BPF_OBJ_GET_INFO_BY_FD 15u
 #define EDGE_LINUX_BPF_PROG_QUERY        16u
 #define EDGE_LINUX_BPF_BTF_LOAD          18u
+#define EDGE_LINUX_BPF_MAP_LOOKUP_AND_DELETE_ELEM 21u
+#define EDGE_LINUX_BPF_MAP_FREEZE        22u
+#define EDGE_LINUX_BPF_MAP_LOOKUP_BATCH  24u
+#define EDGE_LINUX_BPF_MAP_LOOKUP_AND_DELETE_BATCH 25u
+#define EDGE_LINUX_BPF_MAP_UPDATE_BATCH  26u
+#define EDGE_LINUX_BPF_MAP_DELETE_BATCH  27u
 
 typedef struct edge_linux_bpf_map_create_attribute {
     uint32_t map_type;
@@ -3997,6 +4003,20 @@ typedef struct edge_linux_bpf_map_element_attribute {
     uint64_t value;
     uint64_t flags;
 } edge_linux_bpf_map_element_attribute_t;
+
+typedef struct edge_linux_bpf_map_batch_attribute {
+    uint64_t input_batch;
+    uint64_t output_batch;
+    uint64_t keys;
+    uint64_t values;
+    uint32_t count;
+    uint32_t map_descriptor;
+    uint64_t element_flags;
+    uint64_t flags;
+} edge_linux_bpf_map_batch_attribute_t;
+
+_Static_assert(sizeof(edge_linux_bpf_map_batch_attribute_t) == 56u,
+               "Linux BPF map batch attribute layout changed");
 
 typedef struct edge_linux_bpf_id_attribute {
     uint32_t start_or_object_id;
@@ -4255,6 +4275,15 @@ static int64_t edge_linux_bpf_map_element(
             goto out;
         }
         status = kernel_bpf_map_delete(object_id, key);
+    } else if (command == EDGE_LINUX_BPF_MAP_LOOKUP_AND_DELETE_ELEM) {
+        if (attribute.flags) {
+            status = -EDGE_LINUX_EINVAL;
+            goto out;
+        }
+        status = kernel_bpf_map_lookup_and_delete(object_id, key, value);
+        if (status == 0 && edge_linux_copy_to_user(
+                context, attribute.value, value, info.value_size) < 0)
+            status = -EDGE_LINUX_EFAULT;
     } else {
         if (attribute.flags) {
             status = -EDGE_LINUX_EINVAL;
@@ -4269,6 +4298,166 @@ static int64_t edge_linux_bpf_map_element(
 out:
     if (value) arch_vm_free_page(value);
     if (key) arch_vm_free_page(key);
+    return status;
+}
+
+static int64_t edge_linux_bpf_map_freeze(
+    edge_linux_syscall_context_t *context, uint64_t user_attribute,
+    uint32_t attribute_size) {
+    edge_linux_bpf_map_element_attribute_t attribute;
+    int object_id;
+    int status;
+
+    status = edge_linux_bpf_copy_attribute(
+        context, &attribute, sizeof(attribute), sizeof(uint32_t),
+        user_attribute, attribute_size);
+    if (status < 0) return status;
+    if (attribute.padding || attribute.key || attribute.value ||
+        attribute.flags)
+        return -EDGE_LINUX_EINVAL;
+    object_id = kernel_bpf_descriptor_object(
+        (int32_t)attribute.map_descriptor, KERNEL_BPF_OBJECT_MAP);
+    if (object_id < 0) return object_id;
+    return kernel_bpf_map_freeze(object_id);
+}
+
+static int64_t edge_linux_bpf_map_batch(
+    edge_linux_syscall_context_t *context, uint32_t command,
+    uint64_t user_attribute, uint32_t attribute_size) {
+    edge_linux_bpf_map_batch_attribute_t attribute;
+    kernel_bpf_map_info_t info;
+    uint8_t *key;
+    uint8_t *value;
+    uint32_t cursor = 0;
+    uint32_t processed = 0;
+    uint32_t requested;
+    int object_id;
+    int status;
+
+    status = edge_linux_bpf_copy_attribute(
+        context, &attribute, sizeof(attribute), sizeof(attribute),
+        user_attribute, attribute_size);
+    if (status < 0) return status;
+    if (command == EDGE_LINUX_BPF_MAP_UPDATE_BATCH) {
+        if (attribute.element_flags != KERNEL_BPF_ANY &&
+             attribute.element_flags != KERNEL_BPF_NOEXIST &&
+             attribute.element_flags != KERNEL_BPF_EXIST)
+            return -EDGE_LINUX_EINVAL;
+    } else if (command == EDGE_LINUX_BPF_MAP_DELETE_BATCH) {
+        if (attribute.element_flags) return -EDGE_LINUX_EINVAL;
+    } else {
+        if (attribute.element_flags || attribute.flags)
+            return -EDGE_LINUX_EINVAL;
+    }
+    object_id = kernel_bpf_descriptor_object(
+        (int32_t)attribute.map_descriptor, KERNEL_BPF_OBJECT_MAP);
+    if (object_id < 0) return object_id;
+    status = kernel_bpf_map_info(object_id, &info);
+    if (status < 0) return status;
+    if (!attribute.count) return 0;
+    requested = attribute.count;
+    if (edge_linux_copy_to_user(
+            context,
+            user_attribute +
+                offsetof(edge_linux_bpf_map_batch_attribute_t, count),
+            &processed, sizeof(processed)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    if (!attribute.keys ||
+        ((command == EDGE_LINUX_BPF_MAP_LOOKUP_BATCH ||
+          command == EDGE_LINUX_BPF_MAP_LOOKUP_AND_DELETE_BATCH ||
+          command == EDGE_LINUX_BPF_MAP_UPDATE_BATCH) &&
+         !attribute.values) ||
+        ((command == EDGE_LINUX_BPF_MAP_LOOKUP_BATCH ||
+          command == EDGE_LINUX_BPF_MAP_LOOKUP_AND_DELETE_BATCH) &&
+         !attribute.output_batch))
+        return -EDGE_LINUX_EFAULT;
+    key = (uint8_t *)arch_vm_alloc_page();
+    if (!key) return -EDGE_LINUX_ENOMEM;
+    value = (uint8_t *)arch_vm_alloc_page();
+    if (!value) {
+        arch_vm_free_page(key);
+        return -EDGE_LINUX_ENOMEM;
+    }
+    if (attribute.input_batch && edge_linux_copy_from_user(
+            context, &cursor, attribute.input_batch, sizeof(cursor)) < 0) {
+        status = -EDGE_LINUX_EFAULT;
+        goto out;
+    }
+    status = 0;
+    while (processed < requested) {
+        uint64_t key_address = attribute.keys +
+            (uint64_t)processed * info.key_size;
+        uint64_t value_address = attribute.values +
+            (uint64_t)processed * info.value_size;
+
+        if (command == EDGE_LINUX_BPF_MAP_LOOKUP_BATCH ||
+            command == EDGE_LINUX_BPF_MAP_LOOKUP_AND_DELETE_BATCH) {
+            int has_more;
+
+            status = kernel_bpf_map_batch_next(
+                object_id, &cursor, key, value,
+                command == EDGE_LINUX_BPF_MAP_LOOKUP_AND_DELETE_BATCH,
+                &has_more);
+            if (status < 0) break;
+            if (edge_linux_copy_to_user(
+                    context, key_address, key, info.key_size) < 0 ||
+                edge_linux_copy_to_user(
+                    context, value_address, value, info.value_size) < 0) {
+                status = -EDGE_LINUX_EFAULT;
+                break;
+            }
+            ++processed;
+            if (!has_more) {
+                status = -EDGE_LINUX_ENOENT;
+                break;
+            }
+        } else {
+            if (edge_linux_copy_from_user(
+                    context, key, key_address, info.key_size) < 0) {
+                status = -EDGE_LINUX_EFAULT;
+                break;
+            }
+            if (command == EDGE_LINUX_BPF_MAP_UPDATE_BATCH) {
+                if (edge_linux_copy_from_user(
+                        context, value, value_address,
+                        info.value_size) < 0) {
+                    status = -EDGE_LINUX_EFAULT;
+                    break;
+                }
+                status = kernel_bpf_map_update(
+                    object_id, key, value, attribute.element_flags);
+            } else {
+                status = kernel_bpf_map_delete(object_id, key);
+            }
+            if (status < 0) break;
+            ++processed;
+        }
+    }
+    if (status != -EDGE_LINUX_EFAULT) {
+        if ((command == EDGE_LINUX_BPF_MAP_LOOKUP_BATCH ||
+             command == EDGE_LINUX_BPF_MAP_LOOKUP_AND_DELETE_BATCH) &&
+            edge_linux_copy_to_user(
+                context, attribute.output_batch, &cursor,
+                sizeof(cursor)) < 0) {
+            status = -EDGE_LINUX_EFAULT;
+            goto out;
+        }
+    }
+    if (status != -EDGE_LINUX_EFAULT ||
+        (command != EDGE_LINUX_BPF_MAP_LOOKUP_BATCH &&
+         command != EDGE_LINUX_BPF_MAP_LOOKUP_AND_DELETE_BATCH)) {
+        if (edge_linux_copy_to_user(
+                context,
+                user_attribute +
+                    offsetof(edge_linux_bpf_map_batch_attribute_t, count),
+                &processed, sizeof(processed)) < 0) {
+            status = -EDGE_LINUX_EFAULT;
+            goto out;
+        }
+    }
+out:
+    arch_vm_free_page(value);
+    arch_vm_free_page(key);
     return status;
 }
 
@@ -4502,6 +4691,16 @@ static int64_t edge_linux_sys_bpf(
     if (command >= EDGE_LINUX_BPF_MAP_LOOKUP_ELEM &&
         command <= EDGE_LINUX_BPF_MAP_GET_NEXT_KEY)
         return edge_linux_bpf_map_element(
+            context, command, user_attribute, attribute_size);
+    if (command == EDGE_LINUX_BPF_MAP_LOOKUP_AND_DELETE_ELEM)
+        return edge_linux_bpf_map_element(
+            context, command, user_attribute, attribute_size);
+    if (command == EDGE_LINUX_BPF_MAP_FREEZE)
+        return edge_linux_bpf_map_freeze(
+            context, user_attribute, attribute_size);
+    if (command >= EDGE_LINUX_BPF_MAP_LOOKUP_BATCH &&
+        command <= EDGE_LINUX_BPF_MAP_DELETE_BATCH)
+        return edge_linux_bpf_map_batch(
             context, command, user_attribute, attribute_size);
     if (command == EDGE_LINUX_BPF_PROG_LOAD) {
         if (!privileged) return -EDGE_LINUX_EPERM;

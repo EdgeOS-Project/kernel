@@ -65,6 +65,7 @@ typedef struct kernel_bpf_map {
     uint32_t entry_stride;
     uint32_t entry_count;
     uint32_t storage_pages;
+    uint8_t frozen;
     uint8_t *storage;
     char name[KERNEL_BPF_OBJECT_NAME_LENGTH];
 } kernel_bpf_map_t;
@@ -755,6 +756,10 @@ int kernel_bpf_map_update(int object_id, const void *key, const void *value,
         goto out;
     }
     map = &object->value.map;
+    if (map->frozen) {
+        status = -EDGE_LINUX_EPERM;
+        goto out;
+    }
     if (map->type == KERNEL_BPF_MAP_TYPE_ARRAY) {
         if (flags == KERNEL_BPF_NOEXIST) {
             status = -EDGE_LINUX_EEXIST;
@@ -791,6 +796,44 @@ out:
     return status;
 }
 
+int kernel_bpf_map_lookup_and_delete(int object_id, const void *key,
+                                     void *value) {
+    kernel_bpf_object_t *object;
+    kernel_bpf_map_t *map;
+    uint32_t index;
+    uint32_t free_slot;
+    int status = 0;
+
+    if (!key || !value) return -EDGE_LINUX_EFAULT;
+    bpf_lock();
+    object = bpf_object_locked(object_id);
+    if (!object || object->kind != KERNEL_BPF_OBJECT_MAP) {
+        status = -EDGE_LINUX_EBADF;
+        goto out;
+    }
+    map = &object->value.map;
+    if (map->frozen) {
+        status = -EDGE_LINUX_EPERM;
+        goto out;
+    }
+    if (map->type != KERNEL_BPF_MAP_TYPE_HASH) {
+        status = -EDGE_LINUX_EINVAL;
+        goto out;
+    }
+    bpf_map_hash_find(map, key, &index, &free_slot);
+    if (index == UINT32_MAX) {
+        status = -EDGE_LINUX_ENOENT;
+        goto out;
+    }
+    memcpy(value, bpf_map_entry(map, index) + 1u + map->key_size,
+           map->value_size);
+    memset(bpf_map_entry(map, index), 0, map->entry_stride);
+    if (map->entry_count) --map->entry_count;
+out:
+    bpf_unlock();
+    return status;
+}
+
 int kernel_bpf_map_delete(int object_id, const void *key) {
     kernel_bpf_object_t *object;
     kernel_bpf_map_t *map;
@@ -806,6 +849,10 @@ int kernel_bpf_map_delete(int object_id, const void *key) {
         goto out;
     }
     map = &object->value.map;
+    if (map->frozen) {
+        status = -EDGE_LINUX_EPERM;
+        goto out;
+    }
     if (map->type == KERNEL_BPF_MAP_TYPE_ARRAY) {
         status = -EDGE_LINUX_EINVAL;
         goto out;
@@ -860,6 +907,92 @@ int kernel_bpf_map_next_key(int object_id, const void *key, void *next_key) {
         goto out;
     }
     memcpy(next_key, bpf_map_entry(map, next) + 1u, map->key_size);
+out:
+    bpf_unlock();
+    return status;
+}
+
+int kernel_bpf_map_batch_next(int object_id, uint32_t *cursor,
+                              void *key, void *value,
+                              int delete_element, int *has_more) {
+    kernel_bpf_object_t *object;
+    kernel_bpf_map_t *map;
+    uint32_t index;
+    int status = 0;
+
+    if (!cursor || !key || !value || !has_more)
+        return -EDGE_LINUX_EFAULT;
+    bpf_lock();
+    object = bpf_object_locked(object_id);
+    if (!object || object->kind != KERNEL_BPF_OBJECT_MAP) {
+        status = -EDGE_LINUX_EBADF;
+        goto out;
+    }
+    map = &object->value.map;
+    if (delete_element && map->frozen) {
+        status = -EDGE_LINUX_EPERM;
+        goto out;
+    }
+    if (delete_element && map->type != KERNEL_BPF_MAP_TYPE_HASH) {
+        status = -EDGE_LINUX_EINVAL;
+        goto out;
+    }
+    index = *cursor;
+    if (map->type == KERNEL_BPF_MAP_TYPE_ARRAY) {
+        if (index >= map->max_entries) {
+            status = -EDGE_LINUX_ENOENT;
+            goto out;
+        }
+        memcpy(key, &index, sizeof(index));
+        memcpy(value, bpf_map_entry(map, index), map->value_size);
+    } else {
+        while (index < map->max_entries && !bpf_map_entry(map, index)[0])
+            ++index;
+        if (index >= map->max_entries) {
+            status = -EDGE_LINUX_ENOENT;
+            goto out;
+        }
+        memcpy(key, bpf_map_entry(map, index) + 1u, map->key_size);
+        memcpy(value,
+               bpf_map_entry(map, index) + 1u + map->key_size,
+               map->value_size);
+        if (delete_element) {
+            memset(bpf_map_entry(map, index), 0, map->entry_stride);
+            if (map->entry_count) --map->entry_count;
+        }
+    }
+    *cursor = index + 1u;
+    *has_more = 0;
+    if (map->type == KERNEL_BPF_MAP_TYPE_ARRAY) {
+        *has_more = *cursor < map->max_entries;
+    } else {
+        index = *cursor;
+        while (index < map->max_entries && !bpf_map_entry(map, index)[0])
+            ++index;
+        *has_more = index < map->max_entries;
+    }
+out:
+    bpf_unlock();
+    return status;
+}
+
+int kernel_bpf_map_freeze(int object_id) {
+    kernel_bpf_object_t *object;
+    kernel_bpf_map_t *map;
+    int status = 0;
+
+    bpf_lock();
+    object = bpf_object_locked(object_id);
+    if (!object || object->kind != KERNEL_BPF_OBJECT_MAP) {
+        status = -EDGE_LINUX_EBADF;
+        goto out;
+    }
+    map = &object->value.map;
+    if (map->frozen) {
+        status = -EDGE_LINUX_EBUSY;
+        goto out;
+    }
+    map->frozen = 1u;
 out:
     bpf_unlock();
     return status;

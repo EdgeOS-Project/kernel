@@ -30,6 +30,12 @@
 #define BPF_PROG_GET_FD_BY_ID 13u
 #define BPF_MAP_GET_FD_BY_ID 14u
 #define BPF_OBJ_GET_INFO_BY_FD 15u
+#define BPF_MAP_LOOKUP_AND_DELETE_ELEM 21u
+#define BPF_MAP_FREEZE 22u
+#define BPF_MAP_LOOKUP_BATCH 24u
+#define BPF_MAP_LOOKUP_AND_DELETE_BATCH 25u
+#define BPF_MAP_UPDATE_BATCH 26u
+#define BPF_MAP_DELETE_BATCH 27u
 
 #define BPF_MAP_TYPE_HASH 1u
 #define BPF_MAP_TYPE_ARRAY 2u
@@ -42,6 +48,9 @@
 #define FD_CLOEXEC 1
 
 #define E2BIG 7
+#define EBADF 9
+#define EFAULT 14
+#define EBUSY 16
 #define EEXIST 17
 #define EINVAL 22
 #define ENOENT 2
@@ -96,6 +105,16 @@ union bpf_attr {
         uint32_t info_len;
         uint64_t info;
     } info;
+    struct {
+        uint64_t in_batch;
+        uint64_t out_batch;
+        uint64_t keys;
+        uint64_t values;
+        uint32_t count;
+        uint32_t map_fd;
+        uint64_t elem_flags;
+        uint64_t flags;
+    } batch;
     uint8_t padding[144];
 };
 
@@ -309,6 +328,26 @@ static long map_element(uint32_t command, long descriptor,
     return bpf_call(command, &attribute);
 }
 
+static long map_batch(uint32_t command, long descriptor,
+                      uint32_t *input_cursor, uint32_t *output_cursor,
+                      uint32_t *keys, uint64_t *values, uint32_t *count,
+                      uint64_t element_flags) {
+    union bpf_attr attribute;
+    long result;
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.batch.in_batch = (uint64_t)(uintptr_t)input_cursor;
+    attribute.batch.out_batch = (uint64_t)(uintptr_t)output_cursor;
+    attribute.batch.keys = (uint64_t)(uintptr_t)keys;
+    attribute.batch.values = (uint64_t)(uintptr_t)values;
+    attribute.batch.count = *count;
+    attribute.batch.map_fd = (uint32_t)descriptor;
+    attribute.batch.elem_flags = element_flags;
+    result = bpf_call(command, &attribute);
+    *count = attribute.batch.count;
+    return result;
+}
+
 static int test_array_map(void) {
     union bpf_attr attribute;
     struct bpf_map_info info;
@@ -405,6 +444,153 @@ static int test_hash_map(void) {
         BPF_MAP_DELETE_ELEM, descriptor, &first, 0, 0), 0);
     failures += expect("hash missing", map_element(
         BPF_MAP_LOOKUP_ELEM, descriptor, &first, &value, 0), -ENOENT);
+    (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+    return failures;
+}
+
+static uint32_t batch_pair_mask(const uint32_t *keys,
+                                const uint64_t *values, uint32_t count) {
+    uint32_t observed_mask = 0u;
+
+    for (uint32_t index = 0; index < count; ++index) {
+        if (keys[index] < 1u || keys[index] > 3u ||
+            values[index] != (uint64_t)keys[index] * 11u)
+            return 0;
+        if (observed_mask & (1u << (keys[index] - 1u))) return 0;
+        observed_mask |= 1u << (keys[index] - 1u);
+    }
+    return observed_mask;
+}
+
+static int test_batch_and_freeze(void) {
+    union bpf_attr attribute;
+    uint32_t keys[4] = { 1u, 2u, 3u, 0u };
+    uint64_t values[4] = { 11u, 22u, 33u, 0u };
+    uint32_t output_keys[4];
+    uint64_t output_values[4];
+    uint32_t cursor = 0u;
+    uint32_t next_cursor = 0u;
+    uint32_t count = 3u;
+    uint32_t first_mask;
+    uint32_t final_mask;
+    uint32_t one_key = 2u;
+    uint64_t one_value = 0u;
+    long descriptor = create_map(BPF_MAP_TYPE_HASH, 4u, "batch_map");
+    int failures = 0;
+
+    failures += expect_true("batch create", descriptor >= 0);
+    if (descriptor < 0) return failures + 1;
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.batch.map_fd = UINT32_MAX;
+    failures += expect("zero batch bad fd", bpf_call(
+        BPF_MAP_UPDATE_BATCH, &attribute), -EBADF);
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.batch.map_fd = (uint32_t)descriptor;
+    failures += expect("zero batch", bpf_call(
+        BPF_MAP_UPDATE_BATCH, &attribute), 0);
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.batch.map_fd = (uint32_t)descriptor;
+    attribute.batch.count = 1u;
+    failures += expect("batch null keys", bpf_call(
+        BPF_MAP_UPDATE_BATCH, &attribute), -EFAULT);
+    failures += expect("batch null keys count", attribute.batch.count, 0);
+    failures += expect("batch update", map_batch(
+        BPF_MAP_UPDATE_BATCH, descriptor, 0, 0, keys, values, &count,
+        BPF_ANY), 0);
+    failures += expect("batch update count", count, 3);
+
+    clear_bytes(output_keys, sizeof(output_keys));
+    clear_bytes(output_values, sizeof(output_values));
+    count = 2u;
+    failures += expect("batch lookup first", map_batch(
+        BPF_MAP_LOOKUP_BATCH, descriptor, 0, &next_cursor, output_keys,
+        output_values, &count, 0), 0);
+    failures += expect("batch lookup first count", count, 2);
+    first_mask = batch_pair_mask(output_keys, output_values, count);
+    failures += expect_true("batch lookup first pairs",
+                            first_mask != 0u && first_mask != 0x7u);
+
+    cursor = next_cursor;
+    clear_bytes(output_keys, sizeof(output_keys));
+    clear_bytes(output_values, sizeof(output_values));
+    count = 2u;
+    failures += expect("batch lookup final", map_batch(
+        BPF_MAP_LOOKUP_BATCH, descriptor, &cursor, &next_cursor,
+        output_keys, output_values, &count, 0), -ENOENT);
+    failures += expect("batch lookup final count", count, 1);
+    final_mask = batch_pair_mask(output_keys, output_values, count);
+    failures += expect_true("batch lookup final pair",
+                            final_mask != 0u &&
+                            !(first_mask & final_mask) &&
+                            (first_mask | final_mask) == 0x7u);
+
+    failures += expect("lookup delete", map_element(
+        BPF_MAP_LOOKUP_AND_DELETE_ELEM, descriptor, &one_key,
+        &one_value, 0), 0);
+    failures += expect_true("lookup delete value", one_value == 22u);
+    failures += expect("lookup delete missing", map_element(
+        BPF_MAP_LOOKUP_ELEM, descriptor, &one_key, &one_value, 0),
+        -ENOENT);
+    one_value = 22u;
+    failures += expect("lookup delete restore", map_element(
+        BPF_MAP_UPDATE_ELEM, descriptor, &one_key, &one_value, BPF_ANY),
+        0);
+
+    clear_bytes(output_keys, sizeof(output_keys));
+    clear_bytes(output_values, sizeof(output_values));
+    count = 4u;
+    failures += expect("batch lookup delete", map_batch(
+        BPF_MAP_LOOKUP_AND_DELETE_BATCH, descriptor, 0, &next_cursor,
+        output_keys, output_values, &count, 0), -ENOENT);
+    failures += expect("batch lookup delete count", count, 3);
+    failures += expect_true("batch lookup delete pairs",
+                            batch_pair_mask(output_keys, output_values,
+                                            count) == 0x7u);
+    failures += expect("batch empty", map_element(
+        BPF_MAP_LOOKUP_ELEM, descriptor, &one_key, &one_value, 0),
+        -ENOENT);
+
+    count = 3u;
+    failures += expect("batch restore", map_batch(
+        BPF_MAP_UPDATE_BATCH, descriptor, 0, 0, keys, values, &count,
+        BPF_ANY), 0);
+    count = 2u;
+    failures += expect("batch delete", map_batch(
+        BPF_MAP_DELETE_BATCH, descriptor, 0, 0, keys, 0, &count, 0), 0);
+    failures += expect("batch delete first", map_element(
+        BPF_MAP_LOOKUP_ELEM, descriptor, &keys[0], &one_value, 0),
+        -ENOENT);
+    failures += expect("batch delete second", map_element(
+        BPF_MAP_LOOKUP_ELEM, descriptor, &keys[1], &one_value, 0),
+        -ENOENT);
+
+    clear_bytes(output_keys, sizeof(output_keys));
+    clear_bytes(output_values, sizeof(output_values));
+    clear_bytes((void *)&cursor, sizeof(cursor));
+    count = 1u;
+    failures += expect("batch frozen seed", map_element(
+        BPF_MAP_LOOKUP_ELEM, descriptor, &keys[2], &one_value, 0), 0);
+    failures += expect("map freeze", map_element(
+        BPF_MAP_FREEZE, descriptor, 0, 0, 0), 0);
+    failures += expect("map freeze repeated", map_element(
+        BPF_MAP_FREEZE, descriptor, 0, 0, 0), -EBUSY);
+    failures += expect("frozen lookup", map_element(
+        BPF_MAP_LOOKUP_ELEM, descriptor, &keys[2], &one_value, 0), 0);
+    failures += expect("frozen update", map_element(
+        BPF_MAP_UPDATE_ELEM, descriptor, &keys[2], &values[0], BPF_ANY),
+        -EPERM);
+    failures += expect("frozen delete", map_element(
+        BPF_MAP_DELETE_ELEM, descriptor, &keys[2], 0, 0), -EPERM);
+    failures += expect("frozen lookup delete", map_element(
+        BPF_MAP_LOOKUP_AND_DELETE_ELEM, descriptor, &keys[2], &one_value,
+        0), -EPERM);
+    failures += expect("frozen batch lookup", map_batch(
+        BPF_MAP_LOOKUP_BATCH, descriptor, 0, &cursor, output_keys,
+        output_values, &count, 0), -ENOENT);
+    failures += expect("frozen batch lookup count", count, 1);
+    failures += expect_true("frozen batch lookup value",
+                            output_keys[0] == 3u &&
+                            output_values[0] == 33u);
     (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
     return failures;
 }
@@ -528,6 +714,7 @@ __attribute__((noreturn)) void _start(void) {
         (void)raw_syscall6(SYS_exit, 77, 0, 0, 0, 0, 0);
     }
     failures += test_hash_map();
+    failures += test_batch_and_freeze();
     failures += test_program();
     failures += test_attribute_tail();
     print_text(failures ? "BPF_ABI_PROBE_FAIL\n" :

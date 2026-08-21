@@ -93,6 +93,12 @@ static void test_hash_map(void) {
                object, &missing, &value2, KERNEL_BPF_ANY) < 0);
     assert(kernel_bpf_map_lookup(object, &key1, &output) == 0);
     assert(output == value1);
+    assert(kernel_bpf_map_lookup_and_delete(
+               object, &key1, &output) == 0);
+    assert(output == value1);
+    assert(kernel_bpf_map_lookup(object, &key1, &output) < 0);
+    assert(kernel_bpf_map_update(
+               object, &key1, &value1, KERNEL_BPF_ANY) == 0);
     assert(kernel_bpf_map_next_key(object, 0, &next) == 0);
     assert(next == key1);
     assert(kernel_bpf_map_delete(object, &key1) == 0);
@@ -104,6 +110,55 @@ static void test_hash_map(void) {
     kernel_bpf_object_release(object);
     kernel_bpf_object_release(object);
     assert(kernel_bpf_map_info(object, &info) < 0);
+}
+
+static void test_batch_and_freeze(void) {
+    uint32_t keys[] = { 1u, 2u, 3u };
+    uint64_t values[] = { 11u, 22u, 33u };
+    uint32_t cursor = 0;
+    uint32_t key = 0;
+    uint64_t value = 0;
+    int has_more = 0;
+    int object = create_map(
+        KERNEL_BPF_MAP_TYPE_HASH, sizeof(key), sizeof(value), 4u,
+        "batch_map");
+
+    assert(object >= 0);
+    for (uint32_t index = 0; index < 3u; ++index)
+        assert(kernel_bpf_map_update(
+                   object, &keys[index], &values[index],
+                   KERNEL_BPF_ANY) == 0);
+    for (uint32_t index = 0; index < 3u; ++index) {
+        assert(kernel_bpf_map_batch_next(
+                   object, &cursor, &key, &value, 0, &has_more) == 0);
+        assert(key == keys[index]);
+        assert(value == values[index]);
+        assert(has_more == (index + 1u < 3u));
+    }
+    assert(kernel_bpf_map_batch_next(
+               object, &cursor, &key, &value, 0, &has_more) < 0);
+    cursor = 0;
+    for (uint32_t index = 0; index < 3u; ++index)
+        assert(kernel_bpf_map_batch_next(
+                   object, &cursor, &key, &value, 1, &has_more) == 0);
+    cursor = 0;
+    assert(kernel_bpf_map_batch_next(
+               object, &cursor, &key, &value, 0, &has_more) < 0);
+    assert(kernel_bpf_map_update(
+               object, &keys[0], &values[0], KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_freeze(object) == 0);
+    assert(kernel_bpf_map_freeze(object) < 0);
+    assert(kernel_bpf_map_lookup(object, &keys[0], &value) == 0);
+    assert(value == values[0]);
+    assert(kernel_bpf_map_update(
+               object, &keys[0], &values[1], KERNEL_BPF_ANY) < 0);
+    assert(kernel_bpf_map_delete(object, &keys[0]) < 0);
+    assert(kernel_bpf_map_lookup_and_delete(
+               object, &keys[0], &value) < 0);
+    cursor = 0;
+    assert(kernel_bpf_map_batch_next(
+               object, &cursor, &key, &value, 1, &has_more) < 0);
+    kernel_bpf_object_release(object);
 }
 
 static void test_program(void) {
@@ -168,6 +223,7 @@ static void test_ids(void) {
 int main(void) {
     test_array_map();
     test_hash_map();
+    test_batch_and_freeze();
     test_program();
     test_ids();
     puts("bpf_runtime_unit: PASS");

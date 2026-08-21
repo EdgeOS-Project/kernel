@@ -110,7 +110,13 @@ int kernel_bpf_map_lookup(int object_id, const void *key, void *value);
 int kernel_bpf_map_update(int object_id, const void *key, const void *value,
                           uint64_t flags);
 int kernel_bpf_map_delete(int object_id, const void *key);
+int kernel_bpf_map_lookup_and_delete(int object_id, const void *key,
+                                     void *value);
 int kernel_bpf_map_next_key(int object_id, const void *key, void *next_key);
+int kernel_bpf_map_batch_next(int object_id, uint32_t *cursor,
+                              void *key, void *value,
+                              int delete_element, int *has_more);
+int kernel_bpf_map_freeze(int object_id);
 
 int kernel_bpf_program_run_cgroup_device(
     int object_id, const kernel_bpf_cgroup_device_context_t *context,
