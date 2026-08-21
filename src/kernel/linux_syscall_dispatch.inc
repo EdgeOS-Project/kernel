@@ -566,6 +566,9 @@ case EDGE_LINUX_SYS_symlink:
 case EDGE_LINUX_SYS_symlinkat:
     context->result = edge_linux_sys_symlink(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_sysfs:
+    context->result = edge_linux_sys_sysfs(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_sysinfo:
     context->result = edge_linux_sys_sysinfo(context);
     return EDGE_LINUX_SYSCALL_HANDLED;

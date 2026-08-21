@@ -74,6 +74,7 @@
 #include "kernel/sysv_shm_runtime.h"
 #include "kernel/sysv_sem_runtime.h"
 #include "kernel/syslog_runtime.h"
+#include "kernel/task_scratch.h"
 #include "kernel/timerfd.h"
 #include "kernel/timerfd_runtime.h"
 #include "kernel/time_discipline.h"
@@ -84,6 +85,7 @@
 #include "sys/bootlog.h"
 #include "sys/spinlock.h"
 #include "string.h"
+#include "vfs/filesystem_registry.h"
 #include "vfs/mount_namespace.h"
 
 #include "linux_syscall_tables.inc"
@@ -1692,6 +1694,45 @@ static int64_t edge_linux_sys_sysinfo(
     return edge_linux_copy_to_user(context, context->arguments[0], &result,
                                    sizeof(result)) < 0 ?
         -EDGE_LINUX_EFAULT : 0;
+}
+
+static int64_t edge_linux_sys_sysfs(
+    edge_linux_syscall_context_t *context) {
+#ifndef CONFIG_SYSFS_SYSCALL
+    (void)context;
+    return -EDGE_LINUX_ENOSYS;
+#else
+    int32_t option = (int32_t)(uint32_t)context->arguments[0];
+
+    if (option == 1) {
+        kernel_task_scratch_t *scratch = arch_task_scratch_current();
+        int status;
+
+        if (!scratch) return -EDGE_LINUX_ENOMEM;
+        status = edge_linux_copy_user_string(
+            context, context->arguments[1], scratch->path_scratch[0],
+            KERNEL_TASK_PATH_MAX, EDGE_LINUX_ENAMETOOLONG);
+        if (status < 0) return status;
+        status = vfs_filesystem_registry_index(scratch->path_scratch[0]);
+        return status < 0 ? -EDGE_LINUX_EINVAL : status;
+    }
+    if (option == 2) {
+        char name[64];
+        uint32_t index = (uint32_t)context->arguments[1];
+        uint32_t length;
+
+        if (vfs_filesystem_registry_name(
+                index, name, sizeof(name)) < 0)
+            return -EDGE_LINUX_EINVAL;
+        length = (uint32_t)strlen(name) + 1u;
+        return edge_linux_copy_to_user(
+                   context, context->arguments[2], name, length) < 0 ?
+            -EDGE_LINUX_EFAULT : 0;
+    }
+    if (option == 3)
+        return (int64_t)vfs_filesystem_registry_count();
+    return -EDGE_LINUX_EINVAL;
+#endif
 }
 
 static int64_t edge_linux_sys_personality(

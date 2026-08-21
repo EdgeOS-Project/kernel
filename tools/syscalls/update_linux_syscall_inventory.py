@@ -52,6 +52,7 @@ LINUX_RESERVED_SYSCALL_PROBE = (
 )
 VERIFIED_SYSCALL_PROBES = {
     "remap_file_pages": "tools/tests/remap_file_pages_abi_probe.c",
+    "sysfs": "tools/tests/sysfs_syscall_abi_probe.c",
 }
 
 

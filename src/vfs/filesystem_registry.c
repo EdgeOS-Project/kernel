@@ -170,3 +170,41 @@ int vfs_filesystem_registry_mount(const char *name, const char *device,
 uint32_t vfs_filesystem_registry_count(void) {
     return __atomic_load_n(&g_registration_count, __ATOMIC_ACQUIRE);
 }
+
+int32_t vfs_filesystem_registry_index(const char *name) {
+    int32_t result = -1;
+
+    if (!name) return -1;
+    registry_lock();
+    for (uint32_t index = 0; index < g_registration_count; ++index) {
+        vfs_filesystem_registration_t *registration = registry_at(index);
+        if (registration && strcmp(registration->name, name) == 0) {
+            result = (int32_t)index;
+            break;
+        }
+    }
+    registry_unlock();
+    return result;
+}
+
+int vfs_filesystem_registry_name(uint32_t index, char *name,
+                                 uint32_t capacity) {
+    vfs_filesystem_registration_t *registration;
+    uint32_t length;
+
+    if (!name || !capacity) return -1;
+    registry_lock();
+    if (index >= g_registration_count ||
+        !(registration = registry_at(index))) {
+        registry_unlock();
+        return -1;
+    }
+    length = (uint32_t)strlen(registration->name) + 1u;
+    if (length > capacity) {
+        registry_unlock();
+        return -1;
+    }
+    memcpy(name, registration->name, length);
+    registry_unlock();
+    return 0;
+}

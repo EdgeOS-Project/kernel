@@ -14,5 +14,8 @@ int vfs_filesystem_registry_mount(const char *name, const char *device,
                                   const char *target);
 uint32_t vfs_filesystem_registry_count(void);
 uint32_t vfs_filesystem_registry_capacity(void);
+int32_t vfs_filesystem_registry_index(const char *name);
+int vfs_filesystem_registry_name(uint32_t index, char *name,
+                                 uint32_t capacity);
 
 #endif

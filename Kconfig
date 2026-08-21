@@ -35,6 +35,14 @@ config LINUX_ABI_RELEASE
       Keep this architecture-neutral so Linux userspace selects the same
       feature set on every supported architecture.
 
+config SYSFS_SYSCALL
+    bool "Legacy Linux sysfs system call"
+    default y
+    help
+      Enable the obsolete sysfs system call used to enumerate registered
+      filesystem types. Disable it to expose the same ENOSYS behavior as a
+      Linux kernel built without CONFIG_SYSFS_SYSCALL.
+
 config SMP
     bool "Symmetric multiprocessing"
     default y

@@ -8418,17 +8418,19 @@
     {
       "id": "sysfs",
       "semantic_id": "sysfs",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_sysfs",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/sysfs_syscall_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 139,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_sysfs",
+          "evidence_status": "oracle-verified"
         },
         "aarch64": null
       }
