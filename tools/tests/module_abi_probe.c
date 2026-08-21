@@ -10,17 +10,30 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
-static int has_module_capability(void) {
-    FILE *status = fopen("/proc/self/status", "r");
-    char line[256];
-    unsigned long long effective = 0;
+#define LINUX_CAPABILITY_VERSION_3 UINT32_C(0x20080522)
+#define LINUX_CAP_SYS_MODULE 16u
 
-    if (!status) return 0;
-    while (fgets(line, sizeof(line), status)) {
-        if (sscanf(line, "CapEff:\t%llx", &effective) == 1) break;
-    }
-    fclose(status);
-    return (effective & (1ull << 16)) != 0;
+struct linux_capability_header {
+    uint32_t version;
+    int32_t pid;
+};
+
+struct linux_capability_data {
+    uint32_t effective;
+    uint32_t permitted;
+    uint32_t inheritable;
+};
+
+static int has_module_capability(void) {
+    struct linux_capability_header header = {
+        .version = LINUX_CAPABILITY_VERSION_3,
+        .pid = 0,
+    };
+    struct linux_capability_data data[2] = {{0}};
+
+    if (syscall(SYS_capget, &header, data) != 0) return 0;
+    return (data[LINUX_CAP_SYS_MODULE / 32u].effective &
+            (UINT32_C(1) << (LINUX_CAP_SYS_MODULE % 32u))) != 0;
 }
 
 static int expect_errno(const char *name, long result, int expected) {

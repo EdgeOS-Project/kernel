@@ -37,6 +37,7 @@ static uint64_t monotonic_milliseconds(void) {
 int main(void) {
     struct sigaction action = {0};
     struct timespec child_delay = {0, 30000000};
+    struct timespec stop_delay = {0, 60000000};
     struct timespec request = {0, 150000000};
     struct timespec remaining = {0, 0};
     uint64_t started;
@@ -71,14 +72,39 @@ int main(void) {
                 result, errno, (int)g_signal_seen);
         return 4;
     }
+    if (waitpid(child, 0, 0) != child) return 5;
     errno = 0;
     result = syscall(EDGE_SYS_RESTART_SYSCALL);
-    elapsed = monotonic_milliseconds() - started;
-    if (result != 0 || errno != 0 || elapsed < 100u) {
-        fprintf(stderr, "restart block: result=%ld errno=%d elapsed=%llu\n",
-                result, errno, (unsigned long long)elapsed);
-        return 5;
+    if (result != -1 || errno != EINTR) {
+        fprintf(stderr, "restart after handler: result=%ld errno=%d\n",
+                result, errno);
+        return 6;
     }
-    if (waitpid(child, 0, 0) != child) return 6;
+
+    child = fork();
+    if (child < 0) return 7;
+    if (child == 0) {
+        pid_t parent = getppid();
+        (void)nanosleep(&child_delay, 0);
+        (void)kill(parent, SIGSTOP);
+        (void)nanosleep(&stop_delay, 0);
+        (void)kill(parent, SIGCONT);
+        _exit(0);
+    }
+    remaining.tv_sec = 0;
+    remaining.tv_nsec = 0;
+    started = monotonic_milliseconds();
+    errno = 0;
+    result = nanosleep(&request, &remaining);
+    elapsed = monotonic_milliseconds() - started;
+    if (result != 0 || errno != 0 || elapsed < 120u || elapsed > 400u) {
+        fprintf(stderr,
+                "stop restart: result=%ld errno=%d elapsed=%llu remaining=%ld.%09ld\n",
+                result, errno, (unsigned long long)elapsed,
+                remaining.tv_sec, remaining.tv_nsec);
+        return 8;
+    }
+    if (waitpid(child, 0, 0) != child) return 9;
+    puts("RESTART_SYSCALL_ABI_PROBE_PASS");
     return 0;
 }

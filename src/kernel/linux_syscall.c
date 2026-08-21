@@ -669,9 +669,20 @@ static int64_t edge_linux_sys_nanosleep(
         kernel_restart_block_prepare_nanosleep(
             &thread_state->restart_block, deadline, remaining_user,
             remaining_user != 0);
-        return kernel_restart_block_execute(
+        result = kernel_restart_block_execute(
             &thread_state->restart_block, monotonic_now,
             kernel_current_sleep_until, context->user_registers);
+        /*
+         * A catchable signal has already made the interrupted sleep visible
+         * to userspace as EINTR. Linux replaces the restart function with its
+         * no-restart handler before returning to the signal handler, so a
+         * later, explicit restart_syscall must also return EINTR. Default
+         * job-control stops remain inside the scheduler wait and never reach
+         * this path.
+         */
+        if (result == -EDGE_LINUX_EINTR)
+            kernel_restart_block_reset(&thread_state->restart_block);
+        return result;
     }
     result = kernel_current_sleep_until(
         deadline, remaining_user, !absolute && remaining_user != 0,
