@@ -136,10 +136,33 @@ int main(void) {
     int32_t looked_up_ring = -1;
     uint32_t registered_slot = UINT32_MAX;
 
+    {
+        uint64_t minimum_deadline;
+        uint64_t wait_deadline;
+
+        assert(kernel_io_uring_wait_deadlines(
+                   100u, 25u, 1, 0, 0u,
+                   &minimum_deadline, &wait_deadline) == 0);
+        assert(minimum_deadline == 0u && wait_deadline == 125u);
+        assert(kernel_io_uring_wait_deadlines(
+                   100u, 80u, 1, 1, 40u,
+                   &minimum_deadline, &wait_deadline) == 0);
+        assert(minimum_deadline == 140u && wait_deadline == 140u);
+        assert(kernel_io_uring_wait_deadlines(
+                   UINT64_MAX - 5u, 20u, 1, 0, 10u,
+                   &minimum_deadline, &wait_deadline) == 0);
+        assert(minimum_deadline == UINT64_MAX &&
+               wait_deadline == UINT64_MAX);
+        assert(kernel_io_uring_wait_deadlines(
+                   100u, 0u, 0, 0, 30u,
+                   &minimum_deadline, &wait_deadline) == 0);
+        assert(minimum_deadline == 130u && wait_deadline == 130u);
+    }
     assert(kernel_io_uring_page_allocator_register(&allocator) == 0);
     assert(kernel_io_uring_create(8, &parameters, &ring_id) == 0);
     assert(parameters.sq_entries == 8);
     assert(parameters.cq_entries == 16);
+    assert(kernel_io_uring_completion_capacity(ring_id) == 16u);
     assert(parameters.sq_off.array == 64);
     assert(parameters.cq_off.cqes == 64);
     {

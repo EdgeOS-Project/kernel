@@ -16,9 +16,11 @@
 #define SYS_exit 60
 #define SYS_mmap 9
 #define SYS_munmap 11
+#define SYS_clock_gettime 228
 #define SYS_write 1
 #elif defined(__aarch64__)
 #define SYS_close 57
+#define SYS_clock_gettime 113
 #define SYS_exit 93
 #define SYS_mmap 222
 #define SYS_munmap 215
@@ -35,6 +37,8 @@
 #define MAP_SHARED 1
 #define PAGE_SIZE 4096u
 #define IORING_ENTER_GETEVENTS 1u
+#define IORING_ENTER_EXT_ARG (1u << 3)
+#define IORING_ENTER_ABS_TIMER (1u << 5)
 #define IORING_OP_TIMEOUT 11u
 #define IORING_OP_TIMEOUT_REMOVE 12u
 #define IORING_TIMEOUT_ABS (1u << 0)
@@ -50,10 +54,18 @@
 #define EINVAL 22
 #define ETIME 62
 #define ECANCELED 125
+#define CLOCK_MONOTONIC 1
 
 struct kernel_timespec {
     int64_t seconds;
     int64_t nanoseconds;
+};
+
+struct io_uring_getevents_arg {
+    uint64_t signal_mask;
+    uint32_t signal_mask_size;
+    uint32_t minimum_wait_microseconds;
+    uint64_t timeout;
 };
 
 struct io_uring_sqe {
@@ -162,6 +174,18 @@ static long print_text(const char *text) {
         SYS_write, 1, (long)text, text_length(text), 0, 0, 0);
 }
 
+static uint64_t monotonic_microseconds(void) {
+    struct kernel_timespec value = {0, 0};
+    long result = raw_syscall6(
+        SYS_clock_gettime, CLOCK_MONOTONIC, (long)&value,
+        0, 0, 0, 0);
+
+    if (result < 0 || value.seconds < 0 || value.nanoseconds < 0)
+        return 0;
+    return (uint64_t)value.seconds * 1000000u +
+           (uint64_t)value.nanoseconds / 1000u;
+}
+
 static void print_number(long value) {
     char buffer[32];
     uint32_t position = sizeof(buffer);
@@ -235,6 +259,10 @@ static int run_probe(void) {
     struct kernel_timespec short_timeout = {0, 20000000};
     struct kernel_timespec multishot_timeout = {0, 20000000};
     struct kernel_timespec updateable_multishot_timeout = {0, 200000000};
+    struct kernel_timespec enter_timeout = {0, 20000000};
+    struct kernel_timespec enter_long_timeout = {0, 100000000};
+    struct kernel_timespec enter_short_timeout = {0, 5000000};
+    struct io_uring_getevents_arg enter_arguments = {0};
     void *sq_ring;
     void *cq_ring;
     struct io_uring_sqe *sqes;
@@ -475,6 +503,82 @@ static int run_probe(void) {
         cqes[completion & *cq_mask].user_data == request.user_data &&
         cqes[completion & *cq_mask].result == -ETIME);
     __atomic_store_n(cq_head, completion + 1u, __ATOMIC_RELEASE);
+#endif
+
+    {
+        uint64_t started = monotonic_microseconds();
+        uint64_t finished;
+
+        enter_arguments.timeout =
+            (uint64_t)(uintptr_t)&enter_timeout;
+        failures += check_result("relative enter timeout", raw_syscall6(
+            SYS_io_uring_enter, descriptor, 0, 1,
+            IORING_ENTER_GETEVENTS | IORING_ENTER_EXT_ARG,
+            (long)&enter_arguments, sizeof(enter_arguments)), -ETIME);
+        finished = monotonic_microseconds();
+        failures += check("relative enter timeout elapsed",
+            started != 0 && finished >= started + 10000u &&
+            finished < started + 1000000u);
+    }
+
+    {
+        uint64_t started = monotonic_microseconds();
+        uint64_t deadline = started + 20000u;
+        uint64_t finished;
+
+        enter_timeout.seconds = (int64_t)(deadline / 1000000u);
+        enter_timeout.nanoseconds =
+            (int64_t)((deadline % 1000000u) * 1000u);
+        failures += check_result("absolute enter timeout", raw_syscall6(
+            SYS_io_uring_enter, descriptor, 0, 1,
+            IORING_ENTER_GETEVENTS | IORING_ENTER_EXT_ARG |
+                IORING_ENTER_ABS_TIMER,
+            (long)&enter_arguments, sizeof(enter_arguments)), -ETIME);
+        finished = monotonic_microseconds();
+        failures += check("absolute enter timeout elapsed",
+            started != 0 && finished >= deadline &&
+            finished < started + 1000000u);
+    }
+
+    enter_timeout.seconds = 0;
+    enter_timeout.nanoseconds = -1;
+    failures += check_result("noncanonical enter timeout", raw_syscall6(
+        SYS_io_uring_enter, descriptor, 0, 1,
+        IORING_ENTER_GETEVENTS | IORING_ENTER_EXT_ARG,
+        (long)&enter_arguments, sizeof(enter_arguments)), -ETIME);
+
+#ifdef EDGEOS_EXPECT_ENTER_MIN_WAIT
+    bytes_zero(&request, sizeof(request));
+    request.opcode = IORING_OP_TIMEOUT;
+    request.descriptor = -1;
+    request.address = (uint64_t)(uintptr_t)&enter_short_timeout;
+    request.length = 1u;
+    request.user_data = 0x454e5445524d494eull;
+    failures += check_result("submit enter batching timeout", submit(
+        descriptor, sq_tail, sq_mask, sq_array, sqes, &request, 0), 1);
+    {
+        uint64_t started = monotonic_microseconds();
+        uint64_t finished;
+
+        enter_arguments.minimum_wait_microseconds = 20000u;
+        enter_arguments.timeout =
+            (uint64_t)(uintptr_t)&enter_long_timeout;
+        completion = __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE);
+        failures += check_result("minimum enter wait", raw_syscall6(
+            SYS_io_uring_enter, descriptor, 0, 1,
+            IORING_ENTER_GETEVENTS | IORING_ENTER_EXT_ARG,
+            (long)&enter_arguments, sizeof(enter_arguments)), 0);
+        finished = monotonic_microseconds();
+        failures += check("minimum enter wait elapsed",
+            started != 0 && finished >= started + 10000u &&
+            finished < started + 1000000u);
+        failures += check("minimum enter wait completion",
+            __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) ==
+                completion + 1u &&
+            cqes[completion & *cq_mask].user_data == request.user_data &&
+            cqes[completion & *cq_mask].result == -ETIME);
+        __atomic_store_n(cq_head, completion + 1u, __ATOMIC_RELEASE);
+    }
 #endif
 
     (void)raw_syscall6(SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);

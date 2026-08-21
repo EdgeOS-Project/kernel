@@ -111,5 +111,13 @@ int kernel_io_uring_completion_add_async(int32_t ring_id,
                                          uint64_t user_data,
                                          int32_t result, uint32_t flags);
 uint32_t kernel_io_uring_completion_count(int32_t ring_id);
+uint32_t kernel_io_uring_completion_capacity(int32_t ring_id);
+int kernel_io_uring_wait_deadlines(uint64_t start_us,
+                                   uint64_t timeout_us,
+                                   int timeout_present,
+                                   int absolute_timeout,
+                                   uint32_t minimum_wait_us,
+                                   uint64_t *minimum_deadline_us,
+                                   uint64_t *wait_deadline_us);
 
 #endif

@@ -381,6 +381,9 @@ typedef struct kernel_linux_thread_state {
     struct edge_linux_rseq_state rseq;
     uint32_t personality;
     uint32_t io_uring_wait_submitted;
+    uint32_t io_uring_wait_active;
+    uint64_t io_uring_wait_deadline_us;
+    uint64_t io_uring_wait_minimum_deadline_us;
     kernel_restart_block_t restart_block;
 } kernel_linux_thread_state_t;
 

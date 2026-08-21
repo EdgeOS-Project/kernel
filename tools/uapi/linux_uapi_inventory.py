@@ -34,6 +34,8 @@ EDGEOS_ASSESSMENTS = [
             "completion-count timeouts",
             "timeout removal and user-data cancellation",
             "classic and extended temporary signal-mask enter arguments",
+            "relative and absolute extended enter deadlines with minimum-wait batching",
+            "completion-before-signal enter return ordering and CQ-capacity clamping",
             "OPENAT, OPENAT2, CLOSE, STATX and FALLOCATE through shared VFS handlers",
             "SEND, RECV, SENDMSG, RECVMSG and SHUTDOWN through shared socket handlers",
             "CONNECT and ACCEPT through shared socket handlers",
@@ -52,7 +54,8 @@ EDGEOS_ASSESSMENTS = [
         "missing": [
             "asynchronous worker execution",
             "fixed buffers with user-page pinning",
-            "fully interruptible enter suspension and extended wait deadlines",
+            "scheduler-native enter suspension without polling",
+            "registered wait regions and SQPOLL wait control",
             "pending asynchronous descriptor leases across close and reuse",
             "remaining supported VFS and socket operations",
             "ia32 and x32 compatibility layouts",
@@ -78,7 +81,8 @@ EDGEOS_ASSESSMENTS = [
                 "futex_wake, fixed-file registration, retained lifetime, updates, "
                 "extended resource layouts, tag completion events, registered-ring "
                 "descriptor lifetime, timeout update, finite and updated multishot "
-                "timeouts, poll update, multishot poll and operation probe"
+                "timeouts, relative and absolute enter deadlines, minimum-wait "
+                "batching, poll update, multishot poll and operation probe"
             ),
         },
     },

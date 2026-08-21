@@ -1386,3 +1386,44 @@ uint32_t kernel_io_uring_completion_count(int32_t ring_id) {
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     return result;
 }
+
+uint32_t kernel_io_uring_completion_capacity(int32_t ring_id) {
+    kernel_io_uring_t *ring;
+    uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
+    uint32_t result = 0;
+
+    ring = io_uring_lookup_locked(ring_id);
+    if (ring) result = ring->cq_entries;
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+static uint64_t io_uring_saturating_add(uint64_t first, uint64_t second) {
+    return second > UINT64_MAX - first ? UINT64_MAX : first + second;
+}
+
+int kernel_io_uring_wait_deadlines(uint64_t start_us,
+                                   uint64_t timeout_us,
+                                   int timeout_present,
+                                   int absolute_timeout,
+                                   uint32_t minimum_wait_us,
+                                   uint64_t *minimum_deadline_us,
+                                   uint64_t *wait_deadline_us) {
+    uint64_t minimum_deadline = 0;
+    uint64_t wait_deadline = UINT64_MAX;
+
+    if (!minimum_deadline_us || !wait_deadline_us)
+        return -EDGE_LINUX_EINVAL;
+    if (minimum_wait_us)
+        minimum_deadline = io_uring_saturating_add(
+            start_us, minimum_wait_us);
+    if (timeout_present)
+        wait_deadline = absolute_timeout ? timeout_us :
+            io_uring_saturating_add(start_us, timeout_us);
+    if (minimum_deadline &&
+        (wait_deadline == UINT64_MAX || wait_deadline < minimum_deadline))
+        wait_deadline = minimum_deadline;
+    *minimum_deadline_us = minimum_deadline;
+    *wait_deadline_us = wait_deadline;
+    return 0;
+}

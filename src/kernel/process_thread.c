@@ -32,6 +32,10 @@ void kernel_linux_thread_state_clone(
     child->robust_list_length = 0;
     edge_linux_rseq_state_reset(&child->rseq);
     child->personality = parent ? parent->personality : 0;
+    child->io_uring_wait_submitted = 0;
+    child->io_uring_wait_active = 0;
+    child->io_uring_wait_deadline_us = 0;
+    child->io_uring_wait_minimum_deadline_us = 0;
     kernel_restart_block_reset(&child->restart_block);
 }
 
@@ -41,6 +45,10 @@ void kernel_linux_thread_state_exec(kernel_linux_thread_state_t *state) {
     state->robust_list_head = 0;
     state->robust_list_length = 0;
     edge_linux_rseq_state_reset(&state->rseq);
+    state->io_uring_wait_submitted = 0;
+    state->io_uring_wait_active = 0;
+    state->io_uring_wait_deadline_us = 0;
+    state->io_uring_wait_minimum_deadline_us = 0;
     kernel_restart_block_reset(&state->restart_block);
 }
 
