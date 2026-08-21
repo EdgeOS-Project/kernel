@@ -10475,7 +10475,8 @@ void process_update_thread_group_signal_action(int sig, uint64_t handler, uint64
     }
 }
 const task_t *process_task_by_index(int index) {
-    if (index < 0 || index >= PROC_MAX_TASKS) return 0;
+    if (!g_tasks_ready || !g_tasks ||
+        index < 0 || index >= PROC_MAX_TASKS) return 0;
     return &g_tasks[index];
 }
 task_t *process_current_task(void) { return scheduler_current_task(); }
