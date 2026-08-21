@@ -18,6 +18,7 @@
 #define KERNEL_IO_URING_MAX_SQE_PAGES 4u
 #define KERNEL_IO_URING_MAX_PENDING 128u
 #define KERNEL_IO_URING_MAX_FIXED_FILES 256u
+#define KERNEL_IO_URING_MAX_FIXED_BUFFERS 256u
 #define KERNEL_IO_URING_MAX_WAIT_REGION_PAGES 64u
 #define KERNEL_IO_URING_REGISTERED_RINGS 16u
 #define KERNEL_IO_URING_REGISTERED_RING_ALLOC UINT32_MAX
@@ -91,6 +92,17 @@ int kernel_io_uring_files_update_tagged(
     int32_t ring_id, uint32_t offset,
     const int32_t *descriptors, const uint64_t *tags,
     uint32_t count);
+int kernel_io_uring_buffers_register(
+    int32_t ring_id, const struct edge_linux_iovec *buffers,
+    const uint64_t *tags, uint32_t count);
+int kernel_io_uring_buffers_unregister(int32_t ring_id);
+int kernel_io_uring_buffers_update(
+    int32_t ring_id, uint32_t offset,
+    const struct edge_linux_iovec *buffers,
+    const uint64_t *tags, uint32_t count);
+int kernel_io_uring_fixed_buffer_validate(
+    int32_t ring_id, uint32_t index,
+    uint64_t address, uint64_t length);
 int kernel_io_uring_file_alloc_range_set(int32_t ring_id,
                                          uint32_t offset,
                                          uint32_t length);

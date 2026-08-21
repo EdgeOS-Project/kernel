@@ -66,6 +66,7 @@ struct linux_epoll_event {
 #define PAGE_SIZE 4096u
 #define ENXIO 6
 #define EBADF 9
+#define EFAULT 14
 #define ESPIPE 29
 #define EBUSY 16
 #define EEXIST 17
@@ -83,13 +84,19 @@ struct linux_epoll_event {
 #define IORING_SETUP_R_DISABLED (1u << 6)
 #define IOSQE_FIXED_FILE (1u << 0)
 #define IOSQE_IO_LINK (1u << 2)
+#define IORING_REGISTER_BUFFERS 0u
+#define IORING_UNREGISTER_BUFFERS 1u
 #define IORING_REGISTER_FILES 2u
 #define IORING_UNREGISTER_FILES 3u
 #define IORING_REGISTER_PROBE 8u
 #define IORING_REGISTER_EVENTFD 4u
 #define IORING_UNREGISTER_EVENTFD 5u
+#define IORING_REGISTER_BUFFERS2 15u
+#define IORING_REGISTER_BUFFERS_UPDATE 16u
 #define IO_URING_OP_SUPPORTED 1u
 #define IORING_OP_NOP 0u
+#define IORING_OP_READ_FIXED 4u
+#define IORING_OP_WRITE_FIXED 5u
 #define IORING_OP_SYNC_FILE_RANGE 8u
 #define IORING_OP_READ 22u
 #define IORING_OP_WRITE 23u
@@ -176,6 +183,23 @@ struct open_how {
 struct user_iovec {
     uint64_t base;
     uint64_t length;
+};
+
+struct io_uring_resource_register {
+    uint32_t count;
+    uint32_t flags;
+    uint64_t reserved;
+    uint64_t data;
+    uint64_t tags;
+};
+
+struct io_uring_resource_update2 {
+    uint32_t offset;
+    uint32_t reserved;
+    uint64_t data;
+    uint64_t tags;
+    uint32_t count;
+    uint32_t reserved2;
 };
 
 struct user_msghdr {
@@ -905,6 +929,162 @@ cleanup:
     return failures;
 }
 
+static int run_fixed_buffer_only(
+        long ring_descriptor, struct io_uring_params *parameters,
+        void *sq_ring, void *cq_ring, struct io_uring_sqe *sqes) {
+    volatile uint32_t *sq_tail = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.tail);
+    volatile uint32_t *sq_mask = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.ring_mask);
+    volatile uint32_t *sq_array = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.array);
+    volatile uint32_t *cq_head = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters->cq_off.head);
+    volatile uint32_t *cq_tail = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters->cq_off.tail);
+    volatile uint32_t *cq_mask = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters->cq_off.ring_mask);
+    struct io_uring_cqe *cqes = (struct io_uring_cqe *)(
+        (uint8_t *)cq_ring + parameters->cq_off.cqes);
+    static char source[] = "fixed-buffer-data";
+    char read_buffer[sizeof(source)] = {0};
+    char output[sizeof(source)] = {0};
+    struct user_iovec buffers[2] = {
+        {(uint64_t)(uintptr_t)source, sizeof(source)},
+        {(uint64_t)(uintptr_t)read_buffer, sizeof(read_buffer)},
+    };
+    int32_t pipe_descriptors[2] = {-1, -1};
+    struct io_uring_sqe request;
+    int32_t result = -1;
+    int registered = 0;
+    int failures = 0;
+
+    failures += expect("fixed buffer pipe", raw_syscall6(
+        SYS_pipe2, (long)pipe_descriptors, 0, 0, 0, 0, 0), 0);
+    if (pipe_descriptors[0] < 0 || pipe_descriptors[1] < 0)
+        goto cleanup;
+    failures += expect("register fixed buffers", raw_syscall6(
+        SYS_io_uring_register, ring_descriptor, IORING_REGISTER_BUFFERS,
+        (long)buffers, 2, 0, 0), 0);
+    registered = 1;
+    failures += expect("reject duplicate fixed buffers", raw_syscall6(
+        SYS_io_uring_register, ring_descriptor, IORING_REGISTER_BUFFERS,
+        (long)buffers, 2, 0, 0), -EBUSY);
+
+    memset(&request, 0, sizeof(request));
+    request.opcode = IORING_OP_WRITE_FIXED;
+    request.descriptor = pipe_descriptors[1];
+    request.offset = UINT64_MAX;
+    request.address = (uint64_t)(uintptr_t)source;
+    request.length = sizeof(source);
+    request.buffer_index = 0u;
+    failures += submit_one(
+        ring_descriptor, sq_tail, sq_mask, sq_array, sqes,
+        cq_head, cq_tail, cq_mask, cqes, &request,
+        0x4255464657524954ull, "submit fixed buffer write", &result);
+    failures += expect("fixed buffer write completion", result,
+                       sizeof(source));
+    failures += expect("fixed buffer pipe read", raw_syscall6(
+        SYS_read, pipe_descriptors[0], (long)output,
+        sizeof(output), 0, 0, 0), sizeof(source));
+    failures += expect_true("fixed buffer write data",
+        output[0] == source[0] && output[sizeof(output) - 1u] == 0);
+
+    failures += expect("prime fixed buffer read", raw_syscall6(
+        SYS_write, pipe_descriptors[1], (long)source,
+        sizeof(source), 0, 0, 0), sizeof(source));
+    memset(&request, 0, sizeof(request));
+    request.opcode = IORING_OP_READ_FIXED;
+    request.descriptor = pipe_descriptors[0];
+    request.offset = UINT64_MAX;
+    request.address = (uint64_t)(uintptr_t)read_buffer;
+    request.length = sizeof(read_buffer);
+    request.buffer_index = 1u;
+    failures += submit_one(
+        ring_descriptor, sq_tail, sq_mask, sq_array, sqes,
+        cq_head, cq_tail, cq_mask, cqes, &request,
+        0x4255464652454144ull, "submit fixed buffer read", &result);
+    failures += expect("fixed buffer read completion", result,
+                       sizeof(read_buffer));
+    failures += expect_true("fixed buffer read data",
+        read_buffer[0] == source[0] &&
+        read_buffer[sizeof(read_buffer) - 1u] == 0);
+
+    request.address = (uint64_t)(uintptr_t)read_buffer - 1u;
+    failures += submit_one(
+        ring_descriptor, sq_tail, sq_mask, sq_array, sqes,
+        cq_head, cq_tail, cq_mask, cqes, &request,
+        0x425546464f555453ull, "fixed buffer outside range", &result);
+    failures += expect("fixed buffer outside range completion",
+                       result, -EFAULT);
+    request.address = (uint64_t)(uintptr_t)read_buffer;
+    request.buffer_index = 2u;
+    failures += submit_one(
+        ring_descriptor, sq_tail, sq_mask, sq_array, sqes,
+        cq_head, cq_tail, cq_mask, cqes, &request,
+        0x4255464642414449ull, "fixed buffer invalid index", &result);
+    failures += expect("fixed buffer invalid index completion",
+                       result, -EFAULT);
+    failures += expect("unregister fixed buffers", raw_syscall6(
+        SYS_io_uring_register, ring_descriptor,
+        IORING_UNREGISTER_BUFFERS, 0, 0, 0, 0), 0);
+    registered = 0;
+    failures += expect("repeat unregister fixed buffers", raw_syscall6(
+        SYS_io_uring_register, ring_descriptor,
+        IORING_UNREGISTER_BUFFERS, 0, 0, 0, 0), -ENXIO);
+
+    {
+        uint64_t tags[2] = {
+            0x4255465441474131ull,
+            0x4255465441474232ull,
+        };
+        uint64_t replacement_tag = 0x4255465441474333ull;
+        struct io_uring_resource_register registration = {
+            .count = 2u,
+            .data = (uint64_t)(uintptr_t)buffers,
+            .tags = (uint64_t)(uintptr_t)tags,
+        };
+        struct io_uring_resource_update2 update = {
+            .offset = 0u,
+            .data = (uint64_t)(uintptr_t)&buffers[0],
+            .tags = (uint64_t)(uintptr_t)&replacement_tag,
+            .count = 1u,
+        };
+        uint32_t completion =
+            __atomic_load_n(cq_head, __ATOMIC_ACQUIRE);
+
+        failures += expect("register tagged fixed buffers", raw_syscall6(
+            SYS_io_uring_register, ring_descriptor,
+            IORING_REGISTER_BUFFERS2, (long)&registration,
+            sizeof(registration), 0, 0), 0);
+        registered = 1;
+        failures += expect("update tagged fixed buffer", raw_syscall6(
+            SYS_io_uring_register, ring_descriptor,
+            IORING_REGISTER_BUFFERS_UPDATE, (long)&update,
+            sizeof(update), 0, 0), 1);
+        failures += expect_true("fixed buffer update tag completion",
+            __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == completion + 1u &&
+            cqes[completion & *cq_mask].user_data == tags[0] &&
+            cqes[completion & *cq_mask].result == 0);
+        __atomic_store_n(cq_head, completion + 1u, __ATOMIC_RELEASE);
+        failures += expect("unregister tagged fixed buffers", raw_syscall6(
+            SYS_io_uring_register, ring_descriptor,
+            IORING_UNREGISTER_BUFFERS, 0, 0, 0, 0), 0);
+        registered = 0;
+    }
+
+cleanup:
+    if (registered)
+        (void)raw_syscall6(
+            SYS_io_uring_register, ring_descriptor,
+            IORING_UNREGISTER_BUFFERS, 0, 0, 0, 0);
+    for (uint32_t index = 0; index < 2u; ++index)
+        if (pipe_descriptors[index] >= 0)
+            (void)raw_syscall6(
+                SYS_close, pipe_descriptors[index], 0, 0, 0, 0, 0);
+    return failures;
+}
+
 static int run_tests(void) {
     struct io_uring_probe probe;
     struct io_uring_params parameters;
@@ -1077,6 +1257,11 @@ static int run_tests(void) {
          IO_URING_OP_SUPPORTED) != 0 &&
         (probe.operations[IORING_OP_WRITE].flags &
          IO_URING_OP_SUPPORTED) != 0);
+    failures += expect_true("probe fixed buffer read/write",
+        (probe.operations[IORING_OP_READ_FIXED].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_WRITE_FIXED].flags &
+         IO_URING_OP_SUPPORTED) != 0);
     failures += expect_true("probe VFS operations",
         (probe.operations[IORING_OP_OPENAT].flags &
          IO_URING_OP_SUPPORTED) != 0 &&
@@ -1165,6 +1350,16 @@ static int run_tests(void) {
 
 #ifdef EDGEOS_IO_URING_MSG_RING_ONLY
     failures += run_msg_ring_only(
+        descriptor, &parameters, sq_ring, cq_ring, sqes);
+    (void)raw_syscall6(SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
+    (void)raw_syscall6(SYS_munmap, (long)cq_ring, PAGE_SIZE, 0, 0, 0, 0);
+    (void)raw_syscall6(SYS_munmap, (long)sqes, PAGE_SIZE, 0, 0, 0, 0);
+    (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+    return failures;
+#endif
+
+#ifdef EDGEOS_IO_URING_FIXED_BUFFER_ONLY
+    failures += run_fixed_buffer_only(
         descriptor, &parameters, sq_ring, cq_ring, sqes);
     (void)raw_syscall6(SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
     (void)raw_syscall6(SYS_munmap, (long)cq_ring, PAGE_SIZE, 0, 0, 0, 0);
@@ -2106,6 +2301,9 @@ static int run_tests(void) {
         0x4655544558424144ull, "submit invalid futex wake", &path_result);
     failures += expect("invalid futex wake completion", path_result,
                        -EINVAL);
+
+    failures += run_fixed_buffer_only(
+        descriptor, &parameters, sq_ring, cq_ring, sqes);
 
     failures += expect("fixed splice input pipe", raw_syscall6(
         SYS_pipe2, (long)splice_input, 0, 0, 0, 0, 0), 0);

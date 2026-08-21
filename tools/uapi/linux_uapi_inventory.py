@@ -51,6 +51,8 @@ EDGEOS_ASSESSMENTS = [
             "submission-queue fixed-file updates through IORING_OP_FILES_UPDATE",
             "fixed-file installation with Linux close-on-exec policy",
             "FILES2 sparse registration, UPDATE2 layouts and resource tag completion events",
+            "bounded fixed-buffer registration, sparse entries, updates, tags and range validation",
+            "READ_FIXED and WRITE_FIXED through shared synchronous descriptor I/O",
             "per-task registered-ring descriptors for enter and register operations",
             "timeout removal and update with retained clock selection",
             "per-ring monotonic or boottime enter clocks",
@@ -105,7 +107,9 @@ EDGEOS_ASSESSMENTS = [
                 "flag forwarding, disabled targets and buffered CQ overflow, "
                 "plus registered-file transfer with explicit and allocated "
                 "slots, skipped target completions and retained lifetime after "
-                "source-table removal"
+                "source-table removal, plus legacy and extended fixed-buffer "
+                "registration, tagged updates, range errors and real pipe data "
+                "through READ_FIXED and WRITE_FIXED"
             ),
         },
     },

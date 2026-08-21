@@ -78,6 +78,12 @@ typedef struct kernel_io_uring_pending {
     uint64_t sequence;
 } kernel_io_uring_pending_t;
 
+typedef struct kernel_io_uring_fixed_buffer {
+    uint64_t address;
+    uint64_t length;
+    uint64_t tag;
+} kernel_io_uring_fixed_buffer_t;
+
 typedef struct kernel_io_uring {
     uint8_t used;
     uint8_t disabled;
@@ -113,6 +119,9 @@ typedef struct kernel_io_uring {
     uint32_t file_alloc_hint;
     uint32_t next_fixed_file_reservation;
     uint32_t fixed_file_reservation_count;
+    kernel_io_uring_fixed_buffer_t
+        fixed_buffers[KERNEL_IO_URING_MAX_FIXED_BUFFERS];
+    uint32_t fixed_buffer_count;
     uint32_t clock_id;
     kernel_io_uring_pending_t pending[KERNEL_IO_URING_MAX_PENDING];
     struct edge_linux_io_uring_cqe
@@ -995,6 +1004,192 @@ int kernel_io_uring_files_update(int32_t ring_id, uint32_t offset,
                                  uint32_t count) {
     return kernel_io_uring_files_update_tagged(
         ring_id, offset, descriptors, 0, count);
+}
+
+static int io_uring_fixed_buffer_validate_registration(
+        const struct edge_linux_iovec *buffer) {
+    uint64_t accounted_length;
+
+    if (!buffer) return -EDGE_LINUX_EINVAL;
+    if (!buffer->iov_base)
+        return buffer->iov_len ? -EDGE_LINUX_EFAULT : 0;
+    if (!buffer->iov_len) return -EDGE_LINUX_EFAULT;
+    if (buffer->iov_len > (UINT64_C(1) << 40))
+        return -EDGE_LINUX_EINVAL;
+    if (buffer->iov_len >
+        UINT64_MAX - (KERNEL_IO_URING_PAGE_SIZE - 1u))
+        return -EDGE_LINUX_EOVERFLOW;
+    accounted_length =
+        (buffer->iov_len + KERNEL_IO_URING_PAGE_SIZE - 1u) &
+        ~(uint64_t)(KERNEL_IO_URING_PAGE_SIZE - 1u);
+    if (buffer->iov_base > UINT64_MAX - accounted_length)
+        return -EDGE_LINUX_EOVERFLOW;
+    return 0;
+}
+
+int kernel_io_uring_buffers_register(
+        int32_t ring_id, const struct edge_linux_iovec *buffers,
+        const uint64_t *tags, uint32_t count) {
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    int result = 0;
+
+    if (!buffers || !count ||
+        count > KERNEL_IO_URING_MAX_FIXED_BUFFERS)
+        return -EDGE_LINUX_EINVAL;
+    for (uint32_t index = 0; index < count; ++index) {
+        result = io_uring_fixed_buffer_validate_registration(
+            &buffers[index]);
+        if (result < 0) return result;
+        if (!buffers[index].iov_base && tags && tags[index])
+            return -EDGE_LINUX_EINVAL;
+    }
+
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring)
+        result = -EDGE_LINUX_EBADF;
+    else if (ring->fixed_buffer_count)
+        result = -EDGE_LINUX_EBUSY;
+    else {
+        for (uint32_t index = 0; index < count; ++index) {
+            ring->fixed_buffers[index].address =
+                buffers[index].iov_base;
+            ring->fixed_buffers[index].length =
+                buffers[index].iov_len;
+            ring->fixed_buffers[index].tag =
+                tags ? tags[index] : 0u;
+        }
+        ring->fixed_buffer_count = count;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_buffers_unregister(int32_t ring_id) {
+    kernel_io_uring_t *ring;
+    int32_t event_id = -1;
+    uint64_t flags;
+    int notify = 0;
+    int result = 0;
+
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+    } else if (!ring->fixed_buffer_count) {
+        result = -EDGE_LINUX_ENXIO;
+    } else {
+        for (uint32_t index = 0;
+             index < ring->fixed_buffer_count; ++index) {
+            if (ring->fixed_buffers[index].tag &&
+                io_uring_completion_add_locked(
+                    ring, ring->fixed_buffers[index].tag, 0, 0) == 0)
+                notify = 1;
+        }
+        memset(ring->fixed_buffers, 0,
+               sizeof(ring->fixed_buffers));
+        ring->fixed_buffer_count = 0u;
+        if (notify)
+            event_id = io_uring_event_retain_locked(ring, 0);
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (event_id >= 0) {
+        (void)kernel_eventfd_write_value(event_id, 1, 1u);
+        kernel_eventfd_release(event_id);
+    }
+    return result;
+}
+
+int kernel_io_uring_buffers_update(
+        int32_t ring_id, uint32_t offset,
+        const struct edge_linux_iovec *buffers,
+        const uint64_t *tags, uint32_t count) {
+    kernel_io_uring_t *ring;
+    int32_t event_id = -1;
+    uint32_t done;
+    uint64_t flags;
+    int notify = 0;
+    int result = 0;
+
+    if (!buffers || !count) return -EDGE_LINUX_EINVAL;
+    if (offset > UINT32_MAX - count)
+        return -EDGE_LINUX_EOVERFLOW;
+
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+        goto unlock;
+    }
+    if (!ring->fixed_buffer_count) {
+        result = -EDGE_LINUX_ENXIO;
+        goto unlock;
+    }
+    if (offset + count > ring->fixed_buffer_count) {
+        result = -EDGE_LINUX_EINVAL;
+        goto unlock;
+    }
+    for (done = 0; done < count; ++done) {
+        const struct edge_linux_iovec *buffer = &buffers[done];
+        uint64_t tag = tags ? tags[done] : 0u;
+        uint32_t index = offset + done;
+
+        result = io_uring_fixed_buffer_validate_registration(buffer);
+        if (result < 0) break;
+        if (!buffer->iov_base && tag) {
+            result = -EDGE_LINUX_EINVAL;
+            break;
+        }
+        if (ring->fixed_buffers[index].tag &&
+            io_uring_completion_add_locked(
+                ring, ring->fixed_buffers[index].tag, 0, 0) == 0)
+            notify = 1;
+        ring->fixed_buffers[index].address = buffer->iov_base;
+        ring->fixed_buffers[index].length = buffer->iov_len;
+        ring->fixed_buffers[index].tag = tag;
+    }
+    if (done) result = (int)done;
+    else if (result >= 0) result = (int)count;
+    if (notify)
+        event_id = io_uring_event_retain_locked(ring, 0);
+
+unlock:
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (event_id >= 0) {
+        (void)kernel_eventfd_write_value(event_id, 1, 1u);
+        kernel_eventfd_release(event_id);
+    }
+    return result;
+}
+
+int kernel_io_uring_fixed_buffer_validate(
+        int32_t ring_id, uint32_t index,
+        uint64_t address, uint64_t length) {
+    kernel_io_uring_t *ring;
+    kernel_io_uring_fixed_buffer_t *buffer;
+    uint64_t end;
+    uint64_t limit;
+    uint64_t flags;
+    int result;
+
+    if (address > UINT64_MAX - length)
+        return -EDGE_LINUX_EFAULT;
+    end = address + length;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+    } else if (index >= ring->fixed_buffer_count) {
+        result = -EDGE_LINUX_EFAULT;
+    } else {
+        buffer = &ring->fixed_buffers[index];
+        limit = buffer->address + buffer->length;
+        result = !buffer->address || address < buffer->address ||
+                 end > limit ? -EDGE_LINUX_EFAULT : 0;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
 }
 
 int kernel_io_uring_file_alloc_range_set(int32_t ring_id,

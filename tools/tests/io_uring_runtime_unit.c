@@ -646,6 +646,93 @@ int main(void) {
         kernel_io_uring_release(second_ring_id);
     }
     {
+        struct edge_linux_io_uring_params buffer_parameters = {0};
+        const struct edge_linux_iovec buffers[] = {
+            {.iov_base = 0x1000u, .iov_len = 0x100u},
+            {.iov_base = 0u, .iov_len = 0u},
+            {.iov_base = 0x3000u, .iov_len = 0x200u},
+        };
+        const uint64_t tags[] = {
+            0x42554641u, 0u, 0x42554642u,
+        };
+        const struct edge_linux_iovec replacement = {
+            .iov_base = 0x5000u,
+            .iov_len = 0x80u,
+        };
+        const uint64_t replacement_tag = 0x42554643u;
+        const struct edge_linux_iovec partial[] = {
+            {.iov_base = 0x6000u, .iov_len = 0x40u},
+            {.iov_base = 0u, .iov_len = 0u},
+        };
+        const uint64_t partial_tags[] = {
+            0x42554644u, 0x42554645u,
+        };
+        const struct edge_linux_iovec invalid = {
+            .iov_base = 0u,
+            .iov_len = 1u,
+        };
+        kernel_io_uring_page_t buffer_cq;
+        struct edge_linux_io_uring_cqe *buffer_completion;
+
+        assert(kernel_io_uring_create(
+                   4u, &buffer_parameters, &second_ring_id) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_CQ_RING,
+                   0u, &buffer_cq) == 0);
+        buffer_completion = (struct edge_linux_io_uring_cqe *)(
+            (uint8_t *)buffer_cq.address +
+            buffer_parameters.cq_off.cqes);
+        assert(kernel_io_uring_buffers_unregister(second_ring_id) ==
+               -EDGE_LINUX_ENXIO);
+        assert(kernel_io_uring_buffers_register(
+                   second_ring_id, &invalid, 0, 1u) ==
+               -EDGE_LINUX_EFAULT);
+        assert(kernel_io_uring_buffers_register(
+                   second_ring_id, buffers, tags, 3u) == 0);
+        assert(kernel_io_uring_buffers_register(
+                   second_ring_id, buffers, tags, 3u) ==
+               -EDGE_LINUX_EBUSY);
+        assert(kernel_io_uring_fixed_buffer_validate(
+                   second_ring_id, 0u, 0x1000u, 0x100u) == 0);
+        assert(kernel_io_uring_fixed_buffer_validate(
+                   second_ring_id, 0u, 0x1080u, 0x40u) == 0);
+        assert(kernel_io_uring_fixed_buffer_validate(
+                   second_ring_id, 0u, 0x0fffu, 1u) ==
+               -EDGE_LINUX_EFAULT);
+        assert(kernel_io_uring_fixed_buffer_validate(
+                   second_ring_id, 0u, 0x10f0u, 0x20u) ==
+               -EDGE_LINUX_EFAULT);
+        assert(kernel_io_uring_fixed_buffer_validate(
+                   second_ring_id, 1u, 0u, 0u) ==
+               -EDGE_LINUX_EFAULT);
+        assert(kernel_io_uring_fixed_buffer_validate(
+                   second_ring_id, 3u, 0x1000u, 1u) ==
+               -EDGE_LINUX_EFAULT);
+        assert(kernel_io_uring_buffers_update(
+                   second_ring_id, 0u, &replacement,
+                   &replacement_tag, 1u) == 1);
+        assert(buffer_completion[0].user_data == tags[0]);
+        assert(buffer_completion[0].result == 0 &&
+               buffer_completion[0].flags == 0u);
+        assert(kernel_io_uring_fixed_buffer_validate(
+                   second_ring_id, 0u, 0x5000u, 0x80u) == 0);
+        assert(kernel_io_uring_buffers_update(
+                   second_ring_id, 1u, partial,
+                   partial_tags, 2u) == 1);
+        assert(kernel_io_uring_fixed_buffer_validate(
+                   second_ring_id, 1u, 0x6000u, 0x40u) == 0);
+        assert(kernel_io_uring_fixed_buffer_validate(
+                   second_ring_id, 2u, 0x3000u, 0x200u) == 0);
+        assert(kernel_io_uring_buffers_unregister(second_ring_id) == 0);
+        assert(buffer_completion[1].user_data == replacement_tag);
+        assert(buffer_completion[2].user_data == partial_tags[0]);
+        assert(buffer_completion[3].user_data == tags[2]);
+        assert(kernel_io_uring_buffers_unregister(second_ring_id) ==
+               -EDGE_LINUX_ENXIO);
+        test_page_release(0, &buffer_cq);
+        kernel_io_uring_release(second_ring_id);
+    }
+    {
         struct edge_linux_io_uring_params overflow_parameters = {0};
         kernel_io_uring_page_t overflow_cq;
         kernel_io_uring_page_t overflow_sq;
