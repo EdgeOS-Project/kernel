@@ -795,6 +795,7 @@ void syscall_init(void) {
     net_init_defaults();
     process_register_user_vma_backing_hooks(file_vma_retain,
                                             file_vma_release);
+    process_register_task_prestart_hook(syscall_task_prestart);
     process_register_task_exit_hook(syscall_task_exit_cleanup);
     process_register_task_zombie_hook(syscall_task_zombie_cleanup);
     vfs_mount_namespace_set_change_notifier(fd_mount_event_notify);

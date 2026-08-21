@@ -347,6 +347,7 @@ typedef struct task_struct {
 } task_t;
 
 typedef void (*process_task_exit_hook_t)(task_t *t);
+typedef void (*process_task_prestart_hook_t)(task_t *t);
 typedef int (*process_user_vma_retain_hook_t)(const edge_user_vma_t *vma);
 typedef void (*process_user_vma_release_hook_t)(const edge_user_vma_t *vma);
 
@@ -361,6 +362,7 @@ int process_exec_storage_contains(const task_t *task, const char *string);
 void process_debug_dump_tasks(const char *reason);
 int process_exec_storage_budget_ok(const task_t *task, int argc, int envc);
 void process_init(void);
+void process_register_task_prestart_hook(process_task_prestart_hook_t hook);
 void process_register_task_exit_hook(process_task_exit_hook_t hook);
 void process_register_task_zombie_hook(process_task_exit_hook_t hook);
 void process_register_user_vma_backing_hooks(

@@ -4840,6 +4840,10 @@ void syscall_ensure_process_stdio(int pid) {
     if (process) fd_ensure_console_stdio(process, console_line_default());
 }
 
+static void syscall_task_prestart(task_t *task) {
+    if (task && task->pid == 1) syscall_ensure_process_stdio(task->pid);
+}
+
 static void fd_release_current_if_last_thread(void) {
     int tgid = process_gettgid();
     if (tgid > 0 && process_thread_group_size(tgid) > 1) return;

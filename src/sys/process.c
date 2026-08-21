@@ -288,6 +288,7 @@ static edge_pid_index_t g_task_pid_index;
 static uint64_t g_next_fs_context_id = 1u;
 static uint64_t g_next_sighand_context_id = 1u;
 static spinlock_t g_task_lock;
+static process_task_prestart_hook_t g_task_prestart_hook;
 static process_task_exit_hook_t g_task_exit_hook;
 static process_task_exit_hook_t g_task_zombie_hook;
 static process_user_vma_retain_hook_t g_user_vma_retain_hook;
@@ -8176,6 +8177,10 @@ void process_register_task_exit_hook(process_task_exit_hook_t hook) {
     g_task_exit_hook = hook;
 }
 
+void process_register_task_prestart_hook(process_task_prestart_hook_t hook) {
+    g_task_prestart_hook = hook;
+}
+
 void process_register_task_zombie_hook(process_task_exit_hook_t hook) {
     g_task_zombie_hook = hook;
 }
@@ -10350,6 +10355,7 @@ int process_spawn_exec_env(const char *path, int argc, char **argv, int envc, ch
     printf("[proc] spawn child=%d -> RUNNABLE cpu=%d\n", child->pid, process_pick_target_cpu());
 #endif
     (void)process_cgroup_account_publish(child->pid);
+    if (g_task_prestart_hook) g_task_prestart_hook(child);
     scheduler_task_make_runnable(child, (uint32_t)process_pick_target_cpu());
 
     cr3_write(old_cr3);

@@ -719,7 +719,6 @@ void kmain(uint32_t magic, void *mb_info) {
             for (;;) __asm__ __volatile__("hlt");
         }
 
-        syscall_ensure_process_stdio(init_pid);
         kernel_boot_log_flush_now();
         (void)init_pid;
         /*
