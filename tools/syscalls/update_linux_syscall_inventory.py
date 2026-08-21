@@ -39,10 +39,12 @@ LINUX_RESERVED_ENOSYS_X86_64 = {
     "epoll_wait_old",
     "get_kernel_syms",
     "getpmsg",
+    "get_thread_area",
     "nfsservctl",
     "putpmsg",
     "query_module",
     "security",
+    "set_thread_area",
     "tuxcall",
     "uselib",
     "vserver",
@@ -51,6 +53,7 @@ LINUX_RESERVED_SYSCALL_PROBE = (
     "tools/tests/linux_reserved_syscalls_abi_probe.c"
 )
 VERIFIED_SYSCALL_PROBES = {
+    "modify_ldt": "tools/tests/modify_ldt_abi_probe.c",
     "remap_file_pages": "tools/tests/remap_file_pages_abi_probe.c",
     "sysfs": "tools/tests/sysfs_syscall_abi_probe.c",
 }

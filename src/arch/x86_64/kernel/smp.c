@@ -16,6 +16,7 @@
 #include "kernel/timer_policy.h"
 #include "sys/boottime.h"
 #include "sys/mmio.h"
+#include "sys/process.h"
 #include "stdio.h"
 #include "sys/scheduler.h"
 
@@ -281,6 +282,8 @@ void arch_smp_execute_call(uint32_t flags) {
         __asm__ __volatile__("mov %0, %%cr3" :: "r"(address_space) :
                              "memory");
     }
+    if (flags & EDGE_SMP_CALL_ARCH_MM_REFRESH)
+        process_x86_ldt_activate(process_current_task());
 }
 
 void arch_smp_call_relax(void) {

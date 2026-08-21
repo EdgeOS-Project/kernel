@@ -53,6 +53,8 @@ static int run_tests(void) {
         { 183, "afs_syscall" },
         { 184, "tuxcall" },
         { 185, "security" },
+        { 205, "set_thread_area" },
+        { 211, "get_thread_area" },
         { 214, "epoll_ctl_old" },
         { 215, "epoll_wait_old" },
         { 236, "vserver" },

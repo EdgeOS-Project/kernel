@@ -9848,6 +9848,150 @@ static uint64_t do_sys_arch_prctl(uint64_t code, uint64_t addr_u) {
     return (uint64_t)-EINVAL;
 }
 
+struct edge_x86_user_desc {
+    uint32_t entry_number;
+    uint32_t base_addr;
+    uint32_t limit;
+    uint32_t flags;
+};
+
+#define EDGE_X86_USER_DESC_SEG_32BIT (1u << 0)
+#define EDGE_X86_USER_DESC_CONTENTS_MASK (3u << 1)
+#define EDGE_X86_USER_DESC_READ_EXEC_ONLY (1u << 3)
+#define EDGE_X86_USER_DESC_LIMIT_IN_PAGES (1u << 4)
+#define EDGE_X86_USER_DESC_SEG_NOT_PRESENT (1u << 5)
+#define EDGE_X86_USER_DESC_USEABLE (1u << 6)
+#define EDGE_X86_LDT_ENTRIES 8192u
+#define EDGE_X86_LDT_BYTES (EDGE_X86_LDT_ENTRIES * 8u)
+
+_Static_assert(sizeof(struct edge_x86_user_desc) == 16u,
+               "Linux x86 user_desc layout");
+
+static uint32_t edge_x86_user_desc_contents(
+    const struct edge_x86_user_desc *description) {
+    return (description->flags & EDGE_X86_USER_DESC_CONTENTS_MASK) >> 1;
+}
+
+static int edge_x86_user_desc_empty(
+    const struct edge_x86_user_desc *description) {
+    uint32_t expected = EDGE_X86_USER_DESC_READ_EXEC_ONLY |
+                        EDGE_X86_USER_DESC_SEG_NOT_PRESENT;
+
+    return description->base_addr == 0 && description->limit == 0 &&
+           (description->flags & 0x7fu) == expected;
+}
+
+static uint64_t edge_x86_pack_ldt_descriptor(
+    const struct edge_x86_user_desc *description, int old_mode) {
+    uint64_t descriptor = 0;
+    uint32_t contents = edge_x86_user_desc_contents(description);
+    uint32_t type = ((description->flags &
+                      EDGE_X86_USER_DESC_READ_EXEC_ONLY) ? 0u : 2u) |
+                    (contents << 2) | 1u;
+
+    descriptor |= description->limit & 0xffffu;
+    descriptor |= ((uint64_t)description->base_addr & 0xffffu) << 16;
+    descriptor |= ((uint64_t)(description->base_addr >> 16) & 0xffu) << 32;
+    descriptor |= (uint64_t)type << 40;
+    descriptor |= UINT64_C(1) << 44;
+    descriptor |= UINT64_C(3) << 45;
+    if (!(description->flags & EDGE_X86_USER_DESC_SEG_NOT_PRESENT))
+        descriptor |= UINT64_C(1) << 47;
+    descriptor |= ((uint64_t)(description->limit >> 16) & 0x0fu) << 48;
+    if (!old_mode &&
+        (description->flags & EDGE_X86_USER_DESC_USEABLE))
+        descriptor |= UINT64_C(1) << 52;
+    if (description->flags & EDGE_X86_USER_DESC_SEG_32BIT)
+        descriptor |= UINT64_C(1) << 54;
+    if (description->flags & EDGE_X86_USER_DESC_LIMIT_IN_PAGES)
+        descriptor |= UINT64_C(1) << 55;
+    descriptor |= ((uint64_t)(description->base_addr >> 24) & 0xffu) << 56;
+    return descriptor;
+}
+
+static uint64_t edge_x86_modify_ldt_result(int32_t result) {
+    /* Linux defines modify_ldt as an int-returning syscall on x86-64. */
+    return (uint64_t)(uint32_t)result;
+}
+
+static uint64_t do_sys_modify_ldt(uint64_t function_u, uint64_t pointer_u,
+                                  uint64_t byte_count_u) {
+#ifndef CONFIG_MODIFY_LDT_SYSCALL
+    (void)function_u;
+    (void)pointer_u;
+    (void)byte_count_u;
+    return (uint64_t)(int64_t)-ENOSYS;
+#else
+    task_t *current = process_current_task();
+    uint32_t function = (uint32_t)function_u;
+    uint64_t byte_count = byte_count_u;
+
+    if (!current || !current->scratch)
+        return edge_x86_modify_ldt_result(-ESRCH);
+    if (function == 0u) {
+        int copied;
+
+        if (byte_count > EDGE_X86_LDT_BYTES)
+            byte_count = EDGE_X86_LDT_BYTES;
+        copied = process_x86_ldt_snapshot(
+            current, current->scratch->xattr_scratch,
+            (uint32_t)byte_count);
+        if (copied < 0) return edge_x86_modify_ldt_result(-EINVAL);
+        if (!copied) return 0;
+        if (!pointer_u || copy_to_user(
+                pointer_u, current->scratch->xattr_scratch,
+                (uint32_t)copied) < 0)
+            return edge_x86_modify_ldt_result(-EFAULT);
+        return (uint64_t)(uint32_t)copied;
+    }
+    if (function == 2u) {
+        uint32_t copied = byte_count > 128u ? 128u : (uint32_t)byte_count;
+
+        if (!copied) return 0;
+        memset(current->scratch->xattr_scratch, 0, copied);
+        if (!pointer_u || copy_to_user(
+                pointer_u, current->scratch->xattr_scratch, copied) < 0)
+            return edge_x86_modify_ldt_result(-EFAULT);
+        return copied;
+    }
+    if (function == 1u || function == 0x11u) {
+        struct edge_x86_user_desc description;
+        uint64_t descriptor;
+        uint32_t contents;
+        int old_mode = function == 1u;
+
+        if (byte_count != sizeof(description))
+            return edge_x86_modify_ldt_result(-EINVAL);
+        if (!pointer_u || copy_from_user(
+                &description, pointer_u, sizeof(description)) < 0)
+            return edge_x86_modify_ldt_result(-EFAULT);
+        if (description.entry_number >= EDGE_X86_LDT_ENTRIES)
+            return edge_x86_modify_ldt_result(-EINVAL);
+        contents = edge_x86_user_desc_contents(&description);
+        if (contents == 3u &&
+            (old_mode || !(description.flags &
+                           EDGE_X86_USER_DESC_SEG_NOT_PRESENT)))
+            return edge_x86_modify_ldt_result(-EINVAL);
+        if ((old_mode && !description.base_addr && !description.limit) ||
+            edge_x86_user_desc_empty(&description)) {
+            descriptor = 0;
+        } else {
+#ifndef CONFIG_X86_16BIT
+            if (!(description.flags & EDGE_X86_USER_DESC_SEG_32BIT))
+                return edge_x86_modify_ldt_result(-EINVAL);
+#endif
+            descriptor = edge_x86_pack_ldt_descriptor(
+                &description, old_mode);
+        }
+        if (process_x86_ldt_write(
+                current, description.entry_number, descriptor) < 0)
+            return edge_x86_modify_ldt_result(-ENOMEM);
+        return 0;
+    }
+    return edge_x86_modify_ldt_result(-ENOSYS);
+#endif
+}
+
 static void syscall_trace(uint64_t nr, int64_t ret) {
     task_t *t = process_current_task();
     int pid = t ? t->pid : -1;

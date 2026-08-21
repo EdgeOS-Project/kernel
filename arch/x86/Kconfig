@@ -1,6 +1,23 @@
 # EdgeOS x86 architecture configuration
 
 menu "Processor type and features"
+config MODIFY_LDT_SYSCALL
+    bool "Legacy modify_ldt system call"
+    depends on ARCH_X86_64
+    default y
+    help
+      Provide the native x86 Linux modify_ldt ABI used by compatibility
+      runtimes and legacy applications. The descriptor table remains private
+      to an address space and is inherited across fork.
+
+config X86_16BIT
+    bool "16-bit segment support"
+    depends on ARCH_X86_64 && MODIFY_LDT_SYSCALL
+    default n
+    help
+      Permit 16-bit LDT data and stack segments. Leave this disabled until
+      the x86 exception return path provides the required stack fixup model.
+
 config APIC
     bool "Local APIC support"
     default n

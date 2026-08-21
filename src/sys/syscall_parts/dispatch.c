@@ -482,6 +482,9 @@ void edgeos_x86_64_syscall_dispatch(REGISTERS *r) {
             r->rax = do_sys_rt_sigreturn(r);
             sigreturn_restored = 1;
             break;
+        case SYS_modify_ldt:
+            r->rax = do_sys_modify_ldt(a1, a2, a3);
+            break;
         case SYS_arch_prctl:
             r->rax = do_sys_arch_prctl(a1, a2);
             break;

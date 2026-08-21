@@ -5,6 +5,7 @@
 #include "elf/elf_loader.h"
 #include "arch/x86_64/user_layout.h"
 #include "arch/x86_64/syscall.h"
+#include "arch/x86_64/gdt.h"
 #include "fb.h"
 #include "fb_console.h"
 #include "dev/fbdev.h"
@@ -1119,9 +1120,20 @@ static void task_release_dynamic_vma_storage(task_t *task) {
 }
 
 static void task_reset_slot(task_t *task, int index) {
+    uint64_t *x86_ldt_entries;
+    uint32_t x86_ldt_capacity;
+
     if (!task) return;
+    x86_ldt_entries = task->x86_ldt_entries;
+    x86_ldt_capacity = task->x86_ldt_capacity;
     task_release_dynamic_vma_storage(task);
     memset(task, 0, sizeof(*task));
+    task->x86_ldt_entries = x86_ldt_entries;
+    task->x86_ldt_capacity = x86_ldt_capacity;
+    if (x86_ldt_entries && x86_ldt_capacity)
+        memset(x86_ldt_entries, 0,
+               (uint64_t)x86_ldt_capacity * sizeof(uint64_t));
+    spinlock_init(&task->x86_ldt_lock);
     task->user_vmas = index >= 0 && index < USER_AS_MAX_TASKS ?
         kernel_mm_vma_space((uint32_t)index) : 0;
     task->user_vma_capacity = task->user_vmas ?
@@ -8469,6 +8481,13 @@ int process_fork(const edge_trap_frame_t *parent_tf,
         task_release_unused(child);
         return -1;
     }
+    if (process_x86_ldt_clone(child, vm_parent) < 0) {
+        kernel_mm_lock_space_release(child->cr3);
+        process_user_mmap_reset(child);
+        task_child_unlink(child);
+        task_release_unused(child);
+        return -1;
+    }
     if (EDGE_GUI_DEEP_TRACE && parent->pid == 1) {
         proc_trace_puts("[fork-stage] mmap-clone done child=");
         proc_trace_dec(child->pid);
@@ -11402,6 +11421,7 @@ int process_exec_reset_current(
     if (configuration->reset_architecture_tls) {
         cur->fs_base = 0;
         cur->gs_base = 0;
+        process_x86_ldt_reset(cur);
         edgeos_x86_64_set_fs_base(0);
         edgeos_x86_64_set_user_gs_base(0);
     }
@@ -11438,6 +11458,134 @@ uint64_t process_get_gs_base(void) {
     task_t *cur = process_current_task();
     if (!cur) return 0;
     return cur->gs_base;
+}
+
+#define EDGE_X86_LDT_ENTRY_COUNT 8192u
+#define EDGE_X86_LDT_BYTE_COUNT \
+    (EDGE_X86_LDT_ENTRY_COUNT * (uint32_t)sizeof(uint64_t))
+
+static int process_x86_ldt_allocate_locked(task_t *owner) {
+    void *memory = 0;
+    uint64_t physical = 0;
+    uint32_t pages;
+
+    if (!owner) return -1;
+    if (owner->x86_ldt_entries &&
+        owner->x86_ldt_capacity == EDGE_X86_LDT_ENTRY_COUNT)
+        return 0;
+    pages = (EDGE_X86_LDT_BYTE_COUNT + USER_PAGE_SIZE - 1u) /
+            USER_PAGE_SIZE;
+    if (process_kernel_runtime_alloc_pages(
+            pages, &memory, &physical) < 0 || !memory)
+        return -1;
+    (void)physical;
+    owner->x86_ldt_entries = (uint64_t *)memory;
+    owner->x86_ldt_capacity = EDGE_X86_LDT_ENTRY_COUNT;
+    owner->x86_ldt_nr_entries = 0;
+    return 0;
+}
+
+static void process_x86_ldt_refresh_online_cpus(void) {
+    edge_cpumask_t online;
+
+    edge_smp_online_mask(&online);
+    (void)edge_smp_call(&online, EDGE_SMP_CALL_ARCH_MM_REFRESH);
+}
+
+int process_x86_ldt_snapshot(task_t *task, void *buffer,
+                             uint32_t byte_count) {
+    task_t *owner = task_vm_owner_local(task);
+    uint32_t stored_bytes;
+    uint64_t flags;
+
+    if (!owner || (!buffer && byte_count) ||
+        byte_count > EDGE_X86_LDT_BYTE_COUNT)
+        return -1;
+    flags = spin_lock_irqsave(&owner->x86_ldt_lock);
+    if (!owner->x86_ldt_entries || !owner->x86_ldt_nr_entries) {
+        spin_unlock_irqrestore(&owner->x86_ldt_lock, flags);
+        return 0;
+    }
+    memset(buffer, 0, byte_count);
+    stored_bytes = owner->x86_ldt_nr_entries * sizeof(uint64_t);
+    if (stored_bytes > byte_count) stored_bytes = byte_count;
+    memcpy(buffer, owner->x86_ldt_entries, stored_bytes);
+    spin_unlock_irqrestore(&owner->x86_ldt_lock, flags);
+    return (int)byte_count;
+}
+
+int process_x86_ldt_write(task_t *task, uint32_t entry,
+                          uint64_t descriptor) {
+    task_t *owner = task_vm_owner_local(task);
+    uint64_t flags;
+
+    if (!owner || entry >= EDGE_X86_LDT_ENTRY_COUNT) return -1;
+    flags = spin_lock_irqsave(&owner->x86_ldt_lock);
+    if (process_x86_ldt_allocate_locked(owner) < 0) {
+        spin_unlock_irqrestore(&owner->x86_ldt_lock, flags);
+        return -1;
+    }
+    owner->x86_ldt_entries[entry] = descriptor;
+    if (owner->x86_ldt_nr_entries <= entry)
+        owner->x86_ldt_nr_entries = entry + 1u;
+    spin_unlock_irqrestore(&owner->x86_ldt_lock, flags);
+    process_x86_ldt_refresh_online_cpus();
+    return 0;
+}
+
+int process_x86_ldt_clone(task_t *destination, const task_t *source) {
+    task_t *source_owner = task_vm_owner_local((task_t *)source);
+    uint64_t flags;
+
+    if (!destination || !source_owner) return -1;
+    flags = spin_lock_irqsave(&source_owner->x86_ldt_lock);
+    if (!source_owner->x86_ldt_entries ||
+        !source_owner->x86_ldt_nr_entries) {
+        spin_unlock_irqrestore(&source_owner->x86_ldt_lock, flags);
+        return 0;
+    }
+    if (process_x86_ldt_allocate_locked(destination) < 0) {
+        spin_unlock_irqrestore(&source_owner->x86_ldt_lock, flags);
+        return -1;
+    }
+    memcpy(destination->x86_ldt_entries, source_owner->x86_ldt_entries,
+           (uint64_t)source_owner->x86_ldt_nr_entries * sizeof(uint64_t));
+    destination->x86_ldt_nr_entries = source_owner->x86_ldt_nr_entries;
+    spin_unlock_irqrestore(&source_owner->x86_ldt_lock, flags);
+    return 0;
+}
+
+void process_x86_ldt_reset(task_t *task) {
+    task_t *owner = task_vm_owner_local(task);
+    uint64_t flags;
+
+    if (!owner) return;
+    flags = spin_lock_irqsave(&owner->x86_ldt_lock);
+    if (owner->x86_ldt_entries && owner->x86_ldt_capacity)
+        memset(owner->x86_ldt_entries, 0,
+               (uint64_t)owner->x86_ldt_capacity * sizeof(uint64_t));
+    owner->x86_ldt_nr_entries = 0;
+    spin_unlock_irqrestore(&owner->x86_ldt_lock, flags);
+    process_x86_ldt_refresh_online_cpus();
+}
+
+void process_x86_ldt_activate(task_t *task) {
+    task_t *owner = task_vm_owner_local(task);
+    const uint64_t *entries = 0;
+    uint32_t count = 0;
+    uint64_t flags;
+
+    if (!owner) {
+        gdt_load_ldt(0, 0);
+        return;
+    }
+    flags = spin_lock_irqsave(&owner->x86_ldt_lock);
+    if (owner->x86_ldt_entries && owner->x86_ldt_nr_entries) {
+        entries = owner->x86_ldt_entries;
+        count = owner->x86_ldt_capacity;
+    }
+    gdt_load_ldt(entries, count);
+    spin_unlock_irqrestore(&owner->x86_ldt_lock, flags);
 }
 
 uint32_t process_getuid(void) {

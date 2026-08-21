@@ -2232,15 +2232,17 @@
       "architecture_exceptions": [
         "legacy x86_64 TLS descriptor ABI"
       ],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/linux_reserved_syscalls_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 211,
           "status": "enosys",
           "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "evidence_status": "oracle-verified-enosys"
         },
         "aarch64": null
       }
@@ -4416,15 +4418,17 @@
       "architecture_exceptions": [
         "x86_64 descriptor-table ABI"
       ],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/modify_ldt_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 154,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "do_sys_modify_ldt",
+          "evidence_status": "oracle-verified"
         },
         "aarch64": null
       }
@@ -7314,15 +7318,17 @@
       "architecture_exceptions": [
         "legacy x86_64 TLS descriptor ABI"
       ],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/linux_reserved_syscalls_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 205,
           "status": "enosys",
           "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "evidence_status": "oracle-verified-enosys"
         },
         "aarch64": null
       }

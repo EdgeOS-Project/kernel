@@ -30,7 +30,12 @@ typedef struct {
     uint16 iomap_base;
 } __attribute__((packed)) tss64_t;
 
-static uint64 g_gdt[SCHED_MAX_CPUS][7] __attribute__((aligned(64)));
+#define GDT_ENTRY_LDT 7u
+#define GDT_LDT_SELECTOR ((uint16_t)(GDT_ENTRY_LDT << 3))
+#define GDT_ENTRY_COUNT 15u
+
+static uint64 g_gdt[SCHED_MAX_CPUS][GDT_ENTRY_COUNT]
+    __attribute__((aligned(64)));
 static tss64_t g_tss[SCHED_MAX_CPUS] __attribute__((aligned(64)));
 static gdt_ptr_t g_gdt_ptr[SCHED_MAX_CPUS];
 
@@ -65,6 +70,35 @@ uint64_t gdt_get_tss_rsp0(void) {
     return g_tss[cpu].rsp0;
 }
 
+static void gdt_load_ldt_cpu(uint32_t cpu, const uint64_t *entries,
+                             uint32_t entry_count) {
+    uint16_t selector = 0;
+
+    if (cpu >= SCHED_MAX_CPUS) cpu = 0;
+    g_gdt[cpu][GDT_ENTRY_LDT] = 0;
+    g_gdt[cpu][GDT_ENTRY_LDT + 1u] = 0;
+    if (entries && entry_count) {
+        uint64_t base = (uint64_t)(uintptr_t)entries;
+        uint32_t limit = entry_count >= 8192u ?
+            8192u * 8u - 1u : entry_count * 8u - 1u;
+        uint64_t low = 0;
+
+        low |= limit & 0xffffu;
+        low |= (base & 0xffffffu) << 16;
+        low |= UINT64_C(0x82) << 40;
+        low |= ((uint64_t)(limit >> 16) & 0x0fu) << 48;
+        low |= ((base >> 24) & 0xffu) << 56;
+        g_gdt[cpu][GDT_ENTRY_LDT] = low;
+        g_gdt[cpu][GDT_ENTRY_LDT + 1u] = base >> 32;
+        selector = GDT_LDT_SELECTOR;
+    }
+    __asm__ __volatile__("lldt %0" :: "m"(selector) : "memory");
+}
+
+void gdt_load_ldt(const uint64_t *entries, uint32_t entry_count) {
+    gdt_load_ldt_cpu(scheduler_cpu_id(), entries, entry_count);
+}
+
 void gdt_init_cpu(uint32_t cpu) {
     if (cpu >= SCHED_MAX_CPUS) cpu = 0;
     g_gdt[cpu][0] = 0;
@@ -72,6 +106,8 @@ void gdt_init_cpu(uint32_t cpu) {
     g_gdt[cpu][2] = 0x00AF92000000FFFFULL;
     g_gdt[cpu][3] = 0x00AFFA000000FFFFULL;
     g_gdt[cpu][4] = 0x00AFF2000000FFFFULL;
+    for (uint32_t index = 5u; index < GDT_ENTRY_COUNT; ++index)
+        g_gdt[cpu][index] = 0;
 
     for (uint32 i = 0; i < sizeof(g_tss[cpu]); ++i)
         ((uint8 *)&g_tss[cpu])[i] = 0;
@@ -85,6 +121,7 @@ void gdt_init_cpu(uint32_t cpu) {
 
     load_gdt((uint64)&g_gdt_ptr[cpu]);
     load_tss(0x28);
+    gdt_load_ldt_cpu(cpu, 0, 0);
 }
 
 void gdt_init(void) {
