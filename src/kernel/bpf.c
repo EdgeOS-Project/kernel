@@ -65,6 +65,8 @@ typedef struct kernel_bpf_map {
     uint32_t entry_stride;
     uint32_t entry_count;
     uint32_t storage_pages;
+    uint32_t queue_head;
+    uint32_t queue_tail;
     uint64_t access_sequence;
     uint8_t frozen;
     uint8_t *storage;
@@ -140,6 +142,15 @@ static int bpf_map_is_lru_hash(const kernel_bpf_map_t *map) {
     return map && map->type == KERNEL_BPF_MAP_TYPE_LRU_HASH;
 }
 
+static int bpf_map_type_is_queue_stack(uint32_t type) {
+    return type == KERNEL_BPF_MAP_TYPE_QUEUE ||
+           type == KERNEL_BPF_MAP_TYPE_STACK;
+}
+
+static int bpf_map_is_queue_stack(const kernel_bpf_map_t *map) {
+    return map && bpf_map_type_is_queue_stack(map->type);
+}
+
 static int bpf_name_valid(const char *name) {
     uint32_t index;
 
@@ -211,11 +222,16 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
     int status;
 
     if (!request || !bpf_name_valid(request->name) ||
-        !request->key_size || request->key_size > KERNEL_BPF_MAX_KEY_SIZE ||
+        request->key_size > KERNEL_BPF_MAX_KEY_SIZE ||
         !request->value_size ||
         request->value_size > KERNEL_BPF_MAX_VALUE_SIZE ||
         !request->max_entries)
         return -EDGE_LINUX_EINVAL;
+    if (bpf_map_type_is_queue_stack(request->type)) {
+        if (request->key_size) return -EDGE_LINUX_EINVAL;
+    } else if (!request->key_size) {
+        return -EDGE_LINUX_EINVAL;
+    }
     if (request->type == KERNEL_BPF_MAP_TYPE_ARRAY) {
         if (request->key_size != sizeof(uint32_t) || request->flags)
             return -EDGE_LINUX_EINVAL;
@@ -232,6 +248,9 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
         stride = bpf_align8(
             1u + request->key_size + request->value_size) +
             sizeof(uint64_t);
+    } else if (bpf_map_type_is_queue_stack(request->type)) {
+        if (request->flags) return -EDGE_LINUX_EINVAL;
+        stride = bpf_align8(request->value_size);
     } else {
         return -EDGE_LINUX_EINVAL;
     }
@@ -755,6 +774,32 @@ static uint32_t bpf_map_lru_oldest(kernel_bpf_map_t *map) {
     return oldest;
 }
 
+static int bpf_map_queue_stack_get(kernel_bpf_map_t *map, void *value,
+                                   int delete_element) {
+    uint32_t index;
+
+    if (!map->entry_count) {
+        memset(value, 0, map->value_size);
+        return -EDGE_LINUX_ENOENT;
+    }
+    if (map->type == KERNEL_BPF_MAP_TYPE_QUEUE) {
+        index = map->queue_tail;
+        if (delete_element) {
+            map->queue_tail = (map->queue_tail + 1u) % map->max_entries;
+            --map->entry_count;
+        }
+    } else {
+        index = map->queue_head ? map->queue_head - 1u :
+                                 map->max_entries - 1u;
+        if (delete_element) {
+            map->queue_head = index;
+            --map->entry_count;
+        }
+    }
+    memcpy(value, bpf_map_entry(map, index), map->value_size);
+    return 0;
+}
+
 static int bpf_map_array_index(const kernel_bpf_map_t *map, const void *key,
                                uint32_t *index) {
     uint32_t value;
@@ -793,7 +838,7 @@ int kernel_bpf_map_lookup(int object_id, const void *key, void *value) {
     uint32_t free_slot;
     int status = 0;
 
-    if (!key || !value) return -EDGE_LINUX_EFAULT;
+    if (!value) return -EDGE_LINUX_EFAULT;
     bpf_lock();
     object = bpf_object_locked(object_id);
     if (!object || object->kind != KERNEL_BPF_OBJECT_MAP) {
@@ -801,7 +846,15 @@ int kernel_bpf_map_lookup(int object_id, const void *key, void *value) {
         goto out;
     }
     map = &object->value.map;
-    if (map->type == KERNEL_BPF_MAP_TYPE_ARRAY) {
+    if (bpf_map_is_queue_stack(map)) {
+        if (key) {
+            status = -EDGE_LINUX_EINVAL;
+            goto out;
+        }
+        status = bpf_map_queue_stack_get(map, value, 0);
+    } else if (!key) {
+        status = -EDGE_LINUX_EFAULT;
+    } else if (map->type == KERNEL_BPF_MAP_TYPE_ARRAY) {
         status = bpf_map_array_index(map, key, &index);
         if (status < 0) goto out;
         memcpy(value, bpf_map_entry(map, index), map->value_size);
@@ -829,7 +882,7 @@ int kernel_bpf_map_update(int object_id, const void *key, const void *value,
     uint32_t free_slot;
     int status = 0;
 
-    if (!key || !value) return -EDGE_LINUX_EFAULT;
+    if (!value) return -EDGE_LINUX_EFAULT;
     if (flags != KERNEL_BPF_ANY && flags != KERNEL_BPF_NOEXIST &&
         flags != KERNEL_BPF_EXIST)
         return -EDGE_LINUX_EINVAL;
@@ -844,7 +897,27 @@ int kernel_bpf_map_update(int object_id, const void *key, const void *value,
         status = -EDGE_LINUX_EPERM;
         goto out;
     }
-    if (map->type == KERNEL_BPF_MAP_TYPE_ARRAY) {
+    if (bpf_map_is_queue_stack(map)) {
+        if (key || flags == KERNEL_BPF_NOEXIST ||
+            flags > KERNEL_BPF_EXIST) {
+            status = -EDGE_LINUX_EINVAL;
+            goto out;
+        }
+        if (map->entry_count == map->max_entries) {
+            if (flags != KERNEL_BPF_EXIST) {
+                status = -EDGE_LINUX_E2BIG;
+                goto out;
+            }
+            map->queue_tail = (map->queue_tail + 1u) % map->max_entries;
+        } else {
+            ++map->entry_count;
+        }
+        memcpy(bpf_map_entry(map, map->queue_head), value,
+               map->value_size);
+        map->queue_head = (map->queue_head + 1u) % map->max_entries;
+    } else if (!key) {
+        status = -EDGE_LINUX_EFAULT;
+    } else if (map->type == KERNEL_BPF_MAP_TYPE_ARRAY) {
         if (flags == KERNEL_BPF_NOEXIST) {
             status = -EDGE_LINUX_EEXIST;
             goto out;
@@ -896,7 +969,7 @@ int kernel_bpf_map_lookup_and_delete(int object_id, const void *key,
     uint32_t free_slot;
     int status = 0;
 
-    if (!key || !value) return -EDGE_LINUX_EFAULT;
+    if (!value) return -EDGE_LINUX_EFAULT;
     bpf_lock();
     object = bpf_object_locked(object_id);
     if (!object || object->kind != KERNEL_BPF_OBJECT_MAP) {
@@ -906,6 +979,18 @@ int kernel_bpf_map_lookup_and_delete(int object_id, const void *key,
     map = &object->value.map;
     if (map->frozen) {
         status = -EDGE_LINUX_EPERM;
+        goto out;
+    }
+    if (bpf_map_is_queue_stack(map)) {
+        if (key) {
+            status = -EDGE_LINUX_EINVAL;
+            goto out;
+        }
+        status = bpf_map_queue_stack_get(map, value, 1);
+        goto out;
+    }
+    if (!key) {
+        status = -EDGE_LINUX_EFAULT;
         goto out;
     }
     if (!bpf_map_is_hash(map)) {
@@ -933,7 +1018,6 @@ int kernel_bpf_map_delete(int object_id, const void *key) {
     uint32_t free_slot;
     int status = 0;
 
-    if (!key) return -EDGE_LINUX_EFAULT;
     bpf_lock();
     object = bpf_object_locked(object_id);
     if (!object || object->kind != KERNEL_BPF_OBJECT_MAP) {
@@ -943,6 +1027,14 @@ int kernel_bpf_map_delete(int object_id, const void *key) {
     map = &object->value.map;
     if (map->frozen) {
         status = -EDGE_LINUX_EPERM;
+        goto out;
+    }
+    if (bpf_map_is_queue_stack(map)) {
+        status = -EDGE_LINUX_EINVAL;
+        goto out;
+    }
+    if (!key) {
+        status = -EDGE_LINUX_EFAULT;
         goto out;
     }
     if (map->type == KERNEL_BPF_MAP_TYPE_ARRAY) {
@@ -977,6 +1069,10 @@ int kernel_bpf_map_next_key(int object_id, const void *key, void *next_key) {
         goto out;
     }
     map = &object->value.map;
+    if (bpf_map_is_queue_stack(map)) {
+        status = -EDGE_LINUX_EINVAL;
+        goto out;
+    }
     if (map->type == KERNEL_BPF_MAP_TYPE_ARRAY) {
         if (key) {
             memcpy(&index, key, sizeof(index));
@@ -1021,6 +1117,10 @@ int kernel_bpf_map_batch_next(int object_id, uint32_t *cursor,
         goto out;
     }
     map = &object->value.map;
+    if (bpf_map_is_queue_stack(map)) {
+        status = -EDGE_LINUX_ENOTSUPP;
+        goto out;
+    }
     if (delete_element && map->frozen) {
         status = -EDGE_LINUX_EPERM;
         goto out;

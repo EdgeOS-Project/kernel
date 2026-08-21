@@ -176,6 +176,98 @@ static void test_lru_hash_map(void) {
            -EDGE_LINUX_ENOTSUPP);
 }
 
+static void test_queue_stack_maps(void) {
+    kernel_bpf_map_create_request_t invalid = {
+        .type = KERNEL_BPF_MAP_TYPE_QUEUE,
+        .key_size = sizeof(uint32_t),
+        .value_size = sizeof(uint64_t),
+        .max_entries = 2u,
+    };
+    kernel_bpf_map_info_t info;
+    uint32_t cursor = 0u;
+    uint32_t key = 1u;
+    uint64_t first = 11u;
+    uint64_t second = 22u;
+    uint64_t third = 33u;
+    uint64_t output = UINT64_MAX;
+    int has_more = 0;
+    int queue = create_map(
+        KERNEL_BPF_MAP_TYPE_QUEUE, 0u, sizeof(first), 2u, "queue_map");
+    int stack;
+
+    assert(queue >= 0);
+    assert(kernel_bpf_map_info(queue, &info) == 0);
+    assert(info.type == KERNEL_BPF_MAP_TYPE_QUEUE);
+    assert(info.key_size == 0u);
+    assert(kernel_bpf_map_lookup(queue, 0, &output) ==
+           -EDGE_LINUX_ENOENT);
+    assert(output == 0u);
+    assert(kernel_bpf_map_update(
+               queue, 0, &first, KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_update(
+               queue, 0, &second, KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_update(
+               queue, 0, &third, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_E2BIG);
+    assert(kernel_bpf_map_update(
+               queue, &key, &third, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_EINVAL);
+    assert(kernel_bpf_map_update(
+               queue, 0, &third, KERNEL_BPF_NOEXIST) ==
+           -EDGE_LINUX_EINVAL);
+    assert(kernel_bpf_map_update(
+               queue, 0, &third, KERNEL_BPF_EXIST) == 0);
+    assert(kernel_bpf_map_lookup(queue, 0, &output) == 0);
+    assert(output == second);
+    assert(kernel_bpf_map_lookup_and_delete(queue, 0, &output) == 0);
+    assert(output == second);
+    assert(kernel_bpf_map_lookup_and_delete(queue, 0, &output) == 0);
+    assert(output == third);
+    assert(kernel_bpf_map_lookup_and_delete(queue, 0, &output) ==
+           -EDGE_LINUX_ENOENT);
+    assert(output == 0u);
+    assert(kernel_bpf_map_delete(queue, 0) == -EDGE_LINUX_EINVAL);
+    assert(kernel_bpf_map_next_key(queue, 0, &key) ==
+           -EDGE_LINUX_EINVAL);
+    assert(kernel_bpf_map_batch_next(
+               queue, &cursor, &key, &output, 0, &has_more) ==
+           -EDGE_LINUX_ENOTSUPP);
+    kernel_bpf_object_release(queue);
+
+    stack = create_map(
+        KERNEL_BPF_MAP_TYPE_STACK, 0u, sizeof(first), 2u, "stack_map");
+    assert(stack >= 0);
+    assert(kernel_bpf_map_update(
+               stack, 0, &first, KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_update(
+               stack, 0, &second, KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_lookup(stack, 0, &output) == 0);
+    assert(output == second);
+    assert(kernel_bpf_map_update(
+               stack, 0, &third, KERNEL_BPF_EXIST) == 0);
+    assert(kernel_bpf_map_lookup_and_delete(stack, 0, &output) == 0);
+    assert(output == third);
+    assert(kernel_bpf_map_lookup_and_delete(stack, 0, &output) == 0);
+    assert(output == second);
+    assert(kernel_bpf_map_update(
+               stack, 0, &first, KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_freeze(stack) == 0);
+    assert(kernel_bpf_map_lookup(stack, 0, &output) == 0);
+    assert(output == first);
+    assert(kernel_bpf_map_update(
+               stack, 0, &second, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_EPERM);
+    assert(kernel_bpf_map_lookup_and_delete(stack, 0, &output) ==
+           -EDGE_LINUX_EPERM);
+    kernel_bpf_object_release(stack);
+
+    strcpy(invalid.name, "bad_queue");
+    assert(kernel_bpf_map_create(&invalid) == -EDGE_LINUX_EINVAL);
+    invalid.key_size = 0u;
+    invalid.flags = KERNEL_BPF_MAP_NO_PREALLOC;
+    assert(kernel_bpf_map_create(&invalid) == -EDGE_LINUX_EINVAL);
+}
+
 static void test_batch_and_freeze(void) {
     uint32_t keys[] = { 1u, 2u, 3u };
     uint64_t values[] = { 11u, 22u, 33u };
@@ -356,6 +448,7 @@ int main(void) {
     test_array_map();
     test_hash_map();
     test_lru_hash_map();
+    test_queue_stack_maps();
     test_batch_and_freeze();
     test_program();
     test_ids();

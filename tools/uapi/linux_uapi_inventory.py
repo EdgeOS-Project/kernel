@@ -160,6 +160,7 @@ EDGEOS_ASSESSMENTS = [
             "array and hash map creation with descriptor-backed lifetime",
             "map lookup, update, delete and key iteration",
             "LRU hash maps with access-order eviction and lookup-and-delete operations",
+            "queue and stack maps with push, peek, pop and full-map replacement semantics",
             "map and program ID enumeration and descriptor reopening",
             "map information queries",
             "program information, translated instruction and SHA-256 tag queries",
@@ -168,7 +169,7 @@ EDGEOS_ASSESSMENTS = [
             "hierarchical cgroup-device checks for device open and creation",
         ],
         "missing": [
-            "per-CPU and map-in-map families, queue and stack maps, ring buffers and remaining map types",
+            "per-CPU and map-in-map families, ring buffers and remaining map types",
             "per-CPU LRU and no-common-LRU modes",
             "additional attachment families and program types",
             "complete allow-override, multi-position and link semantics",
@@ -185,6 +186,7 @@ EDGEOS_ASSESSMENTS = [
             "scope": (
                 "array and hash maps, map element operations, object IDs, "
                 "LRU hash creation, access-order eviction, element operations, "
+                "queue and stack creation, push, peek, pop and replacement, "
                 "descriptor reopening, map and program information, "
                 "translated instructions, SHA-256 tags and cgroup-device "
                 "program loading, attachment, detachment and query behavior"

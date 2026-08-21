@@ -51,6 +51,8 @@
 #define BPF_MAP_TYPE_HASH 1u
 #define BPF_MAP_TYPE_ARRAY 2u
 #define BPF_MAP_TYPE_LRU_HASH 9u
+#define BPF_MAP_TYPE_QUEUE 22u
+#define BPF_MAP_TYPE_STACK 23u
 #define BPF_PROG_TYPE_CGROUP_DEVICE 15u
 #define BPF_CGROUP_DEVICE 6u
 #define BPF_ANY 0u
@@ -355,6 +357,20 @@ static long create_map(uint32_t type, uint32_t entries, const char *name) {
     return bpf_call(BPF_MAP_CREATE, &attribute);
 }
 
+static long create_keyless_map(uint32_t type, uint32_t entries,
+                               const char *name) {
+    union bpf_attr attribute;
+    unsigned long index;
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.map_create.map_type = type;
+    attribute.map_create.value_size = 8u;
+    attribute.map_create.max_entries = entries;
+    for (index = 0; name[index] && index + 1u < 16u; ++index)
+        attribute.map_create.map_name[index] = name[index];
+    return bpf_call(BPF_MAP_CREATE, &attribute);
+}
+
 static long map_element(uint32_t command, long descriptor,
                         uint32_t *key, uint64_t *value, uint64_t flags) {
     union bpf_attr attribute;
@@ -557,6 +573,86 @@ static int test_lru_hash_map(void) {
     attribute.map_create.map_flags = 1u;
     failures += expect("lru no prealloc", bpf_call(
         BPF_MAP_CREATE, &attribute), -ENOTSUPP);
+    return failures;
+}
+
+static int test_queue_stack_maps(void) {
+    union bpf_attr attribute;
+    uint32_t invalid_key = 1u;
+    uint64_t first = 11u;
+    uint64_t second = 22u;
+    uint64_t third = 33u;
+    uint64_t output = ~0ULL;
+    long queue = create_keyless_map(
+        BPF_MAP_TYPE_QUEUE, 2u, "queue_map");
+    long stack;
+    int failures = 0;
+
+    failures += expect_true("queue create", queue >= 0);
+    if (queue < 0) return failures + 1;
+    failures += expect("queue empty peek", map_element(
+        BPF_MAP_LOOKUP_ELEM, queue, 0, &output, 0), -ENOENT);
+    failures += expect("queue push first", map_element(
+        BPF_MAP_UPDATE_ELEM, queue, 0, &first, BPF_ANY), 0);
+    failures += expect("queue push second", map_element(
+        BPF_MAP_UPDATE_ELEM, queue, 0, &second, BPF_ANY), 0);
+    failures += expect("queue full", map_element(
+        BPF_MAP_UPDATE_ELEM, queue, 0, &third, BPF_ANY), -E2BIG);
+    failures += expect("queue nonnull key", map_element(
+        BPF_MAP_UPDATE_ELEM, queue, &invalid_key, &third, BPF_ANY),
+        -EINVAL);
+    failures += expect("queue noexist", map_element(
+        BPF_MAP_UPDATE_ELEM, queue, 0, &third, BPF_NOEXIST), -EINVAL);
+    failures += expect("queue replace", map_element(
+        BPF_MAP_UPDATE_ELEM, queue, 0, &third, BPF_EXIST), 0);
+    failures += expect("queue peek", map_element(
+        BPF_MAP_LOOKUP_ELEM, queue, 0, &output, 0), 0);
+    failures += expect_true("queue fifo peek", output == second);
+    failures += expect("queue pop first", map_element(
+        BPF_MAP_LOOKUP_AND_DELETE_ELEM, queue, 0, &output, 0), 0);
+    failures += expect_true("queue fifo first", output == second);
+    failures += expect("queue pop second", map_element(
+        BPF_MAP_LOOKUP_AND_DELETE_ELEM, queue, 0, &output, 0), 0);
+    failures += expect_true("queue fifo second", output == third);
+    failures += expect("queue empty pop", map_element(
+        BPF_MAP_LOOKUP_AND_DELETE_ELEM, queue, 0, &output, 0), -ENOENT);
+    failures += expect("queue delete", map_element(
+        BPF_MAP_DELETE_ELEM, queue, 0, 0, 0), -EINVAL);
+    failures += expect("queue next key", map_element(
+        BPF_MAP_GET_NEXT_KEY, queue, 0, &output, 0), -EINVAL);
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.batch.map_fd = (uint32_t)queue;
+    failures += expect("queue batch", bpf_call(
+        BPF_MAP_LOOKUP_BATCH, &attribute), -ENOTSUPP);
+    (void)raw_syscall6(SYS_close, queue, 0, 0, 0, 0, 0);
+
+    stack = create_keyless_map(BPF_MAP_TYPE_STACK, 2u, "stack_map");
+    failures += expect_true("stack create", stack >= 0);
+    if (stack < 0) return failures + 1;
+    failures += expect("stack push first", map_element(
+        BPF_MAP_UPDATE_ELEM, stack, 0, &first, BPF_ANY), 0);
+    failures += expect("stack push second", map_element(
+        BPF_MAP_UPDATE_ELEM, stack, 0, &second, BPF_ANY), 0);
+    failures += expect("stack peek", map_element(
+        BPF_MAP_LOOKUP_ELEM, stack, 0, &output, 0), 0);
+    failures += expect_true("stack lifo peek", output == second);
+    failures += expect("stack replace", map_element(
+        BPF_MAP_UPDATE_ELEM, stack, 0, &third, BPF_EXIST), 0);
+    failures += expect("stack pop first", map_element(
+        BPF_MAP_LOOKUP_AND_DELETE_ELEM, stack, 0, &output, 0), 0);
+    failures += expect_true("stack lifo first", output == third);
+    failures += expect("stack pop second", map_element(
+        BPF_MAP_LOOKUP_AND_DELETE_ELEM, stack, 0, &output, 0), 0);
+    failures += expect_true("stack lifo second", output == second);
+    (void)raw_syscall6(SYS_close, stack, 0, 0, 0, 0, 0);
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.map_create.map_type = BPF_MAP_TYPE_QUEUE;
+    attribute.map_create.key_size = 4u;
+    attribute.map_create.value_size = 8u;
+    attribute.map_create.max_entries = 2u;
+    failures += expect("queue invalid key size", bpf_call(
+        BPF_MAP_CREATE, &attribute), -EINVAL);
     return failures;
 }
 
@@ -891,6 +987,7 @@ START_ATTRIBUTES void _start(void) {
     }
     failures += test_hash_map();
     failures += test_lru_hash_map();
+    failures += test_queue_stack_maps();
     failures += test_batch_and_freeze();
     failures += test_program();
     failures += test_attribute_tail();
