@@ -157,6 +157,10 @@ static int64_t edge_linux_sys_socket_message(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_futex(
     edge_linux_syscall_context_t *context);
+static int64_t edge_linux_io_uring_files_update_user(
+    edge_linux_syscall_context_t *context, int32_t ring_id,
+    uint32_t offset, uint64_t user_descriptors,
+    uint64_t user_tags, uint32_t count);
 
 static int edge_linux_pid_to_global(
     const kernel_linux_identity_t *caller, int32_t visible_pid,
@@ -8066,6 +8070,7 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_OP_FALLOCATE 17u
 #define EDGE_LINUX_IORING_OP_OPENAT    18u
 #define EDGE_LINUX_IORING_OP_CLOSE     19u
+#define EDGE_LINUX_IORING_OP_FILES_UPDATE 20u
 #define EDGE_LINUX_IORING_OP_STATX     21u
 #define EDGE_LINUX_IORING_OP_READ      22u
 #define EDGE_LINUX_IORING_OP_WRITE     23u
@@ -8091,7 +8096,7 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_OP_FTRUNCATE 55u
 #define EDGE_LINUX_IORING_OP_BIND      56u
 #define EDGE_LINUX_IORING_OP_LISTEN    57u
-#define EDGE_LINUX_IORING_OP_LAST      65u
+#define EDGE_LINUX_IORING_OP_LAST      63u
 
 #define EDGE_LINUX_IOSQE_FIXED_FILE       (1u << 0)
 #define EDGE_LINUX_IOSQE_IO_DRAIN         (1u << 1)
@@ -8725,6 +8730,10 @@ static int32_t edge_linux_io_uring_execute_descriptor(
     int64_t result;
     if (submission->flags & ~EDGE_LINUX_IOSQE_KNOWN)
         return -EDGE_LINUX_EINVAL;
+    if (submission->opcode == EDGE_LINUX_IORING_OP_FILES_UPDATE &&
+        (submission->flags & (EDGE_LINUX_IOSQE_FIXED_FILE |
+                              EDGE_LINUX_IOSQE_BUFFER_SELECT)))
+        return -EDGE_LINUX_EINVAL;
     if (submission->flags & EDGE_LINUX_IOSQE_FIXED_FILE)
         return -EDGE_LINUX_EBADF;
     if (submission->flags & EDGE_LINUX_IOSQE_BUFFER_SELECT)
@@ -8798,6 +8807,14 @@ static int32_t edge_linux_io_uring_execute_descriptor(
     case EDGE_LINUX_IORING_OP_TIMEOUT:
         result = edge_linux_io_uring_timeout(
             context, ring_id, submission);
+        break;
+    case EDGE_LINUX_IORING_OP_FILES_UPDATE:
+        if (submission->operation_flags || submission->splice_descriptor)
+            result = -EDGE_LINUX_EINVAL;
+        else
+            result = edge_linux_io_uring_files_update_user(
+                context, ring_id, (uint32_t)submission->offset,
+                submission->address, 0, submission->length);
         break;
     case EDGE_LINUX_IORING_OP_FUTEX_WAKE: {
         edge_linux_syscall_context_t nested = *context;
@@ -9269,6 +9286,7 @@ static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
            opcode == EDGE_LINUX_IORING_OP_FALLOCATE ||
            opcode == EDGE_LINUX_IORING_OP_OPENAT ||
            opcode == EDGE_LINUX_IORING_OP_CLOSE ||
+           opcode == EDGE_LINUX_IORING_OP_FILES_UPDATE ||
            opcode == EDGE_LINUX_IORING_OP_STATX ||
            opcode == EDGE_LINUX_IORING_OP_READ ||
            opcode == EDGE_LINUX_IORING_OP_WRITE ||
