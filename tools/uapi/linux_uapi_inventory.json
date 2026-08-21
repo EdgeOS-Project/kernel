@@ -70,6 +70,7 @@
         "PROVIDE_BUFFERS and REMOVE_BUFFERS with Linux buffer IDs and CQE flags",
         "user-provided buffer-ring registration, status, unregistration and 16-bit head wrap",
         "kernel-allocated mmap buffer rings with shared page lifetime",
+        "kernel-allocated incremental buffer consumption with min-left thresholds and BUF_MORE completions",
         "buffer-ring selection for READ, READV and RECV with Linux CQE buffer IDs",
         "per-task registered-ring descriptors for enter and register operations",
         "timeout removal and update with retained clock selection",
@@ -88,7 +89,7 @@
         "user-provided pinned wait regions and SQPOLL wait control",
         "pending asynchronous descriptor leases across close and reuse",
         "notification-pipe semantics",
-        "incremental provided-buffer consumption",
+        "incremental consumption for user-provided rings without pinned-page backing",
         "provided-buffer page pinning for cross-address-space ring use",
         "remaining supported VFS and socket operations",
         "ia32 and x32 compatibility layouts"
@@ -107,7 +108,7 @@
       "linux_oracle": {
         "status": "partial",
         "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309",
-        "scope": "setup, mmap, NOP, eventfd, poll, timeout, cancellation, openat, openat2, close, statx, fallocate, send, recv, sendmsg, recvmsg, shutdown, connect, accept, fadvise, madvise, epoll_ctl, tee, renameat, unlinkat, mkdirat, symlinkat, linkat, socket, bind, listen, fsetxattr, setxattr, fgetxattr, getxattr, ftruncate, sync_file_range, futex_wake, fixed-file registration, retained lifetime, register and submission-queue updates, extended resource layouts, tag completion events, fixed-file installation, frozen opcode extent, registered-ring descriptor lifetime, timeout update, finite and updated multishot timeouts, relative and absolute enter deadlines, minimum-wait batching, registered wait layouts and errors from the frozen source oracle, poll update, multishot poll, per-ring clock, fixed-file allocation range, operation probe, pipe creation and direct fixed-file allocation, plus packet-pipe record boundaries, short-read truncation and splice with ordinary or fixed input and output descriptors, plus MSG_RING data, flag forwarding, disabled targets and buffered CQ overflow, plus registered-file transfer with explicit and allocated slots, skipped target completions and retained lifetime after source-table removal, plus legacy and extended fixed-buffer registration, tagged updates, range errors and real pipe data through READ_FIXED and WRITE_FIXED, plus frozen-source READV_FIXED and WRITEV_FIXED layouts with EdgeOS runtime data, plus legacy provided-buffer add, remove, empty-group, READ and single-iovec READV selection behavior with returned buffer IDs, plus user-provided buffer-ring registration, READ and READV selection, returned IDs, head status, user and kernel-allocated mmap ring lifetime, unregistration and legacy-versus-ring failed-I/O buffer consumption"
+        "scope": "setup, mmap, NOP, eventfd, poll, timeout, cancellation, openat, openat2, close, statx, fallocate, send, recv, sendmsg, recvmsg, shutdown, connect, accept, fadvise, madvise, epoll_ctl, tee, renameat, unlinkat, mkdirat, symlinkat, linkat, socket, bind, listen, fsetxattr, setxattr, fgetxattr, getxattr, ftruncate, sync_file_range, futex_wake, fixed-file registration, retained lifetime, register and submission-queue updates, extended resource layouts, tag completion events, fixed-file installation, frozen opcode extent, registered-ring descriptor lifetime, timeout update, finite and updated multishot timeouts, relative and absolute enter deadlines, minimum-wait batching, registered wait layouts and errors from the frozen source oracle, poll update, multishot poll, per-ring clock, fixed-file allocation range, operation probe, pipe creation and direct fixed-file allocation, plus packet-pipe record boundaries, short-read truncation and splice with ordinary or fixed input and output descriptors, plus MSG_RING data, flag forwarding, disabled targets and buffered CQ overflow, plus registered-file transfer with explicit and allocated slots, skipped target completions and retained lifetime after source-table removal, plus legacy and extended fixed-buffer registration, tagged updates, range errors and real pipe data through READ_FIXED and WRITE_FIXED, plus frozen-source READV_FIXED and WRITEV_FIXED layouts with EdgeOS runtime data, plus legacy provided-buffer add, remove, empty-group, READ and single-iovec READV selection behavior with returned buffer IDs, plus user-provided buffer-ring registration, READ and READV selection, returned IDs, head status, user and kernel-allocated mmap ring lifetime, unregistration and legacy-versus-ring failed-I/O buffer consumption, plus incremental address and length updates, min-left retirement and BUF_MORE completions on kernel-allocated rings"
       }
     },
     {

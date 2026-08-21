@@ -97,13 +97,14 @@ typedef struct kernel_io_uring_provided_buffer {
 typedef struct kernel_io_uring_buffer_group {
     uint64_t ring_address;
     uint32_t ring_entries;
+    uint32_t minimum_left;
     uint16_t ring_head;
     uint16_t ring_page_count;
     uint16_t id;
     uint8_t used;
     uint8_t provided_ring;
     uint8_t kernel_allocated;
-    uint8_t reserved;
+    uint8_t incremental;
 } kernel_io_uring_buffer_group_t;
 
 typedef struct kernel_io_uring {
@@ -1399,7 +1400,8 @@ int kernel_io_uring_provided_buffer_select(
 
 int kernel_io_uring_pbuf_ring_register(
         int32_t ring_id, uint16_t group_id, uint64_t address,
-        uint32_t entries, int kernel_allocated) {
+        uint32_t entries, int kernel_allocated,
+        int incremental, uint32_t minimum_left) {
     kernel_io_uring_buffer_group_t *group;
     kernel_io_uring_t *ring;
     uint32_t page_count;
@@ -1478,10 +1480,12 @@ int kernel_io_uring_pbuf_ring_register(
     }
     group->ring_address = address;
     group->ring_entries = entries;
+    group->minimum_left = minimum_left;
     group->ring_page_count = kernel_allocated ?
         (uint16_t)page_count : 0u;
     group->provided_ring = 1u;
     group->kernel_allocated = kernel_allocated ? 1u : 0u;
+    group->incremental = incremental ? 1u : 0u;
 unlock:
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     return result;
@@ -1553,7 +1557,9 @@ int kernel_io_uring_pbuf_ring_snapshot(
         snapshot->address = group->ring_address;
         snapshot->entries = group->ring_entries;
         snapshot->head = group->ring_head;
+        snapshot->minimum_left = group->minimum_left;
         snapshot->kernel_allocated = group->kernel_allocated;
+        snapshot->incremental = group->incremental;
     }
 unlock:
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
@@ -1638,6 +1644,71 @@ int kernel_io_uring_pbuf_ring_commit(
     } else if (group->ring_head != (uint16_t)expected_head) {
         result = -EDGE_LINUX_EAGAIN;
     } else {
+        ++group->ring_head;
+    }
+unlock:
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_pbuf_ring_complete(
+        int32_t ring_id, uint16_t group_id, uint32_t expected_head,
+        uint32_t consumed, int *buffer_more) {
+    kernel_io_uring_buffer_group_t *group;
+    struct edge_linux_io_uring_buf *buffer;
+    kernel_io_uring_page_t *page;
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    uint32_t remaining;
+    uint32_t offset;
+    int result = 0;
+
+    if (!buffer_more) return -EDGE_LINUX_EINVAL;
+    *buffer_more = 0;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+        goto unlock;
+    }
+    group = io_uring_buffer_group_locked(ring, group_id, 0);
+    if (!group || !group->provided_ring ||
+        !group->kernel_allocated || !group->incremental) {
+        result = -EDGE_LINUX_EINVAL;
+        goto unlock;
+    }
+    if (group->ring_head != (uint16_t)expected_head) {
+        result = -EDGE_LINUX_EAGAIN;
+        goto unlock;
+    }
+    offset = (group->ring_head & (group->ring_entries - 1u)) *
+        sizeof(*buffer);
+    page = io_uring_pbuf_page_locked(
+        ring, group_id, offset / KERNEL_IO_URING_PAGE_SIZE);
+    if (!page || !page->address) {
+        result = -EDGE_LINUX_EIO;
+        goto unlock;
+    }
+    buffer = (struct edge_linux_io_uring_buf *)(
+        (uint8_t *)page->address +
+        offset % KERNEL_IO_URING_PAGE_SIZE);
+    if (consumed > buffer->length) {
+        result = -EDGE_LINUX_EIO;
+        goto unlock;
+    }
+    if (!consumed) {
+        *buffer_more = 1;
+        goto unlock;
+    }
+    remaining = buffer->length - consumed;
+    if (remaining &&
+        (!group->minimum_left ||
+         remaining >= group->minimum_left)) {
+        buffer->address += consumed;
+        buffer->length = remaining;
+        *buffer_more = 1;
+    } else {
+        buffer->length = 0u;
         ++group->ring_head;
     }
 unlock:

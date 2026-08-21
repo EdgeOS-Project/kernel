@@ -58,6 +58,7 @@ EDGEOS_ASSESSMENTS = [
             "PROVIDE_BUFFERS and REMOVE_BUFFERS with Linux buffer IDs and CQE flags",
             "user-provided buffer-ring registration, status, unregistration and 16-bit head wrap",
             "kernel-allocated mmap buffer rings with shared page lifetime",
+            "kernel-allocated incremental buffer consumption with min-left thresholds and BUF_MORE completions",
             "buffer-ring selection for READ, READV and RECV with Linux CQE buffer IDs",
             "per-task registered-ring descriptors for enter and register operations",
             "timeout removal and update with retained clock selection",
@@ -76,7 +77,7 @@ EDGEOS_ASSESSMENTS = [
             "user-provided pinned wait regions and SQPOLL wait control",
             "pending asynchronous descriptor leases across close and reuse",
             "notification-pipe semantics",
-            "incremental provided-buffer consumption",
+            "incremental consumption for user-provided rings without pinned-page backing",
             "provided-buffer page pinning for cross-address-space ring use",
             "remaining supported VFS and socket operations",
             "ia32 and x32 compatibility layouts",
@@ -126,7 +127,9 @@ EDGEOS_ASSESSMENTS = [
                 "plus user-provided buffer-ring registration, READ and READV "
                 "selection, returned IDs, head status, user and kernel-allocated "
                 "mmap ring lifetime, unregistration and "
-                "legacy-versus-ring failed-I/O buffer consumption"
+                "legacy-versus-ring failed-I/O buffer consumption, plus "
+                "incremental address and length updates, min-left retirement "
+                "and BUF_MORE completions on kernel-allocated rings"
             ),
         },
     },

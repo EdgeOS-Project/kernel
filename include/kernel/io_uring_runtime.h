@@ -67,8 +67,10 @@ typedef struct kernel_io_uring_pbuf_ring {
     uint64_t address;
     uint32_t entries;
     uint32_t head;
+    uint32_t minimum_left;
     uint8_t kernel_allocated;
-    uint8_t reserved[7];
+    uint8_t incremental;
+    uint8_t reserved[6];
 } kernel_io_uring_pbuf_ring_t;
 
 int kernel_io_uring_page_allocator_register(
@@ -135,7 +137,8 @@ int kernel_io_uring_provided_buffer_select(
     kernel_io_uring_selected_buffer_t *selected);
 int kernel_io_uring_pbuf_ring_register(
     int32_t ring_id, uint16_t group_id, uint64_t address,
-    uint32_t entries, int kernel_allocated);
+    uint32_t entries, int kernel_allocated,
+    int incremental, uint32_t minimum_left);
 int kernel_io_uring_pbuf_ring_unregister(
     int32_t ring_id, uint16_t group_id);
 int kernel_io_uring_pbuf_ring_snapshot(
@@ -143,6 +146,9 @@ int kernel_io_uring_pbuf_ring_snapshot(
     kernel_io_uring_pbuf_ring_t *snapshot);
 int kernel_io_uring_pbuf_ring_commit(
     int32_t ring_id, uint16_t group_id, uint32_t expected_head);
+int kernel_io_uring_pbuf_ring_complete(
+    int32_t ring_id, uint16_t group_id, uint32_t expected_head,
+    uint32_t consumed, int *buffer_more);
 int kernel_io_uring_pbuf_ring_read(
     int32_t ring_id, uint16_t group_id, uint32_t head,
     struct edge_linux_io_uring_buf *buffer, uint16_t *tail);
