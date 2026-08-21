@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "kernel/io_uring_runtime.h"
+#include "kernel/anonymous_fd.h"
 #include "kernel/eventfd.h"
 #include "kernel/fd_runtime.h"
 #include "kernel/io_runtime.h"
@@ -499,6 +500,95 @@ int kernel_io_uring_files_unregister(int32_t ring_id) {
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     if (result == 0)
         io_uring_release_fixed_files(pages, used, count, page_count);
+    return result;
+}
+
+int kernel_io_uring_files_update_validate(int32_t ring_id,
+                                          uint32_t offset,
+                                          uint32_t count) {
+    kernel_io_uring_t *ring;
+    uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
+    int result;
+
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring)
+        result = -EDGE_LINUX_EBADF;
+    else if (!ring->fixed_file_count)
+        result = -EDGE_LINUX_ENXIO;
+    else if (!count)
+        result = -EDGE_LINUX_EINVAL;
+    else if (offset > UINT32_MAX - count)
+        result = -EDGE_LINUX_EOVERFLOW;
+    else if (offset + count > ring->fixed_file_count)
+        result = -EDGE_LINUX_EINVAL;
+    else
+        result = 0;
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_files_update(int32_t ring_id, uint32_t offset,
+                                 const int32_t *descriptors,
+                                 uint32_t count) {
+    kernel_io_uring_t *ring;
+    uint32_t done;
+    uint64_t flags;
+    int result = 0;
+
+    if (!descriptors || !count) return -EDGE_LINUX_EINVAL;
+    result = kernel_io_uring_files_update_validate(
+        ring_id, offset, count);
+    if (result < 0) return result;
+
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+        goto unlock;
+    }
+    if (!ring->fixed_file_count) {
+        result = -EDGE_LINUX_ENXIO;
+        goto unlock;
+    }
+    if (offset > UINT32_MAX - count ||
+        offset + count > ring->fixed_file_count) {
+        result = -EDGE_LINUX_EINVAL;
+        goto unlock;
+    }
+
+    for (done = 0; done < count; ++done) {
+        kernel_fd_operation_lease_t *lease;
+        int32_t descriptor = descriptors[done];
+        uint32_t index = offset + done;
+
+        if (descriptor == KERNEL_IO_URING_REGISTER_FILES_SKIP)
+            continue;
+        lease = io_uring_fixed_file_lease(
+            ring->fixed_file_pages, index);
+        if (!lease) {
+            result = -EDGE_LINUX_EBADF;
+            break;
+        }
+        if (ring->fixed_file_used[index]) {
+            (void)kernel_fd_operation_release(lease);
+            ring->fixed_file_used[index] = 0u;
+        }
+        if (descriptor == -1) continue;
+        if (descriptor < 0 ||
+            kernel_anonymous_fd_descriptor_object_id(
+                descriptor, KERNEL_ANONYMOUS_FD_IO_URING) >= 0) {
+            result = -EDGE_LINUX_EBADF;
+            break;
+        }
+        result = kernel_fd_operation_acquire(descriptor, lease);
+        if (result < 0) break;
+        ring->fixed_file_used[index] = 1u;
+    }
+    if (done) result = (int)done;
+    else if (result >= 0) result = (int)count;
+
+unlock:
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
     return result;
 }
 

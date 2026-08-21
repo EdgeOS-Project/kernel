@@ -6,6 +6,7 @@
 #include <stdio.h>
 
 #include "kernel/io_uring_runtime.h"
+#include "kernel/anonymous_fd.h"
 #include "kernel/fd_runtime.h"
 #include "kernel/io_runtime.h"
 #include "kernel/linux_errno.h"
@@ -17,6 +18,11 @@ static uint8_t g_pages[TEST_PAGE_COUNT][KERNEL_IO_URING_PAGE_SIZE]
 static uint32_t g_references[TEST_PAGE_COUNT];
 static int32_t g_ready_descriptor = -1;
 static uint32_t g_fixed_file_references;
+
+int kernel_anonymous_fd_descriptor_object_id(
+        int32_t descriptor, kernel_anonymous_fd_kind_t kind) {
+    return kind == KERNEL_ANONYMOUS_FD_IO_URING && descriptor == 98 ? 1 : -1;
+}
 
 int kernel_fd_operation_acquire(
         int32_t descriptor, kernel_fd_operation_lease_t *lease) {
@@ -141,6 +147,35 @@ int main(void) {
                ring_id, 1u, &materialized) == -EDGE_LINUX_EBADF);
     assert(kernel_io_uring_fixed_file_materialize(
                ring_id, 2u, &materialized) == 0 && materialized == 7);
+    {
+        const int32_t update[] = {8};
+        assert(kernel_io_uring_files_update(
+                   ring_id, 1u, update, 1u) == 1);
+    }
+    assert(g_fixed_file_references == 3u);
+    assert(kernel_io_uring_fixed_file_materialize(
+               ring_id, 1u, &materialized) == 0 && materialized == 8);
+    {
+        const int32_t update[] = {
+            KERNEL_IO_URING_REGISTER_FILES_SKIP, 98,
+        };
+        assert(kernel_io_uring_files_update(
+                   ring_id, 0u, update, 2u) == 1);
+    }
+    assert(g_fixed_file_references == 2u);
+    assert(kernel_io_uring_fixed_file_materialize(
+               ring_id, 1u, &materialized) == -EDGE_LINUX_EBADF);
+    {
+        const int32_t update[] = {-1};
+        assert(kernel_io_uring_files_update(
+                   ring_id, 2u, update, 1u) == 1);
+    }
+    assert(g_fixed_file_references == 1u);
+    {
+        const int32_t update[] = {4};
+        assert(kernel_io_uring_files_update(
+                   ring_id, 3u, update, 1u) == -EDGE_LINUX_EINVAL);
+    }
     assert(kernel_io_uring_files_unregister(ring_id) == 0);
     assert(g_fixed_file_references == 0u);
     assert(kernel_io_uring_files_unregister(ring_id) ==

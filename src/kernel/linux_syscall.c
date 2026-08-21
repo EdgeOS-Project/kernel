@@ -8118,6 +8118,7 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_UNREGISTER_EVENTFD    5u
 #define EDGE_LINUX_IORING_REGISTER_FILES        2u
 #define EDGE_LINUX_IORING_UNREGISTER_FILES      3u
+#define EDGE_LINUX_IORING_REGISTER_FILES_UPDATE 6u
 #define EDGE_LINUX_IORING_REGISTER_EVENTFD_ASYNC 7u
 #define EDGE_LINUX_IORING_REGISTER_PROBE        8u
 #define EDGE_LINUX_IORING_REGISTER_ENABLE_RINGS 12u
@@ -9031,6 +9032,39 @@ static int64_t edge_linux_sys_io_uring_register(
     if (opcode == EDGE_LINUX_IORING_UNREGISTER_FILES) {
         if (argument || operation_count) return -EDGE_LINUX_EINVAL;
         return kernel_io_uring_files_unregister(ring_id);
+    }
+    if (opcode == EDGE_LINUX_IORING_REGISTER_FILES_UPDATE) {
+        struct edge_linux_io_uring_files_update update;
+        int32_t descriptors[KERNEL_IO_URING_MAX_FIXED_FILES];
+        uint32_t copied = 0u;
+        int result;
+
+        if (!operation_count) return -EDGE_LINUX_EINVAL;
+        if (!argument) return -EDGE_LINUX_EFAULT;
+        if (edge_linux_copy_from_user(
+                context, &update, argument, sizeof(update)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (update.reserved) return -EDGE_LINUX_EINVAL;
+        result = kernel_io_uring_files_update_validate(
+            ring_id, update.offset, operation_count);
+        if (result < 0) return result;
+        if (!update.descriptors) return -EDGE_LINUX_EFAULT;
+        for (; copied < operation_count; ++copied) {
+            uint64_t source;
+            if ((uint64_t)copied >
+                (UINT64_MAX - update.descriptors) / sizeof(int32_t))
+                break;
+            source = update.descriptors +
+                     (uint64_t)copied * sizeof(int32_t);
+            if (edge_linux_copy_from_user(
+                    context, &descriptors[copied], source,
+                    sizeof(descriptors[copied])) < 0)
+                break;
+        }
+        if (!copied) return -EDGE_LINUX_EFAULT;
+        result = kernel_io_uring_files_update(
+            ring_id, update.offset, descriptors, copied);
+        return result;
     }
     if (opcode == EDGE_LINUX_IORING_REGISTER_EVENTFD ||
         opcode == EDGE_LINUX_IORING_REGISTER_EVENTFD_ASYNC) {

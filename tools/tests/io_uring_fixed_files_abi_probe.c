@@ -32,10 +32,12 @@
 #define ENXIO 6
 #define EBADF 9
 #define EBUSY 16
+#define EINVAL 22
 #define IOSQE_FIXED_FILE (1u << 0)
 #define IORING_ENTER_GETEVENTS 1u
 #define IORING_REGISTER_FILES 2u
 #define IORING_UNREGISTER_FILES 3u
+#define IORING_REGISTER_FILES_UPDATE 6u
 #define IORING_OP_WRITE 23u
 #define IORING_OFF_SQ_RING 0x00000000ull
 #define IORING_OFF_CQ_RING 0x08000000ull
@@ -99,6 +101,12 @@ struct io_uring_params {
     uint32_t reserved[3];
     struct io_sqring_offsets sq_off;
     struct io_cqring_offsets cq_off;
+};
+
+struct io_uring_files_update {
+    uint32_t offset;
+    uint32_t reserved;
+    uint64_t descriptors;
 };
 
 static long raw_syscall6(long number, long a0, long a1, long a2,
@@ -212,9 +220,13 @@ static int run_probe(void) {
     void *sq_ring;
     void *cq_ring;
     int32_t fixed_files[2];
+    int32_t update_descriptor;
+    int32_t update_descriptors[2];
+    struct io_uring_files_update update;
     uint64_t value = 1u;
     long ring;
     long eventfd;
+    long second_eventfd;
     int failures = 0;
 
     bytes_zero(&parameters, sizeof(parameters));
@@ -246,19 +258,76 @@ static int run_probe(void) {
     failures += expect(raw_syscall6(
         SYS_io_uring_register, ring, IORING_REGISTER_FILES,
         (long)fixed_files, 2, 0, 0), -EBUSY);
+    second_eventfd = raw_syscall6(SYS_eventfd2, 0, 0, 0, 0, 0, 0);
+    if (second_eventfd < 0) {
+        failures = 1;
+        goto close_eventfd;
+    }
+    update_descriptor = (int32_t)second_eventfd;
+    update.offset = 1u;
+    update.reserved = 0u;
+    update.descriptors = (uint64_t)(uintptr_t)&update_descriptor;
+    failures += expect(raw_syscall6(
+        SYS_io_uring_register, ring, IORING_REGISTER_FILES_UPDATE,
+        (long)&update, 1, 0, 0), 1);
     (void)raw_syscall6(SYS_close, eventfd, 0, 0, 0, 0, 0);
+    eventfd = -1;
+    (void)raw_syscall6(SYS_close, second_eventfd, 0, 0, 0, 0, 0);
+    second_eventfd = -1;
+    failures += submit_fixed_write(
+        ring, &parameters, sq_ring, cq_ring, sqes,
+        0, &value, (int32_t)sizeof(value));
+    failures += submit_fixed_write(
+        ring, &parameters, sq_ring, cq_ring, sqes,
+        1, &value, (int32_t)sizeof(value));
+    update_descriptors[0] = -2;
+    update_descriptors[1] = (int32_t)ring;
+    update.offset = 0u;
+    update.descriptors = (uint64_t)(uintptr_t)update_descriptors;
+    failures += expect(raw_syscall6(
+        SYS_io_uring_register, ring, IORING_REGISTER_FILES_UPDATE,
+        (long)&update, 2, 0, 0), 1);
     failures += submit_fixed_write(
         ring, &parameters, sq_ring, cq_ring, sqes,
         0, &value, (int32_t)sizeof(value));
     failures += submit_fixed_write(
         ring, &parameters, sq_ring, cq_ring, sqes,
         1, &value, -EBADF);
+    update_descriptor = -1;
+    update.offset = 0u;
+    update.descriptors = (uint64_t)(uintptr_t)&update_descriptor;
+    failures += expect(raw_syscall6(
+        SYS_io_uring_register, ring, IORING_REGISTER_FILES_UPDATE,
+        (long)&update, 1, 0, 0), 1);
+    failures += submit_fixed_write(
+        ring, &parameters, sq_ring, cq_ring, sqes,
+        0, &value, -EBADF);
+    update_descriptor = -2;
+    update.offset = 2u;
+    failures += expect(raw_syscall6(
+        SYS_io_uring_register, ring, IORING_REGISTER_FILES_UPDATE,
+        (long)&update, 1, 0, 0), -EINVAL);
+    update.offset = 0u;
+    update.reserved = 1u;
+    failures += expect(raw_syscall6(
+        SYS_io_uring_register, ring, IORING_REGISTER_FILES_UPDATE,
+        (long)&update, 1, 0, 0), -EINVAL);
+    update.reserved = 0u;
+    failures += expect(raw_syscall6(
+        SYS_io_uring_register, ring, IORING_REGISTER_FILES_UPDATE,
+        (long)&update, 0, 0, 0), -EINVAL);
     failures += expect(raw_syscall6(
         SYS_io_uring_register, ring, IORING_UNREGISTER_FILES,
         0, 0, 0, 0), 0);
     failures += expect(raw_syscall6(
         SYS_io_uring_register, ring, IORING_UNREGISTER_FILES,
         0, 0, 0, 0), -ENXIO);
+
+close_eventfd:
+    if (second_eventfd >= 0)
+        (void)raw_syscall6(SYS_close, second_eventfd, 0, 0, 0, 0, 0);
+    if (eventfd >= 0)
+        (void)raw_syscall6(SYS_close, eventfd, 0, 0, 0, 0, 0);
 
 unmap:
     (void)raw_syscall6(SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);

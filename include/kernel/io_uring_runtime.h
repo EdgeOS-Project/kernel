@@ -17,6 +17,7 @@
 #define KERNEL_IO_URING_MAX_SQE_PAGES 4u
 #define KERNEL_IO_URING_MAX_PENDING 128u
 #define KERNEL_IO_URING_MAX_FIXED_FILES 256u
+#define KERNEL_IO_URING_REGISTER_FILES_SKIP (-2)
 
 #define KERNEL_IO_URING_OFF_SQ_RING 0x00000000ull
 #define KERNEL_IO_URING_OFF_CQ_RING 0x08000000ull
@@ -50,6 +51,12 @@ int kernel_io_uring_files_register(int32_t ring_id,
                                    const int32_t *descriptors,
                                    uint32_t count);
 int kernel_io_uring_files_unregister(int32_t ring_id);
+int kernel_io_uring_files_update_validate(int32_t ring_id,
+                                          uint32_t offset,
+                                          uint32_t count);
+int kernel_io_uring_files_update(int32_t ring_id, uint32_t offset,
+                                 const int32_t *descriptors,
+                                 uint32_t count);
 int kernel_io_uring_fixed_file_materialize(int32_t ring_id,
                                            uint32_t index,
                                            int32_t *descriptor);
