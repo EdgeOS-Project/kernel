@@ -29,7 +29,7 @@ EDGEOS_ASSESSMENTS = [
             "NOP, READ, WRITE, READV, WRITEV and FSYNC operations",
             "probe and disabled-ring registration",
             "completion eventfd registration and notification",
-            "single-shot poll requests",
+            "single-shot and multishot poll completions with update operations",
             "relative and absolute timeout requests",
             "completion-count timeouts",
             "timeout removal and user-data cancellation",
@@ -52,7 +52,7 @@ EDGEOS_ASSESSMENTS = [
         "missing": [
             "asynchronous worker execution",
             "fixed buffers with user-page pinning",
-            "multishot poll and timeout operations",
+            "multishot timeout operations",
             "fully interruptible enter suspension and extended wait deadlines",
             "pending asynchronous descriptor leases across close and reuse",
             "remaining supported VFS and socket operations",
@@ -63,6 +63,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/io_uring_fixed_files_abi_probe.c",
             "tools/tests/io_uring_registered_rings_abi_probe.c",
             "tools/tests/io_uring_timeout_update_abi_probe.c",
+            "tools/tests/io_uring_poll_multishot_abi_probe.c",
             "tools/tests/io_uring_runtime_unit.c",
         ],
         "linux_oracle": {
@@ -77,7 +78,8 @@ EDGEOS_ASSESSMENTS = [
                 "setxattr, fgetxattr, getxattr, ftruncate, sync_file_range, "
                 "futex_wake, fixed-file registration, retained lifetime, updates, "
                 "extended resource layouts, tag completion events, registered-ring "
-                "descriptor lifetime, timeout update and operation probe"
+                "descriptor lifetime, timeout update, poll update, multishot poll "
+                "and operation probe"
             ),
         },
     },

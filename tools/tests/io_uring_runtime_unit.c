@@ -255,7 +255,8 @@ int main(void) {
     assert(completion[1].user_data == 0x54494d45u);
     assert(completion[1].result == -EDGE_LINUX_ETIME);
 
-    assert(kernel_io_uring_poll_add(ring_id, 0x504f4c4cu, 9, 1u) == 0);
+    assert(kernel_io_uring_poll_add(
+               ring_id, 0x504f4c4cu, 9, 1u, 0) == 0);
     assert(kernel_io_uring_collect(ring_id, 101u) == 0);
     g_ready_descriptor = 9;
     assert(kernel_io_uring_collect(ring_id, 102u) == 1);
@@ -298,6 +299,43 @@ int main(void) {
     assert(completion[6].user_data == 0x54414742u);
     assert(completion[6].result == 0 && completion[6].flags == 0);
     assert(g_fixed_file_references == 0u);
+
+    g_ready_descriptor = -1;
+    assert(kernel_io_uring_poll_add(
+               ring_id, 0x4d554c54u, 9, 1u, 1) == 0);
+    assert(kernel_io_uring_collect(ring_id, 121u) == 0);
+    g_ready_descriptor = 9;
+    assert(kernel_io_uring_collect(ring_id, 122u) == 1);
+    assert(completion[7].user_data == 0x4d554c54u);
+    assert(completion[7].result == 1 && completion[7].flags == 2u);
+    assert(kernel_io_uring_collect(ring_id, 123u) == 0);
+    g_ready_descriptor = -1;
+    assert(kernel_io_uring_collect(ring_id, 124u) == 0);
+    assert(kernel_io_uring_poll_update(
+               ring_id, 0x4d554c54u, 1, 1u, 1,
+               0x4e455755u, 1) == 0);
+    g_ready_descriptor = 9;
+    assert(kernel_io_uring_collect(ring_id, 125u) == 1);
+    assert(completion[8].user_data == 0x4e455755u);
+    assert(completion[8].result == 1 && completion[8].flags == 2u);
+    assert(kernel_io_uring_pending_cancel(ring_id, 0x4e455755u) == 0);
+    assert(kernel_io_uring_poll_update(
+               ring_id, 0x4e455755u, 0, 0u, 1,
+               0x4d495353u, 0) == -EDGE_LINUX_ENOENT);
+
+    g_ready_descriptor = -1;
+    assert(kernel_io_uring_poll_add(
+               ring_id, 0x52455452u, 9, 1u, 1) == 0);
+    for (uint32_t index = 0; index < 7u; ++index)
+        assert(kernel_io_uring_completion_add(
+                   ring_id, 0x46494c4cu + index, 0, 0) == 0);
+    g_ready_descriptor = 9;
+    assert(kernel_io_uring_collect(ring_id, 126u) == 0);
+    *page_u32(&cq_ring, parameters.cq_off.head) = 1u;
+    assert(kernel_io_uring_collect(ring_id, 127u) == 1);
+    assert(completion[0].user_data == 0x52455452u);
+    assert(completion[0].result == 1 && completion[0].flags == 2u);
+    assert(kernel_io_uring_pending_cancel(ring_id, 0x52455452u) == 0);
 
     test_page_release(0, &sq_ring);
     test_page_release(0, &cq_ring);

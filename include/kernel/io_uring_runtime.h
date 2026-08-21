@@ -86,7 +86,13 @@ int kernel_io_uring_timeout_update(int32_t ring_id, uint64_t user_data,
                                    uint64_t monotonic_now_us,
                                    uint64_t realtime_now_us);
 int kernel_io_uring_poll_add(int32_t ring_id, uint64_t user_data,
-                             int32_t descriptor, uint32_t events);
+                             int32_t descriptor, uint32_t events,
+                             int multishot);
+int kernel_io_uring_poll_update(int32_t ring_id, uint64_t old_user_data,
+                                int update_events, uint32_t events,
+                                int update_user_data,
+                                uint64_t new_user_data,
+                                int multishot);
 int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data);
 uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us);
 int kernel_io_uring_mmap_info(int32_t ring_id, uint64_t offset,

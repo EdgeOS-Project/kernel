@@ -8145,6 +8145,13 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_TIMEOUT_UPDATE_SUPPORTED \
     (EDGE_LINUX_IORING_TIMEOUT_UPDATE | \
      EDGE_LINUX_IORING_TIMEOUT_ABS)
+#define EDGE_LINUX_IORING_POLL_ADD_MULTI       (1u << 0)
+#define EDGE_LINUX_IORING_POLL_UPDATE_EVENTS   (1u << 1)
+#define EDGE_LINUX_IORING_POLL_UPDATE_USER_DATA (1u << 2)
+#define EDGE_LINUX_IORING_POLL_UPDATE_SUPPORTED \
+    (EDGE_LINUX_IORING_POLL_ADD_MULTI | \
+     EDGE_LINUX_IORING_POLL_UPDATE_EVENTS | \
+     EDGE_LINUX_IORING_POLL_UPDATE_USER_DATA)
 #define EDGE_LINUX_IORING_POLL_ALLOWED 0x201fu
 #define EDGE_LINUX_IORING_PENDING_RESULT (INT32_MIN + 1)
 
@@ -8237,19 +8244,59 @@ static int32_t edge_linux_io_uring_poll(
         int32_t ring_id,
         const struct edge_linux_io_uring_sqe *submission) {
     uint32_t events = submission->operation_flags;
+    uint32_t flags = submission->length;
     int result;
 
     if (submission->descriptor < 0 || submission->offset ||
-        submission->address || submission->length ||
+        submission->address ||
         submission->buffer_index || submission->splice_descriptor ||
+        (flags & ~EDGE_LINUX_IORING_POLL_ADD_MULTI) ||
+        ((flags & EDGE_LINUX_IORING_POLL_ADD_MULTI) &&
+         (submission->flags & EDGE_LINUX_IOSQE_CQE_SKIP_SUCCESS)) ||
         !events || (events & ~EDGE_LINUX_IORING_POLL_ALLOWED) ||
         !kernel_fd_is_open(submission->descriptor))
         return submission->descriptor < 0 ||
                !kernel_fd_is_open(submission->descriptor) ?
                -EDGE_LINUX_EBADF : -EDGE_LINUX_EINVAL;
     result = kernel_io_uring_poll_add(
-        ring_id, submission->user_data, submission->descriptor, events);
+        ring_id, submission->user_data, submission->descriptor, events,
+        (flags & EDGE_LINUX_IORING_POLL_ADD_MULTI) != 0);
     return result < 0 ? result : EDGE_LINUX_IORING_PENDING_RESULT;
+}
+
+static int32_t edge_linux_io_uring_poll_remove_update(
+        int32_t ring_id,
+        const struct edge_linux_io_uring_sqe *submission) {
+    uint32_t flags = submission->length;
+    int update_events;
+    int update_user_data;
+
+    if (submission->buffer_index || submission->splice_descriptor ||
+        submission->address3 || submission->reserved2 ||
+        (flags & ~EDGE_LINUX_IORING_POLL_UPDATE_SUPPORTED) ||
+        flags == EDGE_LINUX_IORING_POLL_ADD_MULTI)
+        return -EDGE_LINUX_EINVAL;
+    update_events =
+        (flags & EDGE_LINUX_IORING_POLL_UPDATE_EVENTS) != 0;
+    update_user_data =
+        (flags & EDGE_LINUX_IORING_POLL_UPDATE_USER_DATA) != 0;
+    if (!update_user_data && submission->offset)
+        return -EDGE_LINUX_EINVAL;
+    if (!update_events && submission->operation_flags)
+        return -EDGE_LINUX_EINVAL;
+    if (update_events &&
+        (!submission->operation_flags ||
+         (submission->operation_flags &
+          ~EDGE_LINUX_IORING_POLL_ALLOWED)))
+        return -EDGE_LINUX_EINVAL;
+    if (!update_events && !update_user_data)
+        return kernel_io_uring_pending_cancel(
+            ring_id, submission->address);
+    return kernel_io_uring_poll_update(
+        ring_id, submission->address,
+        update_events, submission->operation_flags,
+        update_user_data, submission->offset,
+        (flags & EDGE_LINUX_IORING_POLL_ADD_MULTI) != 0);
 }
 
 static int64_t edge_linux_io_uring_execute_rw(
@@ -8671,7 +8718,6 @@ static int32_t edge_linux_io_uring_execute_descriptor(
     case EDGE_LINUX_IORING_OP_POLL_ADD:
         result = edge_linux_io_uring_poll(ring_id, submission);
         break;
-    case EDGE_LINUX_IORING_OP_POLL_REMOVE:
     case EDGE_LINUX_IORING_OP_ASYNC_CANCEL:
         if (!submission->address || submission->offset ||
             submission->length || submission->operation_flags ||
@@ -8680,6 +8726,10 @@ static int32_t edge_linux_io_uring_execute_descriptor(
         else
             result = kernel_io_uring_pending_cancel(
                 ring_id, submission->address);
+        break;
+    case EDGE_LINUX_IORING_OP_POLL_REMOVE:
+        result = edge_linux_io_uring_poll_remove_update(
+            ring_id, submission);
         break;
     case EDGE_LINUX_IORING_OP_TIMEOUT_REMOVE:
         result = edge_linux_io_uring_timeout_remove_update(
@@ -8959,7 +9009,8 @@ static int64_t edge_linux_sys_io_uring_enter(
             (void)kernel_io_uring_completion_add(
                 ring_id, submission.user_data, operation_result, 0);
         if (operation_result == 0 &&
-            (submission.opcode == EDGE_LINUX_IORING_OP_POLL_REMOVE ||
+            ((submission.opcode == EDGE_LINUX_IORING_OP_POLL_REMOVE &&
+              submission.length == 0u) ||
              (submission.opcode == EDGE_LINUX_IORING_OP_TIMEOUT_REMOVE &&
               submission.operation_flags == 0u) ||
              submission.opcode == EDGE_LINUX_IORING_OP_ASYNC_CANCEL))
