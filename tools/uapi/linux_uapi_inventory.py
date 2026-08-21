@@ -57,6 +57,7 @@ EDGEOS_ASSESSMENTS = [
             "bounded legacy provided-buffer groups with FIFO selection for READ, READV and RECV",
             "PROVIDE_BUFFERS and REMOVE_BUFFERS with Linux buffer IDs and CQE flags",
             "user-provided buffer-ring registration, status, unregistration and 16-bit head wrap",
+            "kernel-allocated mmap buffer rings with shared page lifetime",
             "buffer-ring selection for READ, READV and RECV with Linux CQE buffer IDs",
             "per-task registered-ring descriptors for enter and register operations",
             "timeout removal and update with retained clock selection",
@@ -75,7 +76,7 @@ EDGEOS_ASSESSMENTS = [
             "user-provided pinned wait regions and SQPOLL wait control",
             "pending asynchronous descriptor leases across close and reuse",
             "notification-pipe semantics",
-            "kernel-allocated mmap provided-buffer rings and incremental consumption",
+            "incremental provided-buffer consumption",
             "provided-buffer page pinning for cross-address-space ring use",
             "remaining supported VFS and socket operations",
             "ia32 and x32 compatibility layouts",
@@ -123,7 +124,8 @@ EDGEOS_ASSESSMENTS = [
                 "plus legacy provided-buffer add, remove, empty-group, READ and "
                 "single-iovec READV selection behavior with returned buffer IDs, "
                 "plus user-provided buffer-ring registration, READ and READV "
-                "selection, returned IDs, head status, unregistration and "
+                "selection, returned IDs, head status, user and kernel-allocated "
+                "mmap ring lifetime, unregistration and "
                 "legacy-versus-ring failed-I/O buffer consumption"
             ),
         },

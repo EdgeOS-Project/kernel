@@ -98,9 +98,12 @@ typedef struct kernel_io_uring_buffer_group {
     uint64_t ring_address;
     uint32_t ring_entries;
     uint16_t ring_head;
+    uint16_t ring_page_count;
     uint16_t id;
     uint8_t used;
     uint8_t provided_ring;
+    uint8_t kernel_allocated;
+    uint8_t reserved;
 } kernel_io_uring_buffer_group_t;
 
 typedef struct kernel_io_uring {
@@ -145,6 +148,9 @@ typedef struct kernel_io_uring {
         provided_buffers[KERNEL_IO_URING_MAX_PROVIDED_BUFFERS];
     kernel_io_uring_buffer_group_t
         buffer_groups[KERNEL_IO_URING_MAX_BUFFER_GROUPS];
+    kernel_io_uring_page_t pbuf_pages[KERNEL_IO_URING_MAX_PBUF_PAGES];
+    uint16_t pbuf_page_groups[KERNEL_IO_URING_MAX_PBUF_PAGES];
+    uint8_t pbuf_page_used[KERNEL_IO_URING_MAX_PBUF_PAGES];
     uint64_t next_provided_buffer_sequence;
     uint32_t clock_id;
     kernel_io_uring_pending_t pending[KERNEL_IO_URING_MAX_PENDING];
@@ -308,6 +314,17 @@ static void io_uring_release_storage(kernel_io_uring_t *ring) {
     io_uring_release_fixed_files(
         ring->fixed_file_pages, ring->fixed_file_used,
         ring->fixed_file_count, ring->fixed_file_page_count);
+    for (uint32_t page = 0;
+         page < KERNEL_IO_URING_MAX_PBUF_PAGES; ++page) {
+        if (ring->pbuf_page_used[page])
+            g_io_uring_allocator.release(
+                g_io_uring_allocator.context,
+                &ring->pbuf_pages[page]);
+        memset(&ring->pbuf_pages[page], 0,
+               sizeof(ring->pbuf_pages[page]));
+        ring->pbuf_page_used[page] = 0u;
+        ring->pbuf_page_groups[page] = 0u;
+    }
 }
 
 static void io_uring_fixed_file_reservation_clear(
@@ -1382,14 +1399,22 @@ int kernel_io_uring_provided_buffer_select(
 
 int kernel_io_uring_pbuf_ring_register(
         int32_t ring_id, uint16_t group_id, uint64_t address,
-        uint32_t entries) {
+        uint32_t entries, int kernel_allocated) {
     kernel_io_uring_buffer_group_t *group;
     kernel_io_uring_t *ring;
+    uint32_t page_count;
     uint64_t flags;
     int result = 0;
 
-    if (!address || !entries || entries > UINT16_MAX)
+    if ((!address && !kernel_allocated) ||
+        (address && kernel_allocated) ||
+        !entries || entries > UINT16_MAX)
         return -EDGE_LINUX_EINVAL;
+    page_count = io_uring_page_count(
+        (uint64_t)entries *
+        sizeof(struct edge_linux_io_uring_buf));
+    if (page_count > KERNEL_IO_URING_MAX_PBUF_PAGES)
+        return -EDGE_LINUX_ENOMEM;
     flags = spin_lock_irqsave(&g_io_uring_lock);
     ring = io_uring_lookup_locked(ring_id);
     if (!ring) {
@@ -1413,9 +1438,50 @@ int kernel_io_uring_pbuf_ring_register(
             goto unlock;
         }
     }
+    if (kernel_allocated) {
+        uint32_t allocated = 0u;
+
+        for (uint32_t page = 0;
+             page < KERNEL_IO_URING_MAX_PBUF_PAGES &&
+             allocated < page_count; ++page) {
+            kernel_io_uring_page_t *storage;
+
+            if (ring->pbuf_page_used[page]) continue;
+            storage = &ring->pbuf_pages[page];
+            if (g_io_uring_allocator.allocate(
+                    g_io_uring_allocator.context, storage) < 0 ||
+                !storage->address)
+                break;
+            memset(storage->address, 0, KERNEL_IO_URING_PAGE_SIZE);
+            ring->pbuf_page_groups[page] = group_id;
+            ring->pbuf_page_used[page] = 1u;
+            ++allocated;
+        }
+        if (allocated != page_count) {
+            for (uint32_t page = 0;
+                 page < KERNEL_IO_URING_MAX_PBUF_PAGES; ++page) {
+                if (!ring->pbuf_page_used[page] ||
+                    ring->pbuf_page_groups[page] != group_id)
+                    continue;
+                g_io_uring_allocator.release(
+                    g_io_uring_allocator.context,
+                    &ring->pbuf_pages[page]);
+                memset(&ring->pbuf_pages[page], 0,
+                       sizeof(ring->pbuf_pages[page]));
+                ring->pbuf_page_used[page] = 0u;
+                ring->pbuf_page_groups[page] = 0u;
+            }
+            memset(group, 0, sizeof(*group));
+            result = -EDGE_LINUX_ENOMEM;
+            goto unlock;
+        }
+    }
     group->ring_address = address;
     group->ring_entries = entries;
+    group->ring_page_count = kernel_allocated ?
+        (uint16_t)page_count : 0u;
     group->provided_ring = 1u;
+    group->kernel_allocated = kernel_allocated ? 1u : 0u;
 unlock:
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     return result;
@@ -1440,6 +1506,21 @@ int kernel_io_uring_pbuf_ring_unregister(
     } else if (!group->provided_ring) {
         result = -EDGE_LINUX_EINVAL;
     } else {
+        if (group->kernel_allocated) {
+            for (uint32_t page = 0;
+                 page < KERNEL_IO_URING_MAX_PBUF_PAGES; ++page) {
+                if (!ring->pbuf_page_used[page] ||
+                    ring->pbuf_page_groups[page] != group_id)
+                    continue;
+                g_io_uring_allocator.release(
+                    g_io_uring_allocator.context,
+                    &ring->pbuf_pages[page]);
+                memset(&ring->pbuf_pages[page], 0,
+                       sizeof(ring->pbuf_pages[page]));
+                ring->pbuf_page_used[page] = 0u;
+                ring->pbuf_page_groups[page] = 0u;
+            }
+        }
         memset(group, 0, sizeof(*group));
     }
 unlock:
@@ -1472,7 +1553,67 @@ int kernel_io_uring_pbuf_ring_snapshot(
         snapshot->address = group->ring_address;
         snapshot->entries = group->ring_entries;
         snapshot->head = group->ring_head;
+        snapshot->kernel_allocated = group->kernel_allocated;
     }
+unlock:
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+static kernel_io_uring_page_t *io_uring_pbuf_page_locked(
+        kernel_io_uring_t *ring, uint16_t group_id,
+        uint32_t page_index) {
+    for (uint32_t page = 0;
+         page < KERNEL_IO_URING_MAX_PBUF_PAGES; ++page) {
+        if (!ring->pbuf_page_used[page] ||
+            ring->pbuf_page_groups[page] != group_id)
+            continue;
+        if (!page_index) return &ring->pbuf_pages[page];
+        --page_index;
+    }
+    return 0;
+}
+
+int kernel_io_uring_pbuf_ring_read(
+        int32_t ring_id, uint16_t group_id, uint32_t head,
+        struct edge_linux_io_uring_buf *buffer, uint16_t *tail) {
+    kernel_io_uring_buffer_group_t *group;
+    kernel_io_uring_page_t *page;
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    uint32_t offset;
+    int result = 0;
+
+    if (!buffer || !tail) return -EDGE_LINUX_EINVAL;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+        goto unlock;
+    }
+    group = io_uring_buffer_group_locked(ring, group_id, 0);
+    if (!group || !group->provided_ring || !group->kernel_allocated) {
+        result = -EDGE_LINUX_EINVAL;
+        goto unlock;
+    }
+    page = io_uring_pbuf_page_locked(ring, group_id, 0u);
+    if (!page || !page->address) {
+        result = -EDGE_LINUX_EIO;
+        goto unlock;
+    }
+    memcpy(tail,
+           &((struct edge_linux_io_uring_buf *)page->address)->reserved,
+           sizeof(*tail));
+    offset = (head & (group->ring_entries - 1u)) *
+        sizeof(*buffer);
+    page = io_uring_pbuf_page_locked(
+        ring, group_id, offset / KERNEL_IO_URING_PAGE_SIZE);
+    if (!page || !page->address) {
+        result = -EDGE_LINUX_EIO;
+        goto unlock;
+    }
+    memcpy(buffer, (uint8_t *)page->address +
+           offset % KERNEL_IO_URING_PAGE_SIZE, sizeof(*buffer));
 unlock:
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     return result;
@@ -2296,12 +2437,30 @@ static int io_uring_region(kernel_io_uring_t *ring, uint64_t offset,
     return 0;
 }
 
+static int io_uring_pbuf_mmap_group(
+        uint64_t offset, uint16_t *group_id) {
+    uint64_t encoded;
+
+    if ((offset & KERNEL_IO_URING_OFF_MMAP_MASK) !=
+        KERNEL_IO_URING_OFF_PBUF_RING)
+        return 0;
+    if (offset & ((1ull << KERNEL_IO_URING_OFF_PBUF_SHIFT) - 1u))
+        return -EDGE_LINUX_EINVAL;
+    encoded = (offset & ~KERNEL_IO_URING_OFF_MMAP_MASK) >>
+        KERNEL_IO_URING_OFF_PBUF_SHIFT;
+    if (encoded > UINT16_MAX) return -EDGE_LINUX_EINVAL;
+    *group_id = (uint16_t)encoded;
+    return 1;
+}
+
 int kernel_io_uring_mmap_info(int32_t ring_id, uint64_t offset,
                               uint64_t length, uint32_t *page_count) {
     kernel_io_uring_page_t *pages;
     kernel_io_uring_t *ring;
     uint64_t flags;
     uint32_t count;
+    uint16_t group_id = 0u;
+    int pbuf;
     int result;
     if (!length || !page_count) return -EDGE_LINUX_EINVAL;
     flags = spin_lock_irqsave(&g_io_uring_lock);
@@ -2310,7 +2469,24 @@ int kernel_io_uring_mmap_info(int32_t ring_id, uint64_t offset,
         spin_unlock_irqrestore(&g_io_uring_lock, flags);
         return -EDGE_LINUX_EBADF;
     }
-    result = io_uring_region(ring, offset, &pages, &count);
+    pbuf = io_uring_pbuf_mmap_group(offset, &group_id);
+    if (pbuf < 0) {
+        result = pbuf;
+    } else if (pbuf) {
+        kernel_io_uring_buffer_group_t *group =
+            io_uring_buffer_group_locked(ring, group_id, 0);
+
+        pages = 0;
+        if (!group || !group->provided_ring ||
+            !group->kernel_allocated)
+            result = -EDGE_LINUX_EINVAL;
+        else {
+            count = group->ring_page_count;
+            result = 0;
+        }
+    } else {
+        result = io_uring_region(ring, offset, &pages, &count);
+    }
     (void)pages;
     if (result == 0 &&
         (length > (uint64_t)count * KERNEL_IO_URING_PAGE_SIZE ||
@@ -2329,6 +2505,8 @@ int kernel_io_uring_mmap_page(int32_t ring_id, uint64_t offset,
     kernel_io_uring_t *ring;
     uint64_t flags;
     uint32_t count;
+    uint16_t group_id = 0u;
+    int pbuf;
     int result;
     if (!page) return -EDGE_LINUX_EINVAL;
     flags = spin_lock_irqsave(&g_io_uring_lock);
@@ -2337,14 +2515,42 @@ int kernel_io_uring_mmap_page(int32_t ring_id, uint64_t offset,
         spin_unlock_irqrestore(&g_io_uring_lock, flags);
         return -EDGE_LINUX_EBADF;
     }
-    result = io_uring_region(ring, offset, &pages, &count);
+    pbuf = io_uring_pbuf_mmap_group(offset, &group_id);
+    if (pbuf < 0) {
+        result = pbuf;
+    } else if (pbuf) {
+        kernel_io_uring_buffer_group_t *group =
+            io_uring_buffer_group_locked(ring, group_id, 0);
+
+        if (!group || !group->provided_ring ||
+            !group->kernel_allocated) {
+            pages = 0;
+            count = 0u;
+            result = -EDGE_LINUX_EINVAL;
+        } else {
+            pages = 0;
+            count = group->ring_page_count;
+            result = 0;
+        }
+    } else {
+        result = io_uring_region(ring, offset, &pages, &count);
+    }
     if (result == 0 && page_index >= count)
         result = -EDGE_LINUX_EINVAL;
     if (result == 0) {
+        kernel_io_uring_page_t *source = pbuf ?
+            io_uring_pbuf_page_locked(ring, group_id, page_index) :
+            &pages[page_index];
+
+        if (!source) {
+            result = -EDGE_LINUX_EINVAL;
+            goto unlock;
+        }
         result = g_io_uring_allocator.retain(
-            g_io_uring_allocator.context, &pages[page_index]);
-        if (result == 0) *page = pages[page_index];
+            g_io_uring_allocator.context, source);
+        if (result == 0) *page = *source;
     }
+unlock:
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     return result;
 }

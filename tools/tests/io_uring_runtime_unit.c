@@ -767,14 +767,15 @@ int main(void) {
                    UINT64_MAX - 0x10u, 0x20u, 1u) ==
                -EDGE_LINUX_EOVERFLOW);
         assert(kernel_io_uring_pbuf_ring_register(
-                   second_ring_id, 9u, 0x4000u, 8u) == 0);
+                   second_ring_id, 9u, 0x4000u, 8u, 0) == 0);
         {
             kernel_io_uring_pbuf_ring_t snapshot;
 
             assert(kernel_io_uring_pbuf_ring_snapshot(
                        second_ring_id, 9u, &snapshot) == 0);
             assert(snapshot.address == 0x4000u &&
-                   snapshot.entries == 8u && snapshot.head == 0u);
+                   snapshot.entries == 8u && snapshot.head == 0u &&
+                   !snapshot.kernel_allocated);
             assert(kernel_io_uring_pbuf_ring_commit(
                        second_ring_id, 9u, 1u) ==
                    -EDGE_LINUX_EAGAIN);
@@ -801,6 +802,48 @@ int main(void) {
                    second_ring_id, 9u) == 0);
         assert(kernel_io_uring_pbuf_ring_unregister(
                    second_ring_id, 9u) == -EDGE_LINUX_ENOENT);
+        assert(kernel_io_uring_pbuf_ring_register(
+                   second_ring_id, 10u, 0u, 8u, 1) == 0);
+        {
+            struct edge_linux_io_uring_buf buffer = {0};
+            struct edge_linux_io_uring_buf selected_buffer;
+            kernel_io_uring_pbuf_ring_t snapshot;
+            kernel_io_uring_page_t buffer_page;
+            uint16_t tail = 1u;
+
+            assert(kernel_io_uring_pbuf_ring_snapshot(
+                       second_ring_id, 10u, &snapshot) == 0);
+            assert(!snapshot.address && snapshot.entries == 8u &&
+                   snapshot.kernel_allocated);
+            assert(kernel_io_uring_mmap_info(
+                       second_ring_id,
+                       KERNEL_IO_URING_OFF_PBUF_RING |
+                           (10ull << KERNEL_IO_URING_OFF_PBUF_SHIFT),
+                       KERNEL_IO_URING_PAGE_SIZE, &pages) == 0);
+            assert(pages == 1u);
+            assert(kernel_io_uring_mmap_page(
+                       second_ring_id,
+                       KERNEL_IO_URING_OFF_PBUF_RING |
+                           (10ull << KERNEL_IO_URING_OFF_PBUF_SHIFT),
+                       0u, &buffer_page) == 0);
+            buffer.address = 0x6000u;
+            buffer.length = 0x80u;
+            buffer.id = 70u;
+            memcpy(buffer_page.address, &buffer, sizeof(buffer));
+            memcpy((uint8_t *)buffer_page.address + 14u,
+                   &tail, sizeof(tail));
+            memset(&selected_buffer, 0, sizeof(selected_buffer));
+            tail = 0u;
+            assert(kernel_io_uring_pbuf_ring_read(
+                       second_ring_id, 10u, 0u,
+                       &selected_buffer, &tail) == 0);
+            assert(tail == 1u && selected_buffer.address == 0x6000u &&
+                   selected_buffer.length == 0x80u &&
+                   selected_buffer.id == 70u);
+            test_page_release(0, &buffer_page);
+        }
+        assert(kernel_io_uring_pbuf_ring_unregister(
+                   second_ring_id, 10u) == 0);
         kernel_io_uring_release(second_ring_id);
     }
     {

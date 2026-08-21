@@ -21,6 +21,7 @@
 #define KERNEL_IO_URING_MAX_FIXED_BUFFERS 256u
 #define KERNEL_IO_URING_MAX_PROVIDED_BUFFERS 256u
 #define KERNEL_IO_URING_MAX_BUFFER_GROUPS 256u
+#define KERNEL_IO_URING_MAX_PBUF_PAGES 256u
 #define KERNEL_IO_URING_MAX_WAIT_REGION_PAGES 64u
 #define KERNEL_IO_URING_REGISTERED_RINGS 16u
 #define KERNEL_IO_URING_REGISTERED_RING_ALLOC UINT32_MAX
@@ -30,6 +31,9 @@
 #define KERNEL_IO_URING_OFF_CQ_RING 0x08000000ull
 #define KERNEL_IO_URING_OFF_SQES    0x10000000ull
 #define KERNEL_IO_URING_OFF_PARAM_REGION 0x20000000ull
+#define KERNEL_IO_URING_OFF_PBUF_RING 0x80000000ull
+#define KERNEL_IO_URING_OFF_PBUF_SHIFT 16u
+#define KERNEL_IO_URING_OFF_MMAP_MASK 0xf8000000ull
 
 typedef struct kernel_io_uring_page {
     void *address;
@@ -63,6 +67,8 @@ typedef struct kernel_io_uring_pbuf_ring {
     uint64_t address;
     uint32_t entries;
     uint32_t head;
+    uint8_t kernel_allocated;
+    uint8_t reserved[7];
 } kernel_io_uring_pbuf_ring_t;
 
 int kernel_io_uring_page_allocator_register(
@@ -129,7 +135,7 @@ int kernel_io_uring_provided_buffer_select(
     kernel_io_uring_selected_buffer_t *selected);
 int kernel_io_uring_pbuf_ring_register(
     int32_t ring_id, uint16_t group_id, uint64_t address,
-    uint32_t entries);
+    uint32_t entries, int kernel_allocated);
 int kernel_io_uring_pbuf_ring_unregister(
     int32_t ring_id, uint16_t group_id);
 int kernel_io_uring_pbuf_ring_snapshot(
@@ -137,6 +143,9 @@ int kernel_io_uring_pbuf_ring_snapshot(
     kernel_io_uring_pbuf_ring_t *snapshot);
 int kernel_io_uring_pbuf_ring_commit(
     int32_t ring_id, uint16_t group_id, uint32_t expected_head);
+int kernel_io_uring_pbuf_ring_read(
+    int32_t ring_id, uint16_t group_id, uint32_t head,
+    struct edge_linux_io_uring_buf *buffer, uint16_t *tail);
 int kernel_io_uring_file_alloc_range_set(int32_t ring_id,
                                          uint32_t offset,
                                          uint32_t length);

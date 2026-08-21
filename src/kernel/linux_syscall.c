@@ -9266,21 +9266,29 @@ static int edge_linux_io_uring_select_buffer(
         uint16_t tail;
         uint64_t buffer_address;
 
-        if (edge_linux_copy_from_user(
-                context, &tail,
-                ring.address + offsetof(
-                    struct edge_linux_io_uring_buf, reserved),
-                sizeof(tail)) < 0)
+        if (ring.kernel_allocated) {
+            result = kernel_io_uring_pbuf_ring_read(
+                ring_id, submission->buffer_index,
+                ring.head, &buffer, &tail);
+            if (result < 0) return result;
+        } else if (edge_linux_copy_from_user(
+                       context, &tail,
+                       ring.address + offsetof(
+                           struct edge_linux_io_uring_buf, reserved),
+                       sizeof(tail)) < 0) {
             return -EDGE_LINUX_EFAULT;
+        }
         if (tail == (uint16_t)ring.head)
             return -EDGE_LINUX_ENOBUFS;
-        buffer_address = ring.address +
-            (uint64_t)(ring.head & (ring.entries - 1u)) *
-            sizeof(buffer);
-        if (edge_linux_copy_from_user(
-                context, &buffer, buffer_address,
-                sizeof(buffer)) < 0)
-            return -EDGE_LINUX_EFAULT;
+        if (!ring.kernel_allocated) {
+            buffer_address = ring.address +
+                (uint64_t)(ring.head & (ring.entries - 1u)) *
+                sizeof(buffer);
+            if (edge_linux_copy_from_user(
+                    context, &buffer, buffer_address,
+                    sizeof(buffer)) < 0)
+                return -EDGE_LINUX_EFAULT;
+        }
         selected->address = buffer.address;
         selected->capacity = buffer.length;
         selected->length = !requested_length ||
@@ -10187,9 +10195,12 @@ static int64_t edge_linux_io_uring_register_pbuf_ring(
         registration.minimum_left)
         return -EDGE_LINUX_EINVAL;
     if (registration.flags &
-        (EDGE_LINUX_IORING_PBUF_RING_MMAP |
-         EDGE_LINUX_IORING_PBUF_RING_INCREMENTAL))
+        EDGE_LINUX_IORING_PBUF_RING_INCREMENTAL)
         return -EDGE_LINUX_EOPNOTSUPP;
+    if (registration.flags & EDGE_LINUX_IORING_PBUF_RING_MMAP)
+        return kernel_io_uring_pbuf_ring_register(
+            ring_id, registration.group_id, 0u,
+            registration.ring_entries, 1);
     if (!registration.ring_address)
         return -EDGE_LINUX_EFAULT;
     ring_size = (uint64_t)registration.ring_entries *
@@ -10207,7 +10218,7 @@ static int64_t edge_linux_io_uring_register_pbuf_ring(
     return kernel_io_uring_pbuf_ring_register(
         ring_id, registration.group_id,
         registration.ring_address,
-        registration.ring_entries);
+        registration.ring_entries, 0);
 }
 
 static int64_t edge_linux_io_uring_unregister_pbuf_ring(
