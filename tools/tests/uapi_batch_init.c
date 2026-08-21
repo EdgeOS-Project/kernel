@@ -152,6 +152,12 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "sysv_sem_abi_probe",
         "sysv_msg_abi_probe",
         "posix_mq_abi_probe",
+        "fanotify_abi_probe",
+        "userfaultfd_abi_probe",
+        "keyring_abi_probe",
+        "quota_abi_probe",
+        "perf_event_abi_probe",
+        "seccomp_abi_probe",
 #ifndef UAPI_BATCH_FREESTANDING_ONLY
         "clock_adjust_abi_probe",
         "module_abi_probe",
