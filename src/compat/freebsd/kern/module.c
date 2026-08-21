@@ -985,59 +985,86 @@ run_sysinit_range_bounded(const void *const *begin, const void *const *end,
     int reverse, enum sysinit_sub_id minimum_subsystem,
     enum sysinit_sub_id maximum_subsystem)
 {
+    struct sysinit_run_entry {
+        const struct sysinit *record;
+        size_t index;
+    };
     size_t total;
-    size_t completed = 0;
-    size_t last_index = 0;
-    const struct sysinit *last = 0;
+    size_t count = 0;
+    struct sysinit_run_entry *ordered;
+    struct sysinit_run_entry *scratch;
+    int error = 0;
 
     if (!begin || !end || end < begin)
         return 0;
     total = (size_t)(end - begin);
-    while (completed < total) {
-        const struct sysinit *selected = 0;
-        size_t selected_index = 0;
-
-        for (size_t index = 0; index < total; ++index) {
-            const struct sysinit *record = begin[index];
-            int after_last;
-
-            if (!record || !record->func ||
-                record->subsystem == SI_SUB_DUMMY ||
-                record->subsystem < minimum_subsystem ||
-                record->subsystem > maximum_subsystem)
-                continue;
-            if (!last) {
-                after_last = 1;
-            } else if (record->subsystem != last->subsystem) {
-                after_last = reverse ?
-                    record->subsystem < last->subsystem :
-                    record->subsystem > last->subsystem;
-            } else if (record->order != last->order) {
-                after_last = reverse ?
-                    record->order < last->order :
-                    record->order > last->order;
-            } else {
-                after_last = reverse ?
-                    index < last_index : index > last_index;
-            }
-            if (!after_last)
-                continue;
-            if (!selected || sysinit_tuple_before(record, index, selected,
-                selected_index, reverse)) {
-                selected = record;
-                selected_index = index;
-            }
-        }
-        if (!selected)
-            break;
-        selected->func(selected->udata);
-        if (g_module_error)
-            return g_module_error;
-        last = selected;
-        last_index = selected_index;
-        completed++;
+    if (total == 0)
+        return 0;
+    if (total > SIZE_MAX / sizeof(*ordered))
+        return BSD_MODULE_ENOMEM;
+    ordered = bsd_malloc(total * sizeof(*ordered), M_DEVBUF,
+        M_WAITOK | M_ZERO);
+    scratch = bsd_malloc(total * sizeof(*scratch), M_DEVBUF,
+        M_WAITOK | M_ZERO);
+    if (!ordered || !scratch) {
+        if (ordered)
+            bsd_free(ordered, M_DEVBUF);
+        if (scratch)
+            bsd_free(scratch, M_DEVBUF);
+        return BSD_MODULE_ENOMEM;
     }
-    return 0;
+    for (size_t index = 0; index < total; ++index) {
+        const struct sysinit *record = begin[index];
+
+        if (!record || !record->func ||
+            record->subsystem == SI_SUB_DUMMY ||
+            record->subsystem < minimum_subsystem ||
+            record->subsystem > maximum_subsystem)
+            continue;
+        ordered[count].record = record;
+        ordered[count].index = index;
+        count++;
+    }
+    for (size_t width = 1; width < count; width *= 2u) {
+        for (size_t start = 0; start < count; start += width * 2u) {
+            size_t left = start;
+            size_t middle = start + width < count ? start + width : count;
+            size_t right = middle;
+            size_t finish = middle + width < count ? middle + width : count;
+            size_t output = start;
+
+            while (left < middle && right < finish) {
+                if (sysinit_tuple_before(ordered[left].record,
+                    ordered[left].index, ordered[right].record,
+                    ordered[right].index, reverse)) {
+                    scratch[output++] = ordered[left++];
+                } else {
+                    scratch[output++] = ordered[right++];
+                }
+            }
+            while (left < middle)
+                scratch[output++] = ordered[left++];
+            while (right < finish)
+                scratch[output++] = ordered[right++];
+        }
+        {
+            struct sysinit_run_entry *temporary = ordered;
+            ordered = scratch;
+            scratch = temporary;
+        }
+        if (width > count / 2u)
+            break;
+    }
+    for (size_t index = 0; index < count; ++index) {
+        ordered[index].record->func(ordered[index].record->udata);
+        if (g_module_error)
+            break;
+    }
+    if (g_module_error)
+        error = g_module_error;
+    bsd_free(ordered, M_DEVBUF);
+    bsd_free(scratch, M_DEVBUF);
+    return error;
 }
 
 static int
