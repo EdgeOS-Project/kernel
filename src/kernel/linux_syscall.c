@@ -16,6 +16,7 @@
 #include "kernel/landlock_runtime.h"
 #include "kernel/fd_runtime.h"
 #include "kernel/anonymous_fd.h"
+#include "kernel/bpf_runtime.h"
 #include "kernel/event_runtime.h"
 #include "kernel/eventfd.h"
 #include "kernel/exec_runtime.h"
@@ -3956,17 +3957,59 @@ static int64_t edge_linux_sys_memfd_create(
     return kernel_memfd_create_descriptor(name, flags);
 }
 
-#define EDGE_LINUX_BPF_PROG_LOAD        5u
-#define EDGE_LINUX_BPF_PROG_ATTACH      8u
-#define EDGE_LINUX_BPF_PROG_DETACH      9u
-#define EDGE_LINUX_BPF_PROG_QUERY       16u
-#define EDGE_LINUX_BPF_BTF_LOAD         18u
-#define EDGE_LINUX_BPF_PROG_TYPE_CGROUP_SKB    8u
-#define EDGE_LINUX_BPF_PROG_TYPE_CGROUP_DEVICE 15u
-#define EDGE_LINUX_BPF_CGROUP_DEVICE    6u
-#define EDGE_LINUX_BPF_F_ALLOW_MULTI    (1u << 1)
-#define EDGE_LINUX_BPF_F_REPLACE        (1u << 2)
-#define EDGE_LINUX_BPF_MAX_INSTRUCTIONS 4096u
+#define EDGE_LINUX_BPF_MAP_CREATE         0u
+#define EDGE_LINUX_BPF_MAP_LOOKUP_ELEM    1u
+#define EDGE_LINUX_BPF_MAP_UPDATE_ELEM    2u
+#define EDGE_LINUX_BPF_MAP_DELETE_ELEM    3u
+#define EDGE_LINUX_BPF_MAP_GET_NEXT_KEY   4u
+#define EDGE_LINUX_BPF_PROG_LOAD          5u
+#define EDGE_LINUX_BPF_PROG_ATTACH        8u
+#define EDGE_LINUX_BPF_PROG_DETACH        9u
+#define EDGE_LINUX_BPF_PROG_GET_NEXT_ID  11u
+#define EDGE_LINUX_BPF_MAP_GET_NEXT_ID   12u
+#define EDGE_LINUX_BPF_PROG_GET_FD_BY_ID 13u
+#define EDGE_LINUX_BPF_MAP_GET_FD_BY_ID  14u
+#define EDGE_LINUX_BPF_OBJ_GET_INFO_BY_FD 15u
+#define EDGE_LINUX_BPF_PROG_QUERY        16u
+#define EDGE_LINUX_BPF_BTF_LOAD          18u
+
+typedef struct edge_linux_bpf_map_create_attribute {
+    uint32_t map_type;
+    uint32_t key_size;
+    uint32_t value_size;
+    uint32_t max_entries;
+    uint32_t map_flags;
+    uint32_t inner_map_descriptor;
+    uint32_t numa_node;
+    char map_name[KERNEL_BPF_OBJECT_NAME_LENGTH];
+    uint32_t interface_index;
+    uint32_t btf_descriptor;
+    uint32_t btf_key_type_id;
+    uint32_t btf_value_type_id;
+    uint32_t btf_vmlinux_value_type_id;
+    uint64_t map_extra;
+} edge_linux_bpf_map_create_attribute_t;
+
+typedef struct edge_linux_bpf_map_element_attribute {
+    uint32_t map_descriptor;
+    uint32_t padding;
+    uint64_t key;
+    uint64_t value;
+    uint64_t flags;
+} edge_linux_bpf_map_element_attribute_t;
+
+typedef struct edge_linux_bpf_id_attribute {
+    uint32_t start_or_object_id;
+    uint32_t next_id;
+    uint32_t open_flags;
+    int32_t token_descriptor;
+} edge_linux_bpf_id_attribute_t;
+
+typedef struct edge_linux_bpf_info_attribute {
+    uint32_t bpf_descriptor;
+    uint32_t info_length;
+    uint64_t info;
+} edge_linux_bpf_info_attribute_t;
 
 typedef struct edge_linux_bpf_program_load_attribute {
     uint32_t program_type;
@@ -3983,43 +4026,276 @@ typedef struct edge_linux_bpf_program_load_attribute {
     uint32_t expected_attach_type;
 } edge_linux_bpf_program_load_attribute_t;
 
-typedef struct edge_linux_bpf_program_attach_attribute {
-    uint32_t target_descriptor;
-    uint32_t program_descriptor;
-    uint32_t attach_type;
-    uint32_t attach_flags;
-    uint32_t replace_program_descriptor;
-} edge_linux_bpf_program_attach_attribute_t;
+typedef struct edge_linux_bpf_map_info {
+    uint32_t type;
+    uint32_t id;
+    uint32_t key_size;
+    uint32_t value_size;
+    uint32_t max_entries;
+    uint32_t map_flags;
+    char name[KERNEL_BPF_OBJECT_NAME_LENGTH];
+    uint32_t interface_index;
+    uint32_t btf_vmlinux_value_type_id;
+    uint64_t netns_device;
+    uint64_t netns_inode;
+    uint32_t btf_id;
+    uint32_t btf_key_type_id;
+    uint32_t btf_value_type_id;
+    uint32_t btf_vmlinux_id;
+    uint64_t map_extra;
+    uint64_t hash;
+    uint32_t hash_size;
+    uint32_t padding;
+} edge_linux_bpf_map_info_t;
 
-typedef struct edge_linux_bpf_program_query_attribute {
-    uint32_t target_descriptor;
-    uint32_t attach_type;
-    uint32_t query_flags;
-    uint32_t attach_flags;
-    uint64_t program_ids;
-    uint32_t program_count;
-    uint32_t reserved;
-} edge_linux_bpf_program_query_attribute_t;
+static int edge_linux_bpf_copy_attribute(
+    edge_linux_syscall_context_t *context, void *destination,
+    uint32_t destination_size, uint32_t minimum_size,
+    uint64_t user_attribute, uint32_t attribute_size) {
+    uint32_t copied;
 
-static int edge_linux_bpf_cgroup_descriptor(uint32_t descriptor) {
-    kernel_vfs_descriptor_t description;
-    int status = kernel_vfs_describe_descriptor(
-        (int32_t)descriptor, &description);
-    if (status < 0) return -EDGE_LINUX_EBADF;
-    if (description.kind != KERNEL_VFS_DESCRIPTOR_DIRECTORY ||
-        !description.superblock ||
-        strcmp(description.superblock->fs_name, "cgroup2") != 0)
-        return -EDGE_LINUX_EINVAL;
-    return 0;
+    if (attribute_size < minimum_size) return -EDGE_LINUX_EINVAL;
+    memset(destination, 0, destination_size);
+    copied = attribute_size < destination_size ?
+        attribute_size : destination_size;
+    return edge_linux_copy_from_user(
+        context, destination, user_attribute, copied) < 0 ?
+        -EDGE_LINUX_EFAULT : 0;
 }
 
-static int edge_linux_bpf_program_descriptor(uint32_t descriptor) {
-    kernel_vfs_descriptor_t description;
-    int status = kernel_vfs_describe_descriptor(
-        (int32_t)descriptor, &description);
-    if (status < 0) return -EDGE_LINUX_EBADF;
-    return description.kind == KERNEL_VFS_DESCRIPTOR_MEMORY ?
-        0 : -EDGE_LINUX_EBADF;
+static int64_t edge_linux_bpf_map_create(
+    edge_linux_syscall_context_t *context, uint64_t user_attribute,
+    uint32_t attribute_size) {
+    edge_linux_bpf_map_create_attribute_t attribute;
+    kernel_bpf_map_create_request_t request;
+    int object_id;
+    int status;
+
+    status = edge_linux_bpf_copy_attribute(
+        context, &attribute, sizeof(attribute),
+        offsetof(edge_linux_bpf_map_create_attribute_t, inner_map_descriptor),
+        user_attribute, attribute_size);
+    if (status < 0) return status;
+    if (attribute.inner_map_descriptor || attribute.numa_node ||
+        attribute.interface_index || attribute.btf_descriptor ||
+        attribute.btf_key_type_id || attribute.btf_value_type_id ||
+        attribute.btf_vmlinux_value_type_id || attribute.map_extra)
+        return -EDGE_LINUX_EINVAL;
+    memset(&request, 0, sizeof(request));
+    request.type = attribute.map_type;
+    request.key_size = attribute.key_size;
+    request.value_size = attribute.value_size;
+    request.max_entries = attribute.max_entries;
+    request.flags = attribute.map_flags;
+    memcpy(request.name, attribute.map_name, sizeof(request.name));
+    object_id = kernel_bpf_map_create(&request);
+    if (object_id < 0) return object_id;
+    return kernel_bpf_create_descriptor(object_id);
+}
+
+static int64_t edge_linux_bpf_map_element(
+    edge_linux_syscall_context_t *context, uint32_t command,
+    uint64_t user_attribute, uint32_t attribute_size) {
+    edge_linux_bpf_map_element_attribute_t attribute;
+    kernel_bpf_map_info_t info;
+    uint8_t *key = 0;
+    uint8_t *value = 0;
+    int object_id;
+    int status;
+
+    status = edge_linux_bpf_copy_attribute(
+        context, &attribute, sizeof(attribute), sizeof(attribute),
+        user_attribute, attribute_size);
+    if (status < 0) return status;
+    if (attribute.padding) return -EDGE_LINUX_EINVAL;
+    object_id = kernel_bpf_descriptor_object(
+        (int32_t)attribute.map_descriptor, KERNEL_BPF_OBJECT_MAP);
+    if (object_id < 0) return object_id;
+    status = kernel_bpf_map_info(object_id, &info);
+    if (status < 0) return status;
+    if (!attribute.key && command != EDGE_LINUX_BPF_MAP_GET_NEXT_KEY)
+        return -EDGE_LINUX_EFAULT;
+    if (!attribute.value && command != EDGE_LINUX_BPF_MAP_DELETE_ELEM)
+        return -EDGE_LINUX_EFAULT;
+    key = (uint8_t *)arch_vm_alloc_page();
+    if (!key) return -EDGE_LINUX_ENOMEM;
+    if (command != EDGE_LINUX_BPF_MAP_DELETE_ELEM) {
+        value = (uint8_t *)arch_vm_alloc_page();
+        if (!value) {
+            arch_vm_free_page(key);
+            return -EDGE_LINUX_ENOMEM;
+        }
+    }
+    if (attribute.key && edge_linux_copy_from_user(
+            context, key, attribute.key, info.key_size) < 0) {
+        status = -EDGE_LINUX_EFAULT;
+        goto out;
+    }
+    if (command == EDGE_LINUX_BPF_MAP_LOOKUP_ELEM) {
+        if (attribute.flags) {
+            status = -EDGE_LINUX_EINVAL;
+            goto out;
+        }
+        status = kernel_bpf_map_lookup(object_id, key, value);
+        if (status == 0 && edge_linux_copy_to_user(
+                context, attribute.value, value, info.value_size) < 0)
+            status = -EDGE_LINUX_EFAULT;
+    } else if (command == EDGE_LINUX_BPF_MAP_UPDATE_ELEM) {
+        if (edge_linux_copy_from_user(
+                context, value, attribute.value, info.value_size) < 0) {
+            status = -EDGE_LINUX_EFAULT;
+            goto out;
+        }
+        status = kernel_bpf_map_update(
+            object_id, key, value, attribute.flags);
+    } else if (command == EDGE_LINUX_BPF_MAP_DELETE_ELEM) {
+        if (attribute.flags) {
+            status = -EDGE_LINUX_EINVAL;
+            goto out;
+        }
+        status = kernel_bpf_map_delete(object_id, key);
+    } else {
+        if (attribute.flags) {
+            status = -EDGE_LINUX_EINVAL;
+            goto out;
+        }
+        status = kernel_bpf_map_next_key(
+            object_id, attribute.key ? key : 0, value);
+        if (status == 0 && edge_linux_copy_to_user(
+                context, attribute.value, value, info.key_size) < 0)
+            status = -EDGE_LINUX_EFAULT;
+    }
+out:
+    if (value) arch_vm_free_page(value);
+    if (key) arch_vm_free_page(key);
+    return status;
+}
+
+static int64_t edge_linux_bpf_program_load(
+    edge_linux_syscall_context_t *context,
+    const kernel_linux_identity_t *identity, uint64_t user_attribute,
+    uint32_t attribute_size) {
+    edge_linux_bpf_program_load_attribute_t attribute;
+    kernel_bpf_program_create_request_t request;
+    kernel_bpf_instruction_t *instructions = 0;
+    char license[128];
+    uint32_t pages;
+    int object_id;
+    int status;
+
+    status = edge_linux_bpf_copy_attribute(
+        context, &attribute, sizeof(attribute), sizeof(attribute),
+        user_attribute, attribute_size);
+    if (status < 0) return status;
+    if (!attribute.instructions || !attribute.license ||
+        !attribute.instruction_count ||
+        attribute.instruction_count > KERNEL_BPF_MAX_INSTRUCTIONS)
+        return -EDGE_LINUX_EINVAL;
+    status = edge_linux_copy_user_string(
+        context, attribute.license, license, sizeof(license),
+        EDGE_LINUX_EINVAL);
+    if (status < 0) return status;
+    pages = (attribute.instruction_count * sizeof(*instructions) + 4095u) /
+            4096u;
+    instructions = (kernel_bpf_instruction_t *)arch_vm_alloc_pages(pages);
+    if (!instructions) return -EDGE_LINUX_ENOMEM;
+    if (edge_linux_copy_from_user(
+            context, instructions, attribute.instructions,
+            (uint64_t)attribute.instruction_count *
+                sizeof(*instructions)) < 0) {
+        status = -EDGE_LINUX_EFAULT;
+        goto out;
+    }
+    memset(&request, 0, sizeof(request));
+    request.type = attribute.program_type;
+    request.instruction_count = attribute.instruction_count;
+    request.flags = attribute.program_flags;
+    request.expected_attach_type = attribute.expected_attach_type;
+    request.created_by_uid = identity->uid;
+    memcpy(request.name, attribute.program_name, sizeof(request.name));
+    object_id = kernel_bpf_program_create(&request, instructions);
+    if (object_id < 0) {
+        status = object_id;
+        goto out;
+    }
+    status = kernel_bpf_create_descriptor(object_id);
+out:
+    for (uint32_t page = 0; page < pages; ++page)
+        arch_vm_free_page((uint8_t *)instructions +
+                          (uint64_t)page * 4096u);
+    return status;
+}
+
+static int64_t edge_linux_bpf_object_id_command(
+    edge_linux_syscall_context_t *context, uint32_t command,
+    uint64_t user_attribute, uint32_t attribute_size) {
+    edge_linux_bpf_id_attribute_t attribute;
+    kernel_bpf_object_kind_t kind =
+        command == EDGE_LINUX_BPF_PROG_GET_NEXT_ID ||
+        command == EDGE_LINUX_BPF_PROG_GET_FD_BY_ID ?
+            KERNEL_BPF_OBJECT_PROGRAM : KERNEL_BPF_OBJECT_MAP;
+    int object_id;
+    int status;
+
+    status = edge_linux_bpf_copy_attribute(
+        context, &attribute, sizeof(attribute),
+        offsetof(edge_linux_bpf_id_attribute_t, token_descriptor),
+        user_attribute, attribute_size);
+    if (status < 0) return status;
+    if (attribute.open_flags || attribute.token_descriptor)
+        return -EDGE_LINUX_EINVAL;
+    if (command == EDGE_LINUX_BPF_PROG_GET_NEXT_ID ||
+        command == EDGE_LINUX_BPF_MAP_GET_NEXT_ID) {
+        status = kernel_bpf_object_next_user_id(
+            kind, attribute.start_or_object_id, &attribute.next_id);
+        if (status < 0) return status;
+        return edge_linux_copy_to_user(
+            context, user_attribute, &attribute, sizeof(attribute)) < 0 ?
+            -EDGE_LINUX_EFAULT : 0;
+    }
+    object_id = kernel_bpf_object_from_user_id(
+        kind, attribute.start_or_object_id);
+    if (object_id < 0) return object_id;
+    return kernel_bpf_create_descriptor(object_id);
+}
+
+static int64_t edge_linux_bpf_object_info(
+    edge_linux_syscall_context_t *context, uint64_t user_attribute,
+    uint32_t attribute_size) {
+    edge_linux_bpf_info_attribute_t attribute;
+    kernel_bpf_map_info_t runtime_info;
+    edge_linux_bpf_map_info_t linux_info;
+    int object_id;
+    int status;
+    uint32_t copied;
+
+    status = edge_linux_bpf_copy_attribute(
+        context, &attribute, sizeof(attribute), sizeof(attribute),
+        user_attribute, attribute_size);
+    if (status < 0) return status;
+    if (!attribute.info) return -EDGE_LINUX_EFAULT;
+    object_id = kernel_bpf_descriptor_object(
+        (int32_t)attribute.bpf_descriptor, KERNEL_BPF_OBJECT_MAP);
+    if (object_id < 0) return object_id;
+    status = kernel_bpf_map_info(object_id, &runtime_info);
+    if (status < 0) return status;
+    memset(&linux_info, 0, sizeof(linux_info));
+    linux_info.type = runtime_info.type;
+    linux_info.id = runtime_info.id;
+    linux_info.key_size = runtime_info.key_size;
+    linux_info.value_size = runtime_info.value_size;
+    linux_info.max_entries = runtime_info.max_entries;
+    linux_info.map_flags = runtime_info.flags;
+    memcpy(linux_info.name, runtime_info.name, sizeof(linux_info.name));
+    copied = attribute.info_length < sizeof(linux_info) ?
+        attribute.info_length : sizeof(linux_info);
+    if (copied && edge_linux_copy_to_user(
+            context, attribute.info, &linux_info, copied) < 0)
+        return -EDGE_LINUX_EFAULT;
+    attribute.info_length = sizeof(linux_info);
+    return edge_linux_copy_to_user(
+        context, user_attribute, &attribute, sizeof(attribute)) < 0 ?
+        -EDGE_LINUX_EFAULT : 0;
 }
 
 static int64_t edge_linux_sys_bpf(
@@ -4028,94 +4304,42 @@ static int64_t edge_linux_sys_bpf(
     uint32_t command = (uint32_t)context->arguments[0];
     uint64_t user_attribute = context->arguments[1];
     uint32_t attribute_size = (uint32_t)context->arguments[2];
-    int status;
+    int privileged;
 
     if (!user_attribute) return -EDGE_LINUX_EFAULT;
     if (kernel_current_linux_identity(&identity) < 0)
         return -EDGE_LINUX_ESRCH;
-    if (!(identity.effective_capabilities &
-          (1ULL << EDGE_LINUX_CAP_SYS_ADMIN)))
-        return -EDGE_LINUX_EPERM;
+    privileged = (identity.effective_capabilities &
+                  (1ULL << EDGE_LINUX_CAP_SYS_ADMIN)) != 0;
+    if (command == EDGE_LINUX_BPF_MAP_CREATE) {
+        if (!privileged) return -EDGE_LINUX_EPERM;
+        return edge_linux_bpf_map_create(
+            context, user_attribute, attribute_size);
+    }
+    if (command >= EDGE_LINUX_BPF_MAP_LOOKUP_ELEM &&
+        command <= EDGE_LINUX_BPF_MAP_GET_NEXT_KEY)
+        return edge_linux_bpf_map_element(
+            context, command, user_attribute, attribute_size);
+    if (command == EDGE_LINUX_BPF_PROG_LOAD) {
+        if (!privileged) return -EDGE_LINUX_EPERM;
+        return edge_linux_bpf_program_load(
+            context, &identity, user_attribute, attribute_size);
+    }
+    if (command >= EDGE_LINUX_BPF_PROG_GET_NEXT_ID &&
+        command <= EDGE_LINUX_BPF_MAP_GET_FD_BY_ID) {
+        if (!privileged) return -EDGE_LINUX_EPERM;
+        return edge_linux_bpf_object_id_command(
+            context, command, user_attribute, attribute_size);
+    }
+    if (command == EDGE_LINUX_BPF_OBJ_GET_INFO_BY_FD)
+        return edge_linux_bpf_object_info(
+            context, user_attribute, attribute_size);
     if (command == EDGE_LINUX_BPF_BTF_LOAD)
         return -EDGE_LINUX_EINVAL;
-
-    if (command == EDGE_LINUX_BPF_PROG_QUERY) {
-        edge_linux_bpf_program_query_attribute_t attribute;
-        if (attribute_size < sizeof(attribute))
-            return -EDGE_LINUX_EINVAL;
-        status = edge_linux_copy_from_user(
-            context, &attribute, user_attribute, sizeof(attribute));
-        if (status < 0) return -EDGE_LINUX_EFAULT;
-        if (attribute.attach_type != EDGE_LINUX_BPF_CGROUP_DEVICE ||
-            attribute.query_flags != 0u)
-            return -EDGE_LINUX_EINVAL;
-        status = edge_linux_bpf_cgroup_descriptor(
-            attribute.target_descriptor);
-        if (status < 0) return status;
-        attribute.attach_flags = 0u;
-        attribute.program_count = 0u;
-        status = edge_linux_copy_to_user(
-            context, user_attribute, &attribute, sizeof(attribute));
-        return status < 0 ? -EDGE_LINUX_EFAULT : 0;
-    }
-
-    if (command == EDGE_LINUX_BPF_PROG_LOAD) {
-        edge_linux_bpf_program_load_attribute_t attribute;
-        uint64_t first_instruction;
-        char license[16];
-        if (attribute_size < sizeof(attribute))
-            return -EDGE_LINUX_EINVAL;
-        status = edge_linux_copy_from_user(
-            context, &attribute, user_attribute, sizeof(attribute));
-        if (status < 0) return -EDGE_LINUX_EFAULT;
-        if (attribute.program_type != EDGE_LINUX_BPF_PROG_TYPE_CGROUP_SKB &&
-            attribute.program_type != EDGE_LINUX_BPF_PROG_TYPE_CGROUP_DEVICE)
-            return -EDGE_LINUX_EINVAL;
-        if (!attribute.instruction_count ||
-            attribute.instruction_count > EDGE_LINUX_BPF_MAX_INSTRUCTIONS ||
-            !attribute.instructions || !attribute.license)
-            return -EDGE_LINUX_EINVAL;
-        status = edge_linux_copy_from_user(
-            context, &first_instruction, attribute.instructions,
-            sizeof(first_instruction));
-        if (status < 0) return -EDGE_LINUX_EFAULT;
-        status = edge_linux_copy_user_string(
-            context, attribute.license, license, sizeof(license),
-            EDGE_LINUX_EINVAL);
-        if (status < 0) return status;
-        return kernel_memfd_create_descriptor(
-            "bpf-cgroup-program", KERNEL_MEMFD_CLOEXEC);
-    }
-
     if (command == EDGE_LINUX_BPF_PROG_ATTACH ||
-        command == EDGE_LINUX_BPF_PROG_DETACH) {
-        edge_linux_bpf_program_attach_attribute_t attribute;
-        uint32_t required_size = command == EDGE_LINUX_BPF_PROG_ATTACH ?
-            (uint32_t)sizeof(attribute) : 3u * sizeof(uint32_t);
-        if (attribute_size < required_size)
-            return -EDGE_LINUX_EINVAL;
-        memset(&attribute, 0, sizeof(attribute));
-        status = edge_linux_copy_from_user(
-            context, &attribute, user_attribute, required_size);
-        if (status < 0) return -EDGE_LINUX_EFAULT;
-        if (attribute.attach_type != EDGE_LINUX_BPF_CGROUP_DEVICE)
-            return -EDGE_LINUX_EINVAL;
-        if (command == EDGE_LINUX_BPF_PROG_ATTACH) {
-            if (attribute.attach_flags & EDGE_LINUX_BPF_F_REPLACE)
-                return -EDGE_LINUX_EINVAL;
-            if (attribute.attach_flags & ~EDGE_LINUX_BPF_F_ALLOW_MULTI)
-                return -EDGE_LINUX_EINVAL;
-        } else if (attribute.attach_flags ||
-                   attribute.replace_program_descriptor) {
-            return -EDGE_LINUX_EINVAL;
-        }
-        status = edge_linux_bpf_cgroup_descriptor(
-            attribute.target_descriptor);
-        if (status < 0) return status;
-        return edge_linux_bpf_program_descriptor(
-            attribute.program_descriptor);
-    }
-
+        command == EDGE_LINUX_BPF_PROG_DETACH ||
+        command == EDGE_LINUX_BPF_PROG_QUERY)
+        return -EDGE_LINUX_EOPNOTSUPP;
     return -EDGE_LINUX_ENOSYS;
 }
 

@@ -71,6 +71,44 @@ EDGEOS_ASSESSMENTS = [
             ),
         },
     },
+    {
+        "domain": "bpf",
+        "status": "partial",
+        "kconfig": ["BPF_SYSCALL"],
+        "architectures": {
+            "x86_64": "runtime-verified-partial",
+            "aarch64": "runtime-verified-partial",
+            "ia32": "unimplemented",
+            "x32": "unimplemented",
+        },
+        "implemented": [
+            "array and hash map creation with descriptor-backed lifetime",
+            "map lookup, update, delete and key iteration",
+            "map and program ID enumeration and descriptor reopening",
+            "map information queries",
+            "bounded cgroup-device program verification and execution",
+        ],
+        "missing": [
+            "program attachment, detachment and query enforcement",
+            "program information queries",
+            "additional map and program types",
+            "BTF objects, pinning and link objects",
+            "ia32 and x32 compatibility layouts",
+        ],
+        "runtime_tests": [
+            "tools/tests/bpf_abi_probe.c",
+            "tools/tests/bpf_runtime_unit.c",
+        ],
+        "linux_oracle": {
+            "status": "partial",
+            "reference": REFERENCE_COMMIT,
+            "scope": (
+                "array and hash maps, map element operations, object IDs, "
+                "descriptor reopening, map information and cgroup-device "
+                "program loading"
+            ),
+        },
+    },
 ]
 
 IOCTL_HEADERS = {

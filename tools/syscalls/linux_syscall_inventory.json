@@ -276,21 +276,23 @@
       "semantic_id": "bpf",
       "shared_handler": "edge_linux_sys_bpf",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/bpf_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "partial",
       "architectures": {
         "x86_64": {
           "number": 321,
           "status": "implemented",
           "route": "shared:edge_linux_sys_bpf",
-          "evidence_status": "static-route-only"
+          "evidence_status": "runtime-probe-listed"
         },
         "aarch64": {
           "number": 280,
           "status": "implemented",
           "route": "shared:edge_linux_sys_bpf",
-          "evidence_status": "static-route-only"
+          "evidence_status": "runtime-probe-listed"
         }
       }
     },

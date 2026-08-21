@@ -209,7 +209,9 @@ def validate_runtime_tests(entries: list[dict[str, Any]]) -> None:
                 fail(f"{entry['id']} runtime test does not exist: {test}")
         if entry.get("linux_oracle") != "required":
             fail(f"{entry['id']} must require a frozen Linux oracle")
-        if entry.get("oracle_status") not in {"not-run", "verified"}:
+        if entry.get("oracle_status") not in {
+            "not-run", "partial", "verified"
+        }:
             fail(f"{entry['id']} has an invalid oracle status")
         for architecture, mapping in entry["architectures"].items():
             if mapping is None:

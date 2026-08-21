@@ -38,6 +38,8 @@ EDGE_SHARED_SRCS := \
 	$(SRC)/kernel/boot_logfile.c \
 	$(SRC)/kernel/boot_root.c \
 	$(SRC)/kernel/boottime.c \
+	$(SRC)/kernel/bpf.c \
+	$(SRC)/kernel/bpf_runtime.c \
 	$(SRC)/kernel/anonymous_fd.c \
 	$(SRC)/kernel/anonymous_fd_poll.c \
 	$(SRC)/kernel/aio_runtime.c \

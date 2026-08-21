@@ -1,0 +1,115 @@
+/* SPDX-License-Identifier: MPL-2.0 */
+/*
+ * Original EdgeOS architecture-independent Linux BPF object runtime.
+ * Copyright (c) EdgeOS Contributors.
+ */
+
+#ifndef EDGEOS_KERNEL_BPF_RUNTIME_H
+#define EDGEOS_KERNEL_BPF_RUNTIME_H
+
+#include <stdint.h>
+
+#define KERNEL_BPF_OBJECT_NAME_LENGTH 16u
+#define KERNEL_BPF_MAX_KEY_SIZE 4096u
+#define KERNEL_BPF_MAX_VALUE_SIZE 4096u
+#define KERNEL_BPF_MAX_INSTRUCTIONS 4096u
+
+#define KERNEL_BPF_MAP_TYPE_HASH  1u
+#define KERNEL_BPF_MAP_TYPE_ARRAY 2u
+
+#define KERNEL_BPF_MAP_NO_PREALLOC (1u << 0)
+
+#define KERNEL_BPF_ANY     0u
+#define KERNEL_BPF_NOEXIST 1u
+#define KERNEL_BPF_EXIST   2u
+#define KERNEL_BPF_F_LOCK  4u
+
+#define KERNEL_BPF_PROG_TYPE_CGROUP_DEVICE 15u
+#define KERNEL_BPF_CGROUP_DEVICE 6u
+
+typedef enum kernel_bpf_object_kind {
+    KERNEL_BPF_OBJECT_MAP = 1,
+    KERNEL_BPF_OBJECT_PROGRAM = 2,
+} kernel_bpf_object_kind_t;
+
+typedef struct kernel_bpf_instruction {
+    uint8_t code;
+    uint8_t registers;
+    int16_t offset;
+    int32_t immediate;
+} kernel_bpf_instruction_t;
+
+typedef struct kernel_bpf_map_create_request {
+    uint32_t type;
+    uint32_t key_size;
+    uint32_t value_size;
+    uint32_t max_entries;
+    uint32_t flags;
+    char name[KERNEL_BPF_OBJECT_NAME_LENGTH];
+} kernel_bpf_map_create_request_t;
+
+typedef struct kernel_bpf_program_create_request {
+    uint32_t type;
+    uint32_t instruction_count;
+    uint32_t flags;
+    uint32_t expected_attach_type;
+    uint32_t created_by_uid;
+    char name[KERNEL_BPF_OBJECT_NAME_LENGTH];
+} kernel_bpf_program_create_request_t;
+
+typedef struct kernel_bpf_map_info {
+    uint32_t type;
+    uint32_t id;
+    uint32_t key_size;
+    uint32_t value_size;
+    uint32_t max_entries;
+    uint32_t flags;
+    char name[KERNEL_BPF_OBJECT_NAME_LENGTH];
+} kernel_bpf_map_info_t;
+
+typedef struct kernel_bpf_program_info {
+    uint32_t type;
+    uint32_t id;
+    uint32_t instruction_count;
+    uint32_t created_by_uid;
+    uint32_t verified_instructions;
+    char name[KERNEL_BPF_OBJECT_NAME_LENGTH];
+} kernel_bpf_program_info_t;
+
+typedef struct kernel_bpf_cgroup_device_context {
+    uint32_t access_type;
+    uint32_t major;
+    uint32_t minor;
+} kernel_bpf_cgroup_device_context_t;
+
+int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request);
+int kernel_bpf_program_create(
+    const kernel_bpf_program_create_request_t *request,
+    const kernel_bpf_instruction_t *instructions);
+int kernel_bpf_object_retain(int object_id);
+void kernel_bpf_object_release(int object_id);
+int kernel_bpf_object_kind(int object_id, kernel_bpf_object_kind_t *kind);
+int kernel_bpf_object_user_id(int object_id, uint32_t *user_id);
+int kernel_bpf_object_from_user_id(kernel_bpf_object_kind_t kind,
+                                   uint32_t user_id);
+int kernel_bpf_object_next_user_id(kernel_bpf_object_kind_t kind,
+                                   uint32_t start_id,
+                                   uint32_t *next_id);
+
+int kernel_bpf_map_info(int object_id, kernel_bpf_map_info_t *info);
+int kernel_bpf_program_info(int object_id, kernel_bpf_program_info_t *info);
+int kernel_bpf_map_lookup(int object_id, const void *key, void *value);
+int kernel_bpf_map_update(int object_id, const void *key, const void *value,
+                          uint64_t flags);
+int kernel_bpf_map_delete(int object_id, const void *key);
+int kernel_bpf_map_next_key(int object_id, const void *key, void *next_key);
+
+int kernel_bpf_program_run_cgroup_device(
+    int object_id, const kernel_bpf_cgroup_device_context_t *context,
+    uint32_t *result);
+
+int kernel_bpf_create_descriptor(int object_id);
+int kernel_bpf_descriptor_object(int32_t descriptor,
+                                 kernel_bpf_object_kind_t expected_kind);
+
+#endif

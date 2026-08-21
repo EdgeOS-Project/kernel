@@ -46,6 +46,7 @@
 #include "kernel/linux_abi.h"
 #include "kernel/linux_errno.h"
 #include "kernel/anonymous_fd.h"
+#include "kernel/bpf_runtime.h"
 #include "kernel/event_runtime.h"
 #include "kernel/exec_runtime.h"
 #include "kernel/fbdev_runtime.h"
@@ -1502,6 +1503,7 @@ typedef enum {
     FD_MQUEUE,
     FD_IO_URING,
     FD_LANDLOCK,
+    FD_BPF,
 } edge_fd_kind_t;
 
 typedef struct {

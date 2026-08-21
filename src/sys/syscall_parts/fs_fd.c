@@ -6730,7 +6730,8 @@ static int linux_fd_fill_kstat(edge_fd_t *e, int fd,
     } else if (e->kind == FD_EVENTFD || e->kind == FD_TIMERFD ||
                e->kind == FD_SIGNALFD || e->kind == FD_EPOLL ||
                e->kind == FD_PIDFD || e->kind == FD_DMA_BUF ||
-               e->kind == FD_MOUNT || e->kind == FD_IO_URING) {
+               e->kind == FD_MOUNT || e->kind == FD_IO_URING ||
+               e->kind == FD_BPF) {
         /* Linux anon_inode descriptors have permission bits but no file type. */
         fill_kstat_mode_size(0600, 0, st);
         st->st_ino = 0xE0000000u + (uint64_t)(uint32_t)(e->kind << 16) + (uint64_t)(uint32_t)(e->pipe_id & 0xFFFF);

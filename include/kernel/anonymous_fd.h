@@ -23,6 +23,7 @@ typedef enum kernel_anonymous_fd_kind {
     KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE,
     KERNEL_ANONYMOUS_FD_IO_URING,
     KERNEL_ANONYMOUS_FD_LANDLOCK,
+    KERNEL_ANONYMOUS_FD_BPF,
 } kernel_anonymous_fd_kind_t;
 
 typedef struct kernel_anonymous_fd_poll_state {

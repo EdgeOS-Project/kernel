@@ -57,6 +57,9 @@ VERIFIED_SYSCALL_PROBES = {
     "remap_file_pages": "tools/tests/remap_file_pages_abi_probe.c",
     "sysfs": "tools/tests/sysfs_syscall_abi_probe.c",
 }
+PARTIAL_SYSCALL_PROBES = {
+    "bpf": "tools/tests/bpf_abi_probe.c",
+}
 
 
 def load_existing() -> dict[str, dict[str, Any]]:
@@ -115,6 +118,10 @@ def build_document() -> dict[str, Any]:
         if name in VERIFIED_SYSCALL_PROBES:
             runtime_tests = [VERIFIED_SYSCALL_PROBES[name]]
             oracle_status = "verified"
+        if name in PARTIAL_SYSCALL_PROBES:
+            runtime_tests = [PARTIAL_SYSCALL_PROBES[name]]
+            if oracle_status != "verified":
+                oracle_status = "partial"
         if shared_handler is None:
             shared_routes = {
                 route.split(":", 1)[1]

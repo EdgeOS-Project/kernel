@@ -84,6 +84,7 @@
 #include "kernel/signalfd.h"
 #include "kernel/signalfd_runtime.h"
 #include "kernel/anonymous_fd.h"
+#include "kernel/bpf_runtime.h"
 #include "kernel/system_runtime.h"
 #include "kernel/sysv_shm_runtime.h"
 #include "kernel/sysv_sem_runtime.h"
@@ -894,6 +895,7 @@ static uint32_t g_fd_table_reserve_count;
 #define KERNEL_FD_USERFAULTFD 24u
 #define KERNEL_FD_PERF_EVENT 25u
 #define KERNEL_FD_LANDLOCK 26u
+#define KERNEL_FD_BPF 27u
 
 #define ARM64_EPOLL_SOURCE_FILE_KMSG          0x00000001u
 #define ARM64_EPOLL_SOURCE_FILE_DRM_CARD      0x00000002u
@@ -9174,7 +9176,8 @@ int arch_vfs_describe_descriptor(int32_t descriptor,
         file->kind == KERNEL_FD_MOUNT ||
         file->kind == KERNEL_FD_MQUEUE ||
         file->kind == KERNEL_FD_IO_URING ||
-        file->kind == KERNEL_FD_LANDLOCK) {
+        file->kind == KERNEL_FD_LANDLOCK ||
+        file->kind == KERNEL_FD_BPF) {
         description->kind = KERNEL_VFS_DESCRIPTOR_ANONYMOUS;
         return 0;
     }
@@ -9989,6 +9992,9 @@ static int arm64_anonymous_fd_install(
     case KERNEL_ANONYMOUS_FD_LANDLOCK:
         local_kind = KERNEL_FD_LANDLOCK;
         break;
+    case KERNEL_ANONYMOUS_FD_BPF:
+        local_kind = KERNEL_FD_BPF;
+        break;
     default:
         return -LINUX_EINVAL;
     }
@@ -10070,6 +10076,9 @@ static int arm64_anonymous_fd_object_id(
         break;
     case KERNEL_ANONYMOUS_FD_LANDLOCK:
         expected = KERNEL_FD_LANDLOCK;
+        break;
+    case KERNEL_ANONYMOUS_FD_BPF:
+        expected = KERNEL_FD_BPF;
         break;
     default:
         return -LINUX_EINVAL;
@@ -10378,6 +10387,10 @@ static int fd_retain_backing_object(const bootstrap_fd_t *fd) {
     }
     if (fd->kind == KERNEL_FD_LANDLOCK) {
         result = kernel_landlock_ruleset_retain((int32_t)fd->mount_id);
+        return result < 0 ? result : 0;
+    }
+    if (fd->kind == KERNEL_FD_BPF) {
+        result = kernel_bpf_object_retain(fd->event_index);
         return result < 0 ? result : 0;
     }
     if (fd->kind == KERNEL_FD_SOCKET &&
@@ -15926,6 +15939,8 @@ static void fd_drop_backing_object(bootstrap_fd_t *fd) {
         kernel_io_uring_release(fd->event_index);
     if (fd->kind == KERNEL_FD_LANDLOCK)
         kernel_landlock_ruleset_release((int32_t)fd->mount_id);
+    if (fd->kind == KERNEL_FD_BPF)
+        kernel_bpf_object_release(fd->event_index);
     if ((fd->kind == KERNEL_FD_PIPE_READ ||
          fd->kind == KERNEL_FD_PIPE_WRITE ||
          fd->kind == KERNEL_FD_PIPE_RW) &&
@@ -22620,7 +22635,8 @@ int arch_vfs_metadata_fd(int32_t descriptor,
                file->kind == KERNEL_FD_MOUNT ||
                file->kind == KERNEL_FD_MQUEUE ||
                file->kind == KERNEL_FD_IO_URING ||
-               file->kind == KERNEL_FD_LANDLOCK) {
+               file->kind == KERNEL_FD_LANDLOCK ||
+               file->kind == KERNEL_FD_BPF) {
         arm64_metadata_set_anonymous(file, metadata, 0600u);
     } else if (file->kind == KERNEL_FD_FILE) {
         if (file->sb)

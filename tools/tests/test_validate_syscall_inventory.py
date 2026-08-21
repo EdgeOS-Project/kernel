@@ -142,6 +142,17 @@ class RuntimeEvidenceValidationTests(unittest.TestCase):
             self.entry("explicit-enosys", "not-run", [])
         ])
 
+    def test_partial_oracle_keeps_probe_evidence_scoped(self) -> None:
+        entry = self.entry(
+            "runtime-probe-listed", "partial",
+            ["tools/tests/test_validate_syscall_inventory.py"],
+        )
+        entry["architectures"]["x86_64"]["status"] = "implemented"
+        entry["architectures"]["x86_64"]["route"] = (
+            "shared:edge_linux_sys_example"
+        )
+        validate_runtime_tests([entry])
+
 
 if __name__ == "__main__":
     unittest.main()

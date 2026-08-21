@@ -1,0 +1,417 @@
+/* SPDX-License-Identifier: MPL-2.0 */
+/* Raw Linux BPF object and map ABI probe for x86_64 and AArch64. */
+
+#include <stdint.h>
+
+#if defined(__x86_64__)
+#define SYS_write 1
+#define SYS_close 3
+#define SYS_fcntl 72
+#define SYS_exit 60
+#define SYS_bpf 321
+#elif defined(__aarch64__)
+#define SYS_fcntl 25
+#define SYS_close 57
+#define SYS_write 64
+#define SYS_exit 93
+#define SYS_bpf 280
+#else
+#error "bpf_abi_probe requires a Linux 64-bit architecture"
+#endif
+
+#define BPF_MAP_CREATE 0u
+#define BPF_MAP_LOOKUP_ELEM 1u
+#define BPF_MAP_UPDATE_ELEM 2u
+#define BPF_MAP_DELETE_ELEM 3u
+#define BPF_MAP_GET_NEXT_KEY 4u
+#define BPF_PROG_LOAD 5u
+#define BPF_PROG_GET_NEXT_ID 11u
+#define BPF_MAP_GET_NEXT_ID 12u
+#define BPF_PROG_GET_FD_BY_ID 13u
+#define BPF_MAP_GET_FD_BY_ID 14u
+#define BPF_OBJ_GET_INFO_BY_FD 15u
+
+#define BPF_MAP_TYPE_HASH 1u
+#define BPF_MAP_TYPE_ARRAY 2u
+#define BPF_PROG_TYPE_CGROUP_DEVICE 15u
+#define BPF_ANY 0u
+#define BPF_NOEXIST 1u
+#define BPF_EXIST 2u
+
+#define F_GETFD 1
+#define FD_CLOEXEC 1
+
+#define E2BIG 7
+#define EEXIST 17
+#define EINVAL 22
+#define ENOENT 2
+#define EPERM 1
+
+union bpf_attr {
+    struct {
+        uint32_t map_type;
+        uint32_t key_size;
+        uint32_t value_size;
+        uint32_t max_entries;
+        uint32_t map_flags;
+        uint32_t inner_map_fd;
+        uint32_t numa_node;
+        char map_name[16];
+        uint32_t map_ifindex;
+        uint32_t btf_fd;
+        uint32_t btf_key_type_id;
+        uint32_t btf_value_type_id;
+        uint32_t btf_vmlinux_value_type_id;
+        uint64_t map_extra;
+    } map_create;
+    struct {
+        uint32_t map_fd;
+        uint32_t padding;
+        uint64_t key;
+        uint64_t value;
+        uint64_t flags;
+    } map_element;
+    struct {
+        uint32_t prog_type;
+        uint32_t insn_count;
+        uint64_t insns;
+        uint64_t license;
+        uint32_t log_level;
+        uint32_t log_size;
+        uint64_t log_buf;
+        uint32_t kern_version;
+        uint32_t prog_flags;
+        char prog_name[16];
+        uint32_t prog_ifindex;
+        uint32_t expected_attach_type;
+    } prog_load;
+    struct {
+        uint32_t start_or_object_id;
+        uint32_t next_id;
+        uint32_t open_flags;
+        int32_t token_fd;
+    } id;
+    struct {
+        uint32_t bpf_fd;
+        uint32_t info_len;
+        uint64_t info;
+    } info;
+    uint8_t padding[144];
+};
+
+struct bpf_map_info {
+    uint32_t type;
+    uint32_t id;
+    uint32_t key_size;
+    uint32_t value_size;
+    uint32_t max_entries;
+    uint32_t map_flags;
+    char name[16];
+    uint32_t ifindex;
+    uint32_t btf_vmlinux_value_type_id;
+    uint64_t netns_dev;
+    uint64_t netns_ino;
+    uint32_t btf_id;
+    uint32_t btf_key_type_id;
+    uint32_t btf_value_type_id;
+    uint32_t btf_vmlinux_id;
+    uint64_t map_extra;
+    uint64_t hash;
+    uint32_t hash_size;
+    uint32_t padding;
+};
+
+struct bpf_insn {
+    uint8_t code;
+    uint8_t registers;
+    int16_t offset;
+    int32_t immediate;
+};
+
+_Static_assert(sizeof(union bpf_attr) == 144u,
+               "bpf_attr probe layout mismatch");
+_Static_assert(sizeof(struct bpf_map_info) == 104u,
+               "bpf_map_info probe layout mismatch");
+_Static_assert(sizeof(struct bpf_insn) == 8u,
+               "bpf_insn probe layout mismatch");
+
+static long raw_syscall6(long number, long a0, long a1, long a2,
+                         long a3, long a4, long a5) {
+#if defined(__x86_64__)
+    register long r10 __asm__("r10") = a3;
+    register long r8 __asm__("r8") = a4;
+    register long r9 __asm__("r9") = a5;
+    long result;
+    __asm__ volatile("syscall"
+                     : "=a"(result)
+                     : "a"(number), "D"(a0), "S"(a1), "d"(a2),
+                       "r"(r10), "r"(r8), "r"(r9)
+                     : "rcx", "r11", "memory");
+    return result;
+#else
+    register long x8 __asm__("x8") = number;
+    register long x0 __asm__("x0") = a0;
+    register long x1 __asm__("x1") = a1;
+    register long x2 __asm__("x2") = a2;
+    register long x3 __asm__("x3") = a3;
+    register long x4 __asm__("x4") = a4;
+    register long x5 __asm__("x5") = a5;
+    __asm__ volatile("svc #0"
+                     : "+r"(x0)
+                     : "r"(x8), "r"(x1), "r"(x2), "r"(x3),
+                       "r"(x4), "r"(x5)
+                     : "memory", "cc");
+    return x0;
+#endif
+}
+
+static void clear_bytes(void *destination, unsigned long length) {
+    unsigned char *bytes = destination;
+    while (length) bytes[--length] = 0;
+}
+
+static unsigned long text_length(const char *text) {
+    unsigned long length = 0;
+    while (text[length]) ++length;
+    return length;
+}
+
+static int text_equal(const char *left, const char *right) {
+    unsigned long index = 0;
+    while (left[index] && right[index] && left[index] == right[index]) ++index;
+    return left[index] == right[index];
+}
+
+static void print_text(const char *text) {
+    (void)raw_syscall6(
+        SYS_write, 1, (long)text, (long)text_length(text), 0, 0, 0);
+}
+
+static void print_long(long value) {
+    char output[32];
+    unsigned long magnitude;
+    unsigned long count = 0;
+
+    if (value < 0) {
+        print_text("-");
+        magnitude = (unsigned long)(-(value + 1)) + 1u;
+    } else {
+        magnitude = (unsigned long)value;
+    }
+    do {
+        output[count++] = (char)('0' + magnitude % 10u);
+        magnitude /= 10u;
+    } while (magnitude);
+    while (count) {
+        char character = output[--count];
+        (void)raw_syscall6(SYS_write, 1, (long)&character, 1, 0, 0, 0);
+    }
+}
+
+static int expect(const char *name, long actual, long expected) {
+    if (actual == expected) return 0;
+    print_text("FAIL ");
+    print_text(name);
+    print_text(" actual=");
+    print_long(actual);
+    print_text(" expected=");
+    print_long(expected);
+    print_text("\n");
+    return 1;
+}
+
+static int expect_true(const char *name, int condition) {
+    if (condition) return 0;
+    print_text("FAIL ");
+    print_text(name);
+    print_text("\n");
+    return 1;
+}
+
+static long bpf_call(uint32_t command, union bpf_attr *attribute) {
+    return raw_syscall6(
+        SYS_bpf, command, (long)attribute, sizeof(*attribute), 0, 0, 0);
+}
+
+static long create_map(uint32_t type, uint32_t entries, const char *name) {
+    union bpf_attr attribute;
+    unsigned long index;
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.map_create.map_type = type;
+    attribute.map_create.key_size = 4u;
+    attribute.map_create.value_size = 8u;
+    attribute.map_create.max_entries = entries;
+    for (index = 0; name[index] && index + 1u < 16u; ++index)
+        attribute.map_create.map_name[index] = name[index];
+    return bpf_call(BPF_MAP_CREATE, &attribute);
+}
+
+static long map_element(uint32_t command, long descriptor,
+                        uint32_t *key, uint64_t *value, uint64_t flags) {
+    union bpf_attr attribute;
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.map_element.map_fd = (uint32_t)descriptor;
+    attribute.map_element.key = (uint64_t)(uintptr_t)key;
+    attribute.map_element.value = (uint64_t)(uintptr_t)value;
+    attribute.map_element.flags = flags;
+    return bpf_call(command, &attribute);
+}
+
+static int test_array_map(void) {
+    union bpf_attr attribute;
+    struct bpf_map_info info;
+    uint32_t key = 2u;
+    uint32_t next = UINT32_MAX;
+    uint64_t value = 0x1122334455667788ULL;
+    uint64_t output = 0;
+    uint32_t id;
+    long reopened;
+    long descriptor = create_map(BPF_MAP_TYPE_ARRAY, 4u, "array_map");
+    int failures = 0;
+
+    if (descriptor == -EPERM) return 77;
+    failures += expect_true("array create", descriptor >= 0);
+    if (descriptor < 0) return failures + 1;
+    failures += expect("array cloexec", raw_syscall6(
+        SYS_fcntl, descriptor, F_GETFD, 0, 0, 0, 0), FD_CLOEXEC);
+    failures += expect("array zero lookup", map_element(
+        BPF_MAP_LOOKUP_ELEM, descriptor, &key, &output, 0), 0);
+    failures += expect_true("array zero value", output == 0u);
+    failures += expect("array update", map_element(
+        BPF_MAP_UPDATE_ELEM, descriptor, &key, &value, BPF_ANY), 0);
+    failures += expect("array lookup", map_element(
+        BPF_MAP_LOOKUP_ELEM, descriptor, &key, &output, 0), 0);
+    failures += expect_true("array value", output == value);
+    failures += expect("array noexist", map_element(
+        BPF_MAP_UPDATE_ELEM, descriptor, &key, &value, BPF_NOEXIST),
+        -EEXIST);
+    failures += expect("array delete", map_element(
+        BPF_MAP_DELETE_ELEM, descriptor, &key, 0, 0), -EINVAL);
+    failures += expect("array next", map_element(
+        BPF_MAP_GET_NEXT_KEY, descriptor, &key, (uint64_t *)&next, 0), 0);
+    failures += expect_true("array next value", next == 3u);
+    clear_bytes(&info, sizeof(info));
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.info.bpf_fd = (uint32_t)descriptor;
+    attribute.info.info_len = sizeof(info);
+    attribute.info.info = (uint64_t)(uintptr_t)&info;
+    failures += expect("array info", bpf_call(
+        BPF_OBJ_GET_INFO_BY_FD, &attribute), 0);
+    failures += expect_true(
+        "array info values",
+        info.type == BPF_MAP_TYPE_ARRAY && info.key_size == 4u &&
+        info.value_size == 8u && info.max_entries == 4u &&
+        text_equal(info.name, "array_map"));
+    id = info.id;
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.id.start_or_object_id = id - 1u;
+    failures += expect("map next id", bpf_call(
+        BPF_MAP_GET_NEXT_ID, &attribute), 0);
+    failures += expect_true("map next id value", attribute.id.next_id == id);
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.id.start_or_object_id = id;
+    reopened = bpf_call(BPF_MAP_GET_FD_BY_ID, &attribute);
+    failures += expect_true("map reopen", reopened >= 0);
+    (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+    if (reopened >= 0) {
+        output = 0;
+        failures += expect("reopened lookup", map_element(
+            BPF_MAP_LOOKUP_ELEM, reopened, &key, &output, 0), 0);
+        failures += expect_true("reopened value", output == value);
+        (void)raw_syscall6(SYS_close, reopened, 0, 0, 0, 0, 0);
+    }
+    return failures;
+}
+
+static int test_hash_map(void) {
+    uint32_t first = 1u;
+    uint32_t second = 2u;
+    uint32_t third = 3u;
+    uint32_t next = 0u;
+    uint64_t value = 11u;
+    uint64_t other = 22u;
+    long descriptor = create_map(BPF_MAP_TYPE_HASH, 2u, "hash_map");
+    int failures = 0;
+
+    failures += expect_true("hash create", descriptor >= 0);
+    if (descriptor < 0) return failures + 1;
+    failures += expect("hash insert", map_element(
+        BPF_MAP_UPDATE_ELEM, descriptor, &first, &value, BPF_NOEXIST), 0);
+    failures += expect("hash duplicate", map_element(
+        BPF_MAP_UPDATE_ELEM, descriptor, &first, &value, BPF_NOEXIST),
+        -EEXIST);
+    failures += expect("hash missing exist", map_element(
+        BPF_MAP_UPDATE_ELEM, descriptor, &second, &other, BPF_EXIST),
+        -ENOENT);
+    failures += expect("hash second", map_element(
+        BPF_MAP_UPDATE_ELEM, descriptor, &second, &other, BPF_ANY), 0);
+    failures += expect("hash full", map_element(
+        BPF_MAP_UPDATE_ELEM, descriptor, &third, &other, BPF_ANY), -E2BIG);
+    failures += expect("hash next", map_element(
+        BPF_MAP_GET_NEXT_KEY, descriptor, 0, (uint64_t *)&next, 0), 0);
+    failures += expect("hash delete", map_element(
+        BPF_MAP_DELETE_ELEM, descriptor, &first, 0, 0), 0);
+    failures += expect("hash missing", map_element(
+        BPF_MAP_LOOKUP_ELEM, descriptor, &first, &value, 0), -ENOENT);
+    (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+    return failures;
+}
+
+static int test_program(void) {
+    static const struct bpf_insn instructions[] = {
+        { .code = 0xb7u, .registers = 0u, .offset = 0, .immediate = 1 },
+        { .code = 0x95u, .registers = 0u, .offset = 0, .immediate = 0 },
+    };
+    static const char license[] = "GPL";
+    union bpf_attr attribute;
+    uint32_t program_id;
+    long descriptor;
+    long reopened;
+    int failures = 0;
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.prog_load.prog_type = BPF_PROG_TYPE_CGROUP_DEVICE;
+    attribute.prog_load.insn_count = 2u;
+    attribute.prog_load.insns = (uint64_t)(uintptr_t)instructions;
+    attribute.prog_load.license = (uint64_t)(uintptr_t)license;
+    attribute.prog_load.prog_name[0] = 'a';
+    attribute.prog_load.prog_name[1] = 'l';
+    attribute.prog_load.prog_name[2] = 'l';
+    attribute.prog_load.prog_name[3] = 'o';
+    attribute.prog_load.prog_name[4] = 'w';
+    descriptor = bpf_call(BPF_PROG_LOAD, &attribute);
+    failures += expect_true("program load", descriptor >= 0);
+    if (descriptor < 0) return failures + 1;
+    failures += expect("program cloexec", raw_syscall6(
+        SYS_fcntl, descriptor, F_GETFD, 0, 0, 0, 0), FD_CLOEXEC);
+    clear_bytes(&attribute, sizeof(attribute));
+    failures += expect("program next id", bpf_call(
+        BPF_PROG_GET_NEXT_ID, &attribute), 0);
+    failures += expect_true("program id", attribute.id.next_id != 0u);
+    program_id = attribute.id.next_id;
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.id.start_or_object_id = program_id;
+    reopened = bpf_call(BPF_PROG_GET_FD_BY_ID, &attribute);
+    failures += expect_true("program reopen", reopened >= 0);
+    if (reopened >= 0)
+        (void)raw_syscall6(SYS_close, reopened, 0, 0, 0, 0, 0);
+    (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+    return failures;
+}
+
+__attribute__((noreturn)) void _start(void) {
+    int failures = test_array_map();
+
+    if (failures == 77) {
+        print_text("BPF_ABI_PROBE_SKIP permission\n");
+        (void)raw_syscall6(SYS_exit, 77, 0, 0, 0, 0, 0);
+    }
+    failures += test_hash_map();
+    failures += test_program();
+    print_text(failures ? "BPF_ABI_PROBE_FAIL\n" :
+                          "BPF_ABI_PROBE_PASS\n");
+    (void)raw_syscall6(SYS_exit, failures ? 1 : 0, 0, 0, 0, 0, 0);
+    for (;;) { }
+}
