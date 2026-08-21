@@ -8140,6 +8140,8 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_REGISTER_FILES_UPDATE2 14u
 #define EDGE_LINUX_IORING_REGISTER_RING_FDS      20u
 #define EDGE_LINUX_IORING_UNREGISTER_RING_FDS    21u
+#define EDGE_LINUX_IORING_REGISTER_FILE_ALLOC_RANGE 25u
+#define EDGE_LINUX_IORING_REGISTER_CLOCK         29u
 #define EDGE_LINUX_IORING_REGISTER_MEM_REGION    34u
 #define EDGE_LINUX_IORING_REGISTER_USE_REGISTERED_RING (1u << 31)
 
@@ -9019,6 +9021,15 @@ static void edge_linux_io_uring_wait_state_reset(
     thread_state->io_uring_wait_minimum_deadline_us = 0;
 }
 
+static uint64_t edge_linux_io_uring_wait_now(int32_t ring_id) {
+    uint64_t monotonic_now_us = boottime_monotonic_us();
+    uint64_t now_us = monotonic_now_us;
+
+    (void)kernel_io_uring_clock_now(
+        ring_id, monotonic_now_us, monotonic_now_us, &now_us);
+    return now_us;
+}
+
 static int64_t edge_linux_io_uring_enter_error(
         kernel_linux_thread_state_t *thread_state, int64_t error) {
     edge_linux_io_uring_wait_state_reset(thread_state);
@@ -9171,7 +9182,8 @@ static int64_t edge_linux_sys_io_uring_enter(
     if (!wait_replayed &&
         (flags & EDGE_LINUX_IORING_ENTER_GETEVENTS) && minimum) {
         result = kernel_io_uring_wait_deadlines(
-            boottime_monotonic_us(), wait_timeout_us, timeout_present,
+            edge_linux_io_uring_wait_now(ring_id),
+            wait_timeout_us, timeout_present,
             (flags & EDGE_LINUX_IORING_ENTER_ABS_TIMER) != 0,
             extended_argument.minimum_wait_microseconds,
             &minimum_deadline_us, &wait_deadline_us);
@@ -9237,17 +9249,18 @@ static int64_t edge_linux_sys_io_uring_enter(
     if ((flags & EDGE_LINUX_IORING_ENTER_GETEVENTS) && minimum) {
         uint32_t completion_count =
             kernel_io_uring_completion_count(ring_id);
-        uint64_t now_us = boottime_monotonic_us();
+        uint64_t now_us = edge_linux_io_uring_wait_now(ring_id);
 
         if ((!wait_replayed && completion_count >= minimum) ||
             (wait_replayed && completion_count >= minimum &&
              (!minimum_deadline_us || now_us >= minimum_deadline_us)))
             goto wait_complete;
         if (submitted && wait_deadline_us > now_us) {
-            uint64_t polling_deadline = boottime_monotonic_us() + 5000u;
+            uint64_t polling_deadline =
+                edge_linux_io_uring_wait_now(ring_id) + 5000u;
             while (kernel_io_uring_completion_count(ring_id) < minimum &&
-                   boottime_monotonic_us() < polling_deadline &&
-                   boottime_monotonic_us() < wait_deadline_us) {
+                   edge_linux_io_uring_wait_now(ring_id) < polling_deadline &&
+                   edge_linux_io_uring_wait_now(ring_id) < wait_deadline_us) {
                 (void)kernel_io_uring_collect(
                     ring_id, boottime_monotonic_us());
                 arch_cpu_relax();
@@ -9260,7 +9273,7 @@ static int64_t edge_linux_sys_io_uring_enter(
             (void)kernel_io_uring_collect(
                 ring_id, boottime_monotonic_us());
             completion_count = kernel_io_uring_completion_count(ring_id);
-            now_us = boottime_monotonic_us();
+            now_us = edge_linux_io_uring_wait_now(ring_id);
             if (completion_count >= minimum &&
                 (!minimum_deadline_us || now_us >= minimum_deadline_us))
                 break;
@@ -9600,6 +9613,36 @@ static int64_t edge_linux_sys_io_uring_register(
         return edge_linux_io_uring_files_update_user(
             context, ring_id, update.offset, update.data,
             update.tags, update.count);
+    }
+    if (opcode == EDGE_LINUX_IORING_REGISTER_FILE_ALLOC_RANGE) {
+        struct edge_linux_io_uring_file_index_range range;
+
+        if (!argument || operation_count)
+            return -EDGE_LINUX_EINVAL;
+        if (edge_linux_copy_from_user(
+                context, &range, argument, sizeof(range)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (range.offset > UINT32_MAX - range.length)
+            return -EDGE_LINUX_EOVERFLOW;
+        if (range.reserved) return -EDGE_LINUX_EINVAL;
+        return kernel_io_uring_file_alloc_range_set(
+            ring_id, range.offset, range.length);
+    }
+    if (opcode == EDGE_LINUX_IORING_REGISTER_CLOCK) {
+        struct edge_linux_io_uring_clock_register registration;
+
+        if (!argument || operation_count)
+            return -EDGE_LINUX_EINVAL;
+        if (edge_linux_copy_from_user(
+                context, &registration, argument,
+                sizeof(registration)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (registration.reserved[0] ||
+            registration.reserved[1] ||
+            registration.reserved[2])
+            return -EDGE_LINUX_EINVAL;
+        return kernel_io_uring_clock_set(
+            ring_id, registration.clock_id);
     }
     if (opcode == EDGE_LINUX_IORING_REGISTER_MEM_REGION) {
         struct edge_linux_io_uring_mem_region_reg registration;

@@ -53,6 +53,8 @@ EDGEOS_ASSESSMENTS = [
             "FILES2 sparse registration, UPDATE2 layouts and resource tag completion events",
             "per-task registered-ring descriptors for enter and register operations",
             "timeout removal and update with retained clock selection",
+            "per-ring monotonic or boottime enter clocks",
+            "fixed-file automatic allocation range registration",
         ],
         "missing": [
             "asynchronous worker execution",
@@ -69,6 +71,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/io_uring_registered_rings_abi_probe.c",
             "tools/tests/io_uring_timeout_update_abi_probe.c",
             "tools/tests/io_uring_poll_multishot_abi_probe.c",
+            "tools/tests/io_uring_registration_abi_probe.c",
             "tools/tests/io_uring_runtime_unit.c",
         ],
         "linux_oracle": {
@@ -88,7 +91,8 @@ EDGEOS_ASSESSMENTS = [
                 "descriptor lifetime, timeout update, finite and updated multishot "
                 "timeouts, relative and absolute enter deadlines, minimum-wait "
                 "batching, registered wait layouts and errors from the frozen "
-                "source oracle, poll update, multishot poll and operation probe"
+                "source oracle, poll update, multishot poll, per-ring clock, "
+                "fixed-file allocation range and operation probe"
             ),
         },
     },

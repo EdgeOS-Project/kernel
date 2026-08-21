@@ -9,6 +9,7 @@
 #include "kernel/fd_runtime.h"
 #include "kernel/io_runtime.h"
 #include "kernel/linux_errno.h"
+#include "kernel/linux_time.h"
 #include "kernel/runtime_limits.h"
 #include "string.h"
 #include "sys/spinlock.h"
@@ -104,6 +105,10 @@ typedef struct kernel_io_uring {
     uint64_t fixed_file_tags[KERNEL_IO_URING_MAX_FIXED_FILES];
     uint32_t fixed_file_count;
     uint32_t fixed_file_page_count;
+    uint32_t file_alloc_start;
+    uint32_t file_alloc_end;
+    uint32_t file_alloc_hint;
+    uint32_t clock_id;
     kernel_io_uring_pending_t pending[KERNEL_IO_URING_MAX_PENDING];
 } kernel_io_uring_t;
 
@@ -327,6 +332,7 @@ int kernel_io_uring_create(uint32_t entries,
     memset(ring, 0, sizeof(*ring));
     ring->used = 1u;
     ring->event_id = -1;
+    ring->clock_id = LINUX_CLOCK_MONOTONIC;
     ring->references = 1u;
     ring->disabled =
         (parameters->flags & IORING_SETUP_R_DISABLED) != 0;
@@ -765,6 +771,9 @@ int kernel_io_uring_files_register_tagged(
                    sizeof(ring->fixed_file_tags));
         ring->fixed_file_count = count;
         ring->fixed_file_page_count = page_count;
+        ring->file_alloc_start = 0u;
+        ring->file_alloc_end = count;
+        ring->file_alloc_hint = 0u;
         memset(pages, 0, sizeof(pages));
         memset(used, 0, sizeof(used));
         result = 0;
@@ -823,6 +832,9 @@ int kernel_io_uring_files_unregister(int32_t ring_id) {
                sizeof(ring->fixed_file_tags));
         ring->fixed_file_count = 0u;
         ring->fixed_file_page_count = 0u;
+        ring->file_alloc_start = 0u;
+        ring->file_alloc_end = 0u;
+        ring->file_alloc_hint = 0u;
     }
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     if (result == 0)
@@ -948,6 +960,93 @@ int kernel_io_uring_files_update(int32_t ring_id, uint32_t offset,
                                  uint32_t count) {
     return kernel_io_uring_files_update_tagged(
         ring_id, offset, descriptors, 0, count);
+}
+
+int kernel_io_uring_file_alloc_range_set(int32_t ring_id,
+                                         uint32_t offset,
+                                         uint32_t length) {
+    kernel_io_uring_t *ring;
+    uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
+    int result;
+
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+    } else if (offset > UINT32_MAX - length) {
+        result = -EDGE_LINUX_EOVERFLOW;
+    } else if (offset + length > ring->fixed_file_count) {
+        result = -EDGE_LINUX_EINVAL;
+    } else {
+        ring->file_alloc_start = offset;
+        ring->file_alloc_end = offset + length;
+        ring->file_alloc_hint = offset;
+        result = 0;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_file_alloc_range_get(int32_t ring_id,
+                                         uint32_t *offset,
+                                         uint32_t *length) {
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    int result;
+
+    if (!offset || !length) return -EDGE_LINUX_EINVAL;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+    } else {
+        *offset = ring->file_alloc_start;
+        *length = ring->file_alloc_end - ring->file_alloc_start;
+        result = 0;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_clock_set(int32_t ring_id, uint32_t clock_id) {
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    int result;
+
+    if (clock_id != LINUX_CLOCK_MONOTONIC &&
+        clock_id != LINUX_CLOCK_BOOTTIME)
+        return -EDGE_LINUX_EINVAL;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+    } else {
+        ring->clock_id = clock_id;
+        result = 0;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_clock_now(int32_t ring_id,
+                              uint64_t monotonic_now_us,
+                              uint64_t boottime_now_us,
+                              uint64_t *now_us) {
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    int result;
+
+    if (!now_us) return -EDGE_LINUX_EINVAL;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+    } else {
+        *now_us = ring->clock_id == LINUX_CLOCK_BOOTTIME ?
+                  boottime_now_us : monotonic_now_us;
+        result = 0;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
 }
 
 int kernel_io_uring_fixed_file_install(int32_t ring_id,

@@ -138,6 +138,9 @@ int main(void) {
     int32_t second_ring_id;
     int32_t looked_up_ring = -1;
     uint32_t registered_slot = UINT32_MAX;
+    uint32_t allocation_offset = UINT32_MAX;
+    uint32_t allocation_length = UINT32_MAX;
+    uint64_t selected_time = 0u;
 
     {
         uint64_t minimum_deadline;
@@ -168,6 +171,20 @@ int main(void) {
     assert(kernel_io_uring_completion_capacity(ring_id) == 16u);
     assert(parameters.sq_off.array == 64);
     assert(parameters.cq_off.cqes == 64);
+    assert(kernel_io_uring_clock_now(
+               ring_id, 100u, 200u, &selected_time) == 0);
+    assert(selected_time == 100u);
+    assert(kernel_io_uring_clock_set(ring_id, 7u) == 0);
+    assert(kernel_io_uring_clock_now(
+               ring_id, 100u, 200u, &selected_time) == 0);
+    assert(selected_time == 200u);
+    assert(kernel_io_uring_clock_set(ring_id, 0u) ==
+           -EDGE_LINUX_EINVAL);
+    assert(kernel_io_uring_clock_set(ring_id, 1u) == 0);
+    assert(kernel_io_uring_file_alloc_range_get(
+               ring_id, &allocation_offset,
+               &allocation_length) == 0);
+    assert(allocation_offset == 0u && allocation_length == 0u);
     {
         struct edge_linux_io_uring_params second_parameters = {0};
         assert(kernel_io_uring_create(
@@ -242,6 +259,20 @@ int main(void) {
     }
     assert(kernel_io_uring_files_register(
                ring_id, fixed_files, 3u) == 0);
+    assert(kernel_io_uring_file_alloc_range_get(
+               ring_id, &allocation_offset,
+               &allocation_length) == 0);
+    assert(allocation_offset == 0u && allocation_length == 3u);
+    assert(kernel_io_uring_file_alloc_range_set(
+               ring_id, 1u, 2u) == 0);
+    assert(kernel_io_uring_file_alloc_range_get(
+               ring_id, &allocation_offset,
+               &allocation_length) == 0);
+    assert(allocation_offset == 1u && allocation_length == 2u);
+    assert(kernel_io_uring_file_alloc_range_set(
+               ring_id, UINT32_MAX, 2u) == -EDGE_LINUX_EOVERFLOW);
+    assert(kernel_io_uring_file_alloc_range_set(
+               ring_id, 2u, 2u) == -EDGE_LINUX_EINVAL);
     assert(g_fixed_file_references == 2u);
     assert(kernel_io_uring_files_register(
                ring_id, fixed_files, 3u) == -EDGE_LINUX_EBUSY);

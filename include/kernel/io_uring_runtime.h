@@ -82,6 +82,17 @@ int kernel_io_uring_files_update_tagged(
     int32_t ring_id, uint32_t offset,
     const int32_t *descriptors, const uint64_t *tags,
     uint32_t count);
+int kernel_io_uring_file_alloc_range_set(int32_t ring_id,
+                                         uint32_t offset,
+                                         uint32_t length);
+int kernel_io_uring_file_alloc_range_get(int32_t ring_id,
+                                         uint32_t *offset,
+                                         uint32_t *length);
+int kernel_io_uring_clock_set(int32_t ring_id, uint32_t clock_id);
+int kernel_io_uring_clock_now(int32_t ring_id,
+                              uint64_t monotonic_now_us,
+                              uint64_t boottime_now_us,
+                              uint64_t *now_us);
 int kernel_io_uring_fixed_file_materialize(int32_t ring_id,
                                            uint32_t index,
                                            int32_t *descriptor);
