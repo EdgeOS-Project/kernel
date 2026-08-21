@@ -49,8 +49,11 @@
 #define IO_URING_OP_SUPPORTED 1u
 #define IORING_OP_FILES_UPDATE 20u
 #define IORING_OP_FIXED_FD_INSTALL 54u
+#define IORING_OP_PIPE 60u
 #define IORING_OP_LAST 63u
+#define IORING_OP_READ 22u
 #define IORING_OP_WRITE 23u
+#define IORING_FILE_INDEX_ALLOC UINT32_MAX
 #define IORING_FIXED_FD_NO_CLOEXEC (1u << 0)
 #define IORING_OFF_SQ_RING 0x00000000ull
 #define IORING_OFF_CQ_RING 0x08000000ull
@@ -269,6 +272,104 @@ static int submit_fixed_write(
     return failures;
 }
 
+static int submit_fixed_read(
+        long ring_descriptor, struct io_uring_params *parameters,
+        void *sq_ring, void *cq_ring, struct io_uring_sqe *sqes,
+        int32_t fixed_index, uint64_t *value, int32_t expected) {
+    volatile uint32_t *sq_head = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.head);
+    volatile uint32_t *sq_tail = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.tail);
+    volatile uint32_t *sq_mask = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.ring_mask);
+    volatile uint32_t *sq_array = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.array);
+    volatile uint32_t *cq_head = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters->cq_off.head);
+    volatile uint32_t *cq_tail = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters->cq_off.tail);
+    volatile uint32_t *cq_mask = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters->cq_off.ring_mask);
+    struct io_uring_cqe *cqes = (struct io_uring_cqe *)(
+        (uint8_t *)cq_ring + parameters->cq_off.cqes);
+    uint32_t submission = __atomic_load_n(sq_tail, __ATOMIC_ACQUIRE);
+    uint32_t completion = __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE);
+    uint32_t submission_slot = submission & *sq_mask;
+    uint32_t completion_slot = completion & *cq_mask;
+    int failures = 0;
+
+    bytes_zero(&sqes[submission_slot], sizeof(sqes[submission_slot]));
+    sqes[submission_slot].opcode = IORING_OP_READ;
+    sqes[submission_slot].flags = IOSQE_FIXED_FILE;
+    sqes[submission_slot].descriptor = fixed_index;
+    sqes[submission_slot].offset = UINT64_MAX;
+    sqes[submission_slot].address = (uint64_t)(uintptr_t)value;
+    sqes[submission_slot].length = sizeof(*value);
+    sqes[submission_slot].user_data = 0x4649584544524541ull;
+    sq_array[submission_slot] = submission_slot;
+    __atomic_store_n(sq_tail, submission + 1u, __ATOMIC_RELEASE);
+    failures += expect(raw_syscall6(
+        SYS_io_uring_enter, ring_descriptor, 1, 1,
+        IORING_ENTER_GETEVENTS, 0, 0), 1);
+    failures += expect(
+        __atomic_load_n(sq_head, __ATOMIC_ACQUIRE), submission + 1u);
+    failures += expect(
+        __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE), completion + 1u);
+    failures += expect(cqes[completion_slot].result, expected);
+    __atomic_store_n(cq_head, completion + 1u, __ATOMIC_RELEASE);
+    return failures;
+}
+
+static int32_t submit_pipe(
+        long ring_descriptor, struct io_uring_params *parameters,
+        void *sq_ring, void *cq_ring, struct io_uring_sqe *sqes,
+        uint32_t file_index, uint32_t pipe_flags,
+        int32_t descriptors[2], int *failures) {
+    volatile uint32_t *sq_head = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.head);
+    volatile uint32_t *sq_tail = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.tail);
+    volatile uint32_t *sq_mask = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.ring_mask);
+    volatile uint32_t *sq_array = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.array);
+    volatile uint32_t *cq_head = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters->cq_off.head);
+    volatile uint32_t *cq_tail = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters->cq_off.tail);
+    volatile uint32_t *cq_mask = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters->cq_off.ring_mask);
+    struct io_uring_cqe *cqes = (struct io_uring_cqe *)(
+        (uint8_t *)cq_ring + parameters->cq_off.cqes);
+    uint32_t submission = __atomic_load_n(sq_tail, __ATOMIC_ACQUIRE);
+    uint32_t completion = __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE);
+    uint32_t submission_slot = submission & *sq_mask;
+    uint32_t completion_slot = completion & *cq_mask;
+    int32_t result;
+
+    descriptors[0] = -1;
+    descriptors[1] = -1;
+    bytes_zero(&sqes[submission_slot], sizeof(sqes[submission_slot]));
+    sqes[submission_slot].opcode = IORING_OP_PIPE;
+    sqes[submission_slot].address =
+        (uint64_t)(uintptr_t)descriptors;
+    sqes[submission_slot].operation_flags = pipe_flags;
+    sqes[submission_slot].splice_descriptor = (int32_t)file_index;
+    sqes[submission_slot].user_data = 0x504950455f4f5045ull;
+    sq_array[submission_slot] = submission_slot;
+    __atomic_store_n(sq_tail, submission + 1u, __ATOMIC_RELEASE);
+    *failures += expect(raw_syscall6(
+        SYS_io_uring_enter, ring_descriptor, 1, 1,
+        IORING_ENTER_GETEVENTS, 0, 0), 1);
+    *failures += expect(
+        __atomic_load_n(sq_head, __ATOMIC_ACQUIRE), submission + 1u);
+    *failures += expect(
+        __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE), completion + 1u);
+    result = cqes[completion_slot].result;
+    __atomic_store_n(cq_head, completion + 1u, __ATOMIC_RELEASE);
+    return result;
+}
+
 static int submit_files_update(
         long ring_descriptor, struct io_uring_params *parameters,
         void *sq_ring, void *cq_ring, struct io_uring_sqe *sqes,
@@ -401,6 +502,7 @@ static int run_probe(void) {
     struct io_uring_resource_register registration2;
     struct io_uring_resource_update2 update2;
     uint64_t value = 1u;
+    uint64_t pipe_value = 0u;
     uint64_t tag;
     long ring;
     long eventfd;
@@ -428,6 +530,9 @@ static int run_probe(void) {
             IO_URING_OP_SUPPORTED);
         failures += expect(
             probe.operations[IORING_OP_FIXED_FD_INSTALL].flags,
+            IO_URING_OP_SUPPORTED);
+        failures += expect(
+            probe.operations[IORING_OP_PIPE].flags,
             IO_URING_OP_SUPPORTED);
     }
 #endif
@@ -558,6 +663,51 @@ static int run_probe(void) {
     failures += expect(raw_syscall6(
         SYS_io_uring_register, ring, IORING_REGISTER_FILES2,
         (long)&registration2, sizeof(registration2), 0, 0), 0);
+    installed_result = submit_pipe(
+        ring, &parameters, sq_ring, cq_ring, sqes,
+        0u, 0u, update_descriptors, &failures);
+    failures += expect(installed_result, 0);
+    if (update_descriptors[0] >= 0)
+        (void)raw_syscall6(
+            SYS_close, update_descriptors[0], 0, 0, 0, 0, 0);
+    if (update_descriptors[1] >= 0)
+        (void)raw_syscall6(
+            SYS_close, update_descriptors[1], 0, 0, 0, 0, 0);
+
+    installed_result = submit_pipe(
+        ring, &parameters, sq_ring, cq_ring, sqes,
+        IORING_FILE_INDEX_ALLOC, 0u,
+        update_descriptors, &failures);
+    failures += expect(installed_result, 0);
+    failures += expect(update_descriptors[0], 0);
+    failures += expect(update_descriptors[1], 1);
+    failures += submit_fixed_write(
+        ring, &parameters, sq_ring, cq_ring, sqes,
+        1, &value, (int32_t)sizeof(value));
+    failures += submit_fixed_read(
+        ring, &parameters, sq_ring, cq_ring, sqes,
+        0, &pipe_value, (int32_t)sizeof(pipe_value));
+    failures += expect((long)pipe_value, (long)value);
+    update_descriptors[0] = -1;
+    update_descriptors[1] = -1;
+    update.offset = 0u;
+    update.reserved = 0u;
+    update.descriptors = (uint64_t)(uintptr_t)update_descriptors;
+    failures += expect(raw_syscall6(
+        SYS_io_uring_register, ring, IORING_REGISTER_FILES_UPDATE,
+        (long)&update, 2, 0, 0), 2);
+
+    installed_result = submit_pipe(
+        ring, &parameters, sq_ring, cq_ring, sqes,
+        1u, 0u, update_descriptors, &failures);
+    failures += expect(installed_result, 0);
+    failures += expect(update_descriptors[0], 0);
+    failures += expect(update_descriptors[1], 1);
+    update_descriptors[0] = -1;
+    update_descriptors[1] = -1;
+    failures += expect(raw_syscall6(
+        SYS_io_uring_register, ring, IORING_REGISTER_FILES_UPDATE,
+        (long)&update, 2, 0, 0), 2);
     eventfd = raw_syscall6(SYS_eventfd2, 0, 0, 0, 0, 0, 0);
     if (eventfd < 0) {
         failures = 1;

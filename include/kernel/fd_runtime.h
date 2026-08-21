@@ -200,6 +200,9 @@ int64_t kernel_fd_operation_socket(
 int kernel_fd_operation_transfer_from_backend(
     void *source_storage,
     kernel_fd_operation_lease_t *destination);
+int kernel_fd_operation_move(
+    kernel_fd_operation_lease_t *destination,
+    kernel_fd_operation_lease_t *source);
 int kernel_fd_operation_release(
     kernel_fd_operation_lease_t *lease);
 int kernel_fd_operation_materialize(

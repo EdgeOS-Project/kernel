@@ -1949,6 +1949,20 @@ static int x86_fd_operation_release(
     return result < 0 ? result : 0;
 }
 
+static int x86_fd_operation_transfer(
+        void *context, void *destination_storage,
+        void *source_storage) {
+    edge_fd_t *destination = (edge_fd_t *)destination_storage;
+    edge_fd_t *source = (edge_fd_t *)source_storage;
+
+    (void)context;
+    if (!destination || !source || destination == source)
+        return -EINVAL;
+    *destination = *source;
+    memset(source, 0, sizeof(*source));
+    return 0;
+}
+
 typedef struct x86_fd_transfer_target_storage {
     edge_fd_proc_t *table;
     uint32_t allocation_limit;
@@ -2518,6 +2532,7 @@ static const kernel_fd_backend_ops_t x86_fd_backend_ops = {
     .operation_acquire_for_pid =
         x86_fd_operation_acquire_for_pid,
     .operation_release = x86_fd_operation_release,
+    .operation_transfer = x86_fd_operation_transfer,
     .operation_description_id =
         x86_fd_operation_description_id,
     .operation_vector_io = x86_fd_operation_vector_io,

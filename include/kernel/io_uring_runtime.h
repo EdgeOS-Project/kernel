@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 
+#include "kernel/fd_runtime.h"
 #include "kernel/linux_abi.h"
 
 #define KERNEL_IO_URING_MAX_RINGS 64u
@@ -38,6 +39,14 @@ typedef struct kernel_io_uring_page_allocator {
     void (*release)(void *context, const kernel_io_uring_page_t *page);
     void *context;
 } kernel_io_uring_page_allocator_t;
+
+typedef struct kernel_io_uring_fixed_file_reservation {
+    int32_t ring_id;
+    uint32_t indices[2];
+    uint32_t cookie;
+    uint8_t active;
+    uint8_t reserved[3];
+} kernel_io_uring_fixed_file_reservation_t;
 
 int kernel_io_uring_page_allocator_register(
     const kernel_io_uring_page_allocator_t *allocator);
@@ -93,6 +102,14 @@ int kernel_io_uring_clock_now(int32_t ring_id,
                               uint64_t monotonic_now_us,
                               uint64_t boottime_now_us,
                               uint64_t *now_us);
+int kernel_io_uring_fixed_file_pair_reserve(
+    int32_t ring_id, uint32_t file_slot,
+    kernel_io_uring_fixed_file_reservation_t *reservation);
+int kernel_io_uring_fixed_file_pair_commit(
+    kernel_io_uring_fixed_file_reservation_t *reservation,
+    const kernel_fd_publication_t *publication);
+int kernel_io_uring_fixed_file_pair_cancel(
+    kernel_io_uring_fixed_file_reservation_t *reservation);
 int kernel_io_uring_fixed_file_materialize(int32_t ring_id,
                                            uint32_t index,
                                            int32_t *descriptor);

@@ -35,6 +35,35 @@ int kernel_fd_operation_acquire(
     return 0;
 }
 
+int kernel_fd_operation_acquire_from_publication(
+        const kernel_fd_publication_t *publication,
+        uint32_t index, kernel_fd_operation_lease_t *lease) {
+    if (!publication || !publication->active ||
+        !publication->descriptors || index >= publication->count || !lease)
+        return -EDGE_LINUX_EINVAL;
+    *(int32_t *)(void *)lease = publication->descriptors[index] + 1;
+    ++g_fixed_file_references;
+    return 0;
+}
+
+const void *kernel_fd_operation_view(
+        const kernel_fd_operation_lease_t *lease) {
+    return lease && *(const int32_t *)(const void *)lease > 0 ?
+        (const void *)lease : 0;
+}
+
+int kernel_fd_operation_move(
+        kernel_fd_operation_lease_t *destination,
+        kernel_fd_operation_lease_t *source) {
+    if (!destination || !source || destination == source ||
+        *(int32_t *)(void *)destination != 0 ||
+        *(int32_t *)(void *)source <= 0)
+        return -EDGE_LINUX_EINVAL;
+    *(int32_t *)(void *)destination = *(int32_t *)(void *)source;
+    *(int32_t *)(void *)source = 0;
+    return 0;
+}
+
 int kernel_fd_operation_release(kernel_fd_operation_lease_t *lease) {
     if (!lease || *(int32_t *)(void *)lease <= 0)
         return -EDGE_LINUX_EBADF;
@@ -322,6 +351,46 @@ int main(void) {
     assert(g_fixed_file_references == 0u);
     assert(kernel_io_uring_files_unregister(ring_id) ==
            -EDGE_LINUX_ENXIO);
+    {
+        const int32_t sparse_files[] = {-1, -1, -1, -1};
+        const int32_t pipe_files[] = {31, 32};
+        kernel_fd_publication_t publication = {
+            .descriptors = pipe_files,
+            .count = 2u,
+            .active = 1u,
+        };
+        kernel_io_uring_fixed_file_reservation_t reservation = {0};
+        const int32_t update[] = {9};
+
+        assert(kernel_io_uring_files_register(
+                   ring_id, sparse_files, 4u) == 0);
+        assert(kernel_io_uring_fixed_file_pair_reserve(
+                   ring_id, 2u, &reservation) == 0);
+        assert(reservation.active && reservation.indices[0] == 1u &&
+               reservation.indices[1] == 2u);
+        assert(kernel_io_uring_files_update(
+                   ring_id, 1u, update, 1u) == -EDGE_LINUX_EBUSY);
+        assert(kernel_io_uring_files_unregister(ring_id) ==
+               -EDGE_LINUX_EBUSY);
+        assert(kernel_io_uring_fixed_file_pair_cancel(
+                   &reservation) == 0);
+        assert(!reservation.active);
+
+        assert(kernel_io_uring_fixed_file_pair_reserve(
+                   ring_id, 2u, &reservation) == 0);
+        assert(kernel_io_uring_fixed_file_pair_commit(
+                   &reservation, &publication) == 0);
+        assert(!reservation.active);
+        assert(g_fixed_file_references == 2u);
+        assert(kernel_io_uring_fixed_file_materialize(
+                   ring_id, 1u, &materialized) == 0 &&
+               materialized == 31);
+        assert(kernel_io_uring_fixed_file_materialize(
+                   ring_id, 2u, &materialized) == 0 &&
+               materialized == 32);
+        assert(kernel_io_uring_files_unregister(ring_id) == 0);
+        assert(g_fixed_file_references == 0u);
+    }
     assert(kernel_io_uring_files_register_tagged(
                ring_id, fixed_files, fixed_tags, 3u) == 0);
     assert(kernel_io_uring_mmap_info(

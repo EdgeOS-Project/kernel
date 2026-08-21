@@ -102,12 +102,15 @@ typedef struct kernel_io_uring {
     uint8_t region_wait_argument;
     kernel_io_uring_page_t fixed_file_pages[IO_URING_FIXED_FILE_PAGES];
     uint8_t fixed_file_used[KERNEL_IO_URING_MAX_FIXED_FILES];
+    uint32_t fixed_file_reservations[KERNEL_IO_URING_MAX_FIXED_FILES];
     uint64_t fixed_file_tags[KERNEL_IO_URING_MAX_FIXED_FILES];
     uint32_t fixed_file_count;
     uint32_t fixed_file_page_count;
     uint32_t file_alloc_start;
     uint32_t file_alloc_end;
     uint32_t file_alloc_hint;
+    uint32_t next_fixed_file_reservation;
+    uint32_t fixed_file_reservation_count;
     uint32_t clock_id;
     kernel_io_uring_pending_t pending[KERNEL_IO_URING_MAX_PENDING];
 } kernel_io_uring_t;
@@ -259,6 +262,17 @@ static void io_uring_release_storage(kernel_io_uring_t *ring) {
     io_uring_release_fixed_files(
         ring->fixed_file_pages, ring->fixed_file_used,
         ring->fixed_file_count, ring->fixed_file_page_count);
+}
+
+static void io_uring_fixed_file_reservation_clear(
+        kernel_io_uring_fixed_file_reservation_t *reservation) {
+    if (!reservation) return;
+    reservation->ring_id = -1;
+    reservation->indices[0] = UINT32_MAX;
+    reservation->indices[1] = UINT32_MAX;
+    reservation->cookie = 0u;
+    reservation->active = 0u;
+    memset(reservation->reserved, 0, sizeof(reservation->reserved));
 }
 
 static kernel_io_uring_t *io_uring_lookup_locked(int32_t ring_id) {
@@ -809,6 +823,8 @@ int kernel_io_uring_files_unregister(int32_t ring_id) {
         result = -EDGE_LINUX_EBADF;
     } else if (!ring->fixed_file_count) {
         result = -EDGE_LINUX_ENXIO;
+    } else if (ring->fixed_file_reservation_count) {
+        result = -EDGE_LINUX_EBUSY;
     } else {
         for (uint32_t index = 0;
              index < ring->fixed_file_count; ++index) {
@@ -900,6 +916,12 @@ int kernel_io_uring_files_update_tagged(
         offset + count > ring->fixed_file_count) {
         result = -EDGE_LINUX_EINVAL;
         goto unlock;
+    }
+    for (uint32_t index = offset; index < offset + count; ++index) {
+        if (ring->fixed_file_reservations[index]) {
+            result = -EDGE_LINUX_EBUSY;
+            goto unlock;
+        }
     }
 
     for (done = 0; done < count; ++done) {
@@ -1046,6 +1068,237 @@ int kernel_io_uring_clock_now(int32_t ring_id,
         result = 0;
     }
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+static int io_uring_fixed_file_find_free_locked(
+        kernel_io_uring_t *ring, uint32_t excluded,
+        uint32_t *index) {
+    uint32_t start;
+    uint32_t length;
+
+    if (!ring || !index ||
+        ring->file_alloc_start >= ring->file_alloc_end)
+        return -EDGE_LINUX_ENFILE;
+    start = ring->file_alloc_hint;
+    if (start < ring->file_alloc_start ||
+        start >= ring->file_alloc_end)
+        start = ring->file_alloc_start;
+    length = ring->file_alloc_end - ring->file_alloc_start;
+    for (uint32_t offset = 0; offset < length; ++offset) {
+        uint32_t candidate = start + offset;
+        if (candidate >= ring->file_alloc_end)
+            candidate = ring->file_alloc_start +
+                candidate - ring->file_alloc_end;
+        if (candidate == excluded ||
+            ring->fixed_file_used[candidate] ||
+            ring->fixed_file_reservations[candidate])
+            continue;
+        *index = candidate;
+        ring->file_alloc_hint = candidate + 1u;
+        if (ring->file_alloc_hint >= ring->file_alloc_end)
+            ring->file_alloc_hint = ring->file_alloc_start;
+        return 0;
+    }
+    return -EDGE_LINUX_ENFILE;
+}
+
+int kernel_io_uring_fixed_file_pair_reserve(
+        int32_t ring_id, uint32_t file_slot,
+        kernel_io_uring_fixed_file_reservation_t *reservation) {
+    kernel_io_uring_t *ring;
+    uint32_t indices[2] = {UINT32_MAX, UINT32_MAX};
+    uint32_t cookie;
+    uint64_t flags;
+    int result = 0;
+
+    if (!reservation) return -EDGE_LINUX_EINVAL;
+    if (reservation->active) return -EDGE_LINUX_EBUSY;
+    io_uring_fixed_file_reservation_clear(reservation);
+    if (!file_slot) return -EDGE_LINUX_EINVAL;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+    } else if (!ring->fixed_file_count) {
+        result = -EDGE_LINUX_ENXIO;
+    } else if (ring->references == UINT32_MAX) {
+        result = -EDGE_LINUX_EOVERFLOW;
+    } else if (file_slot == UINT32_MAX) {
+        result = io_uring_fixed_file_find_free_locked(
+            ring, UINT32_MAX, &indices[0]);
+        if (result == 0)
+            result = io_uring_fixed_file_find_free_locked(
+                ring, indices[0], &indices[1]);
+    } else {
+        indices[0] = file_slot - 1u;
+        if (ring->fixed_file_count < 2u ||
+            indices[0] > ring->fixed_file_count - 2u) {
+            result = -EDGE_LINUX_EINVAL;
+        } else if (ring->fixed_file_reservations[indices[0]] ||
+                   ring->fixed_file_reservations[indices[0] + 1u]) {
+            result = -EDGE_LINUX_EBUSY;
+        } else {
+            indices[1] = indices[0] + 1u;
+        }
+    }
+    if (result == 0) {
+        cookie = ++ring->next_fixed_file_reservation;
+        if (!cookie) cookie = ++ring->next_fixed_file_reservation;
+        ring->fixed_file_reservations[indices[0]] = cookie;
+        ring->fixed_file_reservations[indices[1]] = cookie;
+        ++ring->fixed_file_reservation_count;
+        ++ring->references;
+        reservation->ring_id = ring_id;
+        reservation->indices[0] = indices[0];
+        reservation->indices[1] = indices[1];
+        reservation->cookie = cookie;
+        reservation->active = 1u;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+static int io_uring_fixed_file_pair_finish_locked(
+        kernel_io_uring_t *ring,
+        const kernel_io_uring_fixed_file_reservation_t *reservation) {
+    if (!ring || !reservation || !reservation->active ||
+        reservation->indices[0] >= ring->fixed_file_count ||
+        reservation->indices[1] >= ring->fixed_file_count ||
+        ring->fixed_file_reservations[reservation->indices[0]] !=
+            reservation->cookie ||
+        ring->fixed_file_reservations[reservation->indices[1]] !=
+            reservation->cookie)
+        return -EDGE_LINUX_EINVAL;
+    ring->fixed_file_reservations[reservation->indices[0]] = 0u;
+    ring->fixed_file_reservations[reservation->indices[1]] = 0u;
+    if (ring->fixed_file_reservation_count)
+        --ring->fixed_file_reservation_count;
+    return 0;
+}
+
+int kernel_io_uring_fixed_file_pair_cancel(
+        kernel_io_uring_fixed_file_reservation_t *reservation) {
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    int result;
+
+    if (!reservation || !reservation->active)
+        return -EDGE_LINUX_EINVAL;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(reservation->ring_id);
+    result = io_uring_fixed_file_pair_finish_locked(
+        ring, reservation);
+    if (result == 0 && ring->references && --ring->references == 0u) {
+        io_uring_release_storage(ring);
+        memset(ring, 0, sizeof(*ring));
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (result == 0)
+        io_uring_fixed_file_reservation_clear(reservation);
+    return result;
+}
+
+int kernel_io_uring_fixed_file_pair_commit(
+        kernel_io_uring_fixed_file_reservation_t *reservation,
+        const kernel_fd_publication_t *publication) {
+    kernel_fd_operation_lease_t sources[2] = {0};
+    kernel_io_uring_t *ring;
+    uint32_t indices[2];
+    int32_t event_id = -1;
+    uint32_t installed = 0u;
+    uint32_t reservation_finished = 0u;
+    uint64_t flags;
+    int notify = 0;
+    int result;
+
+    if (!reservation || !reservation->active ||
+        reservation->indices[0] >= KERNEL_IO_URING_MAX_FIXED_FILES ||
+        reservation->indices[1] >= KERNEL_IO_URING_MAX_FIXED_FILES ||
+        !publication ||
+        !publication->active || publication->count != 2u)
+        return -EDGE_LINUX_EINVAL;
+    indices[0] = reservation->indices[0];
+    indices[1] = reservation->indices[1];
+    result = kernel_fd_operation_acquire_from_publication(
+        publication, 0u, &sources[0]);
+    if (result < 0) goto cancel;
+    result = kernel_fd_operation_acquire_from_publication(
+        publication, 1u, &sources[1]);
+    if (result < 0) goto release_sources;
+
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(reservation->ring_id);
+    result = io_uring_fixed_file_pair_finish_locked(
+        ring, reservation);
+    if (result < 0) goto unlock;
+    reservation_finished = 1u;
+    for (uint32_t item = 0; item < 2u; ++item) {
+        uint32_t index = indices[item];
+        kernel_fd_operation_lease_t *destination =
+            io_uring_fixed_file_lease(
+                ring->fixed_file_pages, index);
+
+        if (!destination) {
+            result = -EDGE_LINUX_EBADF;
+            break;
+        }
+        if (ring->fixed_file_used[index]) {
+            if (ring->fixed_file_tags[index] &&
+                io_uring_completion_add_locked(
+                    ring, ring->fixed_file_tags[index], 0, 0) == 0)
+                notify = 1;
+            (void)kernel_fd_operation_release(destination);
+            ring->fixed_file_used[index] = 0u;
+            ring->fixed_file_tags[index] = 0u;
+        }
+        result = kernel_fd_operation_move(destination, &sources[item]);
+        if (result < 0) break;
+        ring->fixed_file_used[index] = 1u;
+        ring->fixed_file_tags[index] = 0u;
+        ++installed;
+    }
+    if (result < 0) {
+        for (uint32_t item = 0;
+             item < installed && item < 2u; ++item) {
+            uint32_t index = indices[item];
+            kernel_fd_operation_lease_t *destination =
+                index < KERNEL_IO_URING_MAX_FIXED_FILES ?
+                    io_uring_fixed_file_lease(
+                        ring->fixed_file_pages, index) : 0;
+            if (index >= KERNEL_IO_URING_MAX_FIXED_FILES)
+                continue;
+            if (ring->fixed_file_used[index] && destination)
+                (void)kernel_fd_operation_release(destination);
+            ring->fixed_file_used[index] = 0u;
+            ring->fixed_file_tags[index] = 0u;
+        }
+    }
+    if (notify) event_id = io_uring_event_retain_locked(ring, 0);
+    if (ring->references && --ring->references == 0u) {
+        io_uring_release_storage(ring);
+        memset(ring, 0, sizeof(*ring));
+    }
+
+unlock:
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (event_id >= 0) {
+        (void)kernel_eventfd_write_value(event_id, 1, 1u);
+        kernel_eventfd_release(event_id);
+    }
+    if (reservation_finished)
+        io_uring_fixed_file_reservation_clear(reservation);
+
+release_sources:
+    for (uint32_t item = 0; item < 2u; ++item)
+        if (kernel_fd_operation_view(&sources[item]))
+            (void)kernel_fd_operation_release(&sources[item]);
+    if (result < 0 && reservation->active)
+        (void)kernel_io_uring_fixed_file_pair_cancel(reservation);
+    return result;
+
+cancel:
+    (void)kernel_io_uring_fixed_file_pair_cancel(reservation);
     return result;
 }
 

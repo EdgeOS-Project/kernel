@@ -569,6 +569,19 @@ int kernel_fd_operation_transfer_from_backend(
     return 0;
 }
 
+int kernel_fd_operation_move(
+        kernel_fd_operation_lease_t *destination,
+        kernel_fd_operation_lease_t *source) {
+    const void *source_storage;
+
+    if (!destination || !source || destination == source)
+        return -EDGE_LINUX_EINVAL;
+    source_storage = kernel_fd_operation_view(source);
+    if (!source_storage) return -EDGE_LINUX_EINVAL;
+    return kernel_fd_operation_transfer_from_backend(
+        (void *)(uintptr_t)source_storage, destination);
+}
+
 int kernel_fd_operation_release(
         kernel_fd_operation_lease_t *lease) {
     fd_operation_lease_internal_t *internal;

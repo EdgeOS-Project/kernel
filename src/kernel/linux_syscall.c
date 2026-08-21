@@ -8097,6 +8097,7 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_OP_FTRUNCATE 55u
 #define EDGE_LINUX_IORING_OP_BIND      56u
 #define EDGE_LINUX_IORING_OP_LISTEN    57u
+#define EDGE_LINUX_IORING_OP_PIPE      60u
 #define EDGE_LINUX_IORING_OP_LAST      63u
 
 #define EDGE_LINUX_IOSQE_FIXED_FILE       (1u << 0)
@@ -8151,6 +8152,15 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_RESOURCE_SPARSE       (1u << 0)
 #define EDGE_LINUX_IO_URING_OP_SUPPORTED        1u
 #define EDGE_LINUX_IORING_FIXED_FD_NO_CLOEXEC   (1u << 0)
+#define EDGE_LINUX_IORING_PIPE_O_DIRECT          0x00004000u
+#define EDGE_LINUX_IORING_PIPE_O_NOTIFICATION    0x00000080u
+#define EDGE_LINUX_IORING_PIPE_O_NONBLOCK        0x00000800u
+#define EDGE_LINUX_IORING_PIPE_O_CLOEXEC         0x00080000u
+#define EDGE_LINUX_IORING_PIPE_FLAGS \
+    (EDGE_LINUX_IORING_PIPE_O_DIRECT | \
+     EDGE_LINUX_IORING_PIPE_O_NOTIFICATION | \
+     EDGE_LINUX_IORING_PIPE_O_NONBLOCK | \
+     EDGE_LINUX_IORING_PIPE_O_CLOEXEC)
 #define EDGE_LINUX_IORING_FSYNC_DATASYNC        1u
 #define EDGE_LINUX_IORING_TIMEOUT_ABS            (1u << 0)
 #define EDGE_LINUX_IORING_TIMEOUT_UPDATE         (1u << 1)
@@ -8909,6 +8919,70 @@ static int edge_linux_io_uring_fixed_file_supported(uint8_t opcode) {
     }
 }
 
+static int32_t edge_linux_io_uring_pipe(
+        edge_linux_syscall_context_t *context,
+        int32_t ring_id,
+        const struct edge_linux_io_uring_sqe *submission) {
+    kernel_fd_publication_t publication = {0};
+    kernel_io_uring_fixed_file_reservation_t reservation = {0};
+    int32_t descriptors[2] = {-1, -1};
+    int32_t user_descriptors[2];
+    uint32_t file_slot = (uint32_t)submission->splice_descriptor;
+    uint32_t pipe_flags = submission->operation_flags;
+    int result;
+
+    if (submission->flags & ~EDGE_LINUX_IOSQE_KNOWN)
+        return -EDGE_LINUX_EINVAL;
+    if (submission->flags & (EDGE_LINUX_IOSQE_FIXED_FILE |
+                             EDGE_LINUX_IOSQE_BUFFER_SELECT))
+        return -EDGE_LINUX_EINVAL;
+    if (submission->descriptor || submission->offset ||
+        submission->address3 || submission->reserved2 ||
+        submission->personality)
+        return -EDGE_LINUX_EINVAL;
+    if (pipe_flags & ~EDGE_LINUX_IORING_PIPE_FLAGS)
+        return -EDGE_LINUX_EINVAL;
+    if (pipe_flags & (EDGE_LINUX_IORING_PIPE_O_DIRECT |
+                      EDGE_LINUX_IORING_PIPE_O_NOTIFICATION))
+        return -EDGE_LINUX_EOPNOTSUPP;
+    if (file_slot &&
+        (pipe_flags & EDGE_LINUX_IORING_PIPE_O_CLOEXEC))
+        return -EDGE_LINUX_EINVAL;
+
+    result = kernel_fd_pipe_prepare(
+        pipe_flags, descriptors, &publication);
+    if (result < 0) return result;
+    if (!file_slot) {
+        if (edge_linux_copy_to_user(
+                context, submission->address, descriptors,
+                sizeof(descriptors)) < 0) {
+            (void)kernel_fd_publication_abort(&publication);
+            return -EDGE_LINUX_EFAULT;
+        }
+        return kernel_fd_publication_commit(&publication);
+    }
+
+    result = kernel_io_uring_fixed_file_pair_reserve(
+        ring_id, file_slot, &reservation);
+    if (result < 0) {
+        (void)kernel_fd_publication_abort(&publication);
+        return result;
+    }
+    user_descriptors[0] = (int32_t)reservation.indices[0];
+    user_descriptors[1] = (int32_t)reservation.indices[1];
+    if (edge_linux_copy_to_user(
+            context, submission->address, user_descriptors,
+            sizeof(user_descriptors)) < 0) {
+        (void)kernel_io_uring_fixed_file_pair_cancel(&reservation);
+        (void)kernel_fd_publication_abort(&publication);
+        return -EDGE_LINUX_EFAULT;
+    }
+    result = kernel_io_uring_fixed_file_pair_commit(
+        &reservation, &publication);
+    (void)kernel_fd_publication_abort(&publication);
+    return result;
+}
+
 static int32_t edge_linux_io_uring_execute(
         edge_linux_syscall_context_t *context,
         int32_t ring_id,
@@ -8917,6 +8991,9 @@ static int32_t edge_linux_io_uring_execute(
     int32_t descriptor = -1;
     int32_t result;
 
+    if (submission->opcode == EDGE_LINUX_IORING_OP_PIPE)
+        return edge_linux_io_uring_pipe(
+            context, ring_id, submission);
     if (submission->opcode == EDGE_LINUX_IORING_OP_FIXED_FD_INSTALL) {
         uint32_t descriptor_flags;
 
@@ -9352,7 +9429,8 @@ static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
            opcode == EDGE_LINUX_IORING_OP_GETXATTR ||
            opcode == EDGE_LINUX_IORING_OP_FUTEX_WAKE ||
            opcode == EDGE_LINUX_IORING_OP_FIXED_FD_INSTALL ||
-           opcode == EDGE_LINUX_IORING_OP_FTRUNCATE;
+           opcode == EDGE_LINUX_IORING_OP_FTRUNCATE ||
+           opcode == EDGE_LINUX_IORING_OP_PIPE;
 }
 
 static int64_t edge_linux_io_uring_files_update_user(
