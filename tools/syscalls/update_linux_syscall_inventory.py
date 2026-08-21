@@ -50,6 +50,9 @@ LINUX_RESERVED_ENOSYS_X86_64 = {
 LINUX_RESERVED_SYSCALL_PROBE = (
     "tools/tests/linux_reserved_syscalls_abi_probe.c"
 )
+VERIFIED_SYSCALL_PROBES = {
+    "remap_file_pages": "tools/tests/remap_file_pages_abi_probe.c",
+}
 
 
 def load_existing() -> dict[str, dict[str, Any]]:
@@ -96,6 +99,7 @@ def build_document() -> dict[str, Any]:
         old = existing.get(name, {})
         runtime_tests = old.get("runtime_tests", [])
         oracle_status = old.get("oracle_status", "not-run")
+        shared_handler = old.get("shared_handler")
         if name in LINUX_RESERVED_ENOSYS_X86_64:
             if report["x86_64"]["routes"].get(name) != "enosys":
                 raise ValueError(
@@ -104,11 +108,23 @@ def build_document() -> dict[str, Any]:
                 )
             runtime_tests = [LINUX_RESERVED_SYSCALL_PROBE]
             oracle_status = "verified"
+        if name in VERIFIED_SYSCALL_PROBES:
+            runtime_tests = [VERIFIED_SYSCALL_PROBES[name]]
+            oracle_status = "verified"
+        if shared_handler is None:
+            shared_routes = {
+                route.split(":", 1)[1]
+                for architecture in ("x86_64", "arm64")
+                for route in [report[architecture]["routes"].get(name)]
+                if route is not None and route.startswith("shared:")
+            }
+            if len(shared_routes) == 1:
+                shared_handler = next(iter(shared_routes))
         syscalls.append(
             {
                 "id": name,
                 "semantic_id": normalize(name),
-                "shared_handler": old.get("shared_handler"),
+                "shared_handler": shared_handler,
                 "architecture_exceptions": ARCHITECTURE_EXCEPTIONS.get(name, []),
                 "runtime_tests": runtime_tests,
                 "linux_oracle": "required",

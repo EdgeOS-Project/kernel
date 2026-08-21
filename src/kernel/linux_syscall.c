@@ -2423,6 +2423,14 @@ static int64_t edge_linux_sys_mremap(
                                  context->arguments[4]);
 }
 
+static int64_t edge_linux_sys_remap_file_pages(
+    edge_linux_syscall_context_t *context) {
+    return kernel_mm_remap_file_pages(
+        context->arguments[0], context->arguments[1],
+        context->arguments[2], context->arguments[3],
+        context->arguments[4]);
+}
+
 static int64_t edge_linux_sys_mseal(
     edge_linux_syscall_context_t *context) {
     return kernel_mm_seal_range(context->arguments[0],

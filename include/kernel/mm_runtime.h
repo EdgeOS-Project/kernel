@@ -34,6 +34,7 @@
 #define KERNEL_MM_MAP_FIXED                  0x00000010u
 #define KERNEL_MM_MAP_ANONYMOUS              0x00000020u
 #define KERNEL_MM_MAP_LOCKED                 0x00002000u
+#define KERNEL_MM_MAP_NONBLOCK               0x00010000u
 #define KERNEL_MM_MAP_FIXED_NOREPLACE        0x00100000u
 #define KERNEL_MM_VMA_INITIAL_AREAS           128u
 #define KERNEL_MM_VMA_MAX                     65530u
@@ -76,6 +77,18 @@ typedef struct kernel_mm_map_request {
     uint32_t reserved;
     uint64_t offset;
 } kernel_mm_map_request_t;
+
+typedef struct kernel_mm_file_mapping_info {
+    uint64_t start;
+    uint64_t end;
+    uint64_t file_offset;
+    uint64_t backing_identity;
+    uint64_t object_identity;
+    uint32_t protection;
+    uint32_t attributes;
+    uint8_t shared;
+    uint8_t reserved[7];
+} kernel_mm_file_mapping_info_t;
 
 typedef struct kernel_process_vm_scratch {
     void *buffer;
@@ -175,6 +188,9 @@ int64_t kernel_mm_unmap_range(uint64_t address, uint64_t length);
 int64_t kernel_mm_remap_range(uint64_t old_address, uint64_t old_length,
                               uint64_t new_length, uint64_t flags,
                               uint64_t new_address);
+int64_t kernel_mm_remap_file_pages(uint64_t address, uint64_t length,
+                                   uint64_t protection,
+                                   uint64_t page_offset, uint64_t flags);
 int64_t kernel_mm_program_break(uint64_t address);
 int64_t kernel_mm_seal_range(uint64_t address, uint64_t length,
                              uint64_t flags);
@@ -327,6 +343,10 @@ int64_t arch_mm_unmap_range(uint64_t address, uint64_t length);
 int64_t arch_mm_remap_range(uint64_t old_address, uint64_t old_length,
                             uint64_t new_length, uint32_t flags,
                             uint64_t new_address);
+int arch_mm_file_mapping_info(uint64_t address,
+                              kernel_mm_file_mapping_info_t *info);
+int64_t arch_mm_remap_file_pages(uint64_t address, uint64_t length,
+                                 uint64_t file_offset, uint32_t flags);
 int arch_mm_program_break_snapshot(
     kernel_mm_program_break_state_t *state);
 int arch_mm_program_break_resize(uint64_t old_page, uint64_t new_page);

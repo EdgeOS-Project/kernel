@@ -7574,6 +7574,188 @@ int64_t arch_mm_map(const kernel_mm_map_request_t *request) {
     return result;
 }
 
+int arch_mm_file_mapping_info(uint64_t address,
+                              kernel_mm_file_mapping_info_t *info) {
+    task_t *current = process_current_task();
+    task_t *memory = current ? process_vm_task(current) : 0;
+    int result = -EINVAL;
+
+    if (!memory || !info) return -EINVAL;
+    process_user_vma_mutation_lock(memory);
+    for (int index = 0; index < user_vma_live_limit(memory); ++index) {
+        const edge_user_vma_t *mapping = &memory->user_vmas[index];
+        if (!mapping->file_backed || mapping->end <= mapping->start ||
+            address < mapping->start || address >= mapping->end)
+            continue;
+        memset(info, 0, sizeof(*info));
+        info->start = mapping->start;
+        info->end = mapping->end;
+        info->file_offset = mapping->file_off + address - mapping->start;
+        info->backing_identity = (uint64_t)mapping->file_slot + 1u;
+        info->object_identity =
+            ((uint64_t)mapping->file_ino << 32u) |
+            mapping->file_generation;
+        info->protection = mapping->prot;
+        info->attributes = mapping->flags;
+        info->shared =
+            (mapping->flags & LINUX_MAP_SHARED) != 0 ? 1u : 0u;
+        result = 0;
+        break;
+    }
+    process_user_vma_mutation_unlock(memory);
+    return result;
+}
+
+static int user_vma_clone_file_piece(task_t *task,
+                                     const edge_user_vma_t *source,
+                                     uint64_t start, uint64_t end,
+                                     uint64_t file_offset) {
+    int slot;
+
+    if (!task || !source || !source->file_backed || end <= start)
+        return -1;
+    slot = user_vma_find_free_slot(task);
+    if (slot < 0) return -1;
+    task->user_vmas[slot] = *source;
+    task->user_vmas[slot].start = start;
+    task->user_vmas[slot].end = end;
+    task->user_vmas[slot].file_off = file_offset;
+    task->user_vmas[slot].file_len = end - start;
+    if (process_user_vma_retain_backing(&task->user_vmas[slot]) < 0) {
+        memset(&task->user_vmas[slot], 0, sizeof(task->user_vmas[slot]));
+        return -1;
+    }
+    user_vma_commit_slot(task, slot);
+    return 0;
+}
+
+static int user_vma_reoffset_file_range(task_t *task, uint64_t start,
+                                        uint64_t end,
+                                        uint64_t file_offset) {
+    edge_user_vma_t first;
+    uint64_t cursor = start;
+    int needed_slots = 0;
+    int have_first = 0;
+    int live;
+
+    if (!task || end <= start) return -1;
+    live = user_vma_live_limit(task);
+    while (cursor < end) {
+        edge_user_vma_t *mapping = 0;
+        for (int index = 0; index < live; ++index) {
+            edge_user_vma_t *candidate = &task->user_vmas[index];
+            if (candidate->end > candidate->start &&
+                cursor >= candidate->start && cursor < candidate->end) {
+                mapping = candidate;
+                break;
+            }
+        }
+        if (!mapping || !mapping->file_backed ||
+            !(mapping->flags & LINUX_MAP_SHARED))
+            return -1;
+        if (!have_first) {
+            first = *mapping;
+            have_first = 1;
+        } else if (mapping->file_slot != first.file_slot ||
+                   mapping->prot != first.prot ||
+                   mapping->flags != first.flags)
+            return -1;
+        cursor = mapping->end < end ? mapping->end : end;
+    }
+
+    for (int index = 0; index < live; ++index) {
+        const edge_user_vma_t *mapping = &task->user_vmas[index];
+        if (mapping->end <= mapping->start || end <= mapping->start ||
+            start >= mapping->end)
+            continue;
+        if (start > mapping->start && end < mapping->end)
+            needed_slots += 2;
+        else if (start > mapping->start || end < mapping->end)
+            ++needed_slots;
+    }
+    if (needed_slots > 0 &&
+        (task->user_vma_count > PROCESS_USER_VMA_MAX -
+                                     (uint32_t)needed_slots ||
+         process_user_vma_reserve(
+             task, task->user_vma_count + (uint32_t)needed_slots) < 0 ||
+         needed_slots > user_vma_free_slot_count(task)))
+        return -1;
+
+    live = user_vma_live_limit(task);
+    for (int index = 0; index < live; ++index) {
+        edge_user_vma_t *mapping = &task->user_vmas[index];
+        edge_user_vma_t old;
+        uint64_t overlap_start;
+        uint64_t overlap_end;
+
+        if (mapping->end <= mapping->start || end <= mapping->start ||
+            start >= mapping->end)
+            continue;
+        old = *mapping;
+        overlap_start = start > old.start ? start : old.start;
+        overlap_end = end < old.end ? end : old.end;
+        if (overlap_start == old.start && overlap_end == old.end) {
+            mapping->file_off = file_offset + old.start - start;
+            mapping->file_len = old.end - old.start;
+            continue;
+        }
+        if (overlap_start == old.start) {
+            if (user_vma_clone_file_piece(
+                    task, &old, overlap_end, old.end,
+                    old.file_off + overlap_end - old.start) < 0)
+                return -1;
+            mapping->end = overlap_end;
+            mapping->file_off = file_offset + old.start - start;
+            mapping->file_len = overlap_end - old.start;
+            continue;
+        }
+
+        mapping->end = overlap_start;
+        mapping->file_len = overlap_start - old.start;
+        if (overlap_end < old.end &&
+            user_vma_clone_file_piece(
+                task, &old, overlap_end, old.end,
+                old.file_off + overlap_end - old.start) < 0)
+            return -1;
+        if (user_vma_clone_file_piece(
+                task, &old, overlap_start, overlap_end,
+                file_offset + overlap_start - start) < 0)
+            return -1;
+    }
+    user_vma_merge_compatible(task);
+    return 0;
+}
+
+int64_t arch_mm_remap_file_pages(uint64_t address, uint64_t length,
+                                 uint64_t file_offset, uint32_t flags) {
+    task_t *current = process_current_task();
+    task_t *memory = current ? process_vm_task(current) : 0;
+    int64_t result = -EINVAL;
+    (void)flags;
+
+    if (!memory || !process_user_mmap_range_ok(address, length))
+        return -EINVAL;
+    process_user_vma_mutation_lock(memory);
+    if (user_vma_sync_shared_file_range(
+            memory, address, address + length) < 0)
+        result = -EIO;
+    else if (user_vma_reoffset_file_range(
+                 memory, address, address + length, file_offset) < 0)
+        result = -ENOMEM;
+    else {
+        process_user_mmap_unmap_fast(memory, address, length);
+        vfs_inode_lifetime_finish_alias_release();
+        result = 0;
+    }
+    process_user_vma_mutation_unlock(memory);
+    if (result == 0 && !(flags & KERNEL_MM_MAP_NONBLOCK)) {
+        uint64_t end = address + length;
+        for (uint64_t page = address; page < end; page += PAGE_SIZE)
+            (void)process_user_mmap_handle_fault(memory, page, 0);
+    }
+    return result;
+}
+
 static int64_t arch_mm_unmap_range_locked(
     uint64_t addr, uint64_t len) {
     task_t *cur = process_current_task();

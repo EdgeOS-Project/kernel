@@ -6196,19 +6196,26 @@
     {
       "id": "remap_file_pages",
       "semantic_id": "remap_file_pages",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_remap_file_pages",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/remap_file_pages_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 216,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_remap_file_pages",
+          "evidence_status": "oracle-verified"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 234,
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_remap_file_pages",
+          "evidence_status": "oracle-verified"
+        }
       }
     },
     {

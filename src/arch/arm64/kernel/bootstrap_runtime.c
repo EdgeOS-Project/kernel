@@ -1231,6 +1231,9 @@ static uint64_t tmpfs_mapping_containing_end(uint64_t ttbr0,
                                              uint64_t address);
 static int tmpfs_mapping_protect(uint64_t ttbr0, uint64_t start,
                                  uint64_t length, uint32_t protection);
+static int tmpfs_mapping_remap_range(uint64_t ttbr0, uint64_t start,
+                                     uint64_t length,
+                                     uint64_t file_offset);
 static int tmpfs_mapping_has_writable_shared(
     vfs_superblock_t *sb, const vfs_inode_t *inode);
 static int tmpfs_mapping_resolve_page(uint64_t ttbr0, uint64_t address,
@@ -1694,6 +1697,9 @@ typedef struct {
     int32_t next_in_space;
     int32_t previous_in_space;
 } kernel_anon_mapping_t;
+
+static int tmpfs_mapping_page_snapshot(uint64_t ttbr0, uint64_t address,
+                                       kernel_tmpfs_mapping_t *out);
 
 typedef struct {
     uint8_t used;
@@ -8295,6 +8301,155 @@ int64_t arch_mm_unmap_range(uint64_t address, uint64_t length) {
     tmpfs_mapping_unmap(task->ttbr0, address, length);
     fbdev_refresh_mmap_ownership();
     shared_mmap_cursor_rewind(task, address);
+    return 0;
+}
+
+static int file_mapping_remap_range(uint64_t ttbr0, uint64_t start,
+                                    uint64_t length,
+                                    uint64_t file_offset) {
+    kernel_file_mapping_t first;
+    uint64_t end = start + length;
+    uint64_t cursor = start;
+    uint32_t required_slots = 0;
+    uint32_t available;
+    int have_first = 0;
+    int32_t head;
+
+    while (cursor < end) {
+        kernel_file_mapping_t current;
+        if (!file_mapping_page_snapshot(ttbr0, cursor, &current) ||
+            !current.shared)
+            return -LINUX_EINVAL;
+        if (!have_first) {
+            first = current;
+            have_first = 1;
+        } else if (!file_mapping_same_inode(
+                       &current, first.sb, &first.inode) ||
+                   current.protection != first.protection ||
+                   current.maximum_protection !=
+                       first.maximum_protection ||
+                   current.shared != first.shared)
+            return -LINUX_EINVAL;
+        cursor = current.end < end ? current.end : end;
+    }
+
+    head = vma_space_mapping_head(ttbr0, VMA_SPACE_FILE);
+    for (int32_t current = head; current >= 0;) {
+        kernel_file_mapping_t *mapping =
+            &g_file_mappings[(uint32_t)current];
+        current = mapping->next_in_space;
+        if (!mapping->used || mapping->ttbr0 != ttbr0 ||
+            end <= mapping->start || start >= mapping->end)
+            continue;
+        if (start > mapping->start && end < mapping->end)
+            required_slots += 2u;
+        else if (start > mapping->start || end < mapping->end)
+            ++required_slots;
+    }
+    available = g_file_mapping_capacity - g_file_mapping_high_water +
+                g_file_mapping_free_count;
+    if (required_slots > available) return -LINUX_ENOMEM;
+
+    g_file_mapping_lookup_cache_valid = 0;
+    head = vma_space_mapping_head(ttbr0, VMA_SPACE_FILE);
+    for (int32_t current = head; current >= 0;) {
+        uint32_t index = (uint32_t)current;
+        kernel_file_mapping_t *mapping = &g_file_mappings[index];
+        kernel_file_mapping_t old;
+        uint64_t overlap_start;
+        uint64_t overlap_end;
+        current = mapping->next_in_space;
+        if (!mapping->used || mapping->ttbr0 != ttbr0 ||
+            end <= mapping->start || start >= mapping->end)
+            continue;
+        old = *mapping;
+        overlap_start = start > old.start ? start : old.start;
+        overlap_end = end < old.end ? end : old.end;
+        if (overlap_start == old.start && overlap_end == old.end) {
+            mapping->file_offset = file_offset + old.start - start;
+            continue;
+        }
+        if (overlap_start == old.start) {
+            int slot = file_mapping_allocate_slot();
+            if (slot < 0 || vfs_inode_open(old.sb, &old.inode) < 0) {
+                if (slot >= 0) file_mapping_release_slot((uint32_t)slot);
+                return -LINUX_ENOMEM;
+            }
+            g_file_mappings[slot] = old;
+            g_file_mappings[slot].start = overlap_end;
+            g_file_mappings[slot].file_offset =
+                old.file_offset + overlap_end - old.start;
+            if (file_mapping_link((uint32_t)slot) < 0) {
+                file_mapping_release_slot((uint32_t)slot);
+                vfs_inode_close(old.sb, &old.inode);
+                return -LINUX_ENOMEM;
+            }
+            mapping->end = overlap_end;
+            mapping->file_offset = file_offset + old.start - start;
+            continue;
+        }
+
+        mapping->end = overlap_start;
+        if (overlap_end < old.end) {
+            int slot = file_mapping_allocate_slot();
+            if (slot < 0 || vfs_inode_open(old.sb, &old.inode) < 0) {
+                if (slot >= 0) file_mapping_release_slot((uint32_t)slot);
+                return -LINUX_ENOMEM;
+            }
+            g_file_mappings[slot] = old;
+            g_file_mappings[slot].start = overlap_end;
+            g_file_mappings[slot].file_offset =
+                old.file_offset + overlap_end - old.start;
+            if (file_mapping_link((uint32_t)slot) < 0) {
+                file_mapping_release_slot((uint32_t)slot);
+                vfs_inode_close(old.sb, &old.inode);
+                return -LINUX_ENOMEM;
+            }
+        }
+        {
+            int slot = file_mapping_allocate_slot();
+            if (slot < 0 || vfs_inode_open(old.sb, &old.inode) < 0) {
+                if (slot >= 0) file_mapping_release_slot((uint32_t)slot);
+                return -LINUX_ENOMEM;
+            }
+            g_file_mappings[slot] = old;
+            g_file_mappings[slot].start = overlap_start;
+            g_file_mappings[slot].end = overlap_end;
+            g_file_mappings[slot].file_offset =
+                file_offset + overlap_start - start;
+            if (file_mapping_link((uint32_t)slot) < 0) {
+                file_mapping_release_slot((uint32_t)slot);
+                vfs_inode_close(old.sb, &old.inode);
+                return -LINUX_ENOMEM;
+            }
+        }
+    }
+    return 0;
+}
+
+int64_t arch_mm_remap_file_pages(uint64_t address, uint64_t length,
+                                 uint64_t file_offset, uint32_t flags) {
+    kernel_task_t *task = current_task();
+    kernel_tmpfs_mapping_t tmpfs;
+    int result;
+    (void)flags;
+
+    if (!task) return -LINUX_ESRCH;
+    if (tmpfs_mapping_page_snapshot(task->ttbr0, address, &tmpfs))
+        result = tmpfs_mapping_remap_range(
+            task->ttbr0, address, length, file_offset);
+    else
+        result = file_mapping_remap_range(
+            task->ttbr0, address, length, file_offset);
+    if (result < 0) return result;
+    if (file_mapping_arch_unmap_finish(
+            task->ttbr0, address, length) < 0)
+        return -LINUX_ENOMEM;
+    if (!(flags & KERNEL_MM_MAP_NONBLOCK)) {
+        uint64_t end = address + length;
+        for (uint64_t page = address; page < end; page += PAGE_SIZE)
+            (void)kernel_mm_resolve_user_page(task->ttbr0, page, 0);
+    }
     return 0;
 }
 
@@ -28227,6 +28382,137 @@ static int tmpfs_mapping_protect(uint64_t ttbr0, uint64_t start,
     return 0;
 }
 
+static int tmpfs_mapping_remap_range(uint64_t ttbr0, uint64_t start,
+                                     uint64_t length,
+                                     uint64_t file_offset) {
+    kernel_tmpfs_mapping_t first;
+    uint64_t irq_flags;
+    uint64_t end;
+    uint64_t cursor;
+    int32_t head;
+    uint32_t required_slots = 0;
+    uint32_t free_slots;
+    uint32_t generation;
+    int have_first = 0;
+
+    if (!ttbr0 || !length || start + length < start)
+        return -LINUX_EINVAL;
+    end = start + length;
+    irq_flags = spin_lock_irqsave(&g_tmpfs_mapping_lock);
+    head = vma_space_mapping_head(ttbr0, VMA_SPACE_TMPFS);
+
+    cursor = start;
+    while (cursor < end) {
+        kernel_tmpfs_mapping_t *found = 0;
+        for (int32_t current = head; current >= 0;) {
+            kernel_tmpfs_mapping_t *mapping =
+                &g_tmpfs_mappings[(uint32_t)current];
+            current = mapping->next_in_space;
+            if (!mapping->used || mapping->ttbr0 != ttbr0 ||
+                cursor < mapping->start || cursor >= mapping->end)
+                continue;
+            found = mapping;
+            break;
+        }
+        if (!found) {
+            spin_unlock_irqrestore(&g_tmpfs_mapping_lock, irq_flags);
+            return -LINUX_EINVAL;
+        }
+        if (!have_first) {
+            first = *found;
+            have_first = 1;
+        } else if (!tmpfs_mapping_same_inode(
+                       found, first.sb, &first.inode) ||
+                   found->protection != first.protection) {
+            spin_unlock_irqrestore(&g_tmpfs_mapping_lock, irq_flags);
+            return -LINUX_EINVAL;
+        }
+        cursor = found->end < end ? found->end : end;
+    }
+
+    for (int32_t current = head; current >= 0;) {
+        kernel_tmpfs_mapping_t *mapping =
+            &g_tmpfs_mappings[(uint32_t)current];
+        uint64_t overlap_start;
+        uint64_t overlap_end;
+        current = mapping->next_in_space;
+        if (!mapping->used || mapping->ttbr0 != ttbr0 ||
+            end <= mapping->start || start >= mapping->end)
+            continue;
+        overlap_start = start > mapping->start ? start : mapping->start;
+        overlap_end = end < mapping->end ? end : mapping->end;
+        if (overlap_start > mapping->start) ++required_slots;
+        if (overlap_end < mapping->end) ++required_slots;
+    }
+    free_slots = g_tmpfs_mapping_capacity - g_tmpfs_mapping_high_water +
+                 g_tmpfs_mapping_free_count;
+    if (required_slots > free_slots) {
+        spin_unlock_irqrestore(&g_tmpfs_mapping_lock, irq_flags);
+        return -LINUX_ENOMEM;
+    }
+
+    g_tmpfs_mapping_lookup_cache_valid = 0;
+    generation = ++g_tmpfs_mapping_generation;
+    if (!generation) generation = ++g_tmpfs_mapping_generation;
+    for (int32_t current = head; current >= 0;) {
+        uint32_t index = (uint32_t)current;
+        kernel_tmpfs_mapping_t old;
+        kernel_tmpfs_mapping_t pieces[3];
+        kernel_tmpfs_mapping_t *mapping = &g_tmpfs_mappings[index];
+        uint64_t overlap_start;
+        uint64_t overlap_end;
+        uint32_t piece_count = 0;
+        current = mapping->next_in_space;
+        if (!mapping->used || mapping->update_generation == generation ||
+            mapping->ttbr0 != ttbr0 || end <= mapping->start ||
+            start >= mapping->end)
+            continue;
+        old = *mapping;
+        overlap_start = start > old.start ? start : old.start;
+        overlap_end = end < old.end ? end : old.end;
+        if (old.start < overlap_start) {
+            pieces[piece_count] = old;
+            pieces[piece_count].end = overlap_start;
+            ++piece_count;
+        }
+        pieces[piece_count] = old;
+        pieces[piece_count].start = overlap_start;
+        pieces[piece_count].end = overlap_end;
+        pieces[piece_count].file_offset =
+            file_offset + overlap_start - start;
+        ++piece_count;
+        if (overlap_end < old.end) {
+            pieces[piece_count] = old;
+            pieces[piece_count].start = overlap_end;
+            pieces[piece_count].file_offset =
+                old.file_offset + overlap_end - old.start;
+            ++piece_count;
+        }
+        pieces[0].update_generation = generation;
+        *mapping = pieces[0];
+        for (uint32_t piece = 1; piece < piece_count; ++piece) {
+            int slot = tmpfs_mapping_allocate_slot();
+            if (slot < 0 ||
+                tmpfs_retain_mapping(old.sb, &old.inode) < 0) {
+                if (slot >= 0)
+                    tmpfs_mapping_release_slot((uint32_t)slot);
+                spin_unlock_irqrestore(&g_tmpfs_mapping_lock, irq_flags);
+                return -LINUX_ENOMEM;
+            }
+            pieces[piece].update_generation = generation;
+            g_tmpfs_mappings[slot] = pieces[piece];
+            if (tmpfs_mapping_link((uint32_t)slot) < 0) {
+                tmpfs_mapping_release_slot((uint32_t)slot);
+                tmpfs_release_mapping(old.sb, &old.inode);
+                spin_unlock_irqrestore(&g_tmpfs_mapping_lock, irq_flags);
+                return -LINUX_ENOMEM;
+            }
+        }
+    }
+    spin_unlock_irqrestore(&g_tmpfs_mapping_lock, irq_flags);
+    return 0;
+}
+
 static void tmpfs_mapping_unmap(uint64_t ttbr0, uint64_t start,
                                 uint64_t length) {
     uint64_t irq_flags;
@@ -29700,6 +29986,46 @@ int kernel_current_file_mapping_info(uint64_t address, uint64_t *start_out,
     if (file_offset_out)
         *file_offset_out = mapping.file_offset + address - mapping.start;
     if (inode_out) *inode_out = mapping.inode.ino;
+    return 0;
+}
+
+int arch_mm_file_mapping_info(uint64_t address,
+                              kernel_mm_file_mapping_info_t *info) {
+    kernel_task_t *task = current_task();
+    kernel_tmpfs_mapping_t tmpfs;
+    kernel_file_mapping_t mapping;
+
+    if (!task || !info) return -LINUX_EINVAL;
+    bytes_zero(info, sizeof(*info));
+    if (tmpfs_mapping_page_snapshot(task->ttbr0, address, &tmpfs)) {
+        info->start = tmpfs.start;
+        info->end = tmpfs.end;
+        info->file_offset =
+            tmpfs.file_offset + address - tmpfs.start;
+        info->backing_identity = (uint64_t)(uintptr_t)tmpfs.sb;
+        info->object_identity =
+            ((uint64_t)tmpfs.inode.ino << 32u) |
+            tmpfs.inode.generation;
+        info->protection = tmpfs.protection;
+        info->attributes = 0x80000000u;
+        info->shared = 1u;
+        return 0;
+    }
+    if (!file_mapping_page_snapshot(task->ttbr0, address, &mapping))
+        return -LINUX_EINVAL;
+    info->start = mapping.start;
+    info->end = mapping.end;
+    info->file_offset =
+        mapping.file_offset + address - mapping.start;
+    info->backing_identity = (uint64_t)(uintptr_t)mapping.sb;
+    info->object_identity =
+        ((uint64_t)mapping.inode.ino << 32u) |
+        mapping.inode.generation;
+    info->protection = mapping.protection;
+    info->attributes =
+        (uint32_t)mapping.maximum_protection |
+        ((uint32_t)mapping.shared << 8u);
+    info->shared = mapping.shared;
     return 0;
 }
 

@@ -1646,6 +1646,48 @@ int64_t kernel_mm_remap_range(uint64_t old_address, uint64_t old_length,
     }
 }
 
+int64_t kernel_mm_remap_file_pages(uint64_t address, uint64_t length,
+                                   uint64_t protection,
+                                   uint64_t page_offset, uint64_t flags) {
+    kernel_mm_file_mapping_info_t first;
+    uint64_t page_count;
+    uint64_t end;
+    uint64_t cursor;
+
+    if (protection) return -EDGE_LINUX_EINVAL;
+    address &= ~(uint64_t)(KERNEL_MM_USER_PAGE_SIZE - 1u);
+    length &= ~(uint64_t)(KERNEL_MM_USER_PAGE_SIZE - 1u);
+    if (!length || address > UINT64_MAX - length)
+        return -EDGE_LINUX_EINVAL;
+    page_count = length / KERNEL_MM_USER_PAGE_SIZE;
+    if (page_offset > UINT64_MAX - page_count ||
+        page_offset > UINT64_MAX / KERNEL_MM_USER_PAGE_SIZE)
+        return -EDGE_LINUX_EINVAL;
+    if (arch_mm_file_mapping_info(address, &first) < 0 || !first.shared)
+        return -EDGE_LINUX_EINVAL;
+
+    end = address + length;
+    cursor = address;
+    while (cursor < end) {
+        kernel_mm_file_mapping_info_t current;
+        uint64_t next;
+
+        if (arch_mm_file_mapping_info(cursor, &current) < 0 ||
+            !current.shared ||
+            current.backing_identity != first.backing_identity ||
+            current.object_identity != first.object_identity ||
+            current.protection != first.protection ||
+            current.attributes != first.attributes)
+            return -EDGE_LINUX_EINVAL;
+        next = current.end < end ? current.end : end;
+        if (next <= cursor) return -EDGE_LINUX_EINVAL;
+        cursor = next;
+    }
+    return arch_mm_remap_file_pages(
+        address, length, page_offset * KERNEL_MM_USER_PAGE_SIZE,
+        (uint32_t)(flags & KERNEL_MM_MAP_NONBLOCK));
+}
+
 int64_t kernel_mm_program_break(uint64_t address) {
     kernel_mm_program_break_state_t state;
     uint64_t old_page;

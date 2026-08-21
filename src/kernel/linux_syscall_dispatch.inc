@@ -404,6 +404,9 @@ case EDGE_LINUX_SYS_readlinkat:
 case EDGE_LINUX_SYS_reboot:
     context->result = edge_linux_sys_reboot(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_remap_file_pages:
+    context->result = edge_linux_sys_remap_file_pages(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_rename:
 case EDGE_LINUX_SYS_renameat:
 case EDGE_LINUX_SYS_renameat2:
