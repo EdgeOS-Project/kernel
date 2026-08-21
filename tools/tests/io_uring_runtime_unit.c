@@ -127,6 +127,9 @@ int main(void) {
     kernel_io_uring_page_t sqes;
     uint32_t pages;
     const int32_t fixed_files[] = {4, -1, 7};
+    const uint64_t fixed_tags[] = {
+        0x54414741u, 0u, 0x54414742u,
+    };
     int32_t materialized = -1;
     int32_t ring_id;
 
@@ -180,8 +183,8 @@ int main(void) {
     assert(g_fixed_file_references == 0u);
     assert(kernel_io_uring_files_unregister(ring_id) ==
            -EDGE_LINUX_ENXIO);
-    assert(kernel_io_uring_files_register(
-               ring_id, fixed_files, 3u) == 0);
+    assert(kernel_io_uring_files_register_tagged(
+               ring_id, fixed_files, fixed_tags, 3u) == 0);
     assert(kernel_io_uring_mmap_info(
                ring_id, KERNEL_IO_URING_OFF_SQ_RING,
                KERNEL_IO_URING_PAGE_SIZE, &pages) == 0);
@@ -232,6 +235,21 @@ int main(void) {
     assert(kernel_io_uring_pending_cancel(ring_id, 0x43414e43u) == 0);
     assert(kernel_io_uring_pending_cancel(ring_id, 0x43414e43u) ==
            -EDGE_LINUX_ENOENT);
+
+    {
+        const int32_t update[] = {8};
+        const uint64_t tags[] = {0x54414743u};
+        assert(kernel_io_uring_files_update_tagged(
+                   ring_id, 0u, update, tags, 1u) == 1);
+    }
+    assert(completion[3].user_data == 0x54414741u);
+    assert(completion[3].result == 0 && completion[3].flags == 0);
+    assert(kernel_io_uring_files_unregister(ring_id) == 0);
+    assert(completion[4].user_data == 0x54414743u);
+    assert(completion[4].result == 0 && completion[4].flags == 0);
+    assert(completion[5].user_data == 0x54414742u);
+    assert(completion[5].result == 0 && completion[5].flags == 0);
+    assert(g_fixed_file_references == 0u);
 
     test_page_release(0, &sq_ring);
     test_page_release(0, &cq_ring);

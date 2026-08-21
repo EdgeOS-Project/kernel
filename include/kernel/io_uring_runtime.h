@@ -50,6 +50,9 @@ int kernel_io_uring_eventfd_unregister(int32_t ring_id);
 int kernel_io_uring_files_register(int32_t ring_id,
                                    const int32_t *descriptors,
                                    uint32_t count);
+int kernel_io_uring_files_register_tagged(
+    int32_t ring_id, const int32_t *descriptors,
+    const uint64_t *tags, uint32_t count);
 int kernel_io_uring_files_unregister(int32_t ring_id);
 int kernel_io_uring_files_update_validate(int32_t ring_id,
                                           uint32_t offset,
@@ -57,6 +60,10 @@ int kernel_io_uring_files_update_validate(int32_t ring_id,
 int kernel_io_uring_files_update(int32_t ring_id, uint32_t offset,
                                  const int32_t *descriptors,
                                  uint32_t count);
+int kernel_io_uring_files_update_tagged(
+    int32_t ring_id, uint32_t offset,
+    const int32_t *descriptors, const uint64_t *tags,
+    uint32_t count);
 int kernel_io_uring_fixed_file_materialize(int32_t ring_id,
                                            uint32_t index,
                                            int32_t *descriptor);

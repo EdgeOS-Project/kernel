@@ -89,10 +89,24 @@ typedef struct kernel_io_uring {
     kernel_io_uring_page_t sqes[KERNEL_IO_URING_MAX_SQE_PAGES];
     kernel_io_uring_page_t fixed_file_pages[IO_URING_FIXED_FILE_PAGES];
     uint8_t fixed_file_used[KERNEL_IO_URING_MAX_FIXED_FILES];
+    uint64_t fixed_file_tags[KERNEL_IO_URING_MAX_FIXED_FILES];
     uint32_t fixed_file_count;
     uint32_t fixed_file_page_count;
     kernel_io_uring_pending_t pending[KERNEL_IO_URING_MAX_PENDING];
 } kernel_io_uring_t;
+
+static int io_uring_completion_add_locked(
+    kernel_io_uring_t *ring, uint64_t user_data,
+    int32_t result, uint32_t cqe_flags);
+
+static int32_t io_uring_event_retain_locked(
+        kernel_io_uring_t *ring, int asynchronous) {
+    if (ring->event_id >= 0 &&
+        (!ring->event_async_only || asynchronous) &&
+        kernel_eventfd_retain(ring->event_id) == 0)
+        return ring->event_id;
+    return -1;
+}
 
 #define IO_URING_PENDING_TIMEOUT 1u
 #define IO_URING_PENDING_POLL    2u
@@ -414,9 +428,9 @@ int kernel_io_uring_eventfd_unregister(int32_t ring_id) {
     return result;
 }
 
-int kernel_io_uring_files_register(int32_t ring_id,
-                                   const int32_t *descriptors,
-                                   uint32_t count) {
+int kernel_io_uring_files_register_tagged(
+        int32_t ring_id, const int32_t *descriptors,
+        const uint64_t *tags, uint32_t count) {
     kernel_io_uring_page_t pages[IO_URING_FIXED_FILE_PAGES] = {{0}};
     uint8_t used[KERNEL_IO_URING_MAX_FIXED_FILES] = {0};
     kernel_io_uring_t *ring;
@@ -433,7 +447,13 @@ int kernel_io_uring_files_register(int32_t ring_id,
     if (result < 0) return result;
     for (uint32_t index = 0; index < count; ++index) {
         kernel_fd_operation_lease_t *lease;
-        if (descriptors[index] == -1) continue;
+        if (descriptors[index] == -1) {
+            if (tags && tags[index]) {
+                result = -EDGE_LINUX_EINVAL;
+                goto release_new;
+            }
+            continue;
+        }
         if (descriptors[index] < 0) {
             result = -EDGE_LINUX_EBADF;
             goto release_new;
@@ -457,6 +477,12 @@ int kernel_io_uring_files_register(int32_t ring_id,
     } else {
         memcpy(ring->fixed_file_pages, pages, sizeof(pages));
         memcpy(ring->fixed_file_used, used, sizeof(used));
+        if (tags)
+            memcpy(ring->fixed_file_tags, tags,
+                   (size_t)count * sizeof(tags[0]));
+        else
+            memset(ring->fixed_file_tags, 0,
+                   sizeof(ring->fixed_file_tags));
         ring->fixed_file_count = count;
         ring->fixed_file_page_count = page_count;
         memset(pages, 0, sizeof(pages));
@@ -471,12 +497,21 @@ release_new:
     return result;
 }
 
+int kernel_io_uring_files_register(int32_t ring_id,
+                                   const int32_t *descriptors,
+                                   uint32_t count) {
+    return kernel_io_uring_files_register_tagged(
+        ring_id, descriptors, 0, count);
+}
+
 int kernel_io_uring_files_unregister(int32_t ring_id) {
     kernel_io_uring_page_t pages[IO_URING_FIXED_FILE_PAGES] = {{0}};
     uint8_t used[KERNEL_IO_URING_MAX_FIXED_FILES] = {0};
     kernel_io_uring_t *ring;
     uint32_t count = 0u;
     uint32_t page_count = 0u;
+    int32_t event_id = -1;
+    int notify = 0;
     uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
     int result = 0;
 
@@ -486,6 +521,16 @@ int kernel_io_uring_files_unregister(int32_t ring_id) {
     } else if (!ring->fixed_file_count) {
         result = -EDGE_LINUX_ENXIO;
     } else {
+        for (uint32_t index = 0;
+             index < ring->fixed_file_count; ++index) {
+            if (!ring->fixed_file_used[index] ||
+                !ring->fixed_file_tags[index])
+                continue;
+            if (io_uring_completion_add_locked(
+                    ring, ring->fixed_file_tags[index], 0, 0) == 0)
+                notify = 1;
+        }
+        if (notify) event_id = io_uring_event_retain_locked(ring, 0);
         memcpy(pages, ring->fixed_file_pages, sizeof(pages));
         memcpy(used, ring->fixed_file_used, sizeof(used));
         count = ring->fixed_file_count;
@@ -494,12 +539,18 @@ int kernel_io_uring_files_unregister(int32_t ring_id) {
                sizeof(ring->fixed_file_pages));
         memset(ring->fixed_file_used, 0,
                sizeof(ring->fixed_file_used));
+        memset(ring->fixed_file_tags, 0,
+               sizeof(ring->fixed_file_tags));
         ring->fixed_file_count = 0u;
         ring->fixed_file_page_count = 0u;
     }
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     if (result == 0)
         io_uring_release_fixed_files(pages, used, count, page_count);
+    if (event_id >= 0) {
+        (void)kernel_eventfd_write_value(event_id, 1, 1u);
+        kernel_eventfd_release(event_id);
+    }
     return result;
 }
 
@@ -527,12 +578,15 @@ int kernel_io_uring_files_update_validate(int32_t ring_id,
     return result;
 }
 
-int kernel_io_uring_files_update(int32_t ring_id, uint32_t offset,
-                                 const int32_t *descriptors,
-                                 uint32_t count) {
+int kernel_io_uring_files_update_tagged(
+        int32_t ring_id, uint32_t offset,
+        const int32_t *descriptors, const uint64_t *tags,
+        uint32_t count) {
     kernel_io_uring_t *ring;
     uint32_t done;
     uint64_t flags;
+    int32_t event_id = -1;
+    int notify = 0;
     int result = 0;
 
     if (!descriptors || !count) return -EDGE_LINUX_EINVAL;
@@ -559,8 +613,14 @@ int kernel_io_uring_files_update(int32_t ring_id, uint32_t offset,
     for (done = 0; done < count; ++done) {
         kernel_fd_operation_lease_t *lease;
         int32_t descriptor = descriptors[done];
+        uint64_t tag = tags ? tags[done] : 0u;
         uint32_t index = offset + done;
 
+        if ((descriptor == KERNEL_IO_URING_REGISTER_FILES_SKIP ||
+             descriptor == -1) && tag) {
+            result = -EDGE_LINUX_EINVAL;
+            break;
+        }
         if (descriptor == KERNEL_IO_URING_REGISTER_FILES_SKIP)
             continue;
         lease = io_uring_fixed_file_lease(
@@ -570,8 +630,13 @@ int kernel_io_uring_files_update(int32_t ring_id, uint32_t offset,
             break;
         }
         if (ring->fixed_file_used[index]) {
+            if (ring->fixed_file_tags[index] &&
+                io_uring_completion_add_locked(
+                    ring, ring->fixed_file_tags[index], 0, 0) == 0)
+                notify = 1;
             (void)kernel_fd_operation_release(lease);
             ring->fixed_file_used[index] = 0u;
+            ring->fixed_file_tags[index] = 0u;
         }
         if (descriptor == -1) continue;
         if (descriptor < 0 ||
@@ -583,13 +648,26 @@ int kernel_io_uring_files_update(int32_t ring_id, uint32_t offset,
         result = kernel_fd_operation_acquire(descriptor, lease);
         if (result < 0) break;
         ring->fixed_file_used[index] = 1u;
+        ring->fixed_file_tags[index] = tag;
     }
     if (done) result = (int)done;
     else if (result >= 0) result = (int)count;
+    if (notify) event_id = io_uring_event_retain_locked(ring, 0);
 
 unlock:
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (event_id >= 0) {
+        (void)kernel_eventfd_write_value(event_id, 1, 1u);
+        kernel_eventfd_release(event_id);
+    }
     return result;
+}
+
+int kernel_io_uring_files_update(int32_t ring_id, uint32_t offset,
+                                 const int32_t *descriptors,
+                                 uint32_t count) {
+    return kernel_io_uring_files_update_tagged(
+        ring_id, offset, descriptors, 0, count);
 }
 
 int kernel_io_uring_fixed_file_materialize(int32_t ring_id,
@@ -897,25 +975,17 @@ int kernel_io_uring_take_submission(
     return 0;
 }
 
-static int io_uring_completion_add(int32_t ring_id, uint64_t user_data,
-                                   int32_t result, uint32_t cqe_flags,
-                                   int asynchronous) {
+static int io_uring_completion_add_locked(
+        kernel_io_uring_t *ring, uint64_t user_data,
+        int32_t result, uint32_t cqe_flags) {
     struct edge_linux_io_uring_cqe *completion;
-    kernel_io_uring_t *ring;
     volatile uint32_t *head_pointer;
     volatile uint32_t *tail_pointer;
     volatile uint32_t *overflow_pointer;
     uint32_t head;
     uint32_t tail;
     uint32_t offset;
-    int32_t event_id = -1;
-    uint64_t flags;
-    flags = spin_lock_irqsave(&g_io_uring_lock);
-    ring = io_uring_lookup_locked(ring_id);
-    if (!ring) {
-        spin_unlock_irqrestore(&g_io_uring_lock, flags);
-        return -EDGE_LINUX_EBADF;
-    }
+    if (!ring) return -EDGE_LINUX_EBADF;
     head_pointer = io_uring_u32(ring->cq_ring, IORING_CQ_HEAD_OFFSET);
     tail_pointer = io_uring_u32(ring->cq_ring, IORING_CQ_TAIL_OFFSET);
     head = __atomic_load_n(head_pointer, __ATOMIC_ACQUIRE);
@@ -924,7 +994,6 @@ static int io_uring_completion_add(int32_t ring_id, uint64_t user_data,
         overflow_pointer = io_uring_u32(
             ring->cq_ring, IORING_CQ_OVERFLOW_OFFSET);
         __atomic_add_fetch(overflow_pointer, 1u, __ATOMIC_RELAXED);
-        spin_unlock_irqrestore(&g_io_uring_lock, flags);
         return -EDGE_LINUX_EBUSY;
     }
     offset = IORING_CQ_CQES_OFFSET +
@@ -935,16 +1004,28 @@ static int io_uring_completion_add(int32_t ring_id, uint64_t user_data,
     completion->result = result;
     completion->flags = cqe_flags;
     __atomic_store_n(tail_pointer, tail + 1u, __ATOMIC_RELEASE);
-    if (ring->event_id >= 0 &&
-        (!ring->event_async_only || asynchronous) &&
-        kernel_eventfd_retain(ring->event_id) == 0)
-        event_id = ring->event_id;
+    return 0;
+}
+
+static int io_uring_completion_add(int32_t ring_id, uint64_t user_data,
+                                   int32_t result, uint32_t cqe_flags,
+                                   int asynchronous) {
+    kernel_io_uring_t *ring;
+    int32_t event_id = -1;
+    uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
+    int status;
+
+    ring = io_uring_lookup_locked(ring_id);
+    status = io_uring_completion_add_locked(
+        ring, user_data, result, cqe_flags);
+    if (status == 0)
+        event_id = io_uring_event_retain_locked(ring, asynchronous);
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     if (event_id >= 0) {
         (void)kernel_eventfd_write_value(event_id, 1, 1u);
         kernel_eventfd_release(event_id);
     }
-    return 0;
+    return status;
 }
 
 int kernel_io_uring_completion_add(int32_t ring_id, uint64_t user_data,

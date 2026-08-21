@@ -244,6 +244,32 @@ static int submit_fixed_write(
     return failures;
 }
 
+static int consume_tag_completion(
+        struct io_uring_params *parameters, void *cq_ring,
+        uint64_t expected_tag) {
+    volatile uint32_t *cq_head = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters->cq_off.head);
+    volatile uint32_t *cq_tail = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters->cq_off.tail);
+    volatile uint32_t *cq_mask = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters->cq_off.ring_mask);
+    struct io_uring_cqe *cqes = (struct io_uring_cqe *)(
+        (uint8_t *)cq_ring + parameters->cq_off.cqes);
+    uint32_t head = __atomic_load_n(cq_head, __ATOMIC_ACQUIRE);
+    uint32_t tail = __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE);
+    struct io_uring_cqe *completion;
+    int failures = 0;
+
+    failures += expect(tail, head + 1u);
+    if (tail == head) return failures;
+    completion = &cqes[head & *cq_mask];
+    failures += expect((long)completion->user_data, (long)expected_tag);
+    failures += expect(completion->result, 0);
+    failures += expect(completion->flags, 0);
+    __atomic_store_n(cq_head, head + 1u, __ATOMIC_RELEASE);
+    return failures;
+}
+
 static int run_probe(void) {
     struct io_uring_params parameters;
     struct io_uring_sqe *sqes;
@@ -256,6 +282,7 @@ static int run_probe(void) {
     struct io_uring_resource_register registration2;
     struct io_uring_resource_update2 update2;
     uint64_t value = 1u;
+    uint64_t tag;
     long ring;
     long eventfd;
     long second_eventfd;
@@ -368,15 +395,41 @@ static int run_probe(void) {
     update_descriptor = (int32_t)eventfd;
     bytes_zero(&update2, sizeof(update2));
     update2.data = (uint64_t)(uintptr_t)&update_descriptor;
+    tag = 0x5441475f46494c45ull;
+    update2.tags = (uint64_t)(uintptr_t)&tag;
     update2.count = 1u;
     failures += expect(raw_syscall6(
         SYS_io_uring_register, ring, IORING_REGISTER_FILES_UPDATE2,
         (long)&update2, sizeof(update2), 0, 0), 1);
     (void)raw_syscall6(SYS_close, eventfd, 0, 0, 0, 0, 0);
     eventfd = -1;
+    second_eventfd = raw_syscall6(SYS_eventfd2, 0, 0, 0, 0, 0, 0);
+    if (second_eventfd < 0) {
+        failures = 1;
+        goto close_eventfd;
+    }
+    update_descriptor = (int32_t)second_eventfd;
+    tag = 0x5441475f4e455854ull;
+    failures += expect(raw_syscall6(
+        SYS_io_uring_register, ring, IORING_REGISTER_FILES_UPDATE2,
+        (long)&update2, sizeof(update2), 0, 0), 1);
+    failures += consume_tag_completion(
+        &parameters, cq_ring, 0x5441475f46494c45ull);
+    (void)raw_syscall6(SYS_close, second_eventfd, 0, 0, 0, 0, 0);
+    second_eventfd = -1;
     failures += submit_fixed_write(
         ring, &parameters, sq_ring, cq_ring, sqes,
         0, &value, (int32_t)sizeof(value));
+    update_descriptor = -1;
+    tag = 0u;
+    failures += expect(raw_syscall6(
+        SYS_io_uring_register, ring, IORING_REGISTER_FILES_UPDATE2,
+        (long)&update2, sizeof(update2), 0, 0), 1);
+    failures += consume_tag_completion(
+        &parameters, cq_ring, 0x5441475f4e455854ull);
+    failures += submit_fixed_write(
+        ring, &parameters, sq_ring, cq_ring, sqes,
+        0, &value, -EBADF);
     failures += expect(raw_syscall6(
         SYS_io_uring_register, ring, IORING_UNREGISTER_FILES,
         0, 0, 0, 0), 0);

@@ -8998,8 +8998,10 @@ static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
 
 static int64_t edge_linux_io_uring_files_update_user(
         edge_linux_syscall_context_t *context, int32_t ring_id,
-        uint32_t offset, uint64_t user_descriptors, uint32_t count) {
+        uint32_t offset, uint64_t user_descriptors,
+        uint64_t user_tags, uint32_t count) {
     int32_t descriptors[KERNEL_IO_URING_MAX_FIXED_FILES];
+    uint64_t tags[KERNEL_IO_URING_MAX_FIXED_FILES] = {0};
     uint32_t copied = 0u;
     int result;
 
@@ -9009,6 +9011,17 @@ static int64_t edge_linux_io_uring_files_update_user(
     if (!user_descriptors) return -EDGE_LINUX_EFAULT;
     for (; copied < count; ++copied) {
         uint64_t source;
+        if (user_tags) {
+            if ((uint64_t)copied >
+                (UINT64_MAX - user_tags) / sizeof(uint64_t))
+                break;
+            source = user_tags +
+                     (uint64_t)copied * sizeof(uint64_t);
+            if (edge_linux_copy_from_user(
+                    context, &tags[copied], source,
+                    sizeof(tags[copied])) < 0)
+                break;
+        }
         if ((uint64_t)copied >
             (UINT64_MAX - user_descriptors) / sizeof(int32_t))
             break;
@@ -9018,10 +9031,16 @@ static int64_t edge_linux_io_uring_files_update_user(
                 context, &descriptors[copied], source,
                 sizeof(descriptors[copied])) < 0)
             break;
+        if ((descriptors[copied] ==
+                 KERNEL_IO_URING_REGISTER_FILES_SKIP ||
+             descriptors[copied] == -1) && tags[copied]) {
+            ++copied;
+            break;
+        }
     }
     if (!copied) return -EDGE_LINUX_EFAULT;
-    return kernel_io_uring_files_update(
-        ring_id, offset, descriptors, copied);
+    return kernel_io_uring_files_update_tagged(
+        ring_id, offset, descriptors, user_tags ? tags : 0, copied);
 }
 
 static int64_t edge_linux_sys_io_uring_register(
@@ -9074,12 +9093,13 @@ static int64_t edge_linux_sys_io_uring_register(
             return -EDGE_LINUX_EFAULT;
         if (update.reserved) return -EDGE_LINUX_EINVAL;
         return edge_linux_io_uring_files_update_user(
-            context, ring_id, update.offset, update.descriptors,
+            context, ring_id, update.offset, update.descriptors, 0,
             operation_count);
     }
     if (opcode == EDGE_LINUX_IORING_REGISTER_FILES2) {
         struct edge_linux_io_uring_resource_register registration;
         int32_t descriptors[KERNEL_IO_URING_MAX_FIXED_FILES];
+        uint64_t tags[KERNEL_IO_URING_MAX_FIXED_FILES] = {0};
 
         if (operation_count != sizeof(registration))
             return -EDGE_LINUX_EINVAL;
@@ -9093,11 +9113,21 @@ static int64_t edge_linux_sys_io_uring_register(
             ((registration.flags & EDGE_LINUX_IORING_RESOURCE_SPARSE) &&
              registration.data))
             return -EDGE_LINUX_EINVAL;
-        if (registration.tags) return -EDGE_LINUX_EOPNOTSUPP;
         if (registration.count > KERNEL_IO_URING_MAX_FIXED_FILES)
             return -EDGE_LINUX_EMFILE;
         for (uint32_t index = 0; index < registration.count; ++index) {
             uint64_t source = 0u;
+            if (registration.tags) {
+                if ((uint64_t)index >
+                    (UINT64_MAX - registration.tags) / sizeof(uint64_t))
+                    return -EDGE_LINUX_EFAULT;
+                source = registration.tags +
+                         (uint64_t)index * sizeof(uint64_t);
+                if (edge_linux_copy_from_user(
+                        context, &tags[index], source,
+                        sizeof(tags[index])) < 0)
+                    return -EDGE_LINUX_EFAULT;
+            }
             descriptors[index] = -1;
             if (registration.data) {
                 if ((uint64_t)index >
@@ -9114,9 +9144,12 @@ static int64_t edge_linux_sys_io_uring_register(
                 kernel_anonymous_fd_descriptor_object_id(
                     descriptors[index], KERNEL_ANONYMOUS_FD_IO_URING) >= 0)
                 return -EDGE_LINUX_EBADF;
+            if (descriptors[index] == -1 && tags[index])
+                return -EDGE_LINUX_EINVAL;
         }
-        return kernel_io_uring_files_register(
-            ring_id, descriptors, registration.count);
+        return kernel_io_uring_files_register_tagged(
+            ring_id, descriptors,
+            registration.tags ? tags : 0, registration.count);
     }
     if (opcode == EDGE_LINUX_IORING_REGISTER_FILES_UPDATE2) {
         struct edge_linux_io_uring_resource_update2 update;
@@ -9129,9 +9162,9 @@ static int64_t edge_linux_sys_io_uring_register(
             return -EDGE_LINUX_EFAULT;
         if (!update.count || update.reserved || update.reserved2)
             return -EDGE_LINUX_EINVAL;
-        if (update.tags) return -EDGE_LINUX_EOPNOTSUPP;
         return edge_linux_io_uring_files_update_user(
-            context, ring_id, update.offset, update.data, update.count);
+            context, ring_id, update.offset, update.data,
+            update.tags, update.count);
     }
     if (opcode == EDGE_LINUX_IORING_REGISTER_EVENTFD ||
         opcode == EDGE_LINUX_IORING_REGISTER_EVENTFD_ASYNC) {
