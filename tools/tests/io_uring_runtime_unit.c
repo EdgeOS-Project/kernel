@@ -505,9 +505,9 @@ int main(void) {
         assert(kernel_io_uring_completion_add(
                    ring_id, 0x46494c4cu + index, 0, 0) == 0);
     g_ready_descriptor = 9;
-    assert(kernel_io_uring_collect(ring_id, 126u) == 0);
+    assert(kernel_io_uring_collect(ring_id, 126u) == 1);
     *page_u32(&cq_ring, parameters.cq_off.head) = 1u;
-    assert(kernel_io_uring_collect(ring_id, 127u) == 1);
+    assert(kernel_io_uring_completion_flush(ring_id) == 1);
     assert(completion[0].user_data == 0x52455452u);
     assert(completion[0].result == 1 && completion[0].flags == 2u);
     assert(kernel_io_uring_pending_cancel(ring_id, 0x52455452u) == 0);
@@ -572,9 +572,9 @@ int main(void) {
         assert(kernel_io_uring_timeout_add(
                    second_ring_id, 0x52455454u, 300u, 0u,
                    -EDGE_LINUX_ETIME, 0, 10u, 0u, 1) == 0);
-        assert(kernel_io_uring_collect(second_ring_id, 300u) == 0);
-        *page_u32(&timeout_cq, timeout_parameters.cq_off.head) = 1u;
         assert(kernel_io_uring_collect(second_ring_id, 300u) == 1);
+        *page_u32(&timeout_cq, timeout_parameters.cq_off.head) = 1u;
+        assert(kernel_io_uring_completion_flush(second_ring_id) == 1);
         assert(timeout_completion[0].user_data == 0x52455454u);
         assert(timeout_completion[0].result == -EDGE_LINUX_ETIME &&
                timeout_completion[0].flags == 2u);
@@ -582,6 +582,66 @@ int main(void) {
                    second_ring_id, 0x52455454u) == 0);
 
         test_page_release(0, &timeout_cq);
+        kernel_io_uring_release(second_ring_id);
+    }
+    {
+        struct edge_linux_io_uring_params overflow_parameters = {0};
+        kernel_io_uring_page_t overflow_cq;
+        kernel_io_uring_page_t overflow_sq;
+        struct edge_linux_io_uring_cqe *overflow_completion;
+        volatile uint32_t *overflow_head;
+        volatile uint32_t *overflow_tail;
+
+        assert(kernel_io_uring_create(
+                   4u, &overflow_parameters, &second_ring_id) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_CQ_RING,
+                   0u, &overflow_cq) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_SQ_RING,
+                   0u, &overflow_sq) == 0);
+        overflow_completion = (struct edge_linux_io_uring_cqe *)(
+            (uint8_t *)overflow_cq.address +
+            overflow_parameters.cq_off.cqes);
+        overflow_head = page_u32(
+            &overflow_cq, overflow_parameters.cq_off.head);
+        overflow_tail = page_u32(
+            &overflow_cq, overflow_parameters.cq_off.tail);
+        for (uint32_t index = 0;
+             index < overflow_parameters.cq_entries; ++index)
+            assert(kernel_io_uring_completion_add(
+                       second_ring_id, 0x4f5646520000u + index,
+                       0, 0) == 0);
+        assert(kernel_io_uring_completion_add(
+                   second_ring_id, 0x4155584f56455246ull,
+                   77, 0x1234u) == 0);
+        assert(kernel_io_uring_completion_add(
+                   second_ring_id, 0x4f52444552454432ull,
+                   88, 0x5678u) == 0);
+        assert(kernel_io_uring_completion_count(second_ring_id) ==
+               overflow_parameters.cq_entries);
+        assert(*page_u32(
+                   &overflow_cq,
+                   overflow_parameters.cq_off.overflow) == 0u);
+        assert((*page_u32(
+                   &overflow_sq,
+                   overflow_parameters.sq_off.flags) & (1u << 1)) != 0u);
+        *overflow_head = *overflow_tail;
+        assert(kernel_io_uring_completion_flush(second_ring_id) == 2);
+        assert(kernel_io_uring_completion_count(second_ring_id) == 2u);
+        assert(overflow_completion[0].user_data ==
+               0x4155584f56455246ull);
+        assert(overflow_completion[0].result == 77 &&
+               overflow_completion[0].flags == 0x1234u);
+        assert(overflow_completion[1].user_data ==
+               0x4f52444552454432ull);
+        assert(overflow_completion[1].result == 88 &&
+               overflow_completion[1].flags == 0x5678u);
+        assert((*page_u32(
+                   &overflow_sq,
+                   overflow_parameters.sq_off.flags) & (1u << 1)) == 0u);
+        test_page_release(0, &overflow_cq);
+        test_page_release(0, &overflow_sq);
         kernel_io_uring_release(second_ring_id);
     }
     for (uint32_t index = 0; index < TEST_PAGE_COUNT; ++index)

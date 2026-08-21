@@ -27,6 +27,7 @@
 #define IORING_FEAT_RW_CUR_POS       (1u << 3)
 #define IORING_FEAT_POLL_32BITS      (1u << 6)
 #define IORING_FEAT_CQE_SKIP         (1u << 11)
+#define IORING_SQ_CQ_OVERFLOW        (1u << 1)
 
 #define IORING_SETUP_SUPPORTED \
     (IORING_SETUP_CQSIZE | IORING_SETUP_CLAMP | \
@@ -56,6 +57,7 @@
     ((KERNEL_IO_URING_MAX_FIXED_FILES + \
       IO_URING_FIXED_FILES_PER_PAGE - 1u) / \
      IO_URING_FIXED_FILES_PER_PAGE)
+#define IO_URING_MAX_COMPLETION_OVERFLOW 128u
 
 typedef struct kernel_io_uring_pending {
     uint8_t used;
@@ -113,6 +115,10 @@ typedef struct kernel_io_uring {
     uint32_t fixed_file_reservation_count;
     uint32_t clock_id;
     kernel_io_uring_pending_t pending[KERNEL_IO_URING_MAX_PENDING];
+    struct edge_linux_io_uring_cqe
+        completion_overflow[IO_URING_MAX_COMPLETION_OVERFLOW];
+    uint32_t completion_overflow_head;
+    uint32_t completion_overflow_count;
 } kernel_io_uring_t;
 
 typedef struct kernel_io_uring_task_registry {
@@ -124,6 +130,13 @@ typedef struct kernel_io_uring_task_registry {
 static int io_uring_completion_add_locked(
     kernel_io_uring_t *ring, uint64_t user_data,
     int32_t result, uint32_t cqe_flags);
+
+static int io_uring_completion_publish_locked(
+    kernel_io_uring_t *ring, uint64_t user_data,
+    int32_t result, uint32_t cqe_flags);
+
+static uint32_t io_uring_completion_overflow_flush_locked(
+    kernel_io_uring_t *ring);
 
 static int32_t io_uring_event_retain_locked(
         kernel_io_uring_t *ring, int asynchronous) {
@@ -1794,13 +1807,12 @@ int kernel_io_uring_take_submission(
     return 0;
 }
 
-static int io_uring_completion_add_locked(
+static int io_uring_completion_publish_locked(
         kernel_io_uring_t *ring, uint64_t user_data,
         int32_t result, uint32_t cqe_flags) {
     struct edge_linux_io_uring_cqe *completion;
     volatile uint32_t *head_pointer;
     volatile uint32_t *tail_pointer;
-    volatile uint32_t *overflow_pointer;
     uint32_t head;
     uint32_t tail;
     uint32_t offset;
@@ -1809,12 +1821,8 @@ static int io_uring_completion_add_locked(
     tail_pointer = io_uring_u32(ring->cq_ring, IORING_CQ_TAIL_OFFSET);
     head = __atomic_load_n(head_pointer, __ATOMIC_ACQUIRE);
     tail = __atomic_load_n(tail_pointer, __ATOMIC_RELAXED);
-    if (tail - head >= ring->cq_entries) {
-        overflow_pointer = io_uring_u32(
-            ring->cq_ring, IORING_CQ_OVERFLOW_OFFSET);
-        __atomic_add_fetch(overflow_pointer, 1u, __ATOMIC_RELAXED);
+    if (tail - head >= ring->cq_entries)
         return -EDGE_LINUX_EBUSY;
-    }
     offset = IORING_CQ_CQES_OFFSET +
              (tail & (ring->cq_entries - 1u)) *
              (uint32_t)sizeof(*completion);
@@ -1824,6 +1832,63 @@ static int io_uring_completion_add_locked(
     completion->flags = cqe_flags;
     __atomic_store_n(tail_pointer, tail + 1u, __ATOMIC_RELEASE);
     return 0;
+}
+
+static int io_uring_completion_add_locked(
+        kernel_io_uring_t *ring, uint64_t user_data,
+        int32_t result, uint32_t cqe_flags) {
+    volatile uint32_t *overflow_pointer;
+    uint32_t slot;
+    int status;
+
+    if (!ring) return -EDGE_LINUX_EBADF;
+    (void)io_uring_completion_overflow_flush_locked(ring);
+    status = ring->completion_overflow_count ? -EDGE_LINUX_EBUSY :
+        io_uring_completion_publish_locked(
+            ring, user_data, result, cqe_flags);
+    if (status != -EDGE_LINUX_EBUSY) return status;
+    if (ring->completion_overflow_count <
+        IO_URING_MAX_COMPLETION_OVERFLOW) {
+        slot = (ring->completion_overflow_head +
+                ring->completion_overflow_count) %
+               IO_URING_MAX_COMPLETION_OVERFLOW;
+        ring->completion_overflow[slot].user_data = user_data;
+        ring->completion_overflow[slot].result = result;
+        ring->completion_overflow[slot].flags = cqe_flags;
+        ++ring->completion_overflow_count;
+        __atomic_or_fetch(
+            io_uring_u32(ring->sq_ring, IORING_SQ_FLAGS_OFFSET),
+            IORING_SQ_CQ_OVERFLOW, __ATOMIC_RELEASE);
+        return 0;
+    }
+    overflow_pointer = io_uring_u32(
+        ring->cq_ring, IORING_CQ_OVERFLOW_OFFSET);
+    __atomic_add_fetch(overflow_pointer, 1u, __ATOMIC_RELAXED);
+    return -EDGE_LINUX_EBUSY;
+}
+
+static uint32_t io_uring_completion_overflow_flush_locked(
+        kernel_io_uring_t *ring) {
+    uint32_t flushed = 0u;
+
+    while (ring && ring->completion_overflow_count) {
+        struct edge_linux_io_uring_cqe *completion =
+            &ring->completion_overflow[ring->completion_overflow_head];
+        if (io_uring_completion_publish_locked(
+                ring, completion->user_data,
+                completion->result, completion->flags) < 0)
+            break;
+        ring->completion_overflow_head =
+            (ring->completion_overflow_head + 1u) %
+            IO_URING_MAX_COMPLETION_OVERFLOW;
+        --ring->completion_overflow_count;
+        ++flushed;
+    }
+    if (ring && !ring->completion_overflow_count)
+        __atomic_and_fetch(
+            io_uring_u32(ring->sq_ring, IORING_SQ_FLAGS_OFFSET),
+            ~IORING_SQ_CQ_OVERFLOW, __ATOMIC_RELEASE);
+    return flushed;
 }
 
 static int io_uring_completion_add(int32_t ring_id, uint64_t user_data,
@@ -1851,6 +1916,30 @@ int kernel_io_uring_completion_add(int32_t ring_id, uint64_t user_data,
                                    int32_t result, uint32_t cqe_flags) {
     return io_uring_completion_add(
         ring_id, user_data, result, cqe_flags, 0);
+}
+
+int kernel_io_uring_completion_flush(int32_t ring_id) {
+    kernel_io_uring_t *ring;
+    int32_t event_id = -1;
+    uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
+    int result;
+
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+    } else {
+        uint32_t flushed =
+            io_uring_completion_overflow_flush_locked(ring);
+        if (flushed)
+            event_id = io_uring_event_retain_locked(ring, 0);
+        result = (int)flushed;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (event_id >= 0) {
+        (void)kernel_eventfd_write_value(event_id, 1, 1u);
+        kernel_eventfd_release(event_id);
+    }
+    return result;
 }
 
 int kernel_io_uring_completion_add_async(int32_t ring_id,

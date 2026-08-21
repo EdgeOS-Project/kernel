@@ -72,12 +72,15 @@ struct linux_epoll_event {
 #define EINVAL 22
 #define ERANGE 34
 #define ENODATA 61
+#define EOVERFLOW 75
+#define EBADFD 77
 #define AT_FDCWD (-100)
 #define O_RDWR 2u
 #define O_CREAT 64u
 #define O_TRUNC 512u
 #define IORING_ENTER_GETEVENTS 1u
 #define IORING_ENTER_EXT_ARG (1u << 3)
+#define IORING_SETUP_R_DISABLED (1u << 6)
 #define IOSQE_FIXED_FILE (1u << 0)
 #define IOSQE_IO_LINK (1u << 2)
 #define IORING_REGISTER_FILES 2u
@@ -115,6 +118,7 @@ struct linux_epoll_event {
 #define IORING_OP_MKDIRAT 37u
 #define IORING_OP_SYMLINKAT 38u
 #define IORING_OP_LINKAT 39u
+#define IORING_OP_MSG_RING 40u
 #define IORING_OP_FSETXATTR 41u
 #define IORING_OP_SETXATTR 42u
 #define IORING_OP_FGETXATTR 43u
@@ -144,6 +148,9 @@ struct linux_epoll_event {
 #define SYNC_FILE_RANGE_WAIT_AFTER 4u
 #define FUTEX2_SIZE_U32 2u
 #define SPLICE_F_FD_IN_FIXED (1u << 31)
+#define IORING_MSG_RING_CQE_SKIP (1u << 0)
+#define IORING_MSG_RING_FLAGS_PASS (1u << 1)
+#define IORING_SQ_CQ_OVERFLOW (1u << 1)
 
 struct kernel_timespec {
     int64_t seconds;
@@ -526,6 +533,195 @@ cleanup:
     return failures;
 }
 
+static int run_msg_ring_only(
+        long ring_descriptor, struct io_uring_params *parameters,
+        void *sq_ring, void *cq_ring, struct io_uring_sqe *sqes) {
+    volatile uint32_t *sq_tail = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.tail);
+    volatile uint32_t *sq_mask = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.ring_mask);
+    volatile uint32_t *sq_array = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.array);
+    volatile uint32_t *cq_head = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters->cq_off.head);
+    volatile uint32_t *cq_tail = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters->cq_off.tail);
+    volatile uint32_t *cq_mask = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters->cq_off.ring_mask);
+    struct io_uring_cqe *cqes = (struct io_uring_cqe *)(
+        (uint8_t *)cq_ring + parameters->cq_off.cqes);
+    struct io_uring_params target_parameters;
+    struct io_uring_params disabled_parameters;
+    volatile uint32_t *target_cq_head;
+    volatile uint32_t *target_cq_tail;
+    volatile uint32_t *target_cq_mask;
+    volatile uint32_t *target_cq_overflow;
+    volatile uint32_t *target_sq_flags;
+    struct io_uring_cqe *target_cqes;
+    struct io_uring_sqe request;
+    void *target_cq_ring = 0;
+    void *target_sq_ring = 0;
+    long target_descriptor = -1;
+    long disabled_descriptor = -1;
+    int32_t result = -1;
+    int failures = 0;
+    uint32_t position;
+
+    memset(&target_parameters, 0, sizeof(target_parameters));
+    target_descriptor = raw_syscall6(
+        SYS_io_uring_setup, 8, (long)&target_parameters, 0, 0, 0, 0);
+    failures += expect_true("msg-ring target setup", target_descriptor >= 0);
+    if (target_descriptor < 0)
+        goto cleanup;
+    target_cq_ring = map_ring(target_descriptor, IORING_OFF_CQ_RING);
+    target_sq_ring = map_ring(target_descriptor, IORING_OFF_SQ_RING);
+    failures += expect_true("msg-ring target CQ map", target_cq_ring != 0);
+    failures += expect_true("msg-ring target SQ map", target_sq_ring != 0);
+    if (!target_cq_ring || !target_sq_ring)
+        goto cleanup;
+    target_sq_flags = (volatile uint32_t *)((uint8_t *)target_sq_ring +
+                                            target_parameters.sq_off.flags);
+    target_cq_head = (volatile uint32_t *)((uint8_t *)target_cq_ring +
+                                           target_parameters.cq_off.head);
+    target_cq_tail = (volatile uint32_t *)((uint8_t *)target_cq_ring +
+                                           target_parameters.cq_off.tail);
+    target_cq_mask = (volatile uint32_t *)((uint8_t *)target_cq_ring +
+                                           target_parameters.cq_off.ring_mask);
+    target_cq_overflow = (volatile uint32_t *)((uint8_t *)target_cq_ring +
+                                               target_parameters.cq_off.overflow);
+    target_cqes = (struct io_uring_cqe *)((uint8_t *)target_cq_ring +
+                                          target_parameters.cq_off.cqes);
+
+    memset(&request, 0, sizeof(request));
+    request.opcode = IORING_OP_MSG_RING;
+    request.descriptor = (int32_t)target_descriptor;
+    request.offset = 0x4d53474441544131ull;
+    request.length = 123u;
+    failures += submit_one(
+        ring_descriptor, sq_tail, sq_mask, sq_array, sqes,
+        cq_head, cq_tail, cq_mask, cqes, &request,
+        0x4d5347534f555243ull, "msg-ring data submit", &result);
+    failures += expect("msg-ring data source completion", result, 0);
+    position = __atomic_load_n(target_cq_head, __ATOMIC_ACQUIRE);
+    failures += expect_true("msg-ring data target completion",
+        __atomic_load_n(target_cq_tail, __ATOMIC_ACQUIRE) == position + 1u &&
+        target_cqes[position & *target_cq_mask].user_data == request.offset &&
+        target_cqes[position & *target_cq_mask].result == 123 &&
+        target_cqes[position & *target_cq_mask].flags == 0u);
+    __atomic_store_n(target_cq_head, position + 1u, __ATOMIC_RELEASE);
+
+    {
+        int32_t target_file = (int32_t)target_descriptor;
+        failures += expect("msg-ring reject registered ring", raw_syscall6(
+            SYS_io_uring_register, ring_descriptor, IORING_REGISTER_FILES,
+            (long)&target_file, 1, 0, 0), -EBADF);
+    }
+    memset(&request, 0, sizeof(request));
+    request.opcode = IORING_OP_MSG_RING;
+    request.descriptor = (int32_t)target_descriptor;
+    request.offset = 0x4d5347464c414753ull;
+    request.length = 456u;
+    request.operation_flags = IORING_MSG_RING_FLAGS_PASS;
+    request.splice_descriptor = 0x1234;
+    failures += submit_one(
+        ring_descriptor, sq_tail, sq_mask, sq_array, sqes,
+        cq_head, cq_tail, cq_mask, cqes, &request,
+        0x4d53474653524345ull, "msg-ring flags submit", &result);
+    failures += expect("msg-ring flags source completion", result, 0);
+    position = __atomic_load_n(target_cq_head, __ATOMIC_ACQUIRE);
+    failures += expect_true("msg-ring flags target completion",
+        __atomic_load_n(target_cq_tail, __ATOMIC_ACQUIRE) == position + 1u &&
+        target_cqes[position & *target_cq_mask].user_data == request.offset &&
+        target_cqes[position & *target_cq_mask].result == 456 &&
+        target_cqes[position & *target_cq_mask].flags == 0x1234u);
+    __atomic_store_n(target_cq_head, position + 1u, __ATOMIC_RELEASE);
+
+    request.flags = 0;
+    request.descriptor = (int32_t)target_descriptor;
+    request.operation_flags = IORING_MSG_RING_CQE_SKIP;
+    request.splice_descriptor = 0;
+    failures += submit_one(
+        ring_descriptor, sq_tail, sq_mask, sq_array, sqes,
+        cq_head, cq_tail, cq_mask, cqes, &request,
+        0x4d5347494e56414cull, "msg-ring invalid flags", &result);
+    failures += expect("msg-ring invalid flags completion", result, -EINVAL);
+
+    memset(&disabled_parameters, 0, sizeof(disabled_parameters));
+    disabled_parameters.flags = IORING_SETUP_R_DISABLED;
+    disabled_descriptor = raw_syscall6(
+        SYS_io_uring_setup, 8, (long)&disabled_parameters, 0, 0, 0, 0);
+    failures += expect_true("msg-ring disabled target setup",
+                            disabled_descriptor >= 0);
+    if (disabled_descriptor >= 0) {
+        memset(&request, 0, sizeof(request));
+        request.opcode = IORING_OP_MSG_RING;
+        request.descriptor = (int32_t)disabled_descriptor;
+        request.offset = 0x4d53474449534142ull;
+        request.length = 1u;
+        failures += submit_one(
+            ring_descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &request,
+            0x4d53474453524345ull, "msg-ring disabled submit", &result);
+        failures += expect("msg-ring disabled completion", result, -EBADFD);
+    }
+
+    memset(&request, 0, sizeof(request));
+    request.opcode = IORING_OP_MSG_RING;
+    request.descriptor = (int32_t)target_descriptor;
+    request.length = 1u;
+    position = __atomic_load_n(target_cq_tail, __ATOMIC_ACQUIRE);
+    for (uint32_t index = 0; index < target_parameters.cq_entries; ++index) {
+        request.offset = 0x4d534746554c4c00ull + index;
+        failures += submit_one(
+            ring_descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &request,
+            0x4d53474653524300ull + index, "msg-ring fill target", &result);
+        failures += expect("msg-ring fill completion", result, 0);
+    }
+    failures += expect_true("msg-ring target full",
+        __atomic_load_n(target_cq_tail, __ATOMIC_ACQUIRE) ==
+        position + target_parameters.cq_entries);
+    request.offset = 0x4d53474f56455246ull;
+    failures += submit_one(
+        ring_descriptor, sq_tail, sq_mask, sq_array, sqes,
+        cq_head, cq_tail, cq_mask, cqes, &request,
+        0x4d53474f56535243ull, "msg-ring overflow submit", &result);
+    failures += expect("msg-ring buffered overflow completion", result, 0);
+    failures += expect("msg-ring no dropped completions",
+                       *target_cq_overflow, 0);
+    failures += expect_true("msg-ring overflow pending flag",
+        (*target_sq_flags & IORING_SQ_CQ_OVERFLOW) != 0u);
+    __atomic_store_n(target_cq_head,
+                     __atomic_load_n(target_cq_tail, __ATOMIC_ACQUIRE),
+                     __ATOMIC_RELEASE);
+    position = __atomic_load_n(target_cq_tail, __ATOMIC_ACQUIRE);
+    failures += expect("msg-ring flush overflow", raw_syscall6(
+        SYS_io_uring_enter, target_descriptor, 0, 1,
+        IORING_ENTER_GETEVENTS, 0, 0), 0);
+    failures += expect_true("msg-ring flushed target completion",
+        __atomic_load_n(target_cq_tail, __ATOMIC_ACQUIRE) == position + 1u &&
+        target_cqes[position & *target_cq_mask].user_data == request.offset &&
+        target_cqes[position & *target_cq_mask].result == 1);
+    failures += expect_true("msg-ring overflow pending flag cleared",
+        (*target_sq_flags & IORING_SQ_CQ_OVERFLOW) == 0u);
+    __atomic_store_n(target_cq_head, position + 1u, __ATOMIC_RELEASE);
+
+cleanup:
+    if (disabled_descriptor >= 0)
+        (void)raw_syscall6(
+            SYS_close, disabled_descriptor, 0, 0, 0, 0, 0);
+    if (target_cq_ring)
+        (void)raw_syscall6(
+            SYS_munmap, (long)target_cq_ring, PAGE_SIZE, 0, 0, 0, 0);
+    if (target_sq_ring)
+        (void)raw_syscall6(
+            SYS_munmap, (long)target_sq_ring, PAGE_SIZE, 0, 0, 0, 0);
+    if (target_descriptor >= 0)
+        (void)raw_syscall6(
+            SYS_close, target_descriptor, 0, 0, 0, 0, 0);
+    return failures;
+}
+
 static int run_tests(void) {
     struct io_uring_probe probe;
     struct io_uring_params parameters;
@@ -734,6 +930,8 @@ static int run_tests(void) {
          IO_URING_OP_SUPPORTED) != 0 &&
         (probe.operations[IORING_OP_SPLICE].flags &
          IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_MSG_RING].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
         (probe.operations[IORING_OP_TEE].flags &
          IO_URING_OP_SUPPORTED) != 0);
     failures += expect_true("probe path operations",
@@ -774,6 +972,16 @@ static int run_tests(void) {
 
 #ifdef EDGEOS_IO_URING_SPLICE_ONLY
     failures += run_splice_only(
+        descriptor, &parameters, sq_ring, cq_ring, sqes);
+    (void)raw_syscall6(SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
+    (void)raw_syscall6(SYS_munmap, (long)cq_ring, PAGE_SIZE, 0, 0, 0, 0);
+    (void)raw_syscall6(SYS_munmap, (long)sqes, PAGE_SIZE, 0, 0, 0, 0);
+    (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+    return failures;
+#endif
+
+#ifdef EDGEOS_IO_URING_MSG_RING_ONLY
+    failures += run_msg_ring_only(
         descriptor, &parameters, sq_ring, cq_ring, sqes);
     (void)raw_syscall6(SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
     (void)raw_syscall6(SYS_munmap, (long)cq_ring, PAGE_SIZE, 0, 0, 0, 0);

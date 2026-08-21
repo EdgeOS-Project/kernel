@@ -8088,6 +8088,7 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_OP_MKDIRAT   37u
 #define EDGE_LINUX_IORING_OP_SYMLINKAT 38u
 #define EDGE_LINUX_IORING_OP_LINKAT    39u
+#define EDGE_LINUX_IORING_OP_MSG_RING  40u
 #define EDGE_LINUX_IORING_OP_FSETXATTR 41u
 #define EDGE_LINUX_IORING_OP_SETXATTR  42u
 #define EDGE_LINUX_IORING_OP_FGETXATTR 43u
@@ -8154,6 +8155,12 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IO_URING_OP_SUPPORTED        1u
 #define EDGE_LINUX_IORING_FIXED_FD_NO_CLOEXEC   (1u << 0)
 #define EDGE_LINUX_IORING_SPLICE_F_FD_IN_FIXED  (1u << 31)
+#define EDGE_LINUX_IORING_MSG_DATA              0u
+#define EDGE_LINUX_IORING_MSG_SEND_FD           1u
+#define EDGE_LINUX_IORING_MSG_CQE_SKIP          (1u << 0)
+#define EDGE_LINUX_IORING_MSG_FLAGS_PASS        (1u << 1)
+#define EDGE_LINUX_IORING_MSG_FLAGS_ALL \
+    (EDGE_LINUX_IORING_MSG_CQE_SKIP | EDGE_LINUX_IORING_MSG_FLAGS_PASS)
 #define EDGE_LINUX_SPLICE_F_MOVE                 0x01u
 #define EDGE_LINUX_SPLICE_F_NONBLOCK             0x02u
 #define EDGE_LINUX_SPLICE_F_MORE                 0x04u
@@ -8769,6 +8776,41 @@ static int64_t edge_linux_io_uring_execute_socket(
     }
 }
 
+static int64_t edge_linux_io_uring_msg_ring(
+        const struct edge_linux_io_uring_sqe *submission) {
+    uint32_t message_flags = submission->operation_flags;
+    uint32_t completion_flags = 0u;
+    int32_t target_ring;
+    int status;
+
+    if (submission->ioprio || submission->buffer_index ||
+        (message_flags & ~EDGE_LINUX_IORING_MSG_FLAGS_ALL))
+        return -EDGE_LINUX_EINVAL;
+    target_ring = kernel_anonymous_fd_descriptor_object_id(
+        submission->descriptor, KERNEL_ANONYMOUS_FD_IO_URING);
+    if (target_ring < 0)
+        return kernel_fd_is_open(submission->descriptor) ?
+               -EDGE_LINUX_EBADFD : -EDGE_LINUX_EBADF;
+    if (submission->address == EDGE_LINUX_IORING_MSG_SEND_FD)
+        return -EDGE_LINUX_EOPNOTSUPP;
+    if (submission->address != EDGE_LINUX_IORING_MSG_DATA ||
+        submission->address3 ||
+        (message_flags & EDGE_LINUX_IORING_MSG_CQE_SKIP) ||
+        (!(message_flags & EDGE_LINUX_IORING_MSG_FLAGS_PASS) &&
+         submission->splice_descriptor))
+        return -EDGE_LINUX_EINVAL;
+    status = kernel_io_uring_disabled(target_ring);
+    if (status < 0) return status;
+    if (status) return -EDGE_LINUX_EBADFD;
+    if (message_flags & EDGE_LINUX_IORING_MSG_FLAGS_PASS)
+        completion_flags = (uint32_t)submission->splice_descriptor;
+    status = kernel_io_uring_completion_add(
+        target_ring, submission->offset,
+        (int32_t)submission->length, completion_flags);
+    return status == -EDGE_LINUX_EBUSY ?
+           -EDGE_LINUX_EOVERFLOW : status;
+}
+
 static int32_t edge_linux_io_uring_execute_descriptor(
         edge_linux_syscall_context_t *context,
         int32_t ring_id,
@@ -8789,6 +8831,7 @@ static int32_t edge_linux_io_uring_execute_descriptor(
     if (submission->address3 &&
         submission->opcode != EDGE_LINUX_IORING_OP_SETXATTR &&
         submission->opcode != EDGE_LINUX_IORING_OP_GETXATTR &&
+        submission->opcode != EDGE_LINUX_IORING_OP_MSG_RING &&
         submission->opcode != EDGE_LINUX_IORING_OP_FUTEX_WAKE)
         return -EDGE_LINUX_EINVAL;
     switch (submission->opcode) {
@@ -8880,6 +8923,9 @@ static int32_t edge_linux_io_uring_execute_descriptor(
         result = edge_linux_sys_futex(&nested);
         break;
     }
+    case EDGE_LINUX_IORING_OP_MSG_RING:
+        result = edge_linux_io_uring_msg_ring(submission);
+        break;
     case EDGE_LINUX_IORING_OP_FALLOCATE:
     case EDGE_LINUX_IORING_OP_SYNC_FILE_RANGE:
     case EDGE_LINUX_IORING_OP_OPENAT:
@@ -8947,6 +8993,7 @@ static int edge_linux_io_uring_fixed_file_supported(uint8_t opcode) {
     case EDGE_LINUX_IORING_OP_BIND:
     case EDGE_LINUX_IORING_OP_LISTEN:
     case EDGE_LINUX_IORING_OP_SPLICE:
+    case EDGE_LINUX_IORING_OP_MSG_RING:
         return 1;
     default:
         return 0;
@@ -9193,6 +9240,7 @@ static int64_t edge_linux_sys_io_uring_enter(
     if (kernel_io_uring_disabled(ring_id) != 0)
         return edge_linux_io_uring_enter_error(
             thread_state, -EDGE_LINUX_EBADFD);
+    (void)kernel_io_uring_completion_flush(ring_id);
     if ((flags & EDGE_LINUX_IORING_ENTER_GETEVENTS) &&
         (flags & EDGE_LINUX_IORING_ENTER_EXT_ARG)) {
         if (flags & EDGE_LINUX_IORING_ENTER_EXT_ARG_REG) {
@@ -9457,6 +9505,7 @@ static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
            opcode == EDGE_LINUX_IORING_OP_MKDIRAT ||
            opcode == EDGE_LINUX_IORING_OP_SYMLINKAT ||
            opcode == EDGE_LINUX_IORING_OP_LINKAT ||
+           opcode == EDGE_LINUX_IORING_OP_MSG_RING ||
            opcode == EDGE_LINUX_IORING_OP_SOCKET ||
            opcode == EDGE_LINUX_IORING_OP_BIND ||
            opcode == EDGE_LINUX_IORING_OP_LISTEN ||

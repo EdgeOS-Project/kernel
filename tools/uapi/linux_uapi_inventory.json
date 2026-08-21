@@ -69,7 +69,8 @@
         "fixed-file automatic allocation range registration",
         "pipe creation with ordinary descriptors and explicit or automatic fixed-file slots",
         "architecture-correct O_DIRECT packet pipes with record truncation semantics",
-        "splice with immediate offsets and ordinary or fixed input and output descriptors"
+        "splice with immediate offsets and ordinary or fixed input and output descriptors",
+        "MSG_RING data delivery, CQE flag forwarding and buffered target-CQ overflow"
       ],
       "missing": [
         "asynchronous worker execution",
@@ -78,6 +79,7 @@
         "user-provided pinned wait regions and SQPOLL wait control",
         "pending asynchronous descriptor leases across close and reuse",
         "notification-pipe semantics",
+        "MSG_RING registered-file transfer",
         "remaining supported VFS and socket operations",
         "ia32 and x32 compatibility layouts"
       ],
@@ -93,7 +95,7 @@
       "linux_oracle": {
         "status": "partial",
         "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309",
-        "scope": "setup, mmap, NOP, eventfd, poll, timeout, cancellation, openat, openat2, close, statx, fallocate, send, recv, sendmsg, recvmsg, shutdown, connect, accept, fadvise, madvise, epoll_ctl, tee, renameat, unlinkat, mkdirat, symlinkat, linkat, socket, bind, listen, fsetxattr, setxattr, fgetxattr, getxattr, ftruncate, sync_file_range, futex_wake, fixed-file registration, retained lifetime, register and submission-queue updates, extended resource layouts, tag completion events, fixed-file installation, frozen opcode extent, registered-ring descriptor lifetime, timeout update, finite and updated multishot timeouts, relative and absolute enter deadlines, minimum-wait batching, registered wait layouts and errors from the frozen source oracle, poll update, multishot poll, per-ring clock, fixed-file allocation range, operation probe, pipe creation and direct fixed-file allocation, plus packet-pipe record boundaries, short-read truncation and splice with ordinary or fixed input and output descriptors"
+        "scope": "setup, mmap, NOP, eventfd, poll, timeout, cancellation, openat, openat2, close, statx, fallocate, send, recv, sendmsg, recvmsg, shutdown, connect, accept, fadvise, madvise, epoll_ctl, tee, renameat, unlinkat, mkdirat, symlinkat, linkat, socket, bind, listen, fsetxattr, setxattr, fgetxattr, getxattr, ftruncate, sync_file_range, futex_wake, fixed-file registration, retained lifetime, register and submission-queue updates, extended resource layouts, tag completion events, fixed-file installation, frozen opcode extent, registered-ring descriptor lifetime, timeout update, finite and updated multishot timeouts, relative and absolute enter deadlines, minimum-wait batching, registered wait layouts and errors from the frozen source oracle, poll update, multishot poll, per-ring clock, fixed-file allocation range, operation probe, pipe creation and direct fixed-file allocation, plus packet-pipe record boundaries, short-read truncation and splice with ordinary or fixed input and output descriptors, plus MSG_RING data, flag forwarding, disabled targets and buffered CQ overflow"
       }
     },
     {

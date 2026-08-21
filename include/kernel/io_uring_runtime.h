@@ -148,6 +148,7 @@ int kernel_io_uring_take_submission(
     int32_t ring_id, struct edge_linux_io_uring_sqe *submission);
 int kernel_io_uring_completion_add(int32_t ring_id, uint64_t user_data,
                                    int32_t result, uint32_t flags);
+int kernel_io_uring_completion_flush(int32_t ring_id);
 int kernel_io_uring_completion_add_async(int32_t ring_id,
                                          uint64_t user_data,
                                          int32_t result, uint32_t flags);
