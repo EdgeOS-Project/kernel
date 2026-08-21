@@ -1315,6 +1315,100 @@ cancel:
     return result;
 }
 
+int kernel_io_uring_fixed_file_transfer(
+        int32_t source_ring_id, uint32_t source_index,
+        int32_t target_ring_id, uint32_t target_file_slot) {
+    kernel_fd_operation_lease_t clone = {0};
+    kernel_fd_operation_lease_t *source_lease;
+    kernel_fd_operation_lease_t *destination;
+    kernel_io_uring_t *source;
+    kernel_io_uring_t *target;
+    uint32_t target_index = UINT32_MAX;
+    int32_t event_id = -1;
+    uint64_t flags;
+    int allocated;
+    int notify = 0;
+    int result;
+
+    if (source_ring_id == target_ring_id)
+        return -EDGE_LINUX_EINVAL;
+    allocated = target_file_slot == UINT32_MAX;
+
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    source = io_uring_lookup_locked(source_ring_id);
+    target = io_uring_lookup_locked(target_ring_id);
+    if (!source || !target) {
+        result = -EDGE_LINUX_EBADF;
+        goto unlock;
+    }
+    if (source_index >= source->fixed_file_count ||
+        !source->fixed_file_used[source_index]) {
+        result = -EDGE_LINUX_EBADF;
+        goto unlock;
+    }
+    if (!target->fixed_file_count) {
+        result = -EDGE_LINUX_ENXIO;
+        goto unlock;
+    }
+    if (!allocated && !target_file_slot) {
+        result = -EDGE_LINUX_EINVAL;
+        goto unlock;
+    }
+    if (allocated) {
+        result = io_uring_fixed_file_find_free_locked(
+            target, UINT32_MAX, &target_index);
+        if (result < 0) goto unlock;
+    } else {
+        target_index = target_file_slot - 1u;
+        if (target_index >= target->fixed_file_count) {
+            result = -EDGE_LINUX_EINVAL;
+            goto unlock;
+        }
+        if (target->fixed_file_reservations[target_index]) {
+            result = -EDGE_LINUX_EBUSY;
+            goto unlock;
+        }
+    }
+
+    source_lease = io_uring_fixed_file_lease(
+        source->fixed_file_pages, source_index);
+    destination = io_uring_fixed_file_lease(
+        target->fixed_file_pages, target_index);
+    if (!source_lease || !destination) {
+        result = -EDGE_LINUX_EBADF;
+        goto unlock;
+    }
+    result = kernel_fd_operation_clone(&clone, source_lease);
+    if (result < 0) goto unlock;
+    if (target->fixed_file_used[target_index]) {
+        if (target->fixed_file_tags[target_index] &&
+            io_uring_completion_add_locked(
+                target, target->fixed_file_tags[target_index],
+                0, 0) == 0)
+            notify = 1;
+        (void)kernel_fd_operation_release(destination);
+        target->fixed_file_used[target_index] = 0u;
+        target->fixed_file_tags[target_index] = 0u;
+    }
+    result = kernel_fd_operation_move(destination, &clone);
+    if (result < 0) goto unlock;
+    target->fixed_file_used[target_index] = 1u;
+    target->fixed_file_tags[target_index] = 0u;
+    result = allocated ? (int)target_index : 0;
+    if (notify)
+        event_id = io_uring_event_retain_locked(target, 0);
+
+unlock:
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (event_id >= 0) {
+        (void)kernel_eventfd_write_value(event_id, 1, 1u);
+        kernel_eventfd_release(event_id);
+    }
+    if (kernel_fd_operation_view(&clone))
+        (void)kernel_fd_operation_release(&clone);
+    return result;
+}
+
 int kernel_io_uring_fixed_file_install(int32_t ring_id,
                                        uint32_t index,
                                        uint32_t descriptor_flags,

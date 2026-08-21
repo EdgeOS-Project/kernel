@@ -50,6 +50,7 @@ typedef struct fd_backend_mock {
     uint32_t operation_description_id_calls;
     uint32_t operation_release_calls;
     uint32_t operation_transfer_calls;
+    uint32_t operation_clone_calls;
     uint32_t operation_vector_io_calls;
     uint32_t operation_file_range_calls;
     uint32_t operation_socket_calls;
@@ -83,6 +84,7 @@ typedef struct fd_backend_mock {
     int operation_acquire_result;
     int operation_release_result;
     int operation_transfer_result;
+    int operation_clone_result;
     int64_t operation_vector_io_result;
     int64_t operation_file_range_result;
     int64_t operation_socket_result;
@@ -97,6 +99,7 @@ typedef struct fd_backend_mock {
     int transfer_target_abort_result;
     int duplicate_minimum_result;
     void *operation_storage;
+    void *operation_clone_storage;
     const void *operation_owner;
     void *transfer_target_storage;
     const void *transfer_target_owner;
@@ -243,7 +246,8 @@ static int backend_operation_release(
 
     assert(mock);
     assert(storage);
-    assert(storage == mock->operation_storage);
+    assert(storage == mock->operation_storage ||
+           storage == mock->operation_clone_storage);
     assert(!kernel_fd_operation_view(mock->operation_lease));
     assert(snapshot->marker == FD_OPERATION_MOCK_MARKER);
     assert(snapshot->descriptor == mock->operation_descriptor);
@@ -252,6 +256,29 @@ static int backend_operation_release(
     assert(mock->operation_references);
     --mock->operation_references;
     return mock->operation_release_result;
+}
+
+static int backend_operation_clone(
+        void *opaque, void *destination_storage,
+        const void *source_storage) {
+    fd_backend_mock_t *mock = (fd_backend_mock_t *)opaque;
+    fd_operation_mock_snapshot_t *destination =
+        (fd_operation_mock_snapshot_t *)destination_storage;
+    const fd_operation_mock_snapshot_t *source =
+        (const fd_operation_mock_snapshot_t *)source_storage;
+
+    assert(mock);
+    assert(destination);
+    assert(source);
+    assert(source_storage == mock->operation_storage);
+    assert(source->marker == FD_OPERATION_MOCK_MARKER);
+    ++mock->operation_clone_calls;
+    if (mock->operation_clone_result < 0)
+        return mock->operation_clone_result;
+    *destination = *source;
+    mock->operation_clone_storage = destination_storage;
+    ++mock->operation_references;
+    return 0;
 }
 
 static int backend_operation_transfer(
@@ -667,6 +694,7 @@ static const kernel_fd_backend_ops_t g_backend_ops = {
         backend_operation_acquire_for_pid,
     .operation_release = backend_operation_release,
     .operation_transfer = backend_operation_transfer,
+    .operation_clone = backend_operation_clone,
     .operation_description_id =
         backend_operation_description_id,
     .operation_vector_io = backend_operation_vector_io,
@@ -2004,6 +2032,81 @@ static void test_operation_lease_transfer(void) {
     assert(!kernel_fd_operation_view(&destination));
 }
 
+static void test_operation_lease_clone(void) {
+    kernel_fd_backend_ops_t no_clone_ops = g_backend_ops;
+    kernel_fd_operation_lease_t source = {0};
+    kernel_fd_operation_lease_t clone = {0};
+    fd_backend_mock_t mock;
+    const fd_operation_mock_snapshot_t *source_snapshot;
+    const fd_operation_mock_snapshot_t *clone_snapshot;
+
+    memset(&mock, 0, sizeof(mock));
+    mock.allocation_limit = 64;
+    mock.operation_generation = 317;
+    mock.operation_is_socket = 1;
+    mock.operation_lease = &source;
+
+    no_clone_ops.operation_clone = 0;
+    assert(kernel_fd_backend_register(
+               &no_clone_ops, &mock) == 0);
+    assert(kernel_fd_operation_acquire(5, &source) == 0);
+    assert(kernel_fd_operation_clone(&clone, &source) ==
+           -EDGE_LINUX_EOPNOTSUPP);
+    assert(mock.operation_clone_calls == 0);
+    assert(mock.operation_references == 1);
+    assert(kernel_fd_operation_release(&source) == 0);
+    assert(mock.operation_references == 0);
+
+    assert(kernel_fd_backend_register(
+               &g_backend_ops, &mock) == 0);
+    assert(kernel_fd_operation_acquire(5, &source) == 0);
+    assert(kernel_fd_operation_clone(0, &source) ==
+           -EDGE_LINUX_EINVAL);
+    assert(kernel_fd_operation_clone(&clone, 0) ==
+           -EDGE_LINUX_EINVAL);
+    assert(kernel_fd_operation_clone(&source, &source) ==
+           -EDGE_LINUX_EINVAL);
+
+    mock.operation_clone_result = -EDGE_LINUX_ENOMEM;
+    assert(kernel_fd_operation_clone(&clone, &source) ==
+           -EDGE_LINUX_ENOMEM);
+    assert(mock.operation_clone_calls == 1);
+    assert(!kernel_fd_operation_view(&clone));
+    assert(mock.operation_references == 1);
+
+    mock.operation_clone_result = 0;
+    assert(kernel_fd_operation_clone(&clone, &source) == 0);
+    assert(mock.operation_clone_calls == 2);
+    assert(mock.operation_references == 2);
+    source_snapshot = (const fd_operation_mock_snapshot_t *)
+        kernel_fd_operation_view(&source);
+    clone_snapshot = (const fd_operation_mock_snapshot_t *)
+        kernel_fd_operation_view(&clone);
+    assert(source_snapshot);
+    assert(clone_snapshot);
+    assert(source_snapshot != clone_snapshot);
+    assert(memcmp(source_snapshot, clone_snapshot,
+                  sizeof(*source_snapshot)) == 0);
+    assert(kernel_fd_operation_vector_io_supported(&clone));
+    assert(kernel_fd_operation_socket_supported(&clone));
+    assert(kernel_fd_operation_clone(&clone, &source) ==
+           -EDGE_LINUX_EBUSY);
+    assert(mock.operation_clone_calls == 2);
+
+    mock.operation_lease = &source;
+    assert(kernel_fd_operation_release(&source) == 0);
+    assert(mock.operation_references == 1);
+    clone_snapshot = (const fd_operation_mock_snapshot_t *)
+        kernel_fd_operation_view(&clone);
+    assert(clone_snapshot);
+    assert(clone_snapshot->object_generation == 317);
+    mock.operation_lease = &clone;
+    assert(kernel_fd_operation_release(&clone) == 0);
+    assert(mock.operation_references == 0);
+    assert(kernel_fd_operation_clone(&clone, &source) ==
+           -EDGE_LINUX_EINVAL);
+}
+
 static void test_fd_transfer_target_lifecycle(void) {
     kernel_fd_operation_lease_t source = {0};
     kernel_fd_transfer_target_t target = {0};
@@ -2476,6 +2579,7 @@ int main(void) {
     test_socket_descriptor_wrappers();
     test_socket_operation_error_precedence();
     test_socket_operation_lease_stability();
+    test_operation_lease_clone();
     test_operation_lease_transfer();
     test_fd_transfer_target_lifecycle();
     test_fd_transfer_target_prepare_rollback_and_limit();

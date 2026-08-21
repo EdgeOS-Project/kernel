@@ -59,6 +59,7 @@ EDGEOS_ASSESSMENTS = [
             "architecture-correct O_DIRECT packet pipes with record truncation semantics",
             "splice with immediate offsets and ordinary or fixed input and output descriptors",
             "MSG_RING data delivery, CQE flag forwarding and buffered target-CQ overflow",
+            "MSG_RING registered-file transfer with explicit or allocated target slots, CQE skipping and retained lifetime",
         ],
         "missing": [
             "asynchronous worker execution",
@@ -67,7 +68,6 @@ EDGEOS_ASSESSMENTS = [
             "user-provided pinned wait regions and SQPOLL wait control",
             "pending asynchronous descriptor leases across close and reuse",
             "notification-pipe semantics",
-            "MSG_RING registered-file transfer",
             "remaining supported VFS and socket operations",
             "ia32 and x32 compatibility layouts",
         ],
@@ -102,7 +102,10 @@ EDGEOS_ASSESSMENTS = [
                 "and direct fixed-file allocation, plus packet-pipe record "
                 "boundaries, short-read truncation and splice with ordinary "
                 "or fixed input and output descriptors, plus MSG_RING data, "
-                "flag forwarding, disabled targets and buffered CQ overflow"
+                "flag forwarding, disabled targets and buffered CQ overflow, "
+                "plus registered-file transfer with explicit and allocated "
+                "slots, skipped target completions and retained lifetime after "
+                "source-table removal"
             ),
         },
     },

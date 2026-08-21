@@ -150,6 +150,9 @@ struct linux_epoll_event {
 #define SPLICE_F_FD_IN_FIXED (1u << 31)
 #define IORING_MSG_RING_CQE_SKIP (1u << 0)
 #define IORING_MSG_RING_FLAGS_PASS (1u << 1)
+#define IORING_MSG_DATA 0u
+#define IORING_MSG_SEND_FD 1u
+#define IORING_FILE_INDEX_ALLOC UINT32_MAX
 #define IORING_SQ_CQ_OVERFLOW (1u << 1)
 
 struct kernel_timespec {
@@ -557,15 +560,26 @@ static int run_msg_ring_only(
     volatile uint32_t *target_cq_mask;
     volatile uint32_t *target_cq_overflow;
     volatile uint32_t *target_sq_flags;
+    volatile uint32_t *target_sq_tail;
+    volatile uint32_t *target_sq_mask;
+    volatile uint32_t *target_sq_array;
     struct io_uring_cqe *target_cqes;
+    struct io_uring_sqe *target_sqes = 0;
     struct io_uring_sqe request;
     void *target_cq_ring = 0;
     void *target_sq_ring = 0;
+    void *target_sqe_ring = 0;
     long target_descriptor = -1;
     long disabled_descriptor = -1;
+    int32_t transfer_pipe[2] = {-1, -1};
+    int source_files_registered = 0;
+    int target_files_registered = 0;
     int32_t result = -1;
+    int32_t allocated_index = -1;
     int failures = 0;
     uint32_t position;
+    static const char transfer_data[] = "msg-ring-fixed";
+    char transfer_output[sizeof(transfer_data)] = {0};
 
     memset(&target_parameters, 0, sizeof(target_parameters));
     target_descriptor = raw_syscall6(
@@ -575,12 +589,21 @@ static int run_msg_ring_only(
         goto cleanup;
     target_cq_ring = map_ring(target_descriptor, IORING_OFF_CQ_RING);
     target_sq_ring = map_ring(target_descriptor, IORING_OFF_SQ_RING);
+    target_sqe_ring = map_ring(target_descriptor, IORING_OFF_SQES);
     failures += expect_true("msg-ring target CQ map", target_cq_ring != 0);
     failures += expect_true("msg-ring target SQ map", target_sq_ring != 0);
-    if (!target_cq_ring || !target_sq_ring)
+    failures += expect_true("msg-ring target SQE map", target_sqe_ring != 0);
+    if (!target_cq_ring || !target_sq_ring || !target_sqe_ring)
         goto cleanup;
+    target_sqes = (struct io_uring_sqe *)target_sqe_ring;
     target_sq_flags = (volatile uint32_t *)((uint8_t *)target_sq_ring +
                                             target_parameters.sq_off.flags);
+    target_sq_tail = (volatile uint32_t *)((uint8_t *)target_sq_ring +
+                                           target_parameters.sq_off.tail);
+    target_sq_mask = (volatile uint32_t *)((uint8_t *)target_sq_ring +
+                                           target_parameters.sq_off.ring_mask);
+    target_sq_array = (volatile uint32_t *)((uint8_t *)target_sq_ring +
+                                            target_parameters.sq_off.array);
     target_cq_head = (volatile uint32_t *)((uint8_t *)target_cq_ring +
                                            target_parameters.cq_off.head);
     target_cq_tail = (volatile uint32_t *)((uint8_t *)target_cq_ring +
@@ -646,6 +669,140 @@ static int run_msg_ring_only(
         0x4d5347494e56414cull, "msg-ring invalid flags", &result);
     failures += expect("msg-ring invalid flags completion", result, -EINVAL);
 
+    failures += expect("msg-ring transfer pipe", raw_syscall6(
+        SYS_pipe2, (long)transfer_pipe, 0, 0, 0, 0, 0), 0);
+    if (transfer_pipe[0] >= 0 && transfer_pipe[1] >= 0) {
+        int32_t source_files[] = {transfer_pipe[1]};
+        int32_t target_files[] = {-1, -1, -1};
+
+        failures += expect("msg-ring register source file", raw_syscall6(
+            SYS_io_uring_register, ring_descriptor, IORING_REGISTER_FILES,
+            (long)source_files, 1, 0, 0), 0);
+        source_files_registered = 1;
+        failures += expect("msg-ring register target files", raw_syscall6(
+            SYS_io_uring_register, target_descriptor, IORING_REGISTER_FILES,
+            (long)target_files, 3, 0, 0), 0);
+        target_files_registered = 1;
+
+        memset(&request, 0, sizeof(request));
+        request.opcode = IORING_OP_MSG_RING;
+        request.descriptor = (int32_t)target_descriptor;
+        request.offset = 0x4d53474644544131ull;
+        request.address = IORING_MSG_SEND_FD;
+        request.splice_descriptor = 2;
+        failures += submit_one(
+            ring_descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &request,
+            0x4d53474644535231ull, "msg-ring send-fd explicit", &result);
+        failures += expect("msg-ring send-fd explicit completion", result, 0);
+        position = __atomic_load_n(target_cq_head, __ATOMIC_ACQUIRE);
+        failures += expect_true("msg-ring send-fd target completion",
+            __atomic_load_n(target_cq_tail, __ATOMIC_ACQUIRE) ==
+                position + 1u &&
+            target_cqes[position & *target_cq_mask].user_data ==
+                request.offset &&
+            target_cqes[position & *target_cq_mask].result == 0 &&
+            target_cqes[position & *target_cq_mask].flags == 0u);
+        __atomic_store_n(target_cq_head, position + 1u, __ATOMIC_RELEASE);
+
+        request.offset = 0x4d53474644414c4cull;
+        request.operation_flags = IORING_MSG_RING_CQE_SKIP;
+        request.splice_descriptor = (int32_t)IORING_FILE_INDEX_ALLOC;
+        position = __atomic_load_n(target_cq_tail, __ATOMIC_ACQUIRE);
+        failures += submit_one(
+            ring_descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &request,
+            0x4d53474644535232ull, "msg-ring send-fd allocated", &result);
+        failures += expect_true("msg-ring send-fd allocated completion",
+                                result >= 0 && result < 3 && result != 1);
+        allocated_index = result;
+        failures += expect_true("msg-ring send-fd skipped target CQE",
+            __atomic_load_n(target_cq_tail, __ATOMIC_ACQUIRE) == position);
+
+        request.operation_flags = 0;
+        request.splice_descriptor = 0;
+        failures += submit_one(
+            ring_descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &request,
+            0x4d53474644425a52ull, "msg-ring send-fd zero slot", &result);
+        failures += expect("msg-ring send-fd zero slot completion",
+                           result, -EINVAL);
+        request.splice_descriptor = 3;
+        request.address3 = 1u;
+        failures += submit_one(
+            ring_descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &request,
+            0x4d53474644424144ull, "msg-ring send-fd bad source", &result);
+        failures += expect("msg-ring send-fd bad source completion",
+                           result, -EBADF);
+        request.splice_descriptor = 0;
+        failures += submit_one(
+            ring_descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &request,
+            0x4d53474644424f52ull,
+            "msg-ring send-fd error ordering", &result);
+        failures += expect("msg-ring send-fd error ordering completion",
+                           result, -EBADF);
+        request.descriptor = (int32_t)ring_descriptor;
+        request.address3 = 0u;
+        request.splice_descriptor = 1;
+        failures += submit_one(
+            ring_descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &request,
+            0x4d5347464453414dull, "msg-ring send-fd same ring", &result);
+        failures += expect("msg-ring send-fd same ring completion",
+                           result, -EINVAL);
+
+        failures += expect("msg-ring unregister source file", raw_syscall6(
+            SYS_io_uring_register, ring_descriptor,
+            IORING_UNREGISTER_FILES, 0, 0, 0, 0), 0);
+        source_files_registered = 0;
+        failures += expect("msg-ring close original write end", raw_syscall6(
+            SYS_close, transfer_pipe[1], 0, 0, 0, 0, 0), 0);
+        transfer_pipe[1] = -1;
+
+        memset(&request, 0, sizeof(request));
+        request.opcode = IORING_OP_WRITE;
+        request.flags = IOSQE_FIXED_FILE;
+        request.descriptor = 1;
+        request.offset = UINT64_MAX;
+        request.address = (uint64_t)(uintptr_t)transfer_data;
+        request.length = sizeof(transfer_data);
+        failures += submit_one(
+            target_descriptor, target_sq_tail, target_sq_mask,
+            target_sq_array, target_sqes,
+            target_cq_head, target_cq_tail, target_cq_mask, target_cqes,
+            &request, 0x4d53474644575231ull,
+            "msg-ring target fixed write", &result);
+        failures += expect("msg-ring target fixed write completion",
+                           result, sizeof(transfer_data));
+        failures += expect("msg-ring transferred pipe read", raw_syscall6(
+            SYS_read, transfer_pipe[0], (long)transfer_output,
+            sizeof(transfer_output), 0, 0, 0), sizeof(transfer_data));
+        failures += expect_true("msg-ring transferred pipe data",
+            transfer_output[0] == transfer_data[0] &&
+            transfer_output[sizeof(transfer_output) - 1u] == 0);
+
+        memset(transfer_output, 0, sizeof(transfer_output));
+        request.descriptor = allocated_index;
+        failures += submit_one(
+            target_descriptor, target_sq_tail, target_sq_mask,
+            target_sq_array, target_sqes,
+            target_cq_head, target_cq_tail, target_cq_mask, target_cqes,
+            &request, 0x4d53474644575232ull,
+            "msg-ring allocated fixed write", &result);
+        failures += expect("msg-ring allocated fixed write completion",
+                           result, sizeof(transfer_data));
+        failures += expect("msg-ring allocated pipe read", raw_syscall6(
+            SYS_read, transfer_pipe[0], (long)transfer_output,
+            sizeof(transfer_output), 0, 0, 0), sizeof(transfer_data));
+
+        failures += expect("msg-ring unregister target files", raw_syscall6(
+            SYS_io_uring_register, target_descriptor,
+            IORING_UNREGISTER_FILES, 0, 0, 0, 0), 0);
+        target_files_registered = 0;
+    }
+
     memset(&disabled_parameters, 0, sizeof(disabled_parameters));
     disabled_parameters.flags = IORING_SETUP_R_DISABLED;
     disabled_descriptor = raw_syscall6(
@@ -663,6 +820,17 @@ static int run_msg_ring_only(
             cq_head, cq_tail, cq_mask, cqes, &request,
             0x4d53474453524345ull, "msg-ring disabled submit", &result);
         failures += expect("msg-ring disabled completion", result, -EBADFD);
+
+        request.address = IORING_MSG_SEND_FD;
+        request.length = 0u;
+        request.address3 = 0u;
+        request.splice_descriptor = 1;
+        failures += submit_one(
+            ring_descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &request,
+            0x4d53474644445342ull, "msg-ring disabled send-fd", &result);
+        failures += expect("msg-ring disabled send-fd completion",
+                           result, -EBADFD);
     }
 
     memset(&request, 0, sizeof(request));
@@ -707,6 +875,18 @@ static int run_msg_ring_only(
     __atomic_store_n(target_cq_head, position + 1u, __ATOMIC_RELEASE);
 
 cleanup:
+    if (source_files_registered)
+        (void)raw_syscall6(
+            SYS_io_uring_register, ring_descriptor,
+            IORING_UNREGISTER_FILES, 0, 0, 0, 0);
+    if (target_files_registered && target_descriptor >= 0)
+        (void)raw_syscall6(
+            SYS_io_uring_register, target_descriptor,
+            IORING_UNREGISTER_FILES, 0, 0, 0, 0);
+    for (uint32_t index = 0; index < 2u; ++index)
+        if (transfer_pipe[index] >= 0)
+            (void)raw_syscall6(
+                SYS_close, transfer_pipe[index], 0, 0, 0, 0, 0);
     if (disabled_descriptor >= 0)
         (void)raw_syscall6(
             SYS_close, disabled_descriptor, 0, 0, 0, 0, 0);
@@ -716,6 +896,9 @@ cleanup:
     if (target_sq_ring)
         (void)raw_syscall6(
             SYS_munmap, (long)target_sq_ring, PAGE_SIZE, 0, 0, 0, 0);
+    if (target_sqe_ring)
+        (void)raw_syscall6(
+            SYS_munmap, (long)target_sqe_ring, PAGE_SIZE, 0, 0, 0, 0);
     if (target_descriptor >= 0)
         (void)raw_syscall6(
             SYS_close, target_descriptor, 0, 0, 0, 0, 0);

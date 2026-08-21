@@ -110,6 +110,9 @@ int kernel_io_uring_fixed_file_pair_commit(
     const kernel_fd_publication_t *publication);
 int kernel_io_uring_fixed_file_pair_cancel(
     kernel_io_uring_fixed_file_reservation_t *reservation);
+int kernel_io_uring_fixed_file_transfer(
+    int32_t source_ring_id, uint32_t source_index,
+    int32_t target_ring_id, uint32_t target_file_slot);
 int kernel_io_uring_fixed_file_materialize(int32_t ring_id,
                                            uint32_t index,
                                            int32_t *descriptor);

@@ -97,6 +97,8 @@ typedef int (*kernel_fd_operation_release_fn)(
     void *context, void *storage);
 typedef int (*kernel_fd_operation_transfer_fn)(
     void *context, void *destination_storage, void *source_storage);
+typedef int (*kernel_fd_operation_clone_fn)(
+    void *context, void *destination_storage, const void *source_storage);
 typedef int (*kernel_fd_operation_description_id_fn)(
     void *context, const void *storage, uint64_t *description_id);
 struct kernel_io_vector_request;
@@ -203,6 +205,9 @@ int kernel_fd_operation_transfer_from_backend(
 int kernel_fd_operation_move(
     kernel_fd_operation_lease_t *destination,
     kernel_fd_operation_lease_t *source);
+int kernel_fd_operation_clone(
+    kernel_fd_operation_lease_t *destination,
+    const kernel_fd_operation_lease_t *source);
 int kernel_fd_operation_release(
     kernel_fd_operation_lease_t *lease);
 int kernel_fd_operation_materialize(
@@ -311,6 +316,7 @@ typedef struct kernel_fd_backend_ops {
         operation_acquire_for_pid;
     kernel_fd_operation_release_fn operation_release;
     kernel_fd_operation_transfer_fn operation_transfer;
+    kernel_fd_operation_clone_fn operation_clone;
     kernel_fd_operation_description_id_fn
         operation_description_id;
     /*

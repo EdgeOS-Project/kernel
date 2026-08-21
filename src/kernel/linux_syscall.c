@@ -8777,6 +8777,7 @@ static int64_t edge_linux_io_uring_execute_socket(
 }
 
 static int64_t edge_linux_io_uring_msg_ring(
+        int32_t source_ring,
         const struct edge_linux_io_uring_sqe *submission) {
     uint32_t message_flags = submission->operation_flags;
     uint32_t completion_flags = 0u;
@@ -8791,8 +8792,29 @@ static int64_t edge_linux_io_uring_msg_ring(
     if (target_ring < 0)
         return kernel_fd_is_open(submission->descriptor) ?
                -EDGE_LINUX_EBADFD : -EDGE_LINUX_EBADF;
-    if (submission->address == EDGE_LINUX_IORING_MSG_SEND_FD)
-        return -EDGE_LINUX_EOPNOTSUPP;
+    if (submission->address == EDGE_LINUX_IORING_MSG_SEND_FD) {
+        if (submission->length || target_ring == source_ring)
+            return -EDGE_LINUX_EINVAL;
+        status = kernel_io_uring_disabled(target_ring);
+        if (status < 0) return status;
+        if (status) return -EDGE_LINUX_EBADFD;
+        status = kernel_io_uring_fixed_file_transfer(
+            source_ring, (uint32_t)submission->address3,
+            target_ring, (uint32_t)submission->splice_descriptor);
+        if (status < 0 ||
+            (message_flags & EDGE_LINUX_IORING_MSG_CQE_SKIP))
+            return status;
+        {
+            int install_result = status;
+
+            status = kernel_io_uring_completion_add(
+                target_ring, submission->offset,
+                install_result, 0u);
+            if (status == -EDGE_LINUX_EBUSY)
+                return -EDGE_LINUX_EOVERFLOW;
+            return status < 0 ? status : install_result;
+        }
+    }
     if (submission->address != EDGE_LINUX_IORING_MSG_DATA ||
         submission->address3 ||
         (message_flags & EDGE_LINUX_IORING_MSG_CQE_SKIP) ||
@@ -8924,7 +8946,7 @@ static int32_t edge_linux_io_uring_execute_descriptor(
         break;
     }
     case EDGE_LINUX_IORING_OP_MSG_RING:
-        result = edge_linux_io_uring_msg_ring(submission);
+        result = edge_linux_io_uring_msg_ring(ring_id, submission);
         break;
     case EDGE_LINUX_IORING_OP_FALLOCATE:
     case EDGE_LINUX_IORING_OP_SYNC_FILE_RANGE:

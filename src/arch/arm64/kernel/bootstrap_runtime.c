@@ -25898,6 +25898,31 @@ static int arm64_fd_operation_transfer(
     return 0;
 }
 
+static int arm64_fd_operation_clone(
+        void *context, void *destination_storage,
+        const void *source_storage) {
+    bootstrap_fd_t *destination =
+        (bootstrap_fd_t *)destination_storage;
+    const bootstrap_fd_t *source =
+        (const bootstrap_fd_t *)source_storage;
+    bootstrap_fd_t clone;
+    int result;
+
+    (void)context;
+    if (!destination || !source || destination == source)
+        return -LINUX_EINVAL;
+    clone = *source;
+    result = fd_retain(&clone);
+    if (result < 0) return result;
+    result = fd_description_refresh_status(&clone);
+    if (result < 0) {
+        fd_drop_reference(&clone);
+        return result;
+    }
+    *destination = clone;
+    return 0;
+}
+
 typedef struct arm64_fd_transfer_target_storage {
     bootstrap_fd_t *entries;
     uint32_t allocation_limit;
@@ -26554,6 +26579,7 @@ static const kernel_fd_backend_ops_t arm64_fd_backend_ops = {
         arm64_fd_operation_acquire_for_pid,
     .operation_release = arm64_fd_operation_release,
     .operation_transfer = arm64_fd_operation_transfer,
+    .operation_clone = arm64_fd_operation_clone,
     .operation_description_id =
         arm64_fd_operation_description_id,
     .operation_vector_io = arm64_fd_operation_vector_io,

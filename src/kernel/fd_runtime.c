@@ -582,6 +582,57 @@ int kernel_fd_operation_move(
         (void *)(uintptr_t)source_storage, destination);
 }
 
+int kernel_fd_operation_clone(
+        kernel_fd_operation_lease_t *destination,
+        const kernel_fd_operation_lease_t *source_lease) {
+    fd_operation_lease_internal_t *target;
+    const fd_operation_lease_internal_t *source;
+    uint32_t expected = KERNEL_FD_OPERATION_LEASE_INACTIVE;
+    int result;
+
+    if (!destination || !source_lease || destination == source_lease)
+        return -EDGE_LINUX_EINVAL;
+    source = fd_operation_lease_internal_const(source_lease);
+    target = fd_operation_lease_internal(destination);
+    if (__atomic_load_n(
+            &source->state, __ATOMIC_ACQUIRE) !=
+        KERNEL_FD_OPERATION_LEASE_ACTIVE)
+        return -EDGE_LINUX_EINVAL;
+    if (!source->backend_ops || !source->backend_ops->operation_clone)
+        return -EDGE_LINUX_EOPNOTSUPP;
+    if (!__atomic_compare_exchange_n(
+            &target->state, &expected,
+            KERNEL_FD_OPERATION_LEASE_ACQUIRING, 0,
+            __ATOMIC_ACQ_REL, __ATOMIC_RELAXED))
+        return -EDGE_LINUX_EBUSY;
+
+    fd_operation_lease_clear(target);
+    result = source->backend_ops->operation_clone(
+        source->backend_context,
+        target->backend_storage.bytes,
+        source->backend_storage.bytes);
+    if (result < 0) {
+        fd_operation_lease_clear(target);
+        __atomic_store_n(
+            &target->state,
+            KERNEL_FD_OPERATION_LEASE_INACTIVE,
+            __ATOMIC_RELEASE);
+        return result;
+    }
+    target->backend_ops = source->backend_ops;
+    target->backend_context = source->backend_context;
+    target->backend_release = source->backend_release;
+    target->backend_transfer = source->backend_transfer;
+    target->backend_description_id = source->backend_description_id;
+    target->backend_vector_io = source->backend_vector_io;
+    target->backend_socket = source->backend_socket;
+    __atomic_store_n(
+        &target->state,
+        KERNEL_FD_OPERATION_LEASE_ACTIVE,
+        __ATOMIC_RELEASE);
+    return 0;
+}
+
 int kernel_fd_operation_release(
         kernel_fd_operation_lease_t *lease) {
     fd_operation_lease_internal_t *internal;

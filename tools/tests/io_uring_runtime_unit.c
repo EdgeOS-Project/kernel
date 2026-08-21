@@ -64,6 +64,19 @@ int kernel_fd_operation_move(
     return 0;
 }
 
+int kernel_fd_operation_clone(
+        kernel_fd_operation_lease_t *destination,
+        const kernel_fd_operation_lease_t *source) {
+    if (!destination || !source || destination == source ||
+        *(int32_t *)(void *)destination != 0 ||
+        *(const int32_t *)(const void *)source <= 0)
+        return -EDGE_LINUX_EINVAL;
+    *(int32_t *)(void *)destination =
+        *(const int32_t *)(const void *)source;
+    ++g_fixed_file_references;
+    return 0;
+}
+
 int kernel_fd_operation_release(kernel_fd_operation_lease_t *lease) {
     if (!lease || *(int32_t *)(void *)lease <= 0)
         return -EDGE_LINUX_EBADF;
@@ -390,6 +403,54 @@ int main(void) {
                materialized == 32);
         assert(kernel_io_uring_files_unregister(ring_id) == 0);
         assert(g_fixed_file_references == 0u);
+    }
+    {
+        struct edge_linux_io_uring_params target_parameters = {0};
+        const int32_t source_files[] = {4};
+        const int32_t target_files[] = {-1, -1, -1};
+
+        assert(kernel_io_uring_create(
+                   2u, &target_parameters, &second_ring_id) == 0);
+        assert(kernel_io_uring_files_register(
+                   ring_id, source_files, 1u) == 0);
+        assert(kernel_io_uring_files_register(
+                   second_ring_id, target_files, 3u) == 0);
+        assert(g_fixed_file_references == 1u);
+        assert(kernel_io_uring_fixed_file_transfer(
+                   ring_id, 0u, second_ring_id, 2u) == 0);
+        assert(g_fixed_file_references == 2u);
+        assert(kernel_io_uring_fixed_file_materialize(
+                   second_ring_id, 1u, &materialized) == 0 &&
+               materialized == 4);
+        assert(kernel_io_uring_fixed_file_transfer(
+                   ring_id, 0u, second_ring_id, UINT32_MAX) == 0);
+        assert(g_fixed_file_references == 3u);
+        assert(kernel_io_uring_fixed_file_materialize(
+                   second_ring_id, 0u, &materialized) == 0 &&
+               materialized == 4);
+        assert(kernel_io_uring_fixed_file_transfer(
+                   ring_id, 0u, second_ring_id, 2u) == 0);
+        assert(g_fixed_file_references == 3u);
+        assert(kernel_io_uring_fixed_file_transfer(
+                   ring_id, 1u, second_ring_id, 3u) ==
+               -EDGE_LINUX_EBADF);
+        assert(kernel_io_uring_fixed_file_transfer(
+                   ring_id, 1u, second_ring_id, 0u) ==
+               -EDGE_LINUX_EBADF);
+        assert(kernel_io_uring_fixed_file_transfer(
+                   ring_id, 0u, ring_id, 1u) ==
+               -EDGE_LINUX_EINVAL);
+        assert(kernel_io_uring_fixed_file_transfer(
+                   ring_id, 0u, second_ring_id, 0u) ==
+               -EDGE_LINUX_EINVAL);
+        assert(kernel_io_uring_files_unregister(second_ring_id) == 0);
+        assert(g_fixed_file_references == 1u);
+        assert(kernel_io_uring_fixed_file_transfer(
+                   ring_id, 0u, second_ring_id, 1u) ==
+               -EDGE_LINUX_ENXIO);
+        assert(kernel_io_uring_files_unregister(ring_id) == 0);
+        assert(g_fixed_file_references == 0u);
+        kernel_io_uring_release(second_ring_id);
     }
     assert(kernel_io_uring_files_register_tagged(
                ring_id, fixed_files, fixed_tags, 3u) == 0);

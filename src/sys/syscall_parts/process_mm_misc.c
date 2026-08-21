@@ -1963,6 +1963,45 @@ static int x86_fd_operation_transfer(
     return 0;
 }
 
+static int x86_fd_operation_clone(
+        void *context, void *destination_storage,
+        const void *source_storage) {
+    edge_fd_t *destination = (edge_fd_t *)destination_storage;
+    const edge_fd_t *source = (const edge_fd_t *)source_storage;
+    edge_fd_t clone;
+    uint32_t status_flags;
+
+    (void)context;
+    if (!destination || !source || destination == source)
+        return -EINVAL;
+    clone = *source;
+    if (!clone.used || clone.file_ref <= 0)
+        return -EBADF;
+    if (clone.kind == FD_VFS && clone.sb) {
+        if (vfs_inode_refresh(clone.sb, &clone.inode) < 0)
+            return -EBADF;
+    } else if (clone.kind == FD_MEMFD) {
+        edge_memfd_t *memory = memfd_get(clone.pipe_id);
+
+        if (!memory) return -EBADF;
+        clone.inode.size = memory->size;
+    }
+    if (file_ref_get(clone.file_ref) < 0)
+        return -ENOMEM;
+    if (fd_add_backing_object(&clone) < 0) {
+        (void)file_ref_put(clone.file_ref);
+        return -ENOMEM;
+    }
+    if (kernel_file_description_status_load(
+            file_ref_locator(clone.file_ref), &status_flags) < 0) {
+        (void)fd_release_entry(&clone, 0, 0, 0);
+        return -EBADF;
+    }
+    kernel_fd_apply_status_flags(&clone, UINT32_MAX, status_flags);
+    *destination = clone;
+    return 0;
+}
+
 typedef struct x86_fd_transfer_target_storage {
     edge_fd_proc_t *table;
     uint32_t allocation_limit;
@@ -2533,6 +2572,7 @@ static const kernel_fd_backend_ops_t x86_fd_backend_ops = {
         x86_fd_operation_acquire_for_pid,
     .operation_release = x86_fd_operation_release,
     .operation_transfer = x86_fd_operation_transfer,
+    .operation_clone = x86_fd_operation_clone,
     .operation_description_id =
         x86_fd_operation_description_id,
     .operation_vector_io = x86_fd_operation_vector_io,
