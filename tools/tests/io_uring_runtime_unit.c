@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "kernel/io_uring_runtime.h"
 #include "kernel/anonymous_fd.h"
@@ -125,6 +126,7 @@ int main(void) {
     kernel_io_uring_page_t sq_ring;
     kernel_io_uring_page_t cq_ring;
     kernel_io_uring_page_t sqes;
+    kernel_io_uring_page_t wait_region;
     uint32_t pages;
     const int32_t fixed_files[] = {4, -1, 7};
     const uint64_t fixed_tags[] = {
@@ -194,7 +196,49 @@ int main(void) {
     kernel_io_uring_task_release(41);
     assert(kernel_io_uring_task_ring_lookup(
                41, 0u, &looked_up_ring) == -EDGE_LINUX_EBADF);
+    assert(kernel_io_uring_region_register(
+               second_ring_id, 1u, 1) == -EDGE_LINUX_EINVAL);
     kernel_io_uring_release(second_ring_id);
+    {
+        struct edge_linux_io_uring_params wait_parameters = {
+            .flags = 1u << 6,
+        };
+        struct edge_linux_io_uring_reg_wait wait_value = {
+            .timeout_seconds = 3,
+            .timeout_nanoseconds = 4000,
+            .minimum_wait_microseconds = 55,
+            .flags = 1,
+        };
+        struct edge_linux_io_uring_reg_wait wait_copy = {0};
+
+        assert(kernel_io_uring_create(
+                   2u, &wait_parameters, &second_ring_id) == 0);
+        assert(kernel_io_uring_region_registered(second_ring_id) == 0);
+        assert(kernel_io_uring_region_register(
+                   second_ring_id, 1u, 1) == 0);
+        assert(kernel_io_uring_region_registered(second_ring_id) == 1);
+        assert(kernel_io_uring_region_register(
+                   second_ring_id, 1u, 1) == -EDGE_LINUX_EBUSY);
+        assert(kernel_io_uring_mmap_info(
+                   second_ring_id, KERNEL_IO_URING_OFF_PARAM_REGION,
+                   KERNEL_IO_URING_PAGE_SIZE, &pages) == 0);
+        assert(pages == 1u);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_PARAM_REGION,
+                   0u, &wait_region) == 0);
+        memcpy(wait_region.address, &wait_value, sizeof(wait_value));
+        assert(kernel_io_uring_registered_wait_read(
+                   second_ring_id, 0u, &wait_copy) == 0);
+        assert(memcmp(&wait_copy, &wait_value, sizeof(wait_value)) == 0);
+        assert(kernel_io_uring_registered_wait_read(
+                   second_ring_id, 1u, &wait_copy) ==
+               -EDGE_LINUX_EFAULT);
+        assert(kernel_io_uring_enable(second_ring_id) == 0);
+        assert(kernel_io_uring_region_unregister(second_ring_id) == 0);
+        assert(kernel_io_uring_region_registered(second_ring_id) == 0);
+        test_page_release(0, &wait_region);
+        kernel_io_uring_release(second_ring_id);
+    }
     assert(kernel_io_uring_files_register(
                ring_id, fixed_files, 3u) == 0);
     assert(g_fixed_file_references == 2u);

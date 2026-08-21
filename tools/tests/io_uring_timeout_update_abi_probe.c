@@ -31,6 +31,7 @@
 
 #define SYS_io_uring_setup 425
 #define SYS_io_uring_enter 426
+#define SYS_io_uring_register 427
 
 #define PROT_READ 1
 #define PROT_WRITE 2
@@ -39,6 +40,8 @@
 #define IORING_ENTER_GETEVENTS 1u
 #define IORING_ENTER_EXT_ARG (1u << 3)
 #define IORING_ENTER_ABS_TIMER (1u << 5)
+#define IORING_ENTER_EXT_ARG_REG (1u << 6)
+#define IORING_SETUP_R_DISABLED (1u << 6)
 #define IORING_OP_TIMEOUT 11u
 #define IORING_OP_TIMEOUT_REMOVE 12u
 #define IORING_TIMEOUT_ABS (1u << 0)
@@ -50,7 +53,14 @@
 #define IORING_OFF_SQ_RING 0x00000000ull
 #define IORING_OFF_CQ_RING 0x08000000ull
 #define IORING_OFF_SQES 0x10000000ull
+#define IORING_OFF_PARAM_REGION 0x20000000ull
+#define IORING_REGISTER_ENABLE_RINGS 12u
+#define IORING_REGISTER_MEM_REGION 34u
+#define IORING_MEM_REGION_REG_WAIT_ARG 1u
+#define IORING_REG_WAIT_TS 1u
 #define ENOENT 2
+#define EFAULT 14
+#define EBUSY 16
 #define EINVAL 22
 #define ETIME 62
 #define ECANCELED 125
@@ -66,6 +76,31 @@ struct io_uring_getevents_arg {
     uint32_t signal_mask_size;
     uint32_t minimum_wait_microseconds;
     uint64_t timeout;
+};
+
+struct io_uring_region_desc {
+    uint64_t user_address;
+    uint64_t size;
+    uint32_t flags;
+    uint32_t id;
+    uint64_t mmap_offset;
+    uint64_t reserved[4];
+};
+
+struct io_uring_mem_region_reg {
+    uint64_t region;
+    uint64_t flags;
+    uint64_t reserved[2];
+};
+
+struct io_uring_reg_wait {
+    struct kernel_timespec timeout;
+    uint32_t minimum_wait_microseconds;
+    uint32_t flags;
+    uint64_t signal_mask;
+    uint32_t signal_mask_size;
+    uint32_t padding[3];
+    uint64_t padding2[2];
 };
 
 struct io_uring_sqe {
@@ -251,6 +286,81 @@ static int submit(long descriptor, volatile uint32_t *sq_tail,
         SYS_io_uring_enter, descriptor, 1, minimum_completions,
         minimum_completions ? IORING_ENTER_GETEVENTS : 0, 0, 0);
 }
+
+#ifdef EDGEOS_EXPECT_REGISTERED_WAIT
+static int run_registered_wait_probe(void) {
+    struct io_uring_params parameters;
+    struct io_uring_region_desc region;
+    struct io_uring_mem_region_reg registration;
+    struct io_uring_reg_wait *wait;
+    void *mapping = 0;
+    long descriptor;
+    int failures = 0;
+
+    bytes_zero(&parameters, sizeof(parameters));
+    parameters.flags = IORING_SETUP_R_DISABLED;
+    descriptor = raw_syscall6(
+        SYS_io_uring_setup, 2, (long)&parameters, 0, 0, 0, 0);
+    if (descriptor < 0) {
+        print_text("FAIL registered wait setup ");
+        print_number(descriptor);
+        return 1;
+    }
+
+    bytes_zero(&region, sizeof(region));
+    region.size = PAGE_SIZE;
+    bytes_zero(&registration, sizeof(registration));
+    registration.region = (uint64_t)(uintptr_t)&region;
+    registration.flags = IORING_MEM_REGION_REG_WAIT_ARG;
+    failures += check_result("register wait region", raw_syscall6(
+        SYS_io_uring_register, descriptor, IORING_REGISTER_MEM_REGION,
+        (long)&registration, 1, 0, 0), 0);
+    failures += check("registered wait mmap offset",
+        region.mmap_offset == IORING_OFF_PARAM_REGION);
+    failures += check_result("duplicate wait region", raw_syscall6(
+        SYS_io_uring_register, descriptor, IORING_REGISTER_MEM_REGION,
+        (long)&registration, 1, 0, 0), -EBUSY);
+    if (failures) goto close_ring;
+
+    mapping = map_ring(descriptor, region.mmap_offset);
+    if (!mapping) {
+        failures += check("map registered wait region", 0);
+        goto close_ring;
+    }
+    wait = mapping;
+    bytes_zero(wait, sizeof(*wait));
+    wait->timeout.nanoseconds = 15000000;
+    wait->flags = IORING_REG_WAIT_TS;
+    failures += check_result("enable registered wait ring", raw_syscall6(
+        SYS_io_uring_register, descriptor, IORING_REGISTER_ENABLE_RINGS,
+        0, 0, 0, 0), 0);
+    {
+        uint64_t started = monotonic_microseconds();
+        uint64_t finished;
+
+        failures += check_result("registered enter timeout", raw_syscall6(
+            SYS_io_uring_enter, descriptor, 0, 1,
+            IORING_ENTER_GETEVENTS | IORING_ENTER_EXT_ARG |
+                IORING_ENTER_EXT_ARG_REG,
+            0, sizeof(*wait)), -ETIME);
+        finished = monotonic_microseconds();
+        failures += check("registered enter timeout elapsed",
+            started != 0 && finished >= started + 8000u &&
+            finished < started + 1000000u);
+    }
+    failures += check_result("unaligned registered wait", raw_syscall6(
+        SYS_io_uring_enter, descriptor, 0, 1,
+        IORING_ENTER_GETEVENTS | IORING_ENTER_EXT_ARG |
+            IORING_ENTER_EXT_ARG_REG,
+        1, sizeof(*wait)), -EFAULT);
+
+    (void)raw_syscall6(
+        SYS_munmap, (long)mapping, PAGE_SIZE, 0, 0, 0, 0);
+close_ring:
+    (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+    return failures;
+}
+#endif
 
 static int run_probe(void) {
     struct io_uring_params parameters;
@@ -594,6 +704,9 @@ __attribute__((force_align_arg_pointer))
 #endif
 void _start(void) {
     int failures = run_probe();
+#ifdef EDGEOS_EXPECT_REGISTERED_WAIT
+    failures += run_registered_wait_probe();
+#endif
     const char *result = failures ?
         "IO_URING_TIMEOUT_UPDATE_ABI_PROBE_FAIL\n" :
         "IO_URING_TIMEOUT_UPDATE_ABI_PROBE_PASS\n";

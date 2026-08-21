@@ -36,6 +36,7 @@ EDGEOS_ASSESSMENTS = [
             "classic and extended temporary signal-mask enter arguments",
             "relative and absolute extended enter deadlines with minimum-wait batching",
             "completion-before-signal enter return ordering and CQ-capacity clamping",
+            "kernel-allocated registered wait regions and indexed enter arguments",
             "OPENAT, OPENAT2, CLOSE, STATX and FALLOCATE through shared VFS handlers",
             "SEND, RECV, SENDMSG, RECVMSG and SHUTDOWN through shared socket handlers",
             "CONNECT and ACCEPT through shared socket handlers",
@@ -55,7 +56,7 @@ EDGEOS_ASSESSMENTS = [
             "asynchronous worker execution",
             "fixed buffers with user-page pinning",
             "scheduler-native enter suspension without polling",
-            "registered wait regions and SQPOLL wait control",
+            "user-provided pinned wait regions and SQPOLL wait control",
             "pending asynchronous descriptor leases across close and reuse",
             "remaining supported VFS and socket operations",
             "ia32 and x32 compatibility layouts",
@@ -82,7 +83,8 @@ EDGEOS_ASSESSMENTS = [
                 "extended resource layouts, tag completion events, registered-ring "
                 "descriptor lifetime, timeout update, finite and updated multishot "
                 "timeouts, relative and absolute enter deadlines, minimum-wait "
-                "batching, poll update, multishot poll and operation probe"
+                "batching, registered wait layouts and errors from the frozen "
+                "source oracle, poll update, multishot poll and operation probe"
             ),
         },
     },

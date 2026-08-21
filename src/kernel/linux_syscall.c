@@ -8111,6 +8111,7 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_ENTER_EXT_ARG   (1u << 3)
 #define EDGE_LINUX_IORING_ENTER_REGISTERED_RING (1u << 4)
 #define EDGE_LINUX_IORING_ENTER_ABS_TIMER (1u << 5)
+#define EDGE_LINUX_IORING_ENTER_EXT_ARG_REG (1u << 6)
 #define EDGE_LINUX_IORING_ENTER_NO_IOWAIT (1u << 7)
 #define EDGE_LINUX_IORING_ENTER_SUPPORTED \
     (EDGE_LINUX_IORING_ENTER_GETEVENTS | \
@@ -8118,6 +8119,7 @@ static int64_t edge_linux_sys_aio(
      EDGE_LINUX_IORING_ENTER_EXT_ARG | \
      EDGE_LINUX_IORING_ENTER_REGISTERED_RING | \
      EDGE_LINUX_IORING_ENTER_ABS_TIMER | \
+     EDGE_LINUX_IORING_ENTER_EXT_ARG_REG | \
      EDGE_LINUX_IORING_ENTER_NO_IOWAIT)
 
 #define EDGE_LINUX_IORING_REGISTER_EVENTFD      4u
@@ -8132,7 +8134,12 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_REGISTER_FILES_UPDATE2 14u
 #define EDGE_LINUX_IORING_REGISTER_RING_FDS      20u
 #define EDGE_LINUX_IORING_UNREGISTER_RING_FDS    21u
+#define EDGE_LINUX_IORING_REGISTER_MEM_REGION    34u
 #define EDGE_LINUX_IORING_REGISTER_USE_REGISTERED_RING (1u << 31)
+
+#define EDGE_LINUX_IORING_MEM_REGION_TYPE_USER   (1u << 0)
+#define EDGE_LINUX_IORING_MEM_REGION_WAIT_ARG    (1u << 0)
+#define EDGE_LINUX_IORING_REG_WAIT_TS            (1u << 0)
 #define EDGE_LINUX_IORING_RESOURCE_SPARSE       (1u << 0)
 #define EDGE_LINUX_IO_URING_OP_SUPPORTED        1u
 #define EDGE_LINUX_IORING_FSYNC_DATASYNC        1u
@@ -8979,6 +8986,7 @@ static int64_t edge_linux_sys_io_uring_enter(
     kernel_signal_runtime_state_t signal_state;
     struct edge_linux_io_uring_sqe submission;
     struct edge_linux_io_uring_getevents_arg extended_argument = {0};
+    struct edge_linux_io_uring_reg_wait registered_wait;
     linux_timespec64_t wait_timeout;
     uint32_t to_submit = (uint32_t)context->arguments[1];
     uint32_t minimum = (uint32_t)context->arguments[2];
@@ -9008,22 +9016,60 @@ static int64_t edge_linux_sys_io_uring_enter(
         (flags & ~EDGE_LINUX_IORING_ENTER_SUPPORTED))
         return edge_linux_io_uring_enter_error(
             thread_state, -EDGE_LINUX_EINVAL);
+    result = edge_linux_io_uring_resolve_ring_descriptor(
+        descriptor,
+        (flags & EDGE_LINUX_IORING_ENTER_REGISTERED_RING) != 0,
+        &ring_id);
+    if (result < 0)
+        return edge_linux_io_uring_enter_error(thread_state, result);
+    if (kernel_io_uring_disabled(ring_id) != 0)
+        return edge_linux_io_uring_enter_error(
+            thread_state, -EDGE_LINUX_EBADFD);
     if ((flags & EDGE_LINUX_IORING_ENTER_GETEVENTS) &&
         (flags & EDGE_LINUX_IORING_ENTER_EXT_ARG)) {
-        if (context->arguments[5] != sizeof(extended_argument))
-            return edge_linux_io_uring_enter_error(
-                thread_state, -EDGE_LINUX_EINVAL);
-        if (edge_linux_copy_from_user(
-                context, &extended_argument, context->arguments[4],
-                sizeof(extended_argument)) < 0)
-            return edge_linux_io_uring_enter_error(
-                thread_state, -EDGE_LINUX_EFAULT);
-        if (extended_argument.timeout) {
+        if (flags & EDGE_LINUX_IORING_ENTER_EXT_ARG_REG) {
+            if (context->arguments[5] != sizeof(registered_wait))
+                return edge_linux_io_uring_enter_error(
+                    thread_state, -EDGE_LINUX_EINVAL);
+            result = kernel_io_uring_registered_wait_read(
+                ring_id, context->arguments[4], &registered_wait);
+            if (result < 0)
+                return edge_linux_io_uring_enter_error(
+                    thread_state, result);
+            if (registered_wait.flags & ~EDGE_LINUX_IORING_REG_WAIT_TS)
+                return edge_linux_io_uring_enter_error(
+                    thread_state, -EDGE_LINUX_EINVAL);
+            extended_argument.signal_mask = registered_wait.signal_mask;
+            extended_argument.signal_mask_size =
+                registered_wait.signal_mask_size;
+            extended_argument.minimum_wait_microseconds =
+                registered_wait.minimum_wait_microseconds;
+            if (registered_wait.flags & EDGE_LINUX_IORING_REG_WAIT_TS) {
+                wait_timeout.tv_sec = registered_wait.timeout_seconds;
+                wait_timeout.tv_nsec =
+                    registered_wait.timeout_nanoseconds;
+                timeout_present = 1;
+            }
+        } else {
+            if (context->arguments[5] != sizeof(extended_argument))
+                return edge_linux_io_uring_enter_error(
+                    thread_state, -EDGE_LINUX_EINVAL);
             if (edge_linux_copy_from_user(
-                    context, &wait_timeout, extended_argument.timeout,
-                    sizeof(wait_timeout)) < 0)
+                    context, &extended_argument, context->arguments[4],
+                    sizeof(extended_argument)) < 0)
                 return edge_linux_io_uring_enter_error(
                     thread_state, -EDGE_LINUX_EFAULT);
+            if (extended_argument.timeout) {
+                if (edge_linux_copy_from_user(
+                        context, &wait_timeout,
+                        extended_argument.timeout,
+                        sizeof(wait_timeout)) < 0)
+                    return edge_linux_io_uring_enter_error(
+                        thread_state, -EDGE_LINUX_EFAULT);
+                timeout_present = 1;
+            }
+        }
+        if (timeout_present) {
             result = edge_linux_io_uring_enter_timeout_value(
                 &wait_timeout, &wait_timeout_us);
             if (result < 0)
@@ -9059,15 +9105,6 @@ static int64_t edge_linux_sys_io_uring_enter(
                 thread_state, -EDGE_LINUX_EFAULT);
         use_temporary_mask = 1;
     }
-    result = edge_linux_io_uring_resolve_ring_descriptor(
-        descriptor,
-        (flags & EDGE_LINUX_IORING_ENTER_REGISTERED_RING) != 0,
-        &ring_id);
-    if (result < 0)
-        return edge_linux_io_uring_enter_error(thread_state, result);
-    if (kernel_io_uring_disabled(ring_id) != 0)
-        return edge_linux_io_uring_enter_error(
-            thread_state, -EDGE_LINUX_EBADFD);
     {
         uint32_t completion_capacity =
             kernel_io_uring_completion_capacity(ring_id);
@@ -9517,6 +9554,67 @@ static int64_t edge_linux_sys_io_uring_register(
         return edge_linux_io_uring_files_update_user(
             context, ring_id, update.offset, update.data,
             update.tags, update.count);
+    }
+    if (opcode == EDGE_LINUX_IORING_REGISTER_MEM_REGION) {
+        struct edge_linux_io_uring_mem_region_reg registration;
+        struct edge_linux_io_uring_region_desc region;
+        uint32_t page_count;
+        int registered_state;
+
+        if (!argument || operation_count != 1u)
+            return -EDGE_LINUX_EINVAL;
+        registered_state = kernel_io_uring_region_registered(ring_id);
+        if (registered_state < 0) return registered_state;
+        if (registered_state) return -EDGE_LINUX_EBUSY;
+        if (edge_linux_copy_from_user(
+                context, &registration, argument,
+                sizeof(registration)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (edge_linux_copy_from_user(
+                context, &region, registration.region,
+                sizeof(region)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (registration.reserved[0] ||
+            registration.reserved[1] ||
+            (registration.flags &
+             ~EDGE_LINUX_IORING_MEM_REGION_WAIT_ARG))
+            return -EDGE_LINUX_EINVAL;
+        if ((registration.flags &
+             EDGE_LINUX_IORING_MEM_REGION_WAIT_ARG) &&
+            kernel_io_uring_disabled(ring_id) != 1)
+            return -EDGE_LINUX_EINVAL;
+        if (region.reserved[0] || region.reserved[1] ||
+            region.reserved[2] || region.reserved[3] ||
+            (region.flags & ~EDGE_LINUX_IORING_MEM_REGION_TYPE_USER))
+            return -EDGE_LINUX_EINVAL;
+        if (((region.flags & EDGE_LINUX_IORING_MEM_REGION_TYPE_USER) != 0) !=
+            (region.user_address != 0))
+            return -EDGE_LINUX_EFAULT;
+        if (!region.size || region.id || region.mmap_offset ||
+            (region.user_address & (KERNEL_IO_URING_PAGE_SIZE - 1u)) ||
+            (region.size & (KERNEL_IO_URING_PAGE_SIZE - 1u)))
+            return -EDGE_LINUX_EINVAL;
+        if (region.user_address > UINT64_MAX - region.size)
+            return -EDGE_LINUX_EOVERFLOW;
+        if (region.flags & EDGE_LINUX_IORING_MEM_REGION_TYPE_USER)
+            return -EDGE_LINUX_EOPNOTSUPP;
+        if ((region.size / KERNEL_IO_URING_PAGE_SIZE) > UINT32_MAX)
+            return -EDGE_LINUX_E2BIG;
+        page_count = (uint32_t)(
+            region.size / KERNEL_IO_URING_PAGE_SIZE);
+        result = kernel_io_uring_region_register(
+            ring_id, page_count,
+            (registration.flags &
+             EDGE_LINUX_IORING_MEM_REGION_WAIT_ARG) != 0);
+        if (result < 0) return result;
+        region.mmap_offset = KERNEL_IO_URING_OFF_PARAM_REGION;
+        if (edge_linux_copy_to_user(
+                context, registration.region, &region,
+                sizeof(region)) < 0) {
+            (void)kernel_io_uring_region_unregister(ring_id);
+            return -EDGE_LINUX_EFAULT;
+        }
+        return 0;
     }
     if (opcode == EDGE_LINUX_IORING_REGISTER_EVENTFD ||
         opcode == EDGE_LINUX_IORING_REGISTER_EVENTFD_ASYNC) {

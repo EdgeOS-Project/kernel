@@ -17,6 +17,7 @@
 #define KERNEL_IO_URING_MAX_SQE_PAGES 4u
 #define KERNEL_IO_URING_MAX_PENDING 128u
 #define KERNEL_IO_URING_MAX_FIXED_FILES 256u
+#define KERNEL_IO_URING_MAX_WAIT_REGION_PAGES 64u
 #define KERNEL_IO_URING_REGISTERED_RINGS 16u
 #define KERNEL_IO_URING_REGISTERED_RING_ALLOC UINT32_MAX
 #define KERNEL_IO_URING_REGISTER_FILES_SKIP (-2)
@@ -24,6 +25,7 @@
 #define KERNEL_IO_URING_OFF_SQ_RING 0x00000000ull
 #define KERNEL_IO_URING_OFF_CQ_RING 0x08000000ull
 #define KERNEL_IO_URING_OFF_SQES    0x10000000ull
+#define KERNEL_IO_URING_OFF_PARAM_REGION 0x20000000ull
 
 typedef struct kernel_io_uring_page {
     void *address;
@@ -56,6 +58,13 @@ int kernel_io_uring_disabled(int32_t ring_id);
 int kernel_io_uring_eventfd_register(int32_t ring_id, int32_t event_id,
                                      int asynchronous_only);
 int kernel_io_uring_eventfd_unregister(int32_t ring_id);
+int kernel_io_uring_region_registered(int32_t ring_id);
+int kernel_io_uring_region_register(int32_t ring_id, uint32_t page_count,
+                                    int wait_argument);
+int kernel_io_uring_region_unregister(int32_t ring_id);
+int kernel_io_uring_registered_wait_read(
+    int32_t ring_id, uint64_t offset,
+    struct edge_linux_io_uring_reg_wait *wait);
 int kernel_io_uring_files_register(int32_t ring_id,
                                    const int32_t *descriptors,
                                    uint32_t count);

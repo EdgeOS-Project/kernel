@@ -94,6 +94,11 @@ typedef struct kernel_io_uring {
     kernel_io_uring_page_t
         cq_ring[KERNEL_IO_URING_MAX_CQ_RING_PAGES];
     kernel_io_uring_page_t sqes[KERNEL_IO_URING_MAX_SQE_PAGES];
+    kernel_io_uring_page_t
+        wait_region[KERNEL_IO_URING_MAX_WAIT_REGION_PAGES];
+    uint32_t wait_region_pages;
+    uint8_t region_registered;
+    uint8_t region_wait_argument;
     kernel_io_uring_page_t fixed_file_pages[IO_URING_FIXED_FILE_PAGES];
     uint8_t fixed_file_used[KERNEL_IO_URING_MAX_FIXED_FILES];
     uint64_t fixed_file_tags[KERNEL_IO_URING_MAX_FIXED_FILES];
@@ -245,6 +250,7 @@ static void io_uring_release_storage(kernel_io_uring_t *ring) {
     io_uring_release_pages(ring->sq_ring, ring->sq_ring_pages);
     io_uring_release_pages(ring->cq_ring, ring->cq_ring_pages);
     io_uring_release_pages(ring->sqes, ring->sqe_pages);
+    io_uring_release_pages(ring->wait_region, ring->wait_region_pages);
     io_uring_release_fixed_files(
         ring->fixed_file_pages, ring->fixed_file_used,
         ring->fixed_file_count, ring->fixed_file_page_count);
@@ -579,6 +585,126 @@ int kernel_io_uring_eventfd_unregister(int32_t ring_id) {
     }
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     if (event_id >= 0) kernel_eventfd_release(event_id);
+    return result;
+}
+
+int kernel_io_uring_region_registered(int32_t ring_id) {
+    kernel_io_uring_t *ring;
+    uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
+    int result;
+
+    ring = io_uring_lookup_locked(ring_id);
+    result = ring ? ring->region_registered != 0 : -EDGE_LINUX_EBADF;
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_region_register(int32_t ring_id, uint32_t page_count,
+                                    int wait_argument) {
+    kernel_io_uring_page_t
+        pages[KERNEL_IO_URING_MAX_WAIT_REGION_PAGES] = {{0}};
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    int result;
+
+    if (!page_count) return -EDGE_LINUX_EINVAL;
+    if (page_count > KERNEL_IO_URING_MAX_WAIT_REGION_PAGES)
+        return -EDGE_LINUX_E2BIG;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) result = -EDGE_LINUX_EBADF;
+    else if (ring->region_registered) result = -EDGE_LINUX_EBUSY;
+    else if (wait_argument && !ring->disabled)
+        result = -EDGE_LINUX_EINVAL;
+    else result = 0;
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (result < 0) return result;
+
+    result = io_uring_allocate_pages(pages, page_count);
+    if (result < 0) return result;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) result = -EDGE_LINUX_EBADF;
+    else if (ring->region_registered) result = -EDGE_LINUX_EBUSY;
+    else if (wait_argument && !ring->disabled)
+        result = -EDGE_LINUX_EINVAL;
+    else {
+        memcpy(ring->wait_region, pages,
+               page_count * sizeof(pages[0]));
+        memset(pages, 0, page_count * sizeof(pages[0]));
+        ring->wait_region_pages = page_count;
+        ring->region_registered = 1u;
+        ring->region_wait_argument = wait_argument != 0;
+        result = 0;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    io_uring_release_pages(pages, page_count);
+    return result;
+}
+
+int kernel_io_uring_region_unregister(int32_t ring_id) {
+    kernel_io_uring_page_t
+        pages[KERNEL_IO_URING_MAX_WAIT_REGION_PAGES] = {{0}};
+    kernel_io_uring_t *ring;
+    uint32_t page_count = 0;
+    uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
+    int result = 0;
+
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) result = -EDGE_LINUX_EBADF;
+    else if (!ring->region_registered) result = -EDGE_LINUX_ENOENT;
+    else {
+        page_count = ring->wait_region_pages;
+        memcpy(pages, ring->wait_region,
+               page_count * sizeof(pages[0]));
+        memset(ring->wait_region, 0, sizeof(ring->wait_region));
+        ring->wait_region_pages = 0;
+        ring->region_registered = 0;
+        ring->region_wait_argument = 0;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    io_uring_release_pages(pages, page_count);
+    return result;
+}
+
+int kernel_io_uring_registered_wait_read(
+        int32_t ring_id, uint64_t offset,
+        struct edge_linux_io_uring_reg_wait *wait) {
+    kernel_io_uring_t *ring;
+    uint64_t end;
+    uint64_t flags;
+    uint32_t copied = 0;
+    int result = 0;
+
+    if (!wait || (offset & (sizeof(uint64_t) - 1u)))
+        return -EDGE_LINUX_EFAULT;
+    if (offset > UINT64_MAX - sizeof(*wait))
+        return -EDGE_LINUX_EFAULT;
+    end = offset + sizeof(*wait);
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) result = -EDGE_LINUX_EBADF;
+    else if (!ring->region_registered || !ring->region_wait_argument ||
+             end > (uint64_t)ring->wait_region_pages *
+                       KERNEL_IO_URING_PAGE_SIZE)
+        result = -EDGE_LINUX_EFAULT;
+    while (result == 0 && copied < sizeof(*wait)) {
+        uint64_t position = offset + copied;
+        uint32_t page = (uint32_t)(position / KERNEL_IO_URING_PAGE_SIZE);
+        uint32_t within = (uint32_t)(position % KERNEL_IO_URING_PAGE_SIZE);
+        uint32_t chunk = KERNEL_IO_URING_PAGE_SIZE - within;
+        if (chunk > sizeof(*wait) - copied)
+            chunk = (uint32_t)sizeof(*wait) - copied;
+        if (!ring->wait_region[page].address) {
+            result = -EDGE_LINUX_EFAULT;
+            break;
+        }
+        memcpy((uint8_t *)wait + copied,
+               (uint8_t *)ring->wait_region[page].address + within,
+               chunk);
+        copied += chunk;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
     return result;
 }
 
@@ -1185,6 +1311,10 @@ static int io_uring_region(kernel_io_uring_t *ring, uint64_t offset,
     } else if (offset == KERNEL_IO_URING_OFF_SQES) {
         *pages = ring->sqes;
         *page_count = ring->sqe_pages;
+    } else if (offset == KERNEL_IO_URING_OFF_PARAM_REGION &&
+               ring->region_registered) {
+        *pages = ring->wait_region;
+        *page_count = ring->wait_region_pages;
     } else {
         return -EDGE_LINUX_EINVAL;
     }

@@ -665,6 +665,32 @@ struct edge_linux_io_uring_getevents_arg {
     uint64_t timeout;
 };
 
+struct edge_linux_io_uring_region_desc {
+    uint64_t user_address;
+    uint64_t size;
+    uint32_t flags;
+    uint32_t id;
+    uint64_t mmap_offset;
+    uint64_t reserved[4];
+};
+
+struct edge_linux_io_uring_mem_region_reg {
+    uint64_t region;
+    uint64_t flags;
+    uint64_t reserved[2];
+};
+
+struct edge_linux_io_uring_reg_wait {
+    int64_t timeout_seconds;
+    int64_t timeout_nanoseconds;
+    uint32_t minimum_wait_microseconds;
+    uint32_t flags;
+    uint64_t signal_mask;
+    uint32_t signal_mask_size;
+    uint32_t padding[3];
+    uint64_t padding2[2];
+};
+
 struct edge_linux_io_uring_files_update {
     uint32_t offset;
     uint32_t reserved;
@@ -752,6 +778,12 @@ _Static_assert(sizeof(struct edge_linux_io_uring_probe) == 16,
                "Linux io_uring probe header size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_getevents_arg) == 24,
                "Linux io_uring getevents argument size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_uring_region_desc) == 64,
+               "Linux io_uring region descriptor size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_uring_mem_region_reg) == 32,
+               "Linux io_uring memory region registration size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_uring_reg_wait) == 64,
+               "Linux io_uring registered wait size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_files_update) == 16,
                "Linux io_uring files update size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_resource_update) == 16,
