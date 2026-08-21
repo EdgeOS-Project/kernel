@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MPL-2.0 */
-/* Linux io_uring legacy provided-buffer ABI probe. */
+/* Linux io_uring user-provided buffer-ring ABI probe. */
 
 #include <stdint.h>
 
@@ -9,22 +9,21 @@
 #define SYS_munmap 11
 #define SYS_exit 60
 #define SYS_write 1
-#define SYS_socketpair 53
 #define SYS_pipe2 293
 #elif defined(__aarch64__)
 #define SYS_close 57
 #define SYS_write 64
 #define SYS_exit 93
 #define SYS_pipe2 59
-#define SYS_socketpair 199
 #define SYS_munmap 215
 #define SYS_mmap 222
 #else
-#error "io_uring_provided_buffers_abi_probe requires a Linux 64-bit architecture"
+#error "io_uring_pbuf_ring_abi_probe requires a Linux 64-bit architecture"
 #endif
 
 #define SYS_io_uring_setup 425
 #define SYS_io_uring_enter 426
+#define SYS_io_uring_register 427
 
 #define PROT_READ 1
 #define PROT_WRITE 2
@@ -32,23 +31,20 @@
 #define PAGE_SIZE 4096u
 #define ENOENT 2
 #define EBADF 9
-#define EOPNOTSUPP 95
 #define ENOBUFS 105
 #define IOSQE_BUFFER_SELECT (1u << 5)
 #define IORING_ENTER_GETEVENTS 1u
-#define IORING_OP_NOP 0u
-#define IORING_OP_READ 22u
-#define IORING_OP_RECV 27u
 #define IORING_OP_READV 1u
+#define IORING_OP_READ 22u
 #define IORING_OP_PROVIDE_BUFFERS 31u
-#define IORING_OP_REMOVE_BUFFERS 32u
 #define IORING_CQE_F_BUFFER 1u
 #define IORING_CQE_BUFFER_SHIFT 16u
 #define IORING_OFF_SQ_RING 0x00000000ull
 #define IORING_OFF_CQ_RING 0x08000000ull
 #define IORING_OFF_SQES 0x10000000ull
-#define AF_UNIX 1
-#define SOCK_STREAM 1
+#define IORING_REGISTER_PBUF_RING 22u
+#define IORING_UNREGISTER_PBUF_RING 23u
+#define IORING_REGISTER_PBUF_STATUS 26u
 
 struct io_uring_sqe {
     uint8_t opcode;
@@ -71,6 +67,28 @@ struct io_uring_cqe {
     uint64_t user_data;
     int32_t result;
     uint32_t flags;
+};
+
+struct io_uring_buf {
+    uint64_t address;
+    uint32_t length;
+    uint16_t id;
+    uint16_t reserved;
+};
+
+struct io_uring_buf_reg {
+    uint64_t ring_address;
+    uint32_t ring_entries;
+    uint16_t buffer_group;
+    uint16_t flags;
+    uint32_t minimum_left;
+    uint32_t reserved[5];
+};
+
+struct io_uring_buf_status {
+    uint32_t buffer_group;
+    uint32_t head;
+    uint32_t reserved[8];
 };
 
 struct linux_iovec {
@@ -123,6 +141,11 @@ typedef struct probe_ring {
     struct io_uring_sqe *sqes;
 } probe_ring_t;
 
+static uint8_t g_buffer_ring[PAGE_SIZE] __attribute__((aligned(PAGE_SIZE)));
+static uint8_t g_first_buffer[16];
+static uint8_t g_second_buffer[16];
+static uint8_t g_third_buffer[16];
+
 static long raw_syscall6(long number, long a0, long a1, long a2,
                          long a3, long a4, long a5) {
 #if defined(__x86_64__)
@@ -162,7 +185,6 @@ static void bytes_copy(void *destination, const void *source,
                        uint32_t size) {
     uint8_t *output = destination;
     const uint8_t *input = source;
-
     for (uint32_t index = 0; index < size; ++index)
         output[index] = input[index];
 }
@@ -252,23 +274,33 @@ static int submit(probe_ring_t *ring, const struct io_uring_sqe *request,
     return failures;
 }
 
+static void publish_buffer(uint32_t index, void *address,
+                           uint32_t length, uint16_t id,
+                           uint16_t tail) {
+    struct io_uring_buf *buffers = (struct io_uring_buf *)g_buffer_ring;
+    buffers[index].address = (uint64_t)(uintptr_t)address;
+    buffers[index].length = length;
+    buffers[index].id = id;
+    __atomic_store_n((uint16_t *)&g_buffer_ring[14], tail, __ATOMIC_RELEASE);
+}
+
 static int run_probe(void) {
-    static const char first[] = "abcd";
-    static const char second[] = "WXYZ";
-    static const char socket_data[] = "recv";
-    static const char consumed_data[] = "gone";
-    uint8_t buffers[24];
-    uint8_t recycled_buffer[8];
-    struct linux_iovec selected_vector = {0u, 8u};
+    static const char first[] = "pbuf";
+    static const char second[] = "ring";
+    static const char third[] = "keep";
+    struct io_uring_buf_reg registration;
+    struct io_uring_buf_status status;
+    struct linux_iovec selected_vector = {0u, 16u};
     int32_t pipes[2] = {-1, -1};
-    int32_t sockets[2] = {-1, -1};
     struct io_uring_sqe request;
     probe_ring_t ring;
     int failures = 0;
 
     bytes_zero(&ring, sizeof(ring));
-    bytes_zero(buffers, sizeof(buffers));
-    bytes_zero(recycled_buffer, sizeof(recycled_buffer));
+    bytes_zero(g_buffer_ring, sizeof(g_buffer_ring));
+    bytes_zero(g_first_buffer, sizeof(g_first_buffer));
+    bytes_zero(g_second_buffer, sizeof(g_second_buffer));
+    bytes_zero(g_third_buffer, sizeof(g_third_buffer));
     ring.descriptor = raw_syscall6(
         SYS_io_uring_setup, 8, (long)&ring.parameters, 0, 0, 0, 0);
     if (ring.descriptor < 0) return 1;
@@ -279,23 +311,22 @@ static int run_probe(void) {
         failures = 1;
         goto close_ring;
     }
+
+    bytes_zero(&registration, sizeof(registration));
+    registration.ring_address = (uint64_t)(uintptr_t)g_buffer_ring;
+    registration.ring_entries = 8u;
+    registration.buffer_group = 9u;
+    failures += expect(raw_syscall6(
+        SYS_io_uring_register, ring.descriptor,
+        IORING_REGISTER_PBUF_RING, (long)&registration, 1, 0, 0), 0);
     failures += expect(raw_syscall6(
         SYS_pipe2, (long)pipes, 0, 0, 0, 0, 0), 0);
     if (pipes[0] < 0 || pipes[1] < 0) {
         ++failures;
-        goto unmap;
+        goto unregister_ring;
     }
 
-    bytes_zero(&request, sizeof(request));
-    request.opcode = IORING_OP_PROVIDE_BUFFERS;
-    request.descriptor = 2;
-    request.offset = 7u;
-    request.address = (uint64_t)(uintptr_t)buffers;
-    request.length = 8u;
-    request.buffer_index = 5u;
-    request.user_data = 1u;
-    failures += submit(&ring, &request, 0, 0u);
-
+    publish_buffer(0u, g_first_buffer, sizeof(g_first_buffer), 40u, 1u);
     failures += expect(raw_syscall6(
         SYS_write, pipes[1], (long)first, sizeof(first) - 1u,
         0, 0, 0), sizeof(first) - 1u);
@@ -304,17 +335,25 @@ static int run_probe(void) {
     request.flags = IOSQE_BUFFER_SELECT;
     request.descriptor = pipes[0];
     request.offset = UINT64_MAX;
-    request.length = 8u;
-    request.buffer_index = 5u;
-    request.user_data = 2u;
+    request.length = sizeof(g_first_buffer);
+    request.buffer_index = 9u;
+    request.user_data = 1u;
     failures += submit(
         &ring, &request, sizeof(first) - 1u,
-        IORING_CQE_F_BUFFER | (7u << IORING_CQE_BUFFER_SHIFT));
-    failures += expect(buffers[0], 'a');
-    failures += expect(buffers[1], 'b');
-    failures += expect(buffers[2], 'c');
-    failures += expect(buffers[3], 'd');
+        IORING_CQE_F_BUFFER | (40u << IORING_CQE_BUFFER_SHIFT));
+    failures += expect(g_first_buffer[0], 'p');
+    failures += expect(g_first_buffer[1], 'b');
+    failures += expect(g_first_buffer[2], 'u');
+    failures += expect(g_first_buffer[3], 'f');
 
+    bytes_zero(&status, sizeof(status));
+    status.buffer_group = 9u;
+    failures += expect(raw_syscall6(
+        SYS_io_uring_register, ring.descriptor,
+        IORING_REGISTER_PBUF_STATUS, (long)&status, 1, 0, 0), 0);
+    failures += expect(status.head, 1u);
+
+    publish_buffer(1u, g_second_buffer, sizeof(g_second_buffer), 41u, 2u);
     failures += expect(raw_syscall6(
         SYS_write, pipes[1], (long)second, sizeof(second) - 1u,
         0, 0, 0), sizeof(second) - 1u);
@@ -325,129 +364,96 @@ static int run_probe(void) {
     request.offset = UINT64_MAX;
     request.address = (uint64_t)(uintptr_t)&selected_vector;
     request.length = 1u;
-    request.buffer_index = 5u;
-    request.user_data = 3u;
+    request.buffer_index = 9u;
+    request.user_data = 2u;
     failures += submit(
         &ring, &request, sizeof(second) - 1u,
-        IORING_CQE_F_BUFFER | (8u << IORING_CQE_BUFFER_SHIFT));
-    failures += expect(buffers[8], 'W');
-    failures += expect(buffers[9], 'X');
-    failures += expect(buffers[10], 'Y');
-    failures += expect(buffers[11], 'Z');
+        IORING_CQE_F_BUFFER | (41u << IORING_CQE_BUFFER_SHIFT));
+    failures += expect(g_second_buffer[0], 'r');
+    failures += expect(g_second_buffer[1], 'i');
+    failures += expect(g_second_buffer[2], 'n');
+    failures += expect(g_second_buffer[3], 'g');
 
-    bytes_zero(&request, sizeof(request));
-    request.opcode = IORING_OP_READ;
-    request.flags = IOSQE_BUFFER_SELECT;
-    request.descriptor = pipes[0];
-    request.offset = UINT64_MAX;
-    request.length = 8u;
-    request.buffer_index = 5u;
-    request.user_data = 4u;
-    failures += submit(&ring, &request, -ENOBUFS, 0u);
-
-    bytes_zero(&request, sizeof(request));
-    request.opcode = IORING_OP_PROVIDE_BUFFERS;
-    request.descriptor = 1;
-    request.offset = 9u;
-    request.address = (uint64_t)(uintptr_t)&buffers[16];
-    request.length = 8u;
-    request.buffer_index = 5u;
-    request.user_data = 5u;
-    failures += submit(&ring, &request, 0, 0u);
-
-    bytes_zero(&request, sizeof(request));
-    request.opcode = IORING_OP_REMOVE_BUFFERS;
-    request.descriptor = 4;
-    request.buffer_index = 5u;
-    request.user_data = 6u;
-    failures += submit(&ring, &request, 1, 0u);
-    request.user_data = 7u;
-    failures += submit(&ring, &request, 0, 0u);
-    request.buffer_index = 6u;
-    request.user_data = 8u;
-    failures += submit(&ring, &request, -ENOENT, 0u);
-
+    bytes_zero(&status, sizeof(status));
+    status.buffer_group = 9u;
     failures += expect(raw_syscall6(
-        SYS_socketpair, AF_UNIX, SOCK_STREAM, 0,
-        (long)sockets, 0, 0), 0);
-    bytes_zero(&request, sizeof(request));
-    request.opcode = IORING_OP_PROVIDE_BUFFERS;
-    request.descriptor = 1;
-    request.offset = 10u;
-    request.address = (uint64_t)(uintptr_t)&buffers[16];
-    request.length = 8u;
-    request.buffer_index = 7u;
-    request.user_data = 9u;
-    failures += submit(&ring, &request, 0, 0u);
-    failures += expect(raw_syscall6(
-        SYS_write, sockets[0], (long)socket_data,
-        sizeof(socket_data) - 1u, 0, 0, 0),
-        sizeof(socket_data) - 1u);
-    bytes_zero(&request, sizeof(request));
-    request.opcode = IORING_OP_RECV;
-    request.flags = IOSQE_BUFFER_SELECT;
-    request.descriptor = sockets[1];
-    request.length = 8u;
-    request.buffer_index = 7u;
-    request.user_data = 10u;
-    failures += submit(
-        &ring, &request, sizeof(socket_data) - 1u,
-        IORING_CQE_F_BUFFER | (10u << IORING_CQE_BUFFER_SHIFT));
-    failures += expect(buffers[16], 'r');
-    failures += expect(buffers[17], 'e');
-    failures += expect(buffers[18], 'c');
-    failures += expect(buffers[19], 'v');
+        SYS_io_uring_register, ring.descriptor,
+        IORING_REGISTER_PBUF_STATUS, (long)&status, 1, 0, 0), 0);
+    failures += expect(status.head, 2u);
 
-    bytes_zero(&request, sizeof(request));
-    request.opcode = IORING_OP_PROVIDE_BUFFERS;
-    request.descriptor = 1;
-    request.offset = 12u;
-    request.address = (uint64_t)(uintptr_t)recycled_buffer;
-    request.length = sizeof(recycled_buffer);
-    request.buffer_index = 11u;
-    request.user_data = 11u;
-    failures += submit(&ring, &request, 0, 0u);
-
+    publish_buffer(2u, g_third_buffer, sizeof(g_third_buffer), 42u, 3u);
     bytes_zero(&request, sizeof(request));
     request.opcode = IORING_OP_READ;
     request.flags = IOSQE_BUFFER_SELECT;
     request.descriptor = pipes[1];
     request.offset = UINT64_MAX;
-    request.length = sizeof(recycled_buffer);
-    request.buffer_index = 11u;
-    request.user_data = 12u;
-    failures += submit(
-        &ring, &request, -EBADF,
-        IORING_CQE_F_BUFFER | (12u << IORING_CQE_BUFFER_SHIFT));
+    request.length = sizeof(g_third_buffer);
+    request.buffer_index = 9u;
+    request.user_data = 3u;
+    failures += submit(&ring, &request, -EBADF, 0u);
+    bytes_zero(&status, sizeof(status));
+    status.buffer_group = 9u;
+    failures += expect(raw_syscall6(
+        SYS_io_uring_register, ring.descriptor,
+        IORING_REGISTER_PBUF_STATUS, (long)&status, 1, 0, 0), 0);
+    failures += expect(status.head, 2u);
 
     failures += expect(raw_syscall6(
-        SYS_write, pipes[1], (long)consumed_data,
-        sizeof(consumed_data) - 1u, 0, 0, 0),
-        sizeof(consumed_data) - 1u);
+        SYS_write, pipes[1], (long)third, sizeof(third) - 1u,
+        0, 0, 0), sizeof(third) - 1u);
+    request.descriptor = pipes[0];
+    request.user_data = 4u;
+    failures += submit(
+        &ring, &request, sizeof(third) - 1u,
+        IORING_CQE_F_BUFFER | (42u << IORING_CQE_BUFFER_SHIFT));
+    failures += expect(g_third_buffer[0], 'k');
+    failures += expect(g_third_buffer[1], 'e');
+    failures += expect(g_third_buffer[2], 'e');
+    failures += expect(g_third_buffer[3], 'p');
+    bytes_zero(&status, sizeof(status));
+    status.buffer_group = 9u;
+    failures += expect(raw_syscall6(
+        SYS_io_uring_register, ring.descriptor,
+        IORING_REGISTER_PBUF_STATUS, (long)&status, 1, 0, 0), 0);
+    failures += expect(status.head, 3u);
+
+    bytes_zero(&request, sizeof(request));
+    request.opcode = IORING_OP_PROVIDE_BUFFERS;
+    request.descriptor = 1;
+    request.offset = 50u;
+    request.address = (uint64_t)(uintptr_t)g_third_buffer;
+    request.length = sizeof(g_third_buffer);
+    request.buffer_index = 11u;
+    request.user_data = 5u;
+    failures += submit(&ring, &request, 0, 0u);
     bytes_zero(&request, sizeof(request));
     request.opcode = IORING_OP_READ;
     request.flags = IOSQE_BUFFER_SELECT;
-    request.descriptor = pipes[0];
+    request.descriptor = pipes[1];
     request.offset = UINT64_MAX;
-    request.length = sizeof(recycled_buffer);
+    request.length = sizeof(g_third_buffer);
     request.buffer_index = 11u;
-    request.user_data = 13u;
+    request.user_data = 6u;
+    failures += submit(
+        &ring, &request, -EBADF,
+        IORING_CQE_F_BUFFER | (50u << IORING_CQE_BUFFER_SHIFT));
+    request.descriptor = pipes[0];
+    request.user_data = 7u;
     failures += submit(&ring, &request, -ENOBUFS, 0u);
 
-    bytes_zero(&request, sizeof(request));
-    request.opcode = IORING_OP_NOP;
-    request.flags = IOSQE_BUFFER_SELECT;
-    request.buffer_index = 5u;
-    request.user_data = 14u;
-    failures += submit(&ring, &request, -EOPNOTSUPP, 0u);
-
-    if (sockets[0] >= 0)
-        (void)raw_syscall6(SYS_close, sockets[0], 0, 0, 0, 0, 0);
-    if (sockets[1] >= 0)
-        (void)raw_syscall6(SYS_close, sockets[1], 0, 0, 0, 0, 0);
     (void)raw_syscall6(SYS_close, pipes[0], 0, 0, 0, 0, 0);
     (void)raw_syscall6(SYS_close, pipes[1], 0, 0, 0, 0, 0);
-unmap:
+unregister_ring:
+    bytes_zero(&registration, sizeof(registration));
+    registration.buffer_group = 9u;
+    failures += expect(raw_syscall6(
+        SYS_io_uring_register, ring.descriptor,
+        IORING_UNREGISTER_PBUF_RING, (long)&registration, 1, 0, 0), 0);
+    bytes_zero(&status, sizeof(status));
+    status.buffer_group = 9u;
+    failures += expect(raw_syscall6(
+        SYS_io_uring_register, ring.descriptor,
+        IORING_REGISTER_PBUF_STATUS, (long)&status, 1, 0, 0), -ENOENT);
     (void)raw_syscall6(
         SYS_munmap, (long)ring.sq_ring, PAGE_SIZE, 0, 0, 0, 0);
     (void)raw_syscall6(
@@ -466,8 +472,8 @@ __attribute__((force_align_arg_pointer))
 void _start(void) {
     int failures = run_probe();
     const char *result = failures ?
-        "IO_URING_PROVIDED_BUFFERS_ABI_PROBE_FAIL\n" :
-        "IO_URING_PROVIDED_BUFFERS_ABI_PROBE_PASS\n";
+        "IO_URING_PBUF_RING_ABI_PROBE_FAIL\n" :
+        "IO_URING_PBUF_RING_ABI_PROBE_PASS\n";
     settle_console_output();
     if (print_text(result) != (long)text_length(result)) ++failures;
     raw_syscall6(SYS_exit, failures ? 1 : 0, 0, 0, 0, 0, 0);

@@ -731,6 +731,28 @@ struct edge_linux_io_uring_clock_register {
     uint32_t reserved[3];
 };
 
+struct edge_linux_io_uring_buf {
+    uint64_t address;
+    uint32_t length;
+    uint16_t id;
+    uint16_t reserved;
+};
+
+struct edge_linux_io_uring_buf_reg {
+    uint64_t ring_address;
+    uint32_t ring_entries;
+    uint16_t group_id;
+    uint16_t flags;
+    uint32_t minimum_left;
+    uint32_t reserved[5];
+};
+
+struct edge_linux_io_uring_buf_status {
+    uint32_t buffer_group;
+    uint32_t head;
+    uint32_t reserved[8];
+};
+
 _Static_assert(sizeof(struct edge_linux_ipc_perm64) == 48,
                "Linux ipc_perm size mismatch");
 _Static_assert(offsetof(struct edge_linux_ipc_perm64, mode) == 20,
@@ -807,6 +829,12 @@ _Static_assert(sizeof(struct edge_linux_io_uring_file_index_range) == 16,
                "Linux io_uring file allocation range size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_clock_register) == 16,
                "Linux io_uring clock registration size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_uring_buf) == 16,
+               "Linux io_uring provided buffer size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_uring_buf_reg) == 40,
+               "Linux io_uring buffer ring registration size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_uring_buf_status) == 40,
+               "Linux io_uring buffer ring status size mismatch");
 
 /* statx is an architecture-independent Linux UAPI layout on 64-bit ports. */
 struct edge_linux_statx_timestamp {

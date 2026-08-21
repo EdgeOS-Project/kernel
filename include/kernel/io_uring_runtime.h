@@ -54,9 +54,16 @@ typedef struct kernel_io_uring_fixed_file_reservation {
 typedef struct kernel_io_uring_selected_buffer {
     uint64_t address;
     uint32_t length;
+    uint32_t capacity;
     uint16_t id;
-    uint16_t reserved;
+    uint16_t group_id;
 } kernel_io_uring_selected_buffer_t;
+
+typedef struct kernel_io_uring_pbuf_ring {
+    uint64_t address;
+    uint32_t entries;
+    uint32_t head;
+} kernel_io_uring_pbuf_ring_t;
 
 int kernel_io_uring_page_allocator_register(
     const kernel_io_uring_page_allocator_t *allocator);
@@ -120,6 +127,16 @@ int kernel_io_uring_provided_buffers_remove(
 int kernel_io_uring_provided_buffer_select(
     int32_t ring_id, uint16_t group_id, uint32_t requested_length,
     kernel_io_uring_selected_buffer_t *selected);
+int kernel_io_uring_pbuf_ring_register(
+    int32_t ring_id, uint16_t group_id, uint64_t address,
+    uint32_t entries);
+int kernel_io_uring_pbuf_ring_unregister(
+    int32_t ring_id, uint16_t group_id);
+int kernel_io_uring_pbuf_ring_snapshot(
+    int32_t ring_id, uint16_t group_id,
+    kernel_io_uring_pbuf_ring_t *snapshot);
+int kernel_io_uring_pbuf_ring_commit(
+    int32_t ring_id, uint16_t group_id, uint32_t expected_head);
 int kernel_io_uring_file_alloc_range_set(int32_t ring_id,
                                          uint32_t offset,
                                          uint32_t length);

@@ -746,7 +746,8 @@ int main(void) {
         assert(kernel_io_uring_provided_buffer_select(
                    second_ring_id, 7u, 0u, &selected) == 0);
         assert(selected.address == 0x1000u &&
-               selected.length == 0x100u && selected.id == 40u);
+               selected.length == 0x100u &&
+               selected.capacity == 0x100u && selected.id == 40u);
         assert(kernel_io_uring_provided_buffer_select(
                    second_ring_id, 7u, 0x40u, &selected) == 0);
         assert(selected.address == 0x1100u &&
@@ -765,6 +766,41 @@ int main(void) {
                    second_ring_id, 8u, 4u,
                    UINT64_MAX - 0x10u, 0x20u, 1u) ==
                -EDGE_LINUX_EOVERFLOW);
+        assert(kernel_io_uring_pbuf_ring_register(
+                   second_ring_id, 9u, 0x4000u, 8u) == 0);
+        {
+            kernel_io_uring_pbuf_ring_t snapshot;
+
+            assert(kernel_io_uring_pbuf_ring_snapshot(
+                       second_ring_id, 9u, &snapshot) == 0);
+            assert(snapshot.address == 0x4000u &&
+                   snapshot.entries == 8u && snapshot.head == 0u);
+            assert(kernel_io_uring_pbuf_ring_commit(
+                       second_ring_id, 9u, 1u) ==
+                   -EDGE_LINUX_EAGAIN);
+            assert(kernel_io_uring_pbuf_ring_commit(
+                       second_ring_id, 9u, 0u) == 0);
+            assert(kernel_io_uring_pbuf_ring_snapshot(
+                       second_ring_id, 9u, &snapshot) == 0);
+            assert(snapshot.head == 1u);
+            for (uint32_t head = 1u; head <= UINT16_MAX; ++head)
+                assert(kernel_io_uring_pbuf_ring_commit(
+                           second_ring_id, 9u, head) == 0);
+            assert(kernel_io_uring_pbuf_ring_snapshot(
+                       second_ring_id, 9u, &snapshot) == 0);
+            assert(snapshot.head == 0u);
+        }
+        assert(kernel_io_uring_provided_buffers_add(
+                   second_ring_id, 9u, 1u,
+                   0x5000u, 0x20u, 1u) ==
+               -EDGE_LINUX_EEXIST);
+        assert(kernel_io_uring_provided_buffers_remove(
+                   second_ring_id, 9u, 1u) ==
+               -EDGE_LINUX_EINVAL);
+        assert(kernel_io_uring_pbuf_ring_unregister(
+                   second_ring_id, 9u) == 0);
+        assert(kernel_io_uring_pbuf_ring_unregister(
+                   second_ring_id, 9u) == -EDGE_LINUX_ENOENT);
         kernel_io_uring_release(second_ring_id);
     }
     {

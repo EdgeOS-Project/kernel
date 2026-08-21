@@ -56,6 +56,8 @@ EDGEOS_ASSESSMENTS = [
             "READV_FIXED and WRITEV_FIXED with registered-buffer range validation",
             "bounded legacy provided-buffer groups with FIFO selection for READ, READV and RECV",
             "PROVIDE_BUFFERS and REMOVE_BUFFERS with Linux buffer IDs and CQE flags",
+            "user-provided buffer-ring registration, status, unregistration and 16-bit head wrap",
+            "buffer-ring selection for READ, READV and RECV with Linux CQE buffer IDs",
             "per-task registered-ring descriptors for enter and register operations",
             "timeout removal and update with retained clock selection",
             "per-ring monotonic or boottime enter clocks",
@@ -73,6 +75,8 @@ EDGEOS_ASSESSMENTS = [
             "user-provided pinned wait regions and SQPOLL wait control",
             "pending asynchronous descriptor leases across close and reuse",
             "notification-pipe semantics",
+            "kernel-allocated mmap provided-buffer rings and incremental consumption",
+            "provided-buffer page pinning for cross-address-space ring use",
             "remaining supported VFS and socket operations",
             "ia32 and x32 compatibility layouts",
         ],
@@ -80,6 +84,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/io_uring_abi_probe.c",
             "tools/tests/io_uring_fixed_files_abi_probe.c",
             "tools/tests/io_uring_provided_buffers_abi_probe.c",
+            "tools/tests/io_uring_pbuf_ring_abi_probe.c",
             "tools/tests/io_uring_registered_rings_abi_probe.c",
             "tools/tests/io_uring_timeout_update_abi_probe.c",
             "tools/tests/io_uring_poll_multishot_abi_probe.c",
@@ -116,7 +121,10 @@ EDGEOS_ASSESSMENTS = [
                 "through READ_FIXED and WRITE_FIXED, plus frozen-source "
                 "READV_FIXED and WRITEV_FIXED layouts with EdgeOS runtime data, "
                 "plus legacy provided-buffer add, remove, empty-group, READ and "
-                "single-iovec READV selection behavior with returned buffer IDs"
+                "single-iovec READV selection behavior with returned buffer IDs, "
+                "plus user-provided buffer-ring registration, READ and READV "
+                "selection, returned IDs, head status, unregistration and "
+                "legacy-versus-ring failed-I/O buffer consumption"
             ),
         },
     },

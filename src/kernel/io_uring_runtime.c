@@ -95,9 +95,12 @@ typedef struct kernel_io_uring_provided_buffer {
 } kernel_io_uring_provided_buffer_t;
 
 typedef struct kernel_io_uring_buffer_group {
+    uint64_t ring_address;
+    uint32_t ring_entries;
+    uint16_t ring_head;
     uint16_t id;
     uint8_t used;
-    uint8_t reserved;
+    uint8_t provided_ring;
 } kernel_io_uring_buffer_group_t;
 
 typedef struct kernel_io_uring {
@@ -1226,6 +1229,7 @@ static kernel_io_uring_buffer_group_t *io_uring_buffer_group_locked(
         if (!group->used && !available) available = group;
     }
     if (!create || !available) return 0;
+    memset(available, 0, sizeof(*available));
     available->id = group_id;
     available->used = 1u;
     return available;
@@ -1278,6 +1282,10 @@ int kernel_io_uring_provided_buffers_add(
         result = -EDGE_LINUX_ENOMEM;
         goto unlock;
     }
+    if (io_uring_buffer_group_locked(ring, group_id, 0)->provided_ring) {
+        result = -EDGE_LINUX_EEXIST;
+        goto unlock;
+    }
     for (uint32_t index = 0;
          index < KERNEL_IO_URING_MAX_PROVIDED_BUFFERS && added < count;
          ++index) {
@@ -1315,6 +1323,9 @@ int kernel_io_uring_provided_buffers_remove(
         result = -EDGE_LINUX_EBADF;
     } else if (!io_uring_buffer_group_locked(ring, group_id, 0)) {
         result = -EDGE_LINUX_ENOENT;
+    } else if (io_uring_buffer_group_locked(
+                   ring, group_id, 0)->provided_ring) {
+        result = -EDGE_LINUX_EINVAL;
     } else {
         while (removed < count) {
             kernel_io_uring_provided_buffer_t *buffer =
@@ -1346,20 +1357,149 @@ int kernel_io_uring_provided_buffer_select(
         result = -EDGE_LINUX_EBADF;
     } else if (!io_uring_buffer_group_locked(ring, group_id, 0)) {
         result = -EDGE_LINUX_ENOBUFS;
+    } else if (io_uring_buffer_group_locked(
+                   ring, group_id, 0)->provided_ring) {
+        result = -EDGE_LINUX_EINVAL;
     } else {
         buffer = io_uring_oldest_provided_buffer_locked(ring, group_id);
         if (!buffer) {
             result = -EDGE_LINUX_ENOBUFS;
         } else {
             selected->address = buffer->address;
+            selected->capacity = buffer->length;
             selected->length = !requested_length ||
                                requested_length > buffer->length ?
                                buffer->length : requested_length;
             selected->id = buffer->buffer_id;
+            selected->group_id = buffer->group_id;
             memset(buffer, 0, sizeof(*buffer));
             result = 0;
         }
     }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_pbuf_ring_register(
+        int32_t ring_id, uint16_t group_id, uint64_t address,
+        uint32_t entries) {
+    kernel_io_uring_buffer_group_t *group;
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    int result = 0;
+
+    if (!address || !entries || entries > UINT16_MAX)
+        return -EDGE_LINUX_EINVAL;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+        goto unlock;
+    }
+    group = io_uring_buffer_group_locked(ring, group_id, 0);
+    if (group) {
+        if (group->provided_ring ||
+            io_uring_oldest_provided_buffer_locked(ring, group_id)) {
+            result = -EDGE_LINUX_EEXIST;
+            goto unlock;
+        }
+        memset(group, 0, sizeof(*group));
+        group->id = group_id;
+        group->used = 1u;
+    } else {
+        group = io_uring_buffer_group_locked(ring, group_id, 1);
+        if (!group) {
+            result = -EDGE_LINUX_ENOMEM;
+            goto unlock;
+        }
+    }
+    group->ring_address = address;
+    group->ring_entries = entries;
+    group->provided_ring = 1u;
+unlock:
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_pbuf_ring_unregister(
+        int32_t ring_id, uint16_t group_id) {
+    kernel_io_uring_buffer_group_t *group;
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    int result = 0;
+
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+        goto unlock;
+    }
+    group = io_uring_buffer_group_locked(ring, group_id, 0);
+    if (!group) {
+        result = -EDGE_LINUX_ENOENT;
+    } else if (!group->provided_ring) {
+        result = -EDGE_LINUX_EINVAL;
+    } else {
+        memset(group, 0, sizeof(*group));
+    }
+unlock:
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_pbuf_ring_snapshot(
+        int32_t ring_id, uint16_t group_id,
+        kernel_io_uring_pbuf_ring_t *snapshot) {
+    kernel_io_uring_buffer_group_t *group;
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    int result = 0;
+
+    if (!snapshot) return -EDGE_LINUX_EINVAL;
+    memset(snapshot, 0, sizeof(*snapshot));
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+        goto unlock;
+    }
+    group = io_uring_buffer_group_locked(ring, group_id, 0);
+    if (!group) {
+        result = -EDGE_LINUX_ENOENT;
+    } else if (!group->provided_ring) {
+        result = -EDGE_LINUX_EINVAL;
+    } else {
+        snapshot->address = group->ring_address;
+        snapshot->entries = group->ring_entries;
+        snapshot->head = group->ring_head;
+    }
+unlock:
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_pbuf_ring_commit(
+        int32_t ring_id, uint16_t group_id, uint32_t expected_head) {
+    kernel_io_uring_buffer_group_t *group;
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    int result = 0;
+
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+        goto unlock;
+    }
+    group = io_uring_buffer_group_locked(ring, group_id, 0);
+    if (!group || !group->provided_ring) {
+        result = -EDGE_LINUX_EINVAL;
+    } else if (group->ring_head != (uint16_t)expected_head) {
+        result = -EDGE_LINUX_EAGAIN;
+    } else {
+        ++group->ring_head;
+    }
+unlock:
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     return result;
 }
