@@ -50,6 +50,7 @@
 
 #define BPF_MAP_TYPE_HASH 1u
 #define BPF_MAP_TYPE_ARRAY 2u
+#define BPF_MAP_TYPE_LRU_HASH 9u
 #define BPF_PROG_TYPE_CGROUP_DEVICE 15u
 #define BPF_CGROUP_DEVICE 6u
 #define BPF_ANY 0u
@@ -70,6 +71,7 @@
 #define EINVAL 22
 #define ENOENT 2
 #define EPERM 1
+#define ENOTSUPP 524
 
 union bpf_attr {
     struct {
@@ -485,6 +487,79 @@ static int test_hash_map(void) {
     return failures;
 }
 
+static int test_lru_hash_map(void) {
+    union bpf_attr attribute;
+    uint32_t first = 1u;
+    uint32_t second = 2u;
+    uint32_t third = 3u;
+    uint64_t first_value = 11u;
+    uint64_t second_value = 22u;
+    uint64_t third_value = 33u;
+    uint64_t output = 0u;
+    long descriptor = create_map(
+        BPF_MAP_TYPE_LRU_HASH, 2u, "lru_hash");
+    int first_status;
+    int second_status;
+    int failures = 0;
+
+    failures += expect_true("lru create", descriptor >= 0);
+    if (descriptor < 0) return failures + 1;
+    failures += expect("lru first", map_element(
+        BPF_MAP_UPDATE_ELEM, descriptor, &first, &first_value,
+        BPF_ANY), 0);
+    failures += expect("lru second", map_element(
+        BPF_MAP_UPDATE_ELEM, descriptor, &second, &second_value,
+        BPF_ANY), 0);
+    failures += expect("lru touch first", map_element(
+        BPF_MAP_LOOKUP_ELEM, descriptor, &first, &output, 0), 0);
+    failures += expect_true("lru touched value", output == first_value);
+    failures += expect("lru full insert", map_element(
+        BPF_MAP_UPDATE_ELEM, descriptor, &third, &third_value,
+        BPF_ANY), 0);
+    output = 0u;
+    failures += expect("lru inserted lookup", map_element(
+        BPF_MAP_LOOKUP_ELEM, descriptor, &third, &output, 0), 0);
+    failures += expect_true("lru inserted value", output == third_value);
+    first_status = (int)map_element(
+        BPF_MAP_LOOKUP_ELEM, descriptor, &first, &output, 0);
+    second_status = (int)map_element(
+        BPF_MAP_LOOKUP_ELEM, descriptor, &second, &output, 0);
+    failures += expect_true(
+        "lru evicted one old key",
+        (first_status == 0 && second_status == -ENOENT) ||
+        (first_status == -ENOENT && second_status == 0));
+    failures += expect("lru remove inserted", map_element(
+        BPF_MAP_LOOKUP_AND_DELETE_ELEM, descriptor,
+        &third, &output, 0), 0);
+    failures += expect_true("lru removed value", output == third_value);
+
+    {
+        uint32_t batch_keys[2];
+        uint64_t batch_values[2];
+        uint32_t next_cursor = 0u;
+        uint32_t count = 2u;
+
+        clear_bytes(batch_keys, sizeof(batch_keys));
+        clear_bytes(batch_values, sizeof(batch_values));
+        failures += expect("lru batch lookup delete", map_batch(
+            BPF_MAP_LOOKUP_AND_DELETE_BATCH, descriptor, 0,
+            &next_cursor, batch_keys, batch_values, &count, 0),
+            -ENOENT);
+        failures += expect("lru batch lookup delete count", count, 1);
+    }
+    (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.map_create.map_type = BPF_MAP_TYPE_LRU_HASH;
+    attribute.map_create.key_size = 4u;
+    attribute.map_create.value_size = 8u;
+    attribute.map_create.max_entries = 2u;
+    attribute.map_create.map_flags = 1u;
+    failures += expect("lru no prealloc", bpf_call(
+        BPF_MAP_CREATE, &attribute), -ENOTSUPP);
+    return failures;
+}
+
 static uint32_t batch_pair_mask(const uint32_t *keys,
                                 const uint64_t *values, uint32_t count) {
     uint32_t observed_mask = 0u;
@@ -815,6 +890,7 @@ START_ATTRIBUTES void _start(void) {
         (void)raw_syscall6(SYS_exit, 77, 0, 0, 0, 0, 0);
     }
     failures += test_hash_map();
+    failures += test_lru_hash_map();
     failures += test_batch_and_freeze();
     failures += test_program();
     failures += test_attribute_tail();

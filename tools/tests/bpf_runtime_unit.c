@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "kernel/bpf_runtime.h"
+#include "kernel/linux_errno.h"
 
 void *arch_vm_alloc_page(void) {
     return calloc(1u, 4096u);
@@ -110,6 +111,69 @@ static void test_hash_map(void) {
     kernel_bpf_object_release(object);
     kernel_bpf_object_release(object);
     assert(kernel_bpf_map_info(object, &info) < 0);
+}
+
+static void test_lru_hash_map(void) {
+    kernel_bpf_map_create_request_t invalid = {
+        .type = KERNEL_BPF_MAP_TYPE_LRU_HASH,
+        .key_size = sizeof(uint32_t),
+        .value_size = sizeof(uint64_t),
+        .max_entries = 2u,
+        .flags = KERNEL_BPF_MAP_NO_PREALLOC,
+    };
+    kernel_bpf_map_info_t info;
+    uint32_t keys[] = { 1u, 2u, 3u, 4u };
+    uint64_t values[] = { 11u, 22u, 33u, 44u };
+    uint64_t output = 0u;
+    int object = create_map(
+        KERNEL_BPF_MAP_TYPE_LRU_HASH, sizeof(keys[0]),
+        sizeof(values[0]), 2u, "lru_hash");
+
+    assert(object >= 0);
+    assert(kernel_bpf_map_info(object, &info) == 0);
+    assert(info.type == KERNEL_BPF_MAP_TYPE_LRU_HASH);
+    assert(kernel_bpf_map_update(
+               object, &keys[0], &values[0], KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_update(
+               object, &keys[1], &values[1], KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_lookup(object, &keys[0], &output) == 0);
+    assert(output == values[0]);
+
+    assert(kernel_bpf_map_update(
+               object, &keys[2], &values[2], KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_lookup(object, &keys[1], &output) ==
+           -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_map_lookup(object, &keys[0], &output) == 0);
+    assert(kernel_bpf_map_lookup(object, &keys[2], &output) == 0);
+
+    assert(kernel_bpf_map_update(
+               object, &keys[3], &values[3], KERNEL_BPF_EXIST) ==
+           -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_map_update(
+               object, &keys[3], &values[3], KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_lookup(object, &keys[0], &output) ==
+           -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_map_lookup_and_delete(
+               object, &keys[2], &output) == 0);
+    assert(output == values[2]);
+    assert(kernel_bpf_map_update(
+               object, &keys[0], &values[0], KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_update(
+               object, &keys[1], &values[1], KERNEL_BPF_ANY) == 0);
+    {
+        uint32_t cursor = 0u;
+        uint32_t key = 0u;
+        int has_more = 0;
+
+        assert(kernel_bpf_map_batch_next(
+                   object, &cursor, &key, &output, 1, &has_more) == 0);
+        assert(key == keys[0] || key == keys[1]);
+    }
+    kernel_bpf_object_release(object);
+
+    strcpy(invalid.name, "bad_lru");
+    assert(kernel_bpf_map_create(&invalid) ==
+           -EDGE_LINUX_ENOTSUPP);
 }
 
 static void test_batch_and_freeze(void) {
@@ -291,6 +355,7 @@ static void test_ids(void) {
 int main(void) {
     test_array_map();
     test_hash_map();
+    test_lru_hash_map();
     test_batch_and_freeze();
     test_program();
     test_ids();
