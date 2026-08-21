@@ -121,6 +121,48 @@ struct bpf_map_info {
     uint32_t padding;
 };
 
+struct bpf_prog_info {
+    uint32_t type;
+    uint32_t id;
+    uint8_t tag[8];
+    uint32_t jited_prog_len;
+    uint32_t xlated_prog_len;
+    uint64_t jited_prog_insns;
+    uint64_t xlated_prog_insns;
+    uint64_t load_time;
+    uint32_t created_by_uid;
+    uint32_t nr_map_ids;
+    uint64_t map_ids;
+    char name[16];
+    uint32_t ifindex;
+    uint32_t gpl_compatible;
+    uint64_t netns_dev;
+    uint64_t netns_ino;
+    uint32_t nr_jited_ksyms;
+    uint32_t nr_jited_func_lens;
+    uint64_t jited_ksyms;
+    uint64_t jited_func_lens;
+    uint32_t btf_id;
+    uint32_t func_info_rec_size;
+    uint64_t func_info;
+    uint32_t nr_func_info;
+    uint32_t nr_line_info;
+    uint64_t line_info;
+    uint64_t jited_line_info;
+    uint32_t nr_jited_line_info;
+    uint32_t line_info_rec_size;
+    uint32_t jited_line_info_rec_size;
+    uint32_t nr_prog_tags;
+    uint64_t prog_tags;
+    uint64_t run_time_ns;
+    uint64_t run_cnt;
+    uint64_t recursion_misses;
+    uint32_t verified_insns;
+    uint32_t attach_btf_obj_id;
+    uint32_t attach_btf_id;
+    uint32_t padding;
+};
+
 struct bpf_insn {
     uint8_t code;
     uint8_t registers;
@@ -132,6 +174,8 @@ _Static_assert(sizeof(union bpf_attr) == 144u,
                "bpf_attr probe layout mismatch");
 _Static_assert(sizeof(struct bpf_map_info) == 104u,
                "bpf_map_info probe layout mismatch");
+_Static_assert(sizeof(struct bpf_prog_info) == 232u,
+               "bpf_prog_info probe layout mismatch");
 _Static_assert(sizeof(struct bpf_insn) == 8u,
                "bpf_insn probe layout mismatch");
 
@@ -231,6 +275,12 @@ static int expect_true(const char *name, int condition) {
 static long bpf_call(uint32_t command, union bpf_attr *attribute) {
     return raw_syscall6(
         SYS_bpf, command, (long)attribute, sizeof(*attribute), 0, 0, 0);
+}
+
+static long bpf_call_size(uint32_t command, union bpf_attr *attribute,
+                          uint32_t size) {
+    return raw_syscall6(
+        SYS_bpf, command, (long)attribute, size, 0, 0, 0);
 }
 
 static long create_map(uint32_t type, uint32_t entries, const char *name) {
@@ -365,7 +415,19 @@ static int test_program(void) {
         { .code = 0x95u, .registers = 0u, .offset = 0, .immediate = 0 },
     };
     static const char license[] = "GPL";
+#if defined(BPF_EXPECT_LEGACY_SHA1_TAG)
+    static const uint8_t expected_tag[8] = {
+        0x57u, 0xcdu, 0x31u, 0x1fu, 0x2eu, 0x27u, 0x36u, 0x6bu,
+    };
+#else
+    static const uint8_t expected_tag[8] = {
+        0xb1u, 0x14u, 0x59u, 0xa0u, 0xe1u, 0x1cu, 0xa1u, 0x4cu,
+    };
+#endif
     union bpf_attr attribute;
+    struct bpf_prog_info info;
+    struct bpf_insn translated[2];
+    uint8_t oversized_info[240];
     uint32_t program_id;
     long descriptor;
     long reopened;
@@ -386,11 +448,53 @@ static int test_program(void) {
     if (descriptor < 0) return failures + 1;
     failures += expect("program cloexec", raw_syscall6(
         SYS_fcntl, descriptor, F_GETFD, 0, 0, 0, 0), FD_CLOEXEC);
+    clear_bytes(&info, sizeof(info));
+    clear_bytes(translated, sizeof(translated));
+    info.xlated_prog_len = sizeof(translated);
+    info.xlated_prog_insns = (uint64_t)(uintptr_t)translated;
     clear_bytes(&attribute, sizeof(attribute));
+    attribute.info.bpf_fd = (uint32_t)descriptor;
+    attribute.info.info_len = sizeof(info);
+    attribute.info.info = (uint64_t)(uintptr_t)&info;
+    failures += expect("program info", bpf_call(
+        BPF_OBJ_GET_INFO_BY_FD, &attribute), 0);
+    failures += expect_true(
+        "program info values",
+        info.type == BPF_PROG_TYPE_CGROUP_DEVICE && info.id != 0u &&
+        info.xlated_prog_len == sizeof(instructions) &&
+        info.gpl_compatible == 1u && info.verified_insns >= 2u &&
+        text_equal(info.name, "allow"));
+    for (unsigned long index = 0; index < sizeof(expected_tag); ++index)
+        failures += expect_true(
+            "program tag", info.tag[index] == expected_tag[index]);
+    failures += expect_true(
+        "program translated instructions",
+        translated[0].code == instructions[0].code &&
+        translated[0].immediate == instructions[0].immediate &&
+        translated[1].code == instructions[1].code);
+    clear_bytes(oversized_info, sizeof(oversized_info));
+#if defined(BPF_EXPECT_LEGACY_SHA1_TAG)
+    oversized_info[232] = 1u;
+#else
+    oversized_info[228] = 1u;
+#endif
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.info.bpf_fd = (uint32_t)descriptor;
+#if defined(BPF_EXPECT_LEGACY_SHA1_TAG)
+    attribute.info.info_len = 233u;
+#else
+    attribute.info.info_len = 229u;
+#endif
+    attribute.info.info = (uint64_t)(uintptr_t)oversized_info;
+    failures += expect("program info nonzero tail", bpf_call(
+        BPF_OBJ_GET_INFO_BY_FD, &attribute), -E2BIG);
+    program_id = info.id;
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.id.start_or_object_id = program_id - 1u;
     failures += expect("program next id", bpf_call(
         BPF_PROG_GET_NEXT_ID, &attribute), 0);
-    failures += expect_true("program id", attribute.id.next_id != 0u);
-    program_id = attribute.id.next_id;
+    failures += expect_true(
+        "program id", attribute.id.next_id == program_id);
     clear_bytes(&attribute, sizeof(attribute));
     attribute.id.start_or_object_id = program_id;
     reopened = bpf_call(BPF_PROG_GET_FD_BY_ID, &attribute);
@@ -399,6 +503,21 @@ static int test_program(void) {
         (void)raw_syscall6(SYS_close, reopened, 0, 0, 0, 0, 0);
     (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
     return failures;
+}
+
+static int test_attribute_tail(void) {
+    union bpf_attr attribute;
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.map_create.map_type = BPF_MAP_TYPE_ARRAY;
+    attribute.map_create.key_size = 4u;
+    attribute.map_create.value_size = 8u;
+    attribute.map_create.max_entries = 1u;
+    attribute.padding[sizeof(attribute) - 1u] = 1u;
+    return expect("nonzero attribute tail", bpf_call(
+               BPF_MAP_CREATE, &attribute), -EINVAL) +
+           expect("oversized attribute", bpf_call_size(
+               BPF_MAP_CREATE, &attribute, 4097u), -E2BIG);
 }
 
 __attribute__((noreturn)) void _start(void) {
@@ -410,6 +529,7 @@ __attribute__((noreturn)) void _start(void) {
     }
     failures += test_hash_map();
     failures += test_program();
+    failures += test_attribute_tail();
     print_text(failures ? "BPF_ABI_PROBE_FAIL\n" :
                           "BPF_ABI_PROBE_PASS\n");
     (void)raw_syscall6(SYS_exit, failures ? 1 : 0, 0, 0, 0, 0, 0);

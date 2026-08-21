@@ -4048,19 +4048,120 @@ typedef struct edge_linux_bpf_map_info {
     uint32_t padding;
 } edge_linux_bpf_map_info_t;
 
+typedef struct edge_linux_bpf_program_info {
+    uint32_t type;
+    uint32_t id;
+    uint8_t tag[8];
+    uint32_t jited_program_length;
+    uint32_t translated_program_length;
+    uint64_t jited_program_instructions;
+    uint64_t translated_program_instructions;
+    uint64_t load_time;
+    uint32_t created_by_uid;
+    uint32_t map_id_count;
+    uint64_t map_ids;
+    char name[KERNEL_BPF_OBJECT_NAME_LENGTH];
+    uint32_t interface_index;
+    uint32_t gpl_compatible;
+    uint64_t netns_device;
+    uint64_t netns_inode;
+    uint32_t jited_symbol_count;
+    uint32_t jited_function_length_count;
+    uint64_t jited_symbols;
+    uint64_t jited_function_lengths;
+    uint32_t btf_id;
+    uint32_t function_info_record_size;
+    uint64_t function_info;
+    uint32_t function_info_count;
+    uint32_t line_info_count;
+    uint64_t line_info;
+    uint64_t jited_line_info;
+    uint32_t jited_line_info_count;
+    uint32_t line_info_record_size;
+    uint32_t jited_line_info_record_size;
+    uint32_t program_tag_count;
+    uint64_t program_tags;
+    uint64_t run_time_ns;
+    uint64_t run_count;
+    uint64_t recursion_misses;
+    uint32_t verified_instructions;
+    uint32_t attach_btf_object_id;
+    uint32_t attach_btf_id;
+    uint32_t padding;
+} edge_linux_bpf_program_info_t;
+
+_Static_assert(sizeof(edge_linux_bpf_program_info_t) == 232u,
+               "Linux bpf_prog_info layout changed");
+
+#define EDGE_LINUX_BPF_MAP_INFO_KNOWN_SIZE 100u
+#define EDGE_LINUX_BPF_PROGRAM_INFO_KNOWN_SIZE 228u
+
+static int edge_linux_bpf_user_tail_zero(
+    edge_linux_syscall_context_t *context, uint64_t user_buffer,
+    uint32_t known_size, uint32_t actual_size) {
+    uint8_t tail[64];
+    uint32_t offset;
+
+    if (actual_size > 4096u) return -EDGE_LINUX_E2BIG;
+    if (actual_size <= known_size) return 0;
+    offset = known_size;
+    while (offset < actual_size) {
+        uint32_t length = actual_size - offset;
+        if (length > sizeof(tail)) length = sizeof(tail);
+        if (edge_linux_copy_from_user(
+                context, tail, user_buffer + offset, length) < 0)
+            return -EDGE_LINUX_EFAULT;
+        for (uint32_t index = 0; index < length; ++index)
+            if (tail[index]) return -EDGE_LINUX_E2BIG;
+        offset += length;
+    }
+    return 0;
+}
+
 static int edge_linux_bpf_copy_attribute(
     edge_linux_syscall_context_t *context, void *destination,
     uint32_t destination_size, uint32_t minimum_size,
     uint64_t user_attribute, uint32_t attribute_size) {
+    uint8_t tail[64];
     uint32_t copied;
+    uint32_t offset;
 
     if (attribute_size < minimum_size) return -EDGE_LINUX_EINVAL;
+    if (attribute_size > 4096u) return -EDGE_LINUX_E2BIG;
     memset(destination, 0, destination_size);
     copied = attribute_size < destination_size ?
         attribute_size : destination_size;
-    return edge_linux_copy_from_user(
-        context, destination, user_attribute, copied) < 0 ?
-        -EDGE_LINUX_EFAULT : 0;
+    if (edge_linux_copy_from_user(
+            context, destination, user_attribute, copied) < 0)
+        return -EDGE_LINUX_EFAULT;
+    offset = destination_size;
+    while (offset < attribute_size) {
+        uint32_t length = attribute_size - offset;
+        if (length > sizeof(tail)) length = sizeof(tail);
+        if (edge_linux_copy_from_user(
+                context, tail, user_attribute + offset, length) < 0)
+            return -EDGE_LINUX_EFAULT;
+        for (uint32_t index = 0; index < length; ++index)
+            if (tail[index]) return -EDGE_LINUX_EINVAL;
+        offset += length;
+    }
+    return 0;
+}
+
+static int edge_linux_bpf_license_is_gpl_compatible(const char *license) {
+    static const char *const compatible[] = {
+        "GPL",
+        "GPL v2",
+        "GPL and additional rights",
+        "Dual BSD/GPL",
+        "Dual MIT/GPL",
+        "Dual MPL/GPL",
+    };
+
+    for (uint32_t index = 0;
+         index < sizeof(compatible) / sizeof(compatible[0]); ++index)
+        if (strcmp(license, compatible[index]) == 0) return 1;
+    return 0;
 }
 
 static int64_t edge_linux_bpf_map_create(
@@ -4212,6 +4313,8 @@ static int64_t edge_linux_bpf_program_load(
     request.flags = attribute.program_flags;
     request.expected_attach_type = attribute.expected_attach_type;
     request.created_by_uid = identity->uid;
+    request.gpl_compatible =
+        edge_linux_bpf_license_is_gpl_compatible(license);
     memcpy(request.name, attribute.program_name, sizeof(request.name));
     object_id = kernel_bpf_program_create(&request, instructions);
     if (object_id < 0) {
@@ -4263,36 +4366,116 @@ static int64_t edge_linux_bpf_object_info(
     edge_linux_syscall_context_t *context, uint64_t user_attribute,
     uint32_t attribute_size) {
     edge_linux_bpf_info_attribute_t attribute;
-    kernel_bpf_map_info_t runtime_info;
-    edge_linux_bpf_map_info_t linux_info;
+    kernel_bpf_object_kind_t kind;
     int object_id;
     int status;
-    uint32_t copied;
 
     status = edge_linux_bpf_copy_attribute(
         context, &attribute, sizeof(attribute), sizeof(attribute),
         user_attribute, attribute_size);
     if (status < 0) return status;
     if (!attribute.info) return -EDGE_LINUX_EFAULT;
-    object_id = kernel_bpf_descriptor_object(
-        (int32_t)attribute.bpf_descriptor, KERNEL_BPF_OBJECT_MAP);
+    object_id = kernel_anonymous_fd_descriptor_object_id(
+        (int32_t)attribute.bpf_descriptor, KERNEL_ANONYMOUS_FD_BPF);
     if (object_id < 0) return object_id;
-    status = kernel_bpf_map_info(object_id, &runtime_info);
+    status = kernel_bpf_object_kind(object_id, &kind);
     if (status < 0) return status;
-    memset(&linux_info, 0, sizeof(linux_info));
-    linux_info.type = runtime_info.type;
-    linux_info.id = runtime_info.id;
-    linux_info.key_size = runtime_info.key_size;
-    linux_info.value_size = runtime_info.value_size;
-    linux_info.max_entries = runtime_info.max_entries;
-    linux_info.map_flags = runtime_info.flags;
-    memcpy(linux_info.name, runtime_info.name, sizeof(linux_info.name));
-    copied = attribute.info_length < sizeof(linux_info) ?
-        attribute.info_length : sizeof(linux_info);
-    if (copied && edge_linux_copy_to_user(
-            context, attribute.info, &linux_info, copied) < 0)
-        return -EDGE_LINUX_EFAULT;
-    attribute.info_length = sizeof(linux_info);
+    if (kind == KERNEL_BPF_OBJECT_MAP) {
+        kernel_bpf_map_info_t runtime_info;
+        edge_linux_bpf_map_info_t linux_info;
+        uint32_t copied;
+
+        status = edge_linux_bpf_user_tail_zero(
+            context, attribute.info, EDGE_LINUX_BPF_MAP_INFO_KNOWN_SIZE,
+            attribute.info_length);
+        if (status < 0) return status;
+        status = kernel_bpf_map_info(object_id, &runtime_info);
+        if (status < 0) return status;
+        memset(&linux_info, 0, sizeof(linux_info));
+        linux_info.type = runtime_info.type;
+        linux_info.id = runtime_info.id;
+        linux_info.key_size = runtime_info.key_size;
+        linux_info.value_size = runtime_info.value_size;
+        linux_info.max_entries = runtime_info.max_entries;
+        linux_info.map_flags = runtime_info.flags;
+        memcpy(linux_info.name, runtime_info.name, sizeof(linux_info.name));
+        copied = attribute.info_length < sizeof(linux_info) ?
+            attribute.info_length : sizeof(linux_info);
+        if (copied && edge_linux_copy_to_user(
+                context, attribute.info, &linux_info, copied) < 0)
+            return -EDGE_LINUX_EFAULT;
+        attribute.info_length = sizeof(linux_info);
+    } else if (kind == KERNEL_BPF_OBJECT_PROGRAM) {
+        kernel_bpf_program_info_t runtime_info;
+        edge_linux_bpf_program_info_t linux_info;
+        edge_linux_bpf_program_info_t requested;
+        uint32_t actual_instruction_size;
+        uint32_t copied;
+
+        status = edge_linux_bpf_user_tail_zero(
+            context, attribute.info,
+            EDGE_LINUX_BPF_PROGRAM_INFO_KNOWN_SIZE,
+            attribute.info_length);
+        if (status < 0) return status;
+        memset(&requested, 0, sizeof(requested));
+        copied = attribute.info_length < sizeof(requested) ?
+            attribute.info_length : sizeof(requested);
+        if (copied && edge_linux_copy_from_user(
+                context, &requested, attribute.info, copied) < 0)
+            return -EDGE_LINUX_EFAULT;
+        status = kernel_bpf_program_info(object_id, &runtime_info);
+        if (status < 0) return status;
+        status = kernel_bpf_program_copy_instructions(
+            object_id, 0, 0, &actual_instruction_size);
+        if (status < 0) return status;
+        if (requested.translated_program_length) {
+            uint32_t requested_size = requested.translated_program_length;
+            uint8_t *instructions;
+            uint32_t pages =
+                (actual_instruction_size + 4095u) / 4096u;
+
+            if (!requested.translated_program_instructions)
+                return -EDGE_LINUX_EFAULT;
+            instructions = (uint8_t *)arch_vm_alloc_pages(pages);
+            if (!instructions) return -EDGE_LINUX_ENOMEM;
+            status = kernel_bpf_program_copy_instructions(
+                object_id, instructions, actual_instruction_size,
+                &actual_instruction_size);
+            if (status == 0) {
+                if (requested_size > actual_instruction_size)
+                    requested_size = actual_instruction_size;
+                if (edge_linux_copy_to_user(
+                        context,
+                        requested.translated_program_instructions,
+                        instructions, requested_size) < 0)
+                    status = -EDGE_LINUX_EFAULT;
+            }
+            for (uint32_t page = 0; page < pages; ++page)
+                arch_vm_free_page(
+                    instructions + (uint64_t)page * 4096u);
+            if (status < 0) return status;
+        }
+        memset(&linux_info, 0, sizeof(linux_info));
+        linux_info.type = runtime_info.type;
+        linux_info.id = runtime_info.id;
+        memcpy(linux_info.tag, runtime_info.tag, sizeof(linux_info.tag));
+        linux_info.translated_program_length = actual_instruction_size;
+        linux_info.translated_program_instructions =
+            requested.translated_program_instructions;
+        linux_info.created_by_uid = runtime_info.created_by_uid;
+        linux_info.gpl_compatible = runtime_info.gpl_compatible;
+        linux_info.run_time_ns = runtime_info.run_time_ns;
+        linux_info.run_count = runtime_info.run_count;
+        linux_info.verified_instructions =
+            runtime_info.verified_instructions;
+        memcpy(linux_info.name, runtime_info.name, sizeof(linux_info.name));
+        if (copied && edge_linux_copy_to_user(
+                context, attribute.info, &linux_info, copied) < 0)
+            return -EDGE_LINUX_EFAULT;
+        attribute.info_length = sizeof(linux_info);
+    } else {
+        return -EDGE_LINUX_EBADF;
+    }
     return edge_linux_copy_to_user(
         context, user_attribute, &attribute, sizeof(attribute)) < 0 ?
         -EDGE_LINUX_EFAULT : 0;

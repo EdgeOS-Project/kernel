@@ -54,6 +54,7 @@ typedef struct kernel_bpf_program_create_request {
     uint32_t flags;
     uint32_t expected_attach_type;
     uint32_t created_by_uid;
+    uint32_t gpl_compatible;
     char name[KERNEL_BPF_OBJECT_NAME_LENGTH];
 } kernel_bpf_program_create_request_t;
 
@@ -73,6 +74,10 @@ typedef struct kernel_bpf_program_info {
     uint32_t instruction_count;
     uint32_t created_by_uid;
     uint32_t verified_instructions;
+    uint32_t gpl_compatible;
+    uint64_t run_time_ns;
+    uint64_t run_count;
+    uint8_t tag[8];
     char name[KERNEL_BPF_OBJECT_NAME_LENGTH];
 } kernel_bpf_program_info_t;
 
@@ -98,6 +103,9 @@ int kernel_bpf_object_next_user_id(kernel_bpf_object_kind_t kind,
 
 int kernel_bpf_map_info(int object_id, kernel_bpf_map_info_t *info);
 int kernel_bpf_program_info(int object_id, kernel_bpf_program_info_t *info);
+int kernel_bpf_program_copy_instructions(int object_id, void *buffer,
+                                         uint32_t capacity,
+                                         uint32_t *actual_size);
 int kernel_bpf_map_lookup(int object_id, const void *key, void *value);
 int kernel_bpf_map_update(int object_id, const void *key, const void *value,
                           uint64_t flags);

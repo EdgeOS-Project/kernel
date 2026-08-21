@@ -75,7 +75,11 @@ typedef struct kernel_bpf_program {
     uint32_t flags;
     uint32_t expected_attach_type;
     uint32_t created_by_uid;
+    uint32_t gpl_compatible;
     uint32_t storage_pages;
+    uint64_t run_time_ns;
+    uint64_t run_count;
+    uint8_t tag[8];
     kernel_bpf_instruction_t *instructions;
     char name[KERNEL_BPF_OBJECT_NAME_LENGTH];
 } kernel_bpf_program_t;
@@ -234,6 +238,120 @@ static uint32_t bpf_program_source(
     return instruction->registers >> 4;
 }
 
+static uint32_t bpf_sha256_rotate_right(uint32_t value, uint32_t count) {
+    return (value >> count) | (value << (32u - count));
+}
+
+static uint32_t bpf_sha256_load_be32(const uint8_t *bytes) {
+    return ((uint32_t)bytes[0] << 24) | ((uint32_t)bytes[1] << 16) |
+           ((uint32_t)bytes[2] << 8) | bytes[3];
+}
+
+static void bpf_sha256_transform(uint32_t state[8],
+                                 const uint8_t block[64]) {
+    static const uint32_t constants[64] = {
+        0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u,
+        0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
+        0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u,
+        0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
+        0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu,
+        0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
+        0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u,
+        0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u,
+        0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u,
+        0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
+        0xa2bfe8a1u, 0xa81a664bu, 0xc24b8b70u, 0xc76c51a3u,
+        0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
+        0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u,
+        0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
+        0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u,
+        0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u,
+    };
+    uint32_t words[64];
+    uint32_t a = state[0];
+    uint32_t b = state[1];
+    uint32_t c = state[2];
+    uint32_t d = state[3];
+    uint32_t e = state[4];
+    uint32_t f = state[5];
+    uint32_t g = state[6];
+    uint32_t h = state[7];
+
+    for (uint32_t index = 0; index < 16u; ++index)
+        words[index] = bpf_sha256_load_be32(block + index * 4u);
+    for (uint32_t index = 16u; index < 64u; ++index) {
+        uint32_t s0 = bpf_sha256_rotate_right(words[index - 15u], 7u) ^
+                      bpf_sha256_rotate_right(words[index - 15u], 18u) ^
+                      (words[index - 15u] >> 3);
+        uint32_t s1 = bpf_sha256_rotate_right(words[index - 2u], 17u) ^
+                      bpf_sha256_rotate_right(words[index - 2u], 19u) ^
+                      (words[index - 2u] >> 10);
+        words[index] = words[index - 16u] + s0 + words[index - 7u] + s1;
+    }
+    for (uint32_t index = 0; index < 64u; ++index) {
+        uint32_t s1 = bpf_sha256_rotate_right(e, 6u) ^
+                      bpf_sha256_rotate_right(e, 11u) ^
+                      bpf_sha256_rotate_right(e, 25u);
+        uint32_t choice = (e & f) ^ (~e & g);
+        uint32_t temporary1 = h + s1 + choice + constants[index] +
+                              words[index];
+        uint32_t s0 = bpf_sha256_rotate_right(a, 2u) ^
+                      bpf_sha256_rotate_right(a, 13u) ^
+                      bpf_sha256_rotate_right(a, 22u);
+        uint32_t majority = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t temporary2 = s0 + majority;
+
+        h = g;
+        g = f;
+        f = e;
+        e = d + temporary1;
+        d = c;
+        c = b;
+        b = a;
+        a = temporary1 + temporary2;
+    }
+    state[0] += a;
+    state[1] += b;
+    state[2] += c;
+    state[3] += d;
+    state[4] += e;
+    state[5] += f;
+    state[6] += g;
+    state[7] += h;
+}
+
+static void bpf_program_tag(const kernel_bpf_instruction_t *instructions,
+                            uint32_t count, uint8_t tag[8]) {
+    uint32_t state[8] = {
+        0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
+        0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u,
+    };
+    const uint8_t *bytes = (const uint8_t *)instructions;
+    uint64_t length = (uint64_t)count * sizeof(*instructions);
+    uint64_t offset = 0;
+    uint8_t final_blocks[128];
+    uint32_t final_size;
+
+    while (length - offset >= 64u) {
+        bpf_sha256_transform(state, bytes + offset);
+        offset += 64u;
+    }
+    final_size = (uint32_t)(length - offset);
+    memset(final_blocks, 0, sizeof(final_blocks));
+    if (final_size) memcpy(final_blocks, bytes + offset, final_size);
+    final_blocks[final_size] = 0x80u;
+    final_size = final_size < 56u ? 64u : 128u;
+    for (uint32_t index = 0; index < 8u; ++index)
+        final_blocks[final_size - 1u - index] =
+            (uint8_t)((length * 8u) >> (index * 8u));
+    bpf_sha256_transform(state, final_blocks);
+    if (final_size == 128u)
+        bpf_sha256_transform(state, final_blocks + 64u);
+    for (uint32_t index = 0; index < 8u; ++index)
+        tag[index] = (uint8_t)(state[index / 4u] >>
+                               (24u - (index % 4u) * 8u));
+}
+
 static int bpf_program_validate(
     const kernel_bpf_program_create_request_t *request,
     const kernel_bpf_instruction_t *instructions) {
@@ -352,8 +470,12 @@ int kernel_bpf_program_create(
         object->value.program.expected_attach_type =
             request->expected_attach_type;
         object->value.program.created_by_uid = request->created_by_uid;
+        object->value.program.gpl_compatible = request->gpl_compatible != 0;
         object->value.program.storage_pages = pages;
         object->value.program.instructions = storage;
+        bpf_program_tag(
+            storage, request->instruction_count,
+            object->value.program.tag);
         memcpy(object->value.program.name, request->name,
                KERNEL_BPF_OBJECT_NAME_LENGTH);
     }
@@ -509,7 +631,38 @@ int kernel_bpf_program_info(int object_id, kernel_bpf_program_info_t *info) {
     info->instruction_count = object->value.program.instruction_count;
     info->created_by_uid = object->value.program.created_by_uid;
     info->verified_instructions = object->value.program.instruction_count;
+    info->gpl_compatible = object->value.program.gpl_compatible;
+    info->run_time_ns = object->value.program.run_time_ns;
+    info->run_count = object->value.program.run_count;
+    memcpy(info->tag, object->value.program.tag, sizeof(info->tag));
     memcpy(info->name, object->value.program.name, sizeof(info->name));
+    bpf_unlock();
+    return 0;
+}
+
+int kernel_bpf_program_copy_instructions(int object_id, void *buffer,
+                                         uint32_t capacity,
+                                         uint32_t *actual_size) {
+    kernel_bpf_object_t *object;
+    uint32_t size;
+
+    if (!actual_size) return -EDGE_LINUX_EINVAL;
+    bpf_lock();
+    object = bpf_object_locked(object_id);
+    if (!object || object->kind != KERNEL_BPF_OBJECT_PROGRAM) {
+        bpf_unlock();
+        return -EDGE_LINUX_EBADF;
+    }
+    size = object->value.program.instruction_count *
+           sizeof(kernel_bpf_instruction_t);
+    *actual_size = size;
+    if (capacity && !buffer) {
+        bpf_unlock();
+        return -EDGE_LINUX_EFAULT;
+    }
+    if (capacity > size) capacity = size;
+    if (capacity)
+        memcpy(buffer, object->value.program.instructions, capacity);
     bpf_unlock();
     return 0;
 }
@@ -790,6 +943,7 @@ int kernel_bpf_program_run_cgroup_device(
             registers[destination] = value;
         } else if (operation == BPF_EXIT) {
             *result = (uint32_t)registers[0];
+            ++object->value.program.run_count;
             goto out;
         } else if (bpf_jump_taken(operation, registers[destination], operand)) {
             pc += (uint32_t)instruction->offset;

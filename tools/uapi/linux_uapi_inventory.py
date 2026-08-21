@@ -86,11 +86,11 @@ EDGEOS_ASSESSMENTS = [
             "map lookup, update, delete and key iteration",
             "map and program ID enumeration and descriptor reopening",
             "map information queries",
+            "program information, translated instruction and SHA-256 tag queries",
             "bounded cgroup-device program verification and execution",
         ],
         "missing": [
             "program attachment, detachment and query enforcement",
-            "program information queries",
             "additional map and program types",
             "BTF objects, pinning and link objects",
             "ia32 and x32 compatibility layouts",
@@ -104,7 +104,8 @@ EDGEOS_ASSESSMENTS = [
             "reference": REFERENCE_COMMIT,
             "scope": (
                 "array and hash maps, map element operations, object IDs, "
-                "descriptor reopening, map information and cgroup-device "
+                "descriptor reopening, map and program information, "
+                "translated instructions, SHA-256 tags and cgroup-device "
                 "program loading"
             ),
         },

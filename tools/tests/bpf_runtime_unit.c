@@ -107,6 +107,9 @@ static void test_hash_map(void) {
 }
 
 static void test_program(void) {
+    static const uint8_t expected_tag[8] = {
+        0xb1u, 0x14u, 0x59u, 0xa0u, 0xe1u, 0x1cu, 0xa1u, 0x4cu,
+    };
     const kernel_bpf_instruction_t instructions[] = {
         { .code = 0xb7u, .registers = 0u, .offset = 0, .immediate = 1 },
         { .code = 0x95u, .registers = 0u, .offset = 0, .immediate = 0 },
@@ -133,6 +136,7 @@ static void test_program(void) {
     assert(info.type == KERNEL_BPF_PROG_TYPE_CGROUP_DEVICE);
     assert(info.instruction_count == 2u);
     assert(info.created_by_uid == 1000u);
+    assert(memcmp(info.tag, expected_tag, sizeof(expected_tag)) == 0);
     assert(kernel_bpf_program_run_cgroup_device(
                object, &context, &result) == 0);
     assert(result == 1u);
