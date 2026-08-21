@@ -49,6 +49,7 @@ EDGEOS_ASSESSMENTS = [
             "fixed-file registration, sparse tables and retained descriptor lifetime",
             "fixed-file replacement, clearing and skip updates with partial progress",
             "submission-queue fixed-file updates through IORING_OP_FILES_UPDATE",
+            "fixed-file installation with Linux close-on-exec policy",
             "FILES2 sparse registration, UPDATE2 layouts and resource tag completion events",
             "per-task registered-ring descriptors for enter and register operations",
             "timeout removal and update with retained clock selection",
@@ -82,7 +83,8 @@ EDGEOS_ASSESSMENTS = [
                 "setxattr, fgetxattr, getxattr, ftruncate, sync_file_range, "
                 "futex_wake, fixed-file registration, retained lifetime, register "
                 "and submission-queue updates, extended resource layouts, tag "
-                "completion events, frozen opcode extent, registered-ring "
+                "completion events, fixed-file installation, frozen opcode "
+                "extent, registered-ring "
                 "descriptor lifetime, timeout update, finite and updated multishot "
                 "timeouts, relative and absolute enter deadlines, minimum-wait "
                 "batching, registered wait layouts and errors from the frozen "

@@ -950,15 +950,17 @@ int kernel_io_uring_files_update(int32_t ring_id, uint32_t offset,
         ring_id, offset, descriptors, 0, count);
 }
 
-int kernel_io_uring_fixed_file_materialize(int32_t ring_id,
-                                           uint32_t index,
-                                           int32_t *descriptor) {
+int kernel_io_uring_fixed_file_install(int32_t ring_id,
+                                       uint32_t index,
+                                       uint32_t descriptor_flags,
+                                       int32_t *descriptor) {
     kernel_io_uring_t *ring;
     kernel_fd_operation_lease_t *lease;
     uint64_t flags;
     int result;
 
-    if (!descriptor) return -EDGE_LINUX_EINVAL;
+    if (!descriptor || (descriptor_flags & ~KERNEL_FD_CLOEXEC))
+        return -EDGE_LINUX_EINVAL;
     *descriptor = -1;
     flags = spin_lock_irqsave(&g_io_uring_lock);
     ring = io_uring_lookup_locked(ring_id);
@@ -971,11 +973,18 @@ int kernel_io_uring_fixed_file_materialize(int32_t ring_id,
         lease = io_uring_fixed_file_lease(
             ring->fixed_file_pages, index);
         result = lease ? kernel_fd_operation_materialize(
-                             lease, KERNEL_FD_CLOEXEC, descriptor) :
+                             lease, descriptor_flags, descriptor) :
                          -EDGE_LINUX_EBADF;
     }
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     return result;
+}
+
+int kernel_io_uring_fixed_file_materialize(int32_t ring_id,
+                                           uint32_t index,
+                                           int32_t *descriptor) {
+    return kernel_io_uring_fixed_file_install(
+        ring_id, index, KERNEL_FD_CLOEXEC, descriptor);
 }
 
 static int io_uring_pending_add(int32_t ring_id, uint8_t kind,

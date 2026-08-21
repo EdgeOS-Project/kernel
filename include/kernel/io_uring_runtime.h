@@ -85,6 +85,10 @@ int kernel_io_uring_files_update_tagged(
 int kernel_io_uring_fixed_file_materialize(int32_t ring_id,
                                            uint32_t index,
                                            int32_t *descriptor);
+int kernel_io_uring_fixed_file_install(int32_t ring_id,
+                                       uint32_t index,
+                                       uint32_t descriptor_flags,
+                                       int32_t *descriptor);
 int kernel_io_uring_timeout_add(int32_t ring_id, uint64_t user_data,
                                 uint64_t deadline_us,
                                 uint32_t completion_target,

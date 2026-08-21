@@ -8093,6 +8093,7 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_OP_GETXATTR  44u
 #define EDGE_LINUX_IORING_OP_SOCKET    45u
 #define EDGE_LINUX_IORING_OP_FUTEX_WAKE 52u
+#define EDGE_LINUX_IORING_OP_FIXED_FD_INSTALL 54u
 #define EDGE_LINUX_IORING_OP_FTRUNCATE 55u
 #define EDGE_LINUX_IORING_OP_BIND      56u
 #define EDGE_LINUX_IORING_OP_LISTEN    57u
@@ -8147,6 +8148,7 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_REG_WAIT_TS            (1u << 0)
 #define EDGE_LINUX_IORING_RESOURCE_SPARSE       (1u << 0)
 #define EDGE_LINUX_IO_URING_OP_SUPPORTED        1u
+#define EDGE_LINUX_IORING_FIXED_FD_NO_CLOEXEC   (1u << 0)
 #define EDGE_LINUX_IORING_FSYNC_DATASYNC        1u
 #define EDGE_LINUX_IORING_TIMEOUT_ABS            (1u << 0)
 #define EDGE_LINUX_IORING_TIMEOUT_UPDATE         (1u << 1)
@@ -8913,6 +8915,31 @@ static int32_t edge_linux_io_uring_execute(
     int32_t descriptor = -1;
     int32_t result;
 
+    if (submission->opcode == EDGE_LINUX_IORING_OP_FIXED_FD_INSTALL) {
+        uint32_t descriptor_flags;
+
+        if (submission->flags & ~EDGE_LINUX_IOSQE_KNOWN)
+            return -EDGE_LINUX_EINVAL;
+        if (!(submission->flags & EDGE_LINUX_IOSQE_FIXED_FILE))
+            return -EDGE_LINUX_EBADF;
+        if ((submission->flags & EDGE_LINUX_IOSQE_BUFFER_SELECT) ||
+            submission->ioprio || submission->offset ||
+            submission->address || submission->length ||
+            submission->buffer_index || submission->splice_descriptor ||
+            submission->address3 || submission->reserved2 ||
+            submission->personality ||
+            (submission->operation_flags &
+             ~EDGE_LINUX_IORING_FIXED_FD_NO_CLOEXEC))
+            return -EDGE_LINUX_EINVAL;
+        descriptor_flags =
+            (submission->operation_flags &
+             EDGE_LINUX_IORING_FIXED_FD_NO_CLOEXEC) ?
+                0u : KERNEL_FD_CLOEXEC;
+        result = kernel_io_uring_fixed_file_install(
+            ring_id, (uint32_t)submission->descriptor,
+            descriptor_flags, &descriptor);
+        return result < 0 ? result : descriptor;
+    }
     if (!(submission->flags & EDGE_LINUX_IOSQE_FIXED_FILE))
         return edge_linux_io_uring_execute_descriptor(
             context, ring_id, submission);
@@ -9311,6 +9338,7 @@ static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
            opcode == EDGE_LINUX_IORING_OP_FGETXATTR ||
            opcode == EDGE_LINUX_IORING_OP_GETXATTR ||
            opcode == EDGE_LINUX_IORING_OP_FUTEX_WAKE ||
+           opcode == EDGE_LINUX_IORING_OP_FIXED_FD_INSTALL ||
            opcode == EDGE_LINUX_IORING_OP_FTRUNCATE;
 }
 

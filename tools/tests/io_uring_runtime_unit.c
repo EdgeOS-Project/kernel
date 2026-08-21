@@ -19,6 +19,7 @@ static uint8_t g_pages[TEST_PAGE_COUNT][KERNEL_IO_URING_PAGE_SIZE]
 static uint32_t g_references[TEST_PAGE_COUNT];
 static int32_t g_ready_descriptor = -1;
 static uint32_t g_fixed_file_references;
+static uint32_t g_materialize_flags;
 
 int kernel_anonymous_fd_descriptor_object_id(
         int32_t descriptor, kernel_anonymous_fd_kind_t kind) {
@@ -47,7 +48,7 @@ int kernel_fd_operation_materialize(
         const kernel_fd_operation_lease_t *source,
         uint32_t descriptor_flags, int32_t *descriptor) {
     int32_t stored;
-    assert(descriptor_flags == KERNEL_FD_CLOEXEC);
+    g_materialize_flags = descriptor_flags;
     if (!source || !descriptor) return -EDGE_LINUX_EINVAL;
     stored = *(const int32_t *)(const void *)source;
     if (stored <= 0) return -EDGE_LINUX_EBADF;
@@ -246,6 +247,13 @@ int main(void) {
                ring_id, fixed_files, 3u) == -EDGE_LINUX_EBUSY);
     assert(kernel_io_uring_fixed_file_materialize(
                ring_id, 0u, &materialized) == 0 && materialized == 4);
+    assert(g_materialize_flags == KERNEL_FD_CLOEXEC);
+    assert(kernel_io_uring_fixed_file_install(
+               ring_id, 0u, 0u, &materialized) == 0 && materialized == 4);
+    assert(g_materialize_flags == 0u);
+    assert(kernel_io_uring_fixed_file_install(
+               ring_id, 0u, KERNEL_FD_CLOEXEC << 1u,
+               &materialized) == -EDGE_LINUX_EINVAL);
     assert(kernel_io_uring_fixed_file_materialize(
                ring_id, 1u, &materialized) == -EDGE_LINUX_EBADF);
     assert(kernel_io_uring_fixed_file_materialize(
