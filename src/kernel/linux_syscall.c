@@ -4366,11 +4366,8 @@ static int64_t edge_linux_bpf_map_element(
         goto out;
     }
     if (command == EDGE_LINUX_BPF_MAP_LOOKUP_ELEM) {
-        if (attribute.flags) {
-            status = -EDGE_LINUX_EINVAL;
-            goto out;
-        }
-        status = kernel_bpf_map_lookup(object_id, key, value);
+        status = kernel_bpf_map_lookup_flags(
+            object_id, key, value, attribute.flags);
         if (status == 0 && edge_linux_copy_to_user(
                 context, attribute.value, value, value_size) < 0)
             status = -EDGE_LINUX_EFAULT;
@@ -4454,12 +4451,14 @@ static int64_t edge_linux_bpf_map_batch(
         user_attribute, attribute_size);
     if (status < 0) return status;
     if (command == EDGE_LINUX_BPF_MAP_UPDATE_BATCH) {
-        if (attribute.element_flags != KERNEL_BPF_ANY &&
-             attribute.element_flags != KERNEL_BPF_NOEXIST &&
-             attribute.element_flags != KERNEL_BPF_EXIST)
-            return -EDGE_LINUX_EINVAL;
+        if (attribute.flags) return -EDGE_LINUX_EINVAL;
     } else if (command == EDGE_LINUX_BPF_MAP_DELETE_BATCH) {
-        if (attribute.element_flags) return -EDGE_LINUX_EINVAL;
+        if (attribute.element_flags || attribute.flags)
+            return -EDGE_LINUX_EINVAL;
+    } else if (command == EDGE_LINUX_BPF_MAP_LOOKUP_BATCH) {
+        if (((uint32_t)attribute.element_flags & ~KERNEL_BPF_F_CPU) ||
+            attribute.flags)
+            return -EDGE_LINUX_EINVAL;
     } else {
         if (attribute.element_flags || attribute.flags)
             return -EDGE_LINUX_EINVAL;
@@ -4514,8 +4513,8 @@ static int64_t edge_linux_bpf_map_batch(
             command == EDGE_LINUX_BPF_MAP_LOOKUP_AND_DELETE_BATCH) {
             int has_more;
 
-            status = kernel_bpf_map_batch_next(
-                object_id, &cursor, key, value,
+            status = kernel_bpf_map_batch_next_flags(
+                object_id, &cursor, key, value, attribute.element_flags,
                 command == EDGE_LINUX_BPF_MAP_LOOKUP_AND_DELETE_BATCH,
                 &has_more);
             if (status < 0) break;

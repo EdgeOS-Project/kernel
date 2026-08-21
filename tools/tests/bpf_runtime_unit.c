@@ -275,13 +275,19 @@ static void test_queue_stack_maps(void) {
 static void test_percpu_maps(void) {
     uint8_t array_values[4][8];
     uint8_t array_output[4][8];
+    uint8_t scalar_array_value[3] = { 91u, 92u, 93u };
+    uint8_t scalar_array_output[3] = { 0u, 0u, 0u };
     uint64_t hash_values[4] = { 101u, 202u, 303u, 404u };
     uint64_t hash_output[4] = { 0u, 0u, 0u, 0u };
+    uint64_t scalar_hash_value = 909u;
+    uint64_t scalar_hash_output = 0u;
     uint32_t array_key = 1u;
     uint32_t hash_key = 7u;
     uint32_t batch_key = 0u;
     uint32_t cursor = 0u;
     uint32_t buffer_size = 0u;
+    uint64_t cpu_one_flags = KERNEL_BPF_F_CPU | (1ULL << 32u);
+    uint64_t cpu_two_flags = KERNEL_BPF_F_CPU | (2ULL << 32u);
     int has_more = 0;
     int array;
     int hash;
@@ -317,6 +323,29 @@ static void test_percpu_maps(void) {
     assert(kernel_bpf_map_update(
                array, &array_key, array_values, KERNEL_BPF_NOEXIST) ==
            -EDGE_LINUX_EEXIST);
+    assert(kernel_bpf_map_value_buffer_size(
+               array, cpu_two_flags, &buffer_size) == 0);
+    assert(buffer_size == sizeof(scalar_array_value));
+    assert(kernel_bpf_map_update(
+               array, &array_key, scalar_array_value, cpu_two_flags) == 0);
+    assert(kernel_bpf_map_lookup_flags(
+               array, &array_key, scalar_array_output, cpu_two_flags) == 0);
+    assert(memcmp(scalar_array_output, scalar_array_value,
+                  sizeof(scalar_array_value)) == 0);
+    memset(array_output, 0, sizeof(array_output));
+    assert(kernel_bpf_map_update(
+               array, &array_key, scalar_array_value,
+               KERNEL_BPF_F_ALL_CPUS) == 0);
+    assert(kernel_bpf_map_lookup(array, &array_key, array_output) == 0);
+    for (uint32_t cpu = 0; cpu < 4u; ++cpu)
+        assert(memcmp(array_output[cpu], scalar_array_value,
+                      sizeof(scalar_array_value)) == 0);
+    assert(kernel_bpf_map_lookup_flags(
+               array, &array_key, scalar_array_output,
+               KERNEL_BPF_F_ALL_CPUS) == -EDGE_LINUX_EINVAL);
+    assert(kernel_bpf_map_value_buffer_size(
+               array, KERNEL_BPF_F_CPU | (4ULL << 32u),
+               &buffer_size) == -EDGE_LINUX_ERANGE);
     assert(kernel_bpf_map_delete(array, &array_key) ==
            -EDGE_LINUX_EINVAL);
     kernel_bpf_object_release(array);
@@ -332,12 +361,23 @@ static void test_percpu_maps(void) {
                hash, &hash_key, hash_values, KERNEL_BPF_ANY) == 0);
     assert(kernel_bpf_map_lookup(hash, &hash_key, hash_output) == 0);
     assert(memcmp(hash_output, hash_values, sizeof(hash_values)) == 0);
+    assert(kernel_bpf_map_update(
+               hash, &hash_key, &scalar_hash_value, cpu_one_flags) == 0);
+    assert(kernel_bpf_map_lookup_flags(
+               hash, &hash_key, &scalar_hash_output, cpu_one_flags) == 0);
+    assert(scalar_hash_output == scalar_hash_value);
     memset(hash_output, 0, sizeof(hash_output));
-    assert(kernel_bpf_map_batch_next(
-               hash, &cursor, &batch_key, hash_output, 0, &has_more) == 0);
+    assert(kernel_bpf_map_batch_next_flags(
+               hash, &cursor, &batch_key, &scalar_hash_output,
+               cpu_one_flags, 0, &has_more) == 0);
     assert(batch_key == hash_key);
-    assert(memcmp(hash_output, hash_values, sizeof(hash_values)) == 0);
+    assert(scalar_hash_output == scalar_hash_value);
     assert(has_more == 0);
+    assert(kernel_bpf_map_update(
+               hash, &hash_key, &scalar_hash_value,
+               KERNEL_BPF_F_ALL_CPUS) == 0);
+    for (uint32_t cpu = 0; cpu < 4u; ++cpu)
+        hash_values[cpu] = scalar_hash_value;
     memset(hash_output, 0, sizeof(hash_output));
     assert(kernel_bpf_map_lookup_and_delete(
                hash, &hash_key, hash_output) == 0);

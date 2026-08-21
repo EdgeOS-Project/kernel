@@ -184,6 +184,35 @@ static uint32_t bpf_map_value_buffer_size_locked(
     return map->value_size;
 }
 
+static int bpf_map_check_percpu_flags_locked(
+        const kernel_bpf_map_t *map, uint64_t flags) {
+    uint32_t operation_flags = (uint32_t)flags;
+    uint32_t cpu = (uint32_t)(flags >> 32u);
+
+    if (operation_flags & KERNEL_BPF_F_LOCK)
+        return -EDGE_LINUX_EINVAL;
+    if (!bpf_map_is_percpu(map)) {
+        if ((operation_flags &
+             (KERNEL_BPF_F_CPU | KERNEL_BPF_F_ALL_CPUS)) || cpu)
+            return -EDGE_LINUX_EINVAL;
+        if (flags != KERNEL_BPF_ANY && flags != KERNEL_BPF_NOEXIST &&
+            flags != KERNEL_BPF_EXIST)
+            return -EDGE_LINUX_EINVAL;
+        return 0;
+    }
+    if (operation_flags > KERNEL_BPF_F_ALL_CPUS)
+        return -EDGE_LINUX_EINVAL;
+    if (!(operation_flags & KERNEL_BPF_F_CPU) && cpu)
+        return -EDGE_LINUX_EINVAL;
+    if ((operation_flags & KERNEL_BPF_F_CPU) &&
+        (operation_flags & KERNEL_BPF_F_ALL_CPUS))
+        return -EDGE_LINUX_EINVAL;
+    if ((operation_flags & KERNEL_BPF_F_CPU) &&
+        cpu >= map->possible_cpu_count)
+        return -EDGE_LINUX_ERANGE;
+    return 0;
+}
+
 static int bpf_name_valid(const char *name) {
     uint32_t index;
 
@@ -717,8 +746,9 @@ int kernel_bpf_map_info(int object_id, kernel_bpf_map_info_t *info) {
 int kernel_bpf_map_value_buffer_size(int object_id, uint64_t flags,
                                      uint32_t *size_out) {
     kernel_bpf_object_t *object;
+    kernel_bpf_map_t *map;
+    int status;
 
-    (void)flags;
     if (!size_out) return -EDGE_LINUX_EINVAL;
     bpf_lock();
     object = bpf_object_locked(object_id);
@@ -726,7 +756,18 @@ int kernel_bpf_map_value_buffer_size(int object_id, uint64_t flags,
         bpf_unlock();
         return -EDGE_LINUX_EBADF;
     }
-    *size_out = bpf_map_value_buffer_size_locked(&object->value.map);
+    map = &object->value.map;
+    status = bpf_map_check_percpu_flags_locked(map, flags);
+    if (status < 0) {
+        bpf_unlock();
+        return status;
+    }
+    if (bpf_map_is_percpu(map) &&
+        ((uint32_t)flags &
+         (KERNEL_BPF_F_CPU | KERNEL_BPF_F_ALL_CPUS)))
+        *size_out = map->value_size;
+    else
+        *size_out = bpf_map_value_buffer_size_locked(map);
     bpf_unlock();
     return 0;
 }
@@ -797,11 +838,18 @@ static uint8_t *bpf_map_value(kernel_bpf_map_t *map, uint32_t index) {
 }
 
 static void bpf_map_copy_value_out(kernel_bpf_map_t *map, uint32_t index,
-                                   void *value) {
+                                   void *value, uint64_t flags) {
     uint8_t *source = bpf_map_value(map, index);
 
     if (!bpf_map_is_percpu(map)) {
         memcpy(value, source, map->value_size);
+        return;
+    }
+    if ((uint32_t)flags & KERNEL_BPF_F_CPU) {
+        uint32_t cpu = (uint32_t)(flags >> 32u);
+
+        memcpy(value, source + (uint64_t)cpu * map->value_stride,
+               map->value_size);
         return;
     }
     for (uint32_t cpu = 0; cpu < map->possible_cpu_count; ++cpu) {
@@ -815,16 +863,26 @@ static void bpf_map_copy_value_out(kernel_bpf_map_t *map, uint32_t index,
 }
 
 static void bpf_map_copy_value_in(kernel_bpf_map_t *map, uint32_t index,
-                                  const void *value) {
+                                  const void *value, uint64_t flags) {
     uint8_t *destination = bpf_map_value(map, index);
 
     if (!bpf_map_is_percpu(map)) {
         memcpy(destination, value, map->value_size);
         return;
     }
+    if ((uint32_t)flags & KERNEL_BPF_F_CPU) {
+        uint32_t cpu = (uint32_t)(flags >> 32u);
+
+        destination += (uint64_t)cpu * map->value_stride;
+        memset(destination, 0, map->value_stride);
+        memcpy(destination, value, map->value_size);
+        return;
+    }
     for (uint32_t cpu = 0; cpu < map->possible_cpu_count; ++cpu) {
-        const uint8_t *source = (const uint8_t *)value +
-            (uint64_t)cpu * map->value_stride;
+        const uint8_t *source = (const uint8_t *)value;
+
+        if (!((uint32_t)flags & KERNEL_BPF_F_ALL_CPUS))
+            source += (uint64_t)cpu * map->value_stride;
 
         memset(destination + (uint64_t)cpu * map->value_stride, 0,
                map->value_stride);
@@ -941,7 +999,8 @@ static int bpf_map_hash_find(kernel_bpf_map_t *map, const void *key,
     return 0;
 }
 
-int kernel_bpf_map_lookup(int object_id, const void *key, void *value) {
+int kernel_bpf_map_lookup_flags(int object_id, const void *key, void *value,
+                                uint64_t flags) {
     kernel_bpf_object_t *object;
     kernel_bpf_map_t *map;
     uint32_t index;
@@ -956,6 +1015,11 @@ int kernel_bpf_map_lookup(int object_id, const void *key, void *value) {
         goto out;
     }
     map = &object->value.map;
+    status = bpf_map_check_percpu_flags_locked(map, flags);
+    if (status < 0 || ((uint32_t)flags & ~KERNEL_BPF_F_CPU)) {
+        if (status == 0) status = -EDGE_LINUX_EINVAL;
+        goto out;
+    }
     if (bpf_map_is_queue_stack(map)) {
         if (key) {
             status = -EDGE_LINUX_EINVAL;
@@ -967,19 +1031,23 @@ int kernel_bpf_map_lookup(int object_id, const void *key, void *value) {
     } else if (bpf_map_is_array(map)) {
         status = bpf_map_array_index(map, key, &index);
         if (status < 0) goto out;
-        bpf_map_copy_value_out(map, index, value);
+        bpf_map_copy_value_out(map, index, value, flags);
     } else {
         bpf_map_hash_find(map, key, &index, &free_slot);
         if (index == UINT32_MAX) {
             status = -EDGE_LINUX_ENOENT;
             goto out;
         }
-        bpf_map_copy_value_out(map, index, value);
+        bpf_map_copy_value_out(map, index, value, flags);
         bpf_map_lru_touch(map, index);
     }
 out:
     bpf_unlock();
     return status;
+}
+
+int kernel_bpf_map_lookup(int object_id, const void *key, void *value) {
+    return kernel_bpf_map_lookup_flags(object_id, key, value, 0u);
 }
 
 int kernel_bpf_map_update(int object_id, const void *key, const void *value,
@@ -992,9 +1060,6 @@ int kernel_bpf_map_update(int object_id, const void *key, const void *value,
     int status = 0;
 
     if (!value) return -EDGE_LINUX_EFAULT;
-    if (flags != KERNEL_BPF_ANY && flags != KERNEL_BPF_NOEXIST &&
-        flags != KERNEL_BPF_EXIST)
-        return -EDGE_LINUX_EINVAL;
     bpf_lock();
     object = bpf_object_locked(object_id);
     if (!object || object->kind != KERNEL_BPF_OBJECT_MAP) {
@@ -1002,6 +1067,14 @@ int kernel_bpf_map_update(int object_id, const void *key, const void *value,
         goto out;
     }
     map = &object->value.map;
+    status = bpf_map_check_percpu_flags_locked(map, flags);
+    if (status < 0) goto out;
+    if (!bpf_map_is_percpu(map) &&
+        flags != KERNEL_BPF_ANY && flags != KERNEL_BPF_NOEXIST &&
+        flags != KERNEL_BPF_EXIST) {
+        status = -EDGE_LINUX_EINVAL;
+        goto out;
+    }
     if (map->frozen) {
         status = -EDGE_LINUX_EPERM;
         goto out;
@@ -1033,7 +1106,7 @@ int kernel_bpf_map_update(int object_id, const void *key, const void *value,
         }
         status = bpf_map_array_index(map, key, &index);
         if (status < 0) goto out;
-        bpf_map_copy_value_in(map, index, value);
+        bpf_map_copy_value_in(map, index, value, flags);
     } else {
         bpf_map_hash_find(map, key, &index, &free_slot);
         if (index != UINT32_MAX && flags == KERNEL_BPF_NOEXIST) {
@@ -1062,7 +1135,7 @@ int kernel_bpf_map_update(int object_id, const void *key, const void *value,
         entry = bpf_map_entry(map, index);
         entry[0] = 1u;
         memcpy(entry + 1u, key, map->key_size);
-        bpf_map_copy_value_in(map, index, value);
+        bpf_map_copy_value_in(map, index, value, flags);
         bpf_map_lru_touch(map, index);
     }
 out:
@@ -1111,7 +1184,7 @@ int kernel_bpf_map_lookup_and_delete(int object_id, const void *key,
         status = -EDGE_LINUX_ENOENT;
         goto out;
     }
-    bpf_map_copy_value_out(map, index, value);
+    bpf_map_copy_value_out(map, index, value, 0u);
     memset(bpf_map_entry(map, index), 0, map->entry_stride);
     if (map->entry_count) --map->entry_count;
 out:
@@ -1208,9 +1281,10 @@ out:
     return status;
 }
 
-int kernel_bpf_map_batch_next(int object_id, uint32_t *cursor,
-                              void *key, void *value,
-                              int delete_element, int *has_more) {
+int kernel_bpf_map_batch_next_flags(int object_id, uint32_t *cursor,
+                                    void *key, void *value,
+                                    uint64_t flags, int delete_element,
+                                    int *has_more) {
     kernel_bpf_object_t *object;
     kernel_bpf_map_t *map;
     uint32_t index;
@@ -1225,6 +1299,11 @@ int kernel_bpf_map_batch_next(int object_id, uint32_t *cursor,
         goto out;
     }
     map = &object->value.map;
+    status = bpf_map_check_percpu_flags_locked(map, flags);
+    if (status < 0 || ((uint32_t)flags & ~KERNEL_BPF_F_CPU)) {
+        if (status == 0) status = -EDGE_LINUX_EINVAL;
+        goto out;
+    }
     if (bpf_map_is_queue_stack(map)) {
         status = -EDGE_LINUX_ENOTSUPP;
         goto out;
@@ -1244,7 +1323,7 @@ int kernel_bpf_map_batch_next(int object_id, uint32_t *cursor,
             goto out;
         }
         memcpy(key, &index, sizeof(index));
-        bpf_map_copy_value_out(map, index, value);
+        bpf_map_copy_value_out(map, index, value, flags);
     } else {
         while (index < map->max_entries && !bpf_map_entry(map, index)[0])
             ++index;
@@ -1253,7 +1332,7 @@ int kernel_bpf_map_batch_next(int object_id, uint32_t *cursor,
             goto out;
         }
         memcpy(key, bpf_map_entry(map, index) + 1u, map->key_size);
-        bpf_map_copy_value_out(map, index, value);
+        bpf_map_copy_value_out(map, index, value, flags);
         if (!delete_element) bpf_map_lru_touch(map, index);
         if (delete_element) {
             memset(bpf_map_entry(map, index), 0, map->entry_stride);
@@ -1273,6 +1352,13 @@ int kernel_bpf_map_batch_next(int object_id, uint32_t *cursor,
 out:
     bpf_unlock();
     return status;
+}
+
+int kernel_bpf_map_batch_next(int object_id, uint32_t *cursor,
+                              void *key, void *value,
+                              int delete_element, int *has_more) {
+    return kernel_bpf_map_batch_next_flags(
+        object_id, cursor, key, value, 0u, delete_element, has_more);
 }
 
 int kernel_bpf_map_freeze(int object_id) {

@@ -60,6 +60,8 @@
 #define BPF_ANY 0u
 #define BPF_NOEXIST 1u
 #define BPF_EXIST 2u
+#define BPF_F_CPU 8u
+#define BPF_F_ALL_CPUS 16u
 
 #define F_GETFD 1
 #define FD_CLOEXEC 1
@@ -73,6 +75,7 @@
 #define EBUSY 16
 #define EEXIST 17
 #define EINVAL 22
+#define ERANGE 34
 #define ENOENT 2
 #define EPERM 1
 #define ENOTSUPP 524
@@ -663,6 +666,13 @@ static int test_percpu_maps(void) {
     uint64_t output[256];
     uint32_t array_key = 1u;
     uint32_t hash_key = 7u;
+    uint32_t batch_key = 0u;
+    uint32_t batch_cursor = 0u;
+    uint32_t batch_output_cursor = 0u;
+    uint32_t batch_count = 1u;
+    uint64_t scalar = 5001u;
+    uint64_t scalar_output = 0u;
+    uint64_t cpu_one_flags = BPF_F_CPU | (1ULL << 32u);
     long array = create_map(
         BPF_MAP_TYPE_PERCPU_ARRAY, 2u, "percpu_array");
     long hash;
@@ -686,6 +696,30 @@ static int test_percpu_maps(void) {
     failures += expect_true(
         "percpu array cpu values",
         output[0] == values[0] && output[1] == values[1]);
+    failures += expect("percpu array cpu update", map_element(
+        BPF_MAP_UPDATE_ELEM, array, &array_key, &scalar,
+        cpu_one_flags), 0);
+    failures += expect("percpu array cpu lookup", map_element(
+        BPF_MAP_LOOKUP_ELEM, array, &array_key, &scalar_output,
+        cpu_one_flags), 0);
+    failures += expect_true(
+        "percpu array selected cpu", scalar_output == scalar);
+    scalar = 7001u;
+    failures += expect("percpu array all cpu update", map_element(
+        BPF_MAP_UPDATE_ELEM, array, &array_key, &scalar,
+        BPF_F_ALL_CPUS), 0);
+    clear_bytes(output, sizeof(output));
+    failures += expect("percpu array all cpu lookup", map_element(
+        BPF_MAP_LOOKUP_ELEM, array, &array_key, output, 0), 0);
+    failures += expect_true(
+        "percpu array all cpu values",
+        output[0] == scalar && output[1] == scalar);
+    failures += expect("percpu array lookup all invalid", map_element(
+        BPF_MAP_LOOKUP_ELEM, array, &array_key, &scalar_output,
+        BPF_F_ALL_CPUS), -EINVAL);
+    failures += expect("percpu array invalid cpu", map_element(
+        BPF_MAP_LOOKUP_ELEM, array, &array_key, &scalar_output,
+        BPF_F_CPU | (0xffffffffULL << 32u)), -ERANGE);
     failures += expect("percpu array noexist", map_element(
         BPF_MAP_UPDATE_ELEM, array, &array_key, values, BPF_NOEXIST),
         -EEXIST);
@@ -702,6 +736,33 @@ static int test_percpu_maps(void) {
     failures += expect_true(
         "percpu hash cpu values",
         output[0] == values[0] && output[1] == values[1]);
+    scalar = 8001u;
+    scalar_output = 0u;
+    failures += expect("percpu hash cpu update", map_element(
+        BPF_MAP_UPDATE_ELEM, hash, &hash_key, &scalar,
+        cpu_one_flags), 0);
+    failures += expect("percpu hash cpu lookup", map_element(
+        BPF_MAP_LOOKUP_ELEM, hash, &hash_key, &scalar_output,
+        cpu_one_flags), 0);
+    failures += expect_true(
+        "percpu hash selected cpu", scalar_output == scalar);
+    values[1] = scalar;
+    scalar_output = 0u;
+    failures += expect("percpu hash cpu batch lookup", map_batch(
+        BPF_MAP_LOOKUP_BATCH, hash, &batch_cursor,
+        &batch_output_cursor, &batch_key, &scalar_output,
+        &batch_count, cpu_one_flags), -ENOENT);
+    failures += expect("percpu hash cpu batch count", batch_count, 1);
+    failures += expect_true(
+        "percpu hash cpu batch value",
+        batch_key == hash_key && scalar_output == scalar);
+    scalar = 8101u;
+    batch_count = 1u;
+    failures += expect("percpu hash all cpu batch update", map_batch(
+        BPF_MAP_UPDATE_BATCH, hash, 0, 0, &hash_key, &scalar,
+        &batch_count, BPF_F_ALL_CPUS), 0);
+    failures += expect("percpu hash all cpu batch count", batch_count, 1);
+    for (uint32_t cpu = 0; cpu < 256u; ++cpu) values[cpu] = scalar;
     clear_bytes(output, sizeof(output));
     failures += expect("percpu hash lookup delete", map_element(
         BPF_MAP_LOOKUP_AND_DELETE_ELEM, hash, &hash_key, output, 0), 0);

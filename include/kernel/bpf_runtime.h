@@ -31,6 +31,8 @@
 #define KERNEL_BPF_NOEXIST 1u
 #define KERNEL_BPF_EXIST   2u
 #define KERNEL_BPF_F_LOCK  4u
+#define KERNEL_BPF_F_CPU   8u
+#define KERNEL_BPF_F_ALL_CPUS 16u
 
 #define KERNEL_BPF_PROG_TYPE_CGROUP_DEVICE 15u
 #define KERNEL_BPF_CGROUP_DEVICE 6u
@@ -127,6 +129,8 @@ int kernel_bpf_program_info(int object_id, kernel_bpf_program_info_t *info);
 int kernel_bpf_program_copy_instructions(int object_id, void *buffer,
                                          uint32_t capacity,
                                          uint32_t *actual_size);
+int kernel_bpf_map_lookup_flags(int object_id, const void *key, void *value,
+                                uint64_t flags);
 int kernel_bpf_map_lookup(int object_id, const void *key, void *value);
 int kernel_bpf_map_update(int object_id, const void *key, const void *value,
                           uint64_t flags);
@@ -137,6 +141,10 @@ int kernel_bpf_map_next_key(int object_id, const void *key, void *next_key);
 int kernel_bpf_map_batch_next(int object_id, uint32_t *cursor,
                               void *key, void *value,
                               int delete_element, int *has_more);
+int kernel_bpf_map_batch_next_flags(int object_id, uint32_t *cursor,
+                                    void *key, void *value,
+                                    uint64_t flags, int delete_element,
+                                    int *has_more);
 int kernel_bpf_map_freeze(int object_id);
 
 int kernel_bpf_program_run_cgroup_device(
