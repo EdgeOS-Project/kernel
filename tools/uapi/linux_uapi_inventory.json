@@ -65,6 +65,7 @@
         "FILES2 sparse registration, UPDATE2 layouts and resource tag completion events",
         "bounded fixed-buffer registration, sparse entries, updates, tags and range validation",
         "READ_FIXED and WRITE_FIXED through shared synchronous descriptor I/O",
+        "READV_FIXED and WRITEV_FIXED with registered-buffer range validation",
         "per-task registered-ring descriptors for enter and register operations",
         "timeout removal and update with retained clock selection",
         "per-ring monotonic or boottime enter clocks",
@@ -97,7 +98,7 @@
       "linux_oracle": {
         "status": "partial",
         "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309",
-        "scope": "setup, mmap, NOP, eventfd, poll, timeout, cancellation, openat, openat2, close, statx, fallocate, send, recv, sendmsg, recvmsg, shutdown, connect, accept, fadvise, madvise, epoll_ctl, tee, renameat, unlinkat, mkdirat, symlinkat, linkat, socket, bind, listen, fsetxattr, setxattr, fgetxattr, getxattr, ftruncate, sync_file_range, futex_wake, fixed-file registration, retained lifetime, register and submission-queue updates, extended resource layouts, tag completion events, fixed-file installation, frozen opcode extent, registered-ring descriptor lifetime, timeout update, finite and updated multishot timeouts, relative and absolute enter deadlines, minimum-wait batching, registered wait layouts and errors from the frozen source oracle, poll update, multishot poll, per-ring clock, fixed-file allocation range, operation probe, pipe creation and direct fixed-file allocation, plus packet-pipe record boundaries, short-read truncation and splice with ordinary or fixed input and output descriptors, plus MSG_RING data, flag forwarding, disabled targets and buffered CQ overflow, plus registered-file transfer with explicit and allocated slots, skipped target completions and retained lifetime after source-table removal, plus legacy and extended fixed-buffer registration, tagged updates, range errors and real pipe data through READ_FIXED and WRITE_FIXED"
+        "scope": "setup, mmap, NOP, eventfd, poll, timeout, cancellation, openat, openat2, close, statx, fallocate, send, recv, sendmsg, recvmsg, shutdown, connect, accept, fadvise, madvise, epoll_ctl, tee, renameat, unlinkat, mkdirat, symlinkat, linkat, socket, bind, listen, fsetxattr, setxattr, fgetxattr, getxattr, ftruncate, sync_file_range, futex_wake, fixed-file registration, retained lifetime, register and submission-queue updates, extended resource layouts, tag completion events, fixed-file installation, frozen opcode extent, registered-ring descriptor lifetime, timeout update, finite and updated multishot timeouts, relative and absolute enter deadlines, minimum-wait batching, registered wait layouts and errors from the frozen source oracle, poll update, multishot poll, per-ring clock, fixed-file allocation range, operation probe, pipe creation and direct fixed-file allocation, plus packet-pipe record boundaries, short-read truncation and splice with ordinary or fixed input and output descriptors, plus MSG_RING data, flag forwarding, disabled targets and buffered CQ overflow, plus registered-file transfer with explicit and allocated slots, skipped target completions and retained lifetime after source-table removal, plus legacy and extended fixed-buffer registration, tagged updates, range errors and real pipe data through READ_FIXED and WRITE_FIXED, plus frozen-source READV_FIXED and WRITEV_FIXED layouts with EdgeOS runtime data"
       }
     },
     {
@@ -12906,6 +12907,1264 @@
           "name": "UDP_SEGMENT",
           "header": "include/uapi/linux/udp.h",
           "expression": "103\t/* Set GSO segmentation size */"
+        }
+      ]
+    },
+    "io_uring": {
+      "sources": [
+        {
+          "path": "include/uapi/linux/io_uring.h",
+          "sha256": "8488b223988fe798a9c1c81d13a550a27cac1f096bdd016ef9eb5e51adaf46a7"
+        }
+      ],
+      "item_defaults": {
+        "status": "unreviewed",
+        "kconfig": [],
+        "architectures": [
+          "x86_64",
+          "aarch64",
+          "ia32",
+          "x32"
+        ],
+        "runtime_tests": [],
+        "linux_oracle": "required",
+        "expected_errors": "reference-kernel"
+      },
+      "items": [
+        {
+          "name": "IORING_ACCEPT_DONTWAIT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 1)"
+        },
+        {
+          "name": "IORING_ACCEPT_MULTISHOT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 0)"
+        },
+        {
+          "name": "IORING_ACCEPT_POLL_FIRST",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 2)"
+        },
+        {
+          "name": "IORING_ASYNC_CANCEL_ALL",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 0)"
+        },
+        {
+          "name": "IORING_ASYNC_CANCEL_ANY",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 2)"
+        },
+        {
+          "name": "IORING_ASYNC_CANCEL_FD",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 1)"
+        },
+        {
+          "name": "IORING_ASYNC_CANCEL_FD_FIXED",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 3)"
+        },
+        {
+          "name": "IORING_ASYNC_CANCEL_OP",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 5)"
+        },
+        {
+          "name": "IORING_ASYNC_CANCEL_USERDATA",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 4)"
+        },
+        {
+          "name": "IORING_CQE_BUFFER_SHIFT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "16"
+        },
+        {
+          "name": "IORING_CQE_F_32",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 15)"
+        },
+        {
+          "name": "IORING_CQE_F_BUFFER",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 0)"
+        },
+        {
+          "name": "IORING_CQE_F_BUF_MORE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 4)"
+        },
+        {
+          "name": "IORING_CQE_F_MORE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 1)"
+        },
+        {
+          "name": "IORING_CQE_F_NOTIF",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 3)"
+        },
+        {
+          "name": "IORING_CQE_F_SKIP",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 5)"
+        },
+        {
+          "name": "IORING_CQE_F_SOCK_NONEMPTY",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 2)"
+        },
+        {
+          "name": "IORING_CQE_F_TSTAMP_HW",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "((__u32)1 << IORING_TIMESTAMP_HW_SHIFT)"
+        },
+        {
+          "name": "IORING_CQ_EVENTFD_DISABLED",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 0)"
+        },
+        {
+          "name": "IORING_ENTER_ABS_TIMER",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 5)"
+        },
+        {
+          "name": "IORING_ENTER_EXT_ARG",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 3)"
+        },
+        {
+          "name": "IORING_ENTER_EXT_ARG_REG",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 6)"
+        },
+        {
+          "name": "IORING_ENTER_GETEVENTS",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 0)"
+        },
+        {
+          "name": "IORING_ENTER_NO_IOWAIT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 7)"
+        },
+        {
+          "name": "IORING_ENTER_REGISTERED_RING",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 4)"
+        },
+        {
+          "name": "IORING_ENTER_SQ_WAIT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 2)"
+        },
+        {
+          "name": "IORING_ENTER_SQ_WAKEUP",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 1)"
+        },
+        {
+          "name": "IORING_FEAT_CQE_SKIP",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 11)"
+        },
+        {
+          "name": "IORING_FEAT_CUR_PERSONALITY",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 4)"
+        },
+        {
+          "name": "IORING_FEAT_EXT_ARG",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 8)"
+        },
+        {
+          "name": "IORING_FEAT_FAST_POLL",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 5)"
+        },
+        {
+          "name": "IORING_FEAT_LINKED_FILE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 12)"
+        },
+        {
+          "name": "IORING_FEAT_MIN_TIMEOUT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 15)"
+        },
+        {
+          "name": "IORING_FEAT_NATIVE_WORKERS",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 9)"
+        },
+        {
+          "name": "IORING_FEAT_NODROP",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 1)"
+        },
+        {
+          "name": "IORING_FEAT_NO_IOWAIT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 17)"
+        },
+        {
+          "name": "IORING_FEAT_POLL_32BITS",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 6)"
+        },
+        {
+          "name": "IORING_FEAT_RECVSEND_BUNDLE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 14)"
+        },
+        {
+          "name": "IORING_FEAT_REG_REG_RING",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 13)"
+        },
+        {
+          "name": "IORING_FEAT_RSRC_TAGS",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 10)"
+        },
+        {
+          "name": "IORING_FEAT_RW_ATTR",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 16)"
+        },
+        {
+          "name": "IORING_FEAT_RW_CUR_POS",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 3)"
+        },
+        {
+          "name": "IORING_FEAT_SINGLE_MMAP",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 0)"
+        },
+        {
+          "name": "IORING_FEAT_SQPOLL_NONFIXED",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 7)"
+        },
+        {
+          "name": "IORING_FEAT_SUBMIT_STABLE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 2)"
+        },
+        {
+          "name": "IORING_FILE_INDEX_ALLOC",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(~0U)"
+        },
+        {
+          "name": "IORING_FIXED_FD_NO_CLOEXEC",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 0)"
+        },
+        {
+          "name": "IORING_FSYNC_DATASYNC",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 0)"
+        },
+        {
+          "name": "IORING_LINK_TIMEOUT_UPDATE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 4)"
+        },
+        {
+          "name": "IORING_MEM_REGION_REG_WAIT_ARG",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "1"
+        },
+        {
+          "name": "IORING_MEM_REGION_TYPE_USER",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "1"
+        },
+        {
+          "name": "IORING_MSG_DATA",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_MSG_RING_CQE_SKIP",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 0)"
+        },
+        {
+          "name": "IORING_MSG_RING_FLAGS_PASS",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 1)"
+        },
+        {
+          "name": "IORING_MSG_SEND_FD",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_NOP_CQE32",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 5)"
+        },
+        {
+          "name": "IORING_NOP_FILE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 1)"
+        },
+        {
+          "name": "IORING_NOP_FIXED_BUFFER",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 3)"
+        },
+        {
+          "name": "IORING_NOP_FIXED_FILE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 2)"
+        },
+        {
+          "name": "IORING_NOP_INJECT_RESULT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 0)"
+        },
+        {
+          "name": "IORING_NOP_TW",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 4)"
+        },
+        {
+          "name": "IORING_NOTIF_USAGE_ZC_COPIED",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 31)"
+        },
+        {
+          "name": "IORING_OFF_CQ_RING",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "0x8000000ULL"
+        },
+        {
+          "name": "IORING_OFF_MMAP_MASK",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "0xf8000000ULL"
+        },
+        {
+          "name": "IORING_OFF_PBUF_RING",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "0x80000000ULL"
+        },
+        {
+          "name": "IORING_OFF_PBUF_SHIFT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "16"
+        },
+        {
+          "name": "IORING_OFF_SQES",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "0x10000000ULL"
+        },
+        {
+          "name": "IORING_OFF_SQ_RING",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "0ULL"
+        },
+        {
+          "name": "IORING_OP_ACCEPT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_ASYNC_CANCEL",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_BIND",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_CLOSE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_CONNECT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_EPOLL_CTL",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_EPOLL_WAIT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_FADVISE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_FALLOCATE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_FGETXATTR",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_FILES_UPDATE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_FIXED_FD_INSTALL",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_FSETXATTR",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_FSYNC",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_FTRUNCATE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_FUTEX_WAIT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_FUTEX_WAITV",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_FUTEX_WAKE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_GETXATTR",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_LAST",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_LINKAT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_LINK_TIMEOUT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_LISTEN",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_MADVISE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_MKDIRAT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_MSG_RING",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_NOP",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_NOP128",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_OPENAT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_OPENAT2",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_PIPE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_POLL_ADD",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_POLL_REMOVE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_PROVIDE_BUFFERS",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_READ",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_READV",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_READV_FIXED",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_READ_FIXED",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_READ_MULTISHOT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_RECV",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_RECVMSG",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_RECV_ZC",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_REMOVE_BUFFERS",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_RENAMEAT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_SEND",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_SENDMSG",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_SENDMSG_ZC",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_SEND_ZC",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_SETXATTR",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_SHUTDOWN",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_SOCKET",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_SPLICE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_STATX",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_SYMLINKAT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_SYNC_FILE_RANGE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_TEE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_TIMEOUT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_TIMEOUT_REMOVE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_UNLINKAT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_URING_CMD",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_URING_CMD128",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_WAITID",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_WRITE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_WRITEV",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_WRITEV_FIXED",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_OP_WRITE_FIXED",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_POLL_ADD_LEVEL",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 3)"
+        },
+        {
+          "name": "IORING_POLL_ADD_MULTI",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 0)"
+        },
+        {
+          "name": "IORING_POLL_UPDATE_EVENTS",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 1)"
+        },
+        {
+          "name": "IORING_POLL_UPDATE_USER_DATA",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 2)"
+        },
+        {
+          "name": "IORING_RECVSEND_BUNDLE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 4)"
+        },
+        {
+          "name": "IORING_RECVSEND_FIXED_BUF",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 2)"
+        },
+        {
+          "name": "IORING_RECVSEND_POLL_FIRST",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 0)"
+        },
+        {
+          "name": "IORING_RECV_MULTISHOT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 1)"
+        },
+        {
+          "name": "IORING_REGISTER_BPF_FILTER",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "37"
+        },
+        {
+          "name": "IORING_REGISTER_BUFFERS",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "0"
+        },
+        {
+          "name": "IORING_REGISTER_BUFFERS2",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "15"
+        },
+        {
+          "name": "IORING_REGISTER_BUFFERS_UPDATE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "16"
+        },
+        {
+          "name": "IORING_REGISTER_CLOCK",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "29"
+        },
+        {
+          "name": "IORING_REGISTER_CLONE_BUFFERS",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "30"
+        },
+        {
+          "name": "IORING_REGISTER_DST_REPLACE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 1)"
+        },
+        {
+          "name": "IORING_REGISTER_ENABLE_RINGS",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "12"
+        },
+        {
+          "name": "IORING_REGISTER_EVENTFD",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "4"
+        },
+        {
+          "name": "IORING_REGISTER_EVENTFD_ASYNC",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "7"
+        },
+        {
+          "name": "IORING_REGISTER_FILES",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "2"
+        },
+        {
+          "name": "IORING_REGISTER_FILES2",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "13"
+        },
+        {
+          "name": "IORING_REGISTER_FILES_SKIP",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(-2)"
+        },
+        {
+          "name": "IORING_REGISTER_FILES_UPDATE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "6"
+        },
+        {
+          "name": "IORING_REGISTER_FILES_UPDATE2",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "14"
+        },
+        {
+          "name": "IORING_REGISTER_FILE_ALLOC_RANGE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "25"
+        },
+        {
+          "name": "IORING_REGISTER_IOWQ_AFF",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "17"
+        },
+        {
+          "name": "IORING_REGISTER_IOWQ_MAX_WORKERS",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "19"
+        },
+        {
+          "name": "IORING_REGISTER_LAST",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_REGISTER_MEM_REGION",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "34"
+        },
+        {
+          "name": "IORING_REGISTER_NAPI",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "27"
+        },
+        {
+          "name": "IORING_REGISTER_PBUF_RING",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "22"
+        },
+        {
+          "name": "IORING_REGISTER_PBUF_STATUS",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "26"
+        },
+        {
+          "name": "IORING_REGISTER_PERSONALITY",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "9"
+        },
+        {
+          "name": "IORING_REGISTER_PROBE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "8"
+        },
+        {
+          "name": "IORING_REGISTER_QUERY",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "35"
+        },
+        {
+          "name": "IORING_REGISTER_RESIZE_RINGS",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "33"
+        },
+        {
+          "name": "IORING_REGISTER_RESTRICTIONS",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "11"
+        },
+        {
+          "name": "IORING_REGISTER_RING_FDS",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "20"
+        },
+        {
+          "name": "IORING_REGISTER_SEND_MSG_RING",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "31"
+        },
+        {
+          "name": "IORING_REGISTER_SRC_REGISTERED",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 0)"
+        },
+        {
+          "name": "IORING_REGISTER_SYNC_CANCEL",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "24"
+        },
+        {
+          "name": "IORING_REGISTER_USE_REGISTERED_RING",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "1U << 31"
+        },
+        {
+          "name": "IORING_REGISTER_ZCRX_CTRL",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "36"
+        },
+        {
+          "name": "IORING_REGISTER_ZCRX_IFQ",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "32"
+        },
+        {
+          "name": "IORING_REG_WAIT_TS",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 0)"
+        },
+        {
+          "name": "IORING_RESTRICTION_LAST",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IORING_RESTRICTION_REGISTER_OP",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "0"
+        },
+        {
+          "name": "IORING_RESTRICTION_SQE_FLAGS_ALLOWED",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "2"
+        },
+        {
+          "name": "IORING_RESTRICTION_SQE_FLAGS_REQUIRED",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "3"
+        },
+        {
+          "name": "IORING_RESTRICTION_SQE_OP",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "1"
+        },
+        {
+          "name": "IORING_RSRC_REGISTER_SPARSE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 0)"
+        },
+        {
+          "name": "IORING_RW_ATTR_FLAG_PI",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 0)"
+        },
+        {
+          "name": "IORING_SEND_VECTORIZED",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 5)"
+        },
+        {
+          "name": "IORING_SEND_ZC_REPORT_USAGE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 3)"
+        },
+        {
+          "name": "IORING_SETUP_ATTACH_WQ",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 5)\t/* attach to existing wq */"
+        },
+        {
+          "name": "IORING_SETUP_CLAMP",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 4)\t/* clamp SQ/CQ ring sizes */"
+        },
+        {
+          "name": "IORING_SETUP_COOP_TASKRUN",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 8)"
+        },
+        {
+          "name": "IORING_SETUP_CQE32",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 11) /* CQEs are 32 byte */"
+        },
+        {
+          "name": "IORING_SETUP_CQE_MIXED",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 18)"
+        },
+        {
+          "name": "IORING_SETUP_CQSIZE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 3)\t/* app defines CQ size */"
+        },
+        {
+          "name": "IORING_SETUP_DEFER_TASKRUN",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 13)"
+        },
+        {
+          "name": "IORING_SETUP_HYBRID_IOPOLL",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 17)"
+        },
+        {
+          "name": "IORING_SETUP_IOPOLL",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 0)\t/* io_context is polled */"
+        },
+        {
+          "name": "IORING_SETUP_NO_MMAP",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 14)"
+        },
+        {
+          "name": "IORING_SETUP_NO_SQARRAY",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 16)"
+        },
+        {
+          "name": "IORING_SETUP_REGISTERED_FD_ONLY",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 15)"
+        },
+        {
+          "name": "IORING_SETUP_R_DISABLED",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 6)\t/* start with ring disabled */"
+        },
+        {
+          "name": "IORING_SETUP_SINGLE_ISSUER",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 12)"
+        },
+        {
+          "name": "IORING_SETUP_SQE128",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 10) /* SQEs are 128 byte */"
+        },
+        {
+          "name": "IORING_SETUP_SQE_MIXED",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 19)"
+        },
+        {
+          "name": "IORING_SETUP_SQPOLL",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 1)\t/* SQ poll thread */"
+        },
+        {
+          "name": "IORING_SETUP_SQ_AFF",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 2)\t/* sq_thread_cpu is valid */"
+        },
+        {
+          "name": "IORING_SETUP_SQ_REWIND",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 20)"
+        },
+        {
+          "name": "IORING_SETUP_SUBMIT_ALL",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 7)\t/* continue submit on error */"
+        },
+        {
+          "name": "IORING_SETUP_TASKRUN_FLAG",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 9)"
+        },
+        {
+          "name": "IORING_SQ_CQ_OVERFLOW",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 1) /* CQ ring is overflown */"
+        },
+        {
+          "name": "IORING_SQ_NEED_WAKEUP",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 0) /* needs io_uring_enter wakeup */"
+        },
+        {
+          "name": "IORING_SQ_TASKRUN",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 2) /* task should enter the kernel */"
+        },
+        {
+          "name": "IORING_TIMEOUT_ABS",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 0)"
+        },
+        {
+          "name": "IORING_TIMEOUT_BOOTTIME",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 2)"
+        },
+        {
+          "name": "IORING_TIMEOUT_CLOCK_MASK",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(IORING_TIMEOUT_BOOTTIME | IORING_TIMEOUT_REALTIME)"
+        },
+        {
+          "name": "IORING_TIMEOUT_ETIME_SUCCESS",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 5)"
+        },
+        {
+          "name": "IORING_TIMEOUT_IMMEDIATE_ARG",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 7)"
+        },
+        {
+          "name": "IORING_TIMEOUT_MULTISHOT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 6)"
+        },
+        {
+          "name": "IORING_TIMEOUT_REALTIME",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 3)"
+        },
+        {
+          "name": "IORING_TIMEOUT_UPDATE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 1)"
+        },
+        {
+          "name": "IORING_TIMEOUT_UPDATE_MASK",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(IORING_TIMEOUT_UPDATE | IORING_LINK_TIMEOUT_UPDATE)"
+        },
+        {
+          "name": "IORING_TIMESTAMP_HW_SHIFT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "16"
+        },
+        {
+          "name": "IORING_TIMESTAMP_TYPE_SHIFT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(IORING_TIMESTAMP_HW_SHIFT + 1)"
+        },
+        {
+          "name": "IORING_UNREGISTER_BUFFERS",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "1"
+        },
+        {
+          "name": "IORING_UNREGISTER_EVENTFD",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "5"
+        },
+        {
+          "name": "IORING_UNREGISTER_FILES",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "3"
+        },
+        {
+          "name": "IORING_UNREGISTER_IOWQ_AFF",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "18"
+        },
+        {
+          "name": "IORING_UNREGISTER_NAPI",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "28"
+        },
+        {
+          "name": "IORING_UNREGISTER_PBUF_RING",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "23"
+        },
+        {
+          "name": "IORING_UNREGISTER_PERSONALITY",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "10"
+        },
+        {
+          "name": "IORING_UNREGISTER_RING_FDS",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "21"
+        },
+        {
+          "name": "IORING_URING_CMD_FIXED",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 0)"
+        },
+        {
+          "name": "IORING_URING_CMD_MASK",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(IORING_URING_CMD_FIXED | IORING_URING_CMD_MULTISHOT)"
+        },
+        {
+          "name": "IORING_URING_CMD_MULTISHOT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << 1)"
+        },
+        {
+          "name": "IOSQE_ASYNC",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << IOSQE_ASYNC_BIT)"
+        },
+        {
+          "name": "IOSQE_ASYNC_BIT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IOSQE_BUFFER_SELECT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << IOSQE_BUFFER_SELECT_BIT)"
+        },
+        {
+          "name": "IOSQE_BUFFER_SELECT_BIT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IOSQE_CQE_SKIP_SUCCESS",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << IOSQE_CQE_SKIP_SUCCESS_BIT)"
+        },
+        {
+          "name": "IOSQE_CQE_SKIP_SUCCESS_BIT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IOSQE_FIXED_FILE",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << IOSQE_FIXED_FILE_BIT)"
+        },
+        {
+          "name": "IOSQE_FIXED_FILE_BIT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IOSQE_IO_DRAIN",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << IOSQE_IO_DRAIN_BIT)"
+        },
+        {
+          "name": "IOSQE_IO_DRAIN_BIT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IOSQE_IO_HARDLINK",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << IOSQE_IO_HARDLINK_BIT)"
+        },
+        {
+          "name": "IOSQE_IO_HARDLINK_BIT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
+        },
+        {
+          "name": "IOSQE_IO_LINK",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "(1U << IOSQE_IO_LINK_BIT)"
+        },
+        {
+          "name": "IOSQE_IO_LINK_BIT",
+          "header": "include/uapi/linux/io_uring.h",
+          "expression": "auto"
         }
       ]
     },

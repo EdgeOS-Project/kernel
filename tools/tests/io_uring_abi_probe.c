@@ -135,6 +135,8 @@ struct linux_epoll_event {
 #define IORING_OP_FTRUNCATE 55u
 #define IORING_OP_BIND 56u
 #define IORING_OP_LISTEN 57u
+#define IORING_OP_READV_FIXED 61u
+#define IORING_OP_WRITEV_FIXED 62u
 #define IORING_OFF_SQ_RING 0x00000000ull
 #define IORING_OFF_CQ_RING 0x08000000ull
 #define IORING_OFF_SQES 0x10000000ull
@@ -931,7 +933,8 @@ cleanup:
 
 static int run_fixed_buffer_only(
         long ring_descriptor, struct io_uring_params *parameters,
-        void *sq_ring, void *cq_ring, struct io_uring_sqe *sqes) {
+        void *sq_ring, void *cq_ring, struct io_uring_sqe *sqes,
+        int fixed_vector_supported) {
     volatile uint32_t *sq_tail = (volatile uint32_t *)(
         (uint8_t *)sq_ring + parameters->sq_off.tail);
     volatile uint32_t *sq_mask = (volatile uint32_t *)(
@@ -952,6 +955,15 @@ static int run_fixed_buffer_only(
     struct user_iovec buffers[2] = {
         {(uint64_t)(uintptr_t)source, sizeof(source)},
         {(uint64_t)(uintptr_t)read_buffer, sizeof(read_buffer)},
+    };
+    struct user_iovec write_vectors[2] = {
+        {(uint64_t)(uintptr_t)source, 5u},
+        {(uint64_t)(uintptr_t)(source + 5u), sizeof(source) - 5u},
+    };
+    struct user_iovec read_vectors[2] = {
+        {(uint64_t)(uintptr_t)read_buffer, 7u},
+        {(uint64_t)(uintptr_t)(read_buffer + 7u),
+         sizeof(read_buffer) - 7u},
     };
     int32_t pipe_descriptors[2] = {-1, -1};
     struct io_uring_sqe request;
@@ -1010,6 +1022,68 @@ static int run_fixed_buffer_only(
         read_buffer[0] == source[0] &&
         read_buffer[sizeof(read_buffer) - 1u] == 0);
 
+    if (fixed_vector_supported) {
+        memset(output, 0, sizeof(output));
+        memset(&request, 0, sizeof(request));
+        request.opcode = IORING_OP_WRITEV_FIXED;
+        request.descriptor = pipe_descriptors[1];
+        request.offset = UINT64_MAX;
+        request.address = (uint64_t)(uintptr_t)write_vectors;
+        request.length = 2u;
+        request.buffer_index = 0u;
+        failures += submit_one(
+            ring_descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &request,
+            0x4255465756454331ull, "submit fixed vector write", &result);
+        failures += expect("fixed vector write completion", result,
+                           sizeof(source));
+        if (result == sizeof(source)) {
+            failures += expect("fixed vector pipe read", raw_syscall6(
+                SYS_read, pipe_descriptors[0], (long)output,
+                sizeof(output), 0, 0, 0), sizeof(source));
+            failures += expect_true("fixed vector write data",
+                output[0] == source[0] &&
+                output[sizeof(output) - 1u] == 0);
+        }
+
+        failures += expect("prime fixed vector read", raw_syscall6(
+            SYS_write, pipe_descriptors[1], (long)source,
+            sizeof(source), 0, 0, 0), sizeof(source));
+        memset(read_buffer, 0, sizeof(read_buffer));
+        memset(&request, 0, sizeof(request));
+        request.opcode = IORING_OP_READV_FIXED;
+        request.descriptor = pipe_descriptors[0];
+        request.offset = UINT64_MAX;
+        request.address = (uint64_t)(uintptr_t)read_vectors;
+        request.length = 2u;
+        request.buffer_index = 1u;
+        failures += submit_one(
+            ring_descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &request,
+            0x4255465256454331ull, "submit fixed vector read", &result);
+        failures += expect("fixed vector read completion", result,
+                           sizeof(read_buffer));
+        failures += expect_true("fixed vector read data",
+            read_buffer[0] == source[0] &&
+            read_buffer[sizeof(read_buffer) - 1u] == 0);
+
+        read_vectors[1].base =
+            (uint64_t)(uintptr_t)(read_buffer + sizeof(read_buffer));
+        read_vectors[1].length = 1u;
+        failures += submit_one(
+            ring_descriptor, sq_tail, sq_mask, sq_array, sqes,
+            cq_head, cq_tail, cq_mask, cqes, &request,
+            0x42554652564f5554ull, "fixed vector outside range", &result);
+        failures += expect("fixed vector outside range completion",
+                           result, -EFAULT);
+    }
+
+    memset(&request, 0, sizeof(request));
+    request.opcode = IORING_OP_READ_FIXED;
+    request.descriptor = pipe_descriptors[0];
+    request.offset = UINT64_MAX;
+    request.length = sizeof(read_buffer);
+    request.buffer_index = 1u;
     request.address = (uint64_t)(uintptr_t)read_buffer - 1u;
     failures += submit_one(
         ring_descriptor, sq_tail, sq_mask, sq_array, sqes,
@@ -1167,6 +1241,7 @@ static int run_tests(void) {
     uint64_t temporary_signal_mask = 0;
     uint32_t futex_word = 0;
     int32_t fixed_files[2] = {-1, -1};
+    int fixed_vector_supported;
     int failures = 0;
 
     memset(&parameters, 0, sizeof(parameters));
@@ -1262,6 +1337,15 @@ static int run_tests(void) {
          IO_URING_OP_SUPPORTED) != 0 &&
         (probe.operations[IORING_OP_WRITE_FIXED].flags &
          IO_URING_OP_SUPPORTED) != 0);
+    fixed_vector_supported =
+        probe.last_opcode >= IORING_OP_WRITEV_FIXED &&
+        (probe.operations[IORING_OP_READV_FIXED].flags &
+         IO_URING_OP_SUPPORTED) != 0 &&
+        (probe.operations[IORING_OP_WRITEV_FIXED].flags &
+         IO_URING_OP_SUPPORTED) != 0;
+    if (probe.last_opcode >= IORING_OP_WRITEV_FIXED)
+        failures += expect_true(
+            "probe fixed vector read/write", fixed_vector_supported);
     failures += expect_true("probe VFS operations",
         (probe.operations[IORING_OP_OPENAT].flags &
          IO_URING_OP_SUPPORTED) != 0 &&
@@ -1360,7 +1444,8 @@ static int run_tests(void) {
 
 #ifdef EDGEOS_IO_URING_FIXED_BUFFER_ONLY
     failures += run_fixed_buffer_only(
-        descriptor, &parameters, sq_ring, cq_ring, sqes);
+        descriptor, &parameters, sq_ring, cq_ring, sqes,
+        fixed_vector_supported);
     (void)raw_syscall6(SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
     (void)raw_syscall6(SYS_munmap, (long)cq_ring, PAGE_SIZE, 0, 0, 0, 0);
     (void)raw_syscall6(SYS_munmap, (long)sqes, PAGE_SIZE, 0, 0, 0, 0);
@@ -2303,7 +2388,8 @@ static int run_tests(void) {
                        -EINVAL);
 
     failures += run_fixed_buffer_only(
-        descriptor, &parameters, sq_ring, cq_ring, sqes);
+        descriptor, &parameters, sq_ring, cq_ring, sqes,
+        fixed_vector_supported);
 
     failures += expect("fixed splice input pipe", raw_syscall6(
         SYS_pipe2, (long)splice_input, 0, 0, 0, 0, 0), 0);

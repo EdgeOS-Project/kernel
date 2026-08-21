@@ -8102,6 +8102,8 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_OP_BIND      56u
 #define EDGE_LINUX_IORING_OP_LISTEN    57u
 #define EDGE_LINUX_IORING_OP_PIPE      60u
+#define EDGE_LINUX_IORING_OP_READV_FIXED 61u
+#define EDGE_LINUX_IORING_OP_WRITEV_FIXED 62u
 #define EDGE_LINUX_IORING_OP_LAST      63u
 
 #define EDGE_LINUX_IOSQE_FIXED_FILE       (1u << 0)
@@ -8415,7 +8417,8 @@ static int64_t edge_linux_io_uring_execute_rw(
     if (result < 0) return result;
     writing = submission->opcode == EDGE_LINUX_IORING_OP_WRITE ||
               submission->opcode == EDGE_LINUX_IORING_OP_WRITE_FIXED ||
-              submission->opcode == EDGE_LINUX_IORING_OP_WRITEV;
+              submission->opcode == EDGE_LINUX_IORING_OP_WRITEV ||
+              submission->opcode == EDGE_LINUX_IORING_OP_WRITEV_FIXED;
     positional = submission->offset != UINT64_MAX;
     operation = writing ?
         (positional ? KERNEL_IO_WRITE_POSITIONAL : KERNEL_IO_WRITE_CURRENT) :
@@ -8456,6 +8459,39 @@ static int64_t edge_linux_io_uring_execute_rw(
         if (transferred == EDGE_LINUX_MAX_RW_COUNT) break;
     }
     return (int64_t)transferred;
+}
+
+static int edge_linux_io_uring_fixed_vector_validate(
+        edge_linux_syscall_context_t *context, int32_t ring_id,
+        const struct edge_linux_io_uring_sqe *submission) {
+    kernel_io_vector_scratch_t scratch;
+    uint64_t total = 0u;
+    uint32_t count = submission->length;
+
+    if (!count || count > EDGE_LINUX_IOV_MAX)
+        return count ? -EDGE_LINUX_EINVAL : 0;
+    if (!submission->address) return -EDGE_LINUX_EFAULT;
+    if (kernel_io_current_vector_scratch(&scratch) < 0 ||
+        !scratch.vectors || scratch.capacity < count)
+        return -EDGE_LINUX_ENOMEM;
+    if (edge_linux_copy_from_user(
+            context, scratch.vectors, submission->address,
+            (uint64_t)count * sizeof(scratch.vectors[0])) < 0)
+        return -EDGE_LINUX_EFAULT;
+    for (uint32_t index = 0; index < count; ++index) {
+        uint64_t length = scratch.vectors[index].iov_len;
+        int result;
+
+        if (!length) return -EDGE_LINUX_EFAULT;
+        if (length > EDGE_LINUX_MAX_RW_COUNT - total)
+            return -EDGE_LINUX_EINVAL;
+        result = kernel_io_uring_fixed_buffer_validate(
+            ring_id, submission->buffer_index,
+            scratch.vectors[index].iov_base, length);
+        if (result < 0) return result;
+        total += length;
+    }
+    return 0;
 }
 
 static int64_t edge_linux_io_uring_execute_vfs(
@@ -8902,6 +8938,18 @@ static int32_t edge_linux_io_uring_execute_descriptor(
             result = edge_linux_io_uring_execute_rw(
                 context, submission, 1);
         break;
+    case EDGE_LINUX_IORING_OP_READV_FIXED:
+    case EDGE_LINUX_IORING_OP_WRITEV_FIXED:
+        if (submission->splice_descriptor)
+            result = -EDGE_LINUX_EINVAL;
+        else {
+            result = edge_linux_io_uring_fixed_vector_validate(
+                context, ring_id, submission);
+            if (result == 0)
+                result = edge_linux_io_uring_execute_rw(
+                    context, submission, 1);
+        }
+        break;
     case EDGE_LINUX_IORING_OP_FSYNC:
         if (submission->operation_flags &
             ~EDGE_LINUX_IORING_FSYNC_DATASYNC)
@@ -9020,6 +9068,8 @@ static int edge_linux_io_uring_fixed_file_supported(uint8_t opcode) {
     switch (opcode) {
     case EDGE_LINUX_IORING_OP_READV:
     case EDGE_LINUX_IORING_OP_WRITEV:
+    case EDGE_LINUX_IORING_OP_READV_FIXED:
+    case EDGE_LINUX_IORING_OP_WRITEV_FIXED:
     case EDGE_LINUX_IORING_OP_FSYNC:
     case EDGE_LINUX_IORING_OP_SYNC_FILE_RANGE:
     case EDGE_LINUX_IORING_OP_SENDMSG:
@@ -9564,7 +9614,9 @@ static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
            opcode == EDGE_LINUX_IORING_OP_FUTEX_WAKE ||
            opcode == EDGE_LINUX_IORING_OP_FIXED_FD_INSTALL ||
            opcode == EDGE_LINUX_IORING_OP_FTRUNCATE ||
-           opcode == EDGE_LINUX_IORING_OP_PIPE;
+           opcode == EDGE_LINUX_IORING_OP_PIPE ||
+           opcode == EDGE_LINUX_IORING_OP_READV_FIXED ||
+           opcode == EDGE_LINUX_IORING_OP_WRITEV_FIXED;
 }
 
 static int64_t edge_linux_io_uring_files_update_user(

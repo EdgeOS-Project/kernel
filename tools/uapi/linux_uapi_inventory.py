@@ -53,6 +53,7 @@ EDGEOS_ASSESSMENTS = [
             "FILES2 sparse registration, UPDATE2 layouts and resource tag completion events",
             "bounded fixed-buffer registration, sparse entries, updates, tags and range validation",
             "READ_FIXED and WRITE_FIXED through shared synchronous descriptor I/O",
+            "READV_FIXED and WRITEV_FIXED with registered-buffer range validation",
             "per-task registered-ring descriptors for enter and register operations",
             "timeout removal and update with retained clock selection",
             "per-ring monotonic or boottime enter clocks",
@@ -109,7 +110,8 @@ EDGEOS_ASSESSMENTS = [
                 "slots, skipped target completions and retained lifetime after "
                 "source-table removal, plus legacy and extended fixed-buffer "
                 "registration, tagged updates, range errors and real pipe data "
-                "through READ_FIXED and WRITE_FIXED"
+                "through READ_FIXED and WRITE_FIXED, plus frozen-source "
+                "READV_FIXED and WRITEV_FIXED layouts with EdgeOS runtime data"
             ),
         },
     },
@@ -422,6 +424,9 @@ def build_inventory(tree: Path) -> dict[str, object]:
             "socket_options": symbol_domain(
                 tree, SOCKET_HEADERS, prefixes=SOCKET_PREFIXES,
                 include_enums=True),
+            "io_uring": symbol_domain(
+                tree, ("include/uapi/linux/io_uring.h",),
+                prefixes=("IORING_", "IOSQE_"), include_enums=True),
             "netlink": symbol_domain(
                 tree, NETLINK_HEADERS, prefixes=NETLINK_PREFIXES,
                 include_enums=True),
