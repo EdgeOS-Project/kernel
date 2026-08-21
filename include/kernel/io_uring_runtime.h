@@ -80,7 +80,10 @@ int kernel_io_uring_timeout_add(int32_t ring_id, uint64_t user_data,
                                 uint64_t deadline_us,
                                 uint32_t completion_target,
                                 int32_t expiration_result,
-                                int realtime_clock);
+                                int realtime_clock,
+                                uint64_t interval_us,
+                                uint32_t repeat_count,
+                                int multishot);
 int kernel_io_uring_timeout_update(int32_t ring_id, uint64_t user_data,
                                    uint64_t value_us, int absolute,
                                    uint64_t monotonic_now_us,

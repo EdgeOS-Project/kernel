@@ -8137,14 +8137,19 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_TIMEOUT_BOOTTIME       (1u << 2)
 #define EDGE_LINUX_IORING_TIMEOUT_REALTIME       (1u << 3)
 #define EDGE_LINUX_IORING_TIMEOUT_ETIME_SUCCESS  (1u << 5)
+#define EDGE_LINUX_IORING_TIMEOUT_MULTISHOT      (1u << 6)
+#define EDGE_LINUX_IORING_TIMEOUT_IMMEDIATE_ARG  (1u << 7)
 #define EDGE_LINUX_IORING_TIMEOUT_SUPPORTED \
     (EDGE_LINUX_IORING_TIMEOUT_ABS | \
      EDGE_LINUX_IORING_TIMEOUT_BOOTTIME | \
      EDGE_LINUX_IORING_TIMEOUT_REALTIME | \
-     EDGE_LINUX_IORING_TIMEOUT_ETIME_SUCCESS)
+     EDGE_LINUX_IORING_TIMEOUT_ETIME_SUCCESS | \
+     EDGE_LINUX_IORING_TIMEOUT_MULTISHOT | \
+     EDGE_LINUX_IORING_TIMEOUT_IMMEDIATE_ARG)
 #define EDGE_LINUX_IORING_TIMEOUT_UPDATE_SUPPORTED \
     (EDGE_LINUX_IORING_TIMEOUT_UPDATE | \
-     EDGE_LINUX_IORING_TIMEOUT_ABS)
+     EDGE_LINUX_IORING_TIMEOUT_ABS | \
+     EDGE_LINUX_IORING_TIMEOUT_IMMEDIATE_ARG)
 #define EDGE_LINUX_IORING_POLL_ADD_MULTI       (1u << 0)
 #define EDGE_LINUX_IORING_POLL_UPDATE_EVENTS   (1u << 1)
 #define EDGE_LINUX_IORING_POLL_UPDATE_USER_DATA (1u << 2)
@@ -8155,10 +8160,27 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_POLL_ALLOWED 0x201fu
 #define EDGE_LINUX_IORING_PENDING_RESULT (INT32_MIN + 1)
 
+static int edge_linux_io_uring_timeout_value(
+        edge_linux_syscall_context_t *context, uint64_t argument,
+        uint32_t flags, uint64_t *value_us) {
+    linux_timespec64_t timeout;
+
+    if (!value_us) return -EDGE_LINUX_EINVAL;
+    if (flags & EDGE_LINUX_IORING_TIMEOUT_IMMEDIATE_ARG) {
+        if (argument > INT64_MAX) return -EDGE_LINUX_EINVAL;
+        *value_us = (argument + 999u) / 1000u;
+        return 0;
+    }
+    if (!argument) return -EDGE_LINUX_EFAULT;
+    if (edge_linux_copy_from_user(
+            context, &timeout, argument, sizeof(timeout)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    return edge_linux_timespec_microseconds(&timeout, value_us);
+}
+
 static int32_t edge_linux_io_uring_timeout(
         edge_linux_syscall_context_t *context, int32_t ring_id,
         const struct edge_linux_io_uring_sqe *submission) {
-    linux_timespec64_t timeout;
     uint64_t duration;
     uint64_t now = boottime_monotonic_us();
     uint64_t deadline;
@@ -8168,17 +8190,18 @@ static int32_t edge_linux_io_uring_timeout(
     int result;
 
     if (submission->descriptor != -1 || submission->length != 1u ||
-        !submission->address || submission->buffer_index ||
-        submission->splice_descriptor ||
+        (!(flags & EDGE_LINUX_IORING_TIMEOUT_IMMEDIATE_ARG) &&
+         !submission->address) || submission->buffer_index ||
+        submission->splice_descriptor || submission->address3 ||
+        submission->reserved2 ||
         (flags & ~EDGE_LINUX_IORING_TIMEOUT_SUPPORTED) ||
         ((flags & EDGE_LINUX_IORING_TIMEOUT_BOOTTIME) &&
-         (flags & EDGE_LINUX_IORING_TIMEOUT_REALTIME)))
+         (flags & EDGE_LINUX_IORING_TIMEOUT_REALTIME)) ||
+        ((flags & EDGE_LINUX_IORING_TIMEOUT_MULTISHOT) &&
+         (flags & EDGE_LINUX_IORING_TIMEOUT_ABS)))
         return -EDGE_LINUX_EINVAL;
-    if (edge_linux_copy_from_user(
-            context, &timeout, submission->address,
-            sizeof(timeout)) < 0)
-        return -EDGE_LINUX_EFAULT;
-    result = edge_linux_timespec_microseconds(&timeout, &duration);
+    result = edge_linux_io_uring_timeout_value(
+        context, submission->address, flags, &duration);
     if (result < 0) return result;
     if (flags & EDGE_LINUX_IORING_TIMEOUT_ABS) {
         if (flags & EDGE_LINUX_IORING_TIMEOUT_REALTIME) {
@@ -8193,7 +8216,8 @@ static int32_t edge_linux_io_uring_timeout(
         deadline = duration > UINT64_MAX - now ? UINT64_MAX :
                    now + duration;
     }
-    if (submission->offset) {
+    if (submission->offset &&
+        !(flags & EDGE_LINUX_IORING_TIMEOUT_MULTISHOT)) {
         uint32_t current = kernel_io_uring_completion_count(ring_id);
         completion_target = submission->offset > UINT32_MAX - current ?
                             UINT32_MAX :
@@ -8201,16 +8225,16 @@ static int32_t edge_linux_io_uring_timeout(
     }
     result = kernel_io_uring_timeout_add(
         ring_id, submission->user_data, deadline, completion_target,
-        (flags & EDGE_LINUX_IORING_TIMEOUT_ETIME_SUCCESS) ?
-            0 : -EDGE_LINUX_ETIME,
-        (flags & EDGE_LINUX_IORING_TIMEOUT_REALTIME) != 0);
+        -EDGE_LINUX_ETIME,
+        (flags & EDGE_LINUX_IORING_TIMEOUT_REALTIME) != 0,
+        duration, (uint32_t)submission->offset,
+        (flags & EDGE_LINUX_IORING_TIMEOUT_MULTISHOT) != 0);
     return result < 0 ? result : EDGE_LINUX_IORING_PENDING_RESULT;
 }
 
 static int32_t edge_linux_io_uring_timeout_remove_update(
         edge_linux_syscall_context_t *context, int32_t ring_id,
         const struct edge_linux_io_uring_sqe *submission) {
-    linux_timespec64_t timeout;
     uint32_t flags = submission->operation_flags;
     uint64_t value;
     int result;
@@ -8227,12 +8251,8 @@ static int32_t edge_linux_io_uring_timeout_remove_update(
     if (!(flags & EDGE_LINUX_IORING_TIMEOUT_UPDATE) ||
         (flags & ~EDGE_LINUX_IORING_TIMEOUT_UPDATE_SUPPORTED))
         return -EDGE_LINUX_EINVAL;
-    if (!submission->offset) return -EDGE_LINUX_EFAULT;
-    if (edge_linux_copy_from_user(
-            context, &timeout, submission->offset,
-            sizeof(timeout)) < 0)
-        return -EDGE_LINUX_EFAULT;
-    result = edge_linux_timespec_microseconds(&timeout, &value);
+    result = edge_linux_io_uring_timeout_value(
+        context, submission->offset, flags, &value);
     if (result < 0) return result;
     return kernel_io_uring_timeout_update(
         ring_id, submission->address, value,
@@ -8973,8 +8993,10 @@ static int64_t edge_linux_sys_io_uring_enter(
     if (kernel_io_uring_disabled(ring_id) != 0)
         return -EDGE_LINUX_EBADFD;
     if (kernel_arch_current_linux_thread_state(&thread_state) == 0 &&
-        thread_state)
-        thread_state->io_uring_wait_submitted = 0;
+        thread_state) {
+        /* A blocked syscall may resume by replaying its entry path. */
+        submitted = thread_state->io_uring_wait_submitted;
+    }
     if (use_temporary_mask) {
         if (kernel_arch_signal_runtime_state(
                 context->current_task, &signal_state) < 0)
@@ -9033,8 +9055,6 @@ static int64_t edge_linux_sys_io_uring_enter(
                     ring_id, boottime_monotonic_us());
                 arch_cpu_relax();
             }
-            if (kernel_io_uring_completion_count(ring_id) < minimum)
-                goto submitted_result;
         }
         while (kernel_io_uring_completion_count(ring_id) < minimum) {
             int released;
@@ -9060,10 +9080,11 @@ static int64_t edge_linux_sys_io_uring_enter(
             if (!yielded) break;
         }
     }
-submitted_result:
     final_result = thread_state ?
         thread_state->io_uring_wait_submitted : submitted;
 finish:
+    if (thread_state)
+        thread_state->io_uring_wait_submitted = 0;
     if (signal_mask_installed)
         kernel_signal_wait_mask_finish(&signal_state, interrupted);
     return final_result;

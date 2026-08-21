@@ -69,6 +69,9 @@ typedef struct kernel_io_uring_pending {
     int32_t expiration_result;
     uint64_t user_data;
     uint64_t deadline_us;
+    uint64_t interval_us;
+    uint32_t repeat_count;
+    uint32_t reserved2;
     uint64_t sequence;
 } kernel_io_uring_pending_t;
 
@@ -854,7 +857,8 @@ static int io_uring_pending_add(int32_t ring_id, uint8_t kind,
                                 uint32_t events, uint64_t deadline_us,
                                 uint32_t completion_target,
                                 int32_t expiration_result,
-                                int realtime_clock, int multishot) {
+                                int realtime_clock, uint64_t interval_us,
+                                uint32_t repeat_count, int multishot) {
     kernel_io_uring_t *ring;
     uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
     uint32_t slot;
@@ -876,6 +880,8 @@ static int io_uring_pending_add(int32_t ring_id, uint8_t kind,
             ring->pending[slot].realtime_clock = realtime_clock ? 1u : 0u;
             ring->pending[slot].multishot = multishot ? 1u : 0u;
             ring->pending[slot].deadline_us = deadline_us;
+            ring->pending[slot].interval_us = interval_us;
+            ring->pending[slot].repeat_count = repeat_count;
             ring->pending[slot].completion_target = completion_target;
             ring->pending[slot].expiration_result = expiration_result;
             ring->pending[slot].user_data = user_data;
@@ -893,11 +899,14 @@ int kernel_io_uring_timeout_add(int32_t ring_id, uint64_t user_data,
                                 uint64_t deadline_us,
                                 uint32_t completion_target,
                                 int32_t expiration_result,
-                                int realtime_clock) {
+                                int realtime_clock,
+                                uint64_t interval_us,
+                                uint32_t repeat_count,
+                                int multishot) {
     return io_uring_pending_add(
         ring_id, IO_URING_PENDING_TIMEOUT, user_data, -1, 0,
         deadline_us, completion_target, expiration_result,
-        realtime_clock, 0);
+        realtime_clock, interval_us, repeat_count, multishot);
 }
 
 int kernel_io_uring_timeout_update(int32_t ring_id, uint64_t user_data,
@@ -920,6 +929,10 @@ int kernel_io_uring_timeout_update(int32_t ring_id, uint64_t user_data,
                 pending->kind != IO_URING_PENDING_TIMEOUT ||
                 pending->user_data != user_data)
                 continue;
+            if (pending->ready_latched) {
+                result = -EDGE_LINUX_EALREADY;
+                break;
+            }
             if (!absolute) {
                 deadline = value_us > UINT64_MAX - monotonic_now_us ?
                            UINT64_MAX : monotonic_now_us + value_us;
@@ -933,7 +946,16 @@ int kernel_io_uring_timeout_update(int32_t ring_id, uint64_t user_data,
                 deadline = value_us;
             }
             pending->deadline_us = deadline;
+            if (pending->multishot) {
+                pending->interval_us = value_us;
+                pending->repeat_count = 0u;
+            }
             pending->completion_target = 0u;
+            pending->ready_latched = 0u;
+            ++ring->next_pending_sequence;
+            if (!ring->next_pending_sequence)
+                ++ring->next_pending_sequence;
+            pending->sequence = ring->next_pending_sequence;
             result = 0;
             break;
         }
@@ -948,7 +970,7 @@ int kernel_io_uring_poll_add(int32_t ring_id, uint64_t user_data,
     if (descriptor < 0 || !events) return -EDGE_LINUX_EINVAL;
     return io_uring_pending_add(
         ring_id, IO_URING_PENDING_POLL, user_data, descriptor,
-        events, UINT64_MAX, 0, 0, 0, multishot);
+        events, UINT64_MAX, 0, 0, 0, 0, 0, multishot);
 }
 
 int kernel_io_uring_poll_update(int32_t ring_id, uint64_t old_user_data,
@@ -1026,6 +1048,8 @@ uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us) {
         int32_t result = 0;
         int remove = 0;
         int ready = 0;
+        int timeout_completion = 0;
+        int timeout_final = 0;
         uint64_t completion_user_data;
         uint32_t completion_flags = 0u;
         ring = io_uring_lookup_locked(ring_id);
@@ -1052,8 +1076,16 @@ uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us) {
                 result = pending.expiration_result;
             }
             if (ready) {
-                memset(&ring->pending[slot], 0,
-                       sizeof(ring->pending[slot]));
+                if (pending.ready_latched) {
+                    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+                    continue;
+                }
+                ring->pending[slot].ready_latched = 1u;
+                timeout_completion = 1;
+                timeout_final = !pending.multishot ||
+                                pending.repeat_count == 1u;
+                if (pending.multishot && !timeout_final)
+                    completion_flags = 1u << 1;
                 remove = 1;
             }
             spin_unlock_irqrestore(&g_io_uring_lock, flags);
@@ -1103,9 +1135,30 @@ uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us) {
             int completion_result = kernel_io_uring_completion_add_async(
                 ring_id, completion_user_data, result,
                 completion_flags);
-            if (completion_result == 0) {
-                ++count;
-            } else if (completion_flags & (1u << 1)) {
+            if (timeout_completion) {
+                flags = spin_lock_irqsave(&g_io_uring_lock);
+                ring = io_uring_lookup_locked(ring_id);
+                if (ring && ring->pending[slot].used &&
+                    ring->pending[slot].kind == IO_URING_PENDING_TIMEOUT &&
+                    ring->pending[slot].sequence == pending.sequence) {
+                    kernel_io_uring_pending_t *current =
+                        &ring->pending[slot];
+                    if (completion_result == 0 && timeout_final) {
+                        memset(current, 0, sizeof(*current));
+                    } else if (completion_result == 0) {
+                        if (current->repeat_count > 1u)
+                            --current->repeat_count;
+                        current->deadline_us =
+                            current->interval_us > UINT64_MAX - now_us ?
+                            UINT64_MAX : now_us + current->interval_us;
+                        current->ready_latched = 0u;
+                    } else {
+                        current->ready_latched = 0u;
+                    }
+                }
+                spin_unlock_irqrestore(&g_io_uring_lock, flags);
+            } else if (completion_result < 0 &&
+                       (completion_flags & (1u << 1))) {
                 flags = spin_lock_irqsave(&g_io_uring_lock);
                 ring = io_uring_lookup_locked(ring_id);
                 if (ring && ring->pending[slot].used &&
@@ -1114,6 +1167,7 @@ uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us) {
                     ring->pending[slot].ready_latched = 0u;
                 spin_unlock_irqrestore(&g_io_uring_lock, flags);
             }
+            if (completion_result == 0) ++count;
         }
     }
     return count;

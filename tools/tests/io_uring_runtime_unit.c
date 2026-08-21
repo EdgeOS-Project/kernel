@@ -248,7 +248,7 @@ int main(void) {
 
     assert(kernel_io_uring_timeout_add(
                ring_id, 0x54494d45u, 100u, 0,
-               -EDGE_LINUX_ETIME, 0) == 0);
+               -EDGE_LINUX_ETIME, 0, 0u, 0u, 0) == 0);
     assert(kernel_io_uring_collect(ring_id, 99u) == 0);
     assert(kernel_io_uring_collect(ring_id, 100u) == 1);
     assert(kernel_io_uring_completion_count(ring_id) == 2);
@@ -266,7 +266,7 @@ int main(void) {
 
     assert(kernel_io_uring_timeout_add(
                ring_id, 0x55504454u, UINT64_MAX, 7u,
-               -EDGE_LINUX_ETIME, 0) == 0);
+               -EDGE_LINUX_ETIME, 0, 0u, 0u, 0) == 0);
     assert(kernel_io_uring_timeout_update(
                ring_id, 0x55504454u, 20u, 0, 100u, 1000u) == 0);
     assert(kernel_io_uring_collect(ring_id, 119u) == 0);
@@ -280,7 +280,7 @@ int main(void) {
 
     assert(kernel_io_uring_timeout_add(
                ring_id, 0x43414e43u, UINT64_MAX, 0,
-               -EDGE_LINUX_ETIME, 0) == 0);
+               -EDGE_LINUX_ETIME, 0, 0u, 0u, 0) == 0);
     assert(kernel_io_uring_pending_cancel(ring_id, 0x43414e43u) == 0);
     assert(kernel_io_uring_pending_cancel(ring_id, 0x43414e43u) ==
            -EDGE_LINUX_ENOENT);
@@ -342,6 +342,73 @@ int main(void) {
     test_page_release(0, &sqes);
     kernel_io_uring_release(ring_id);
     assert(g_fixed_file_references == 0u);
+
+    {
+        struct edge_linux_io_uring_params timeout_parameters = {0};
+        kernel_io_uring_page_t timeout_cq;
+        struct edge_linux_io_uring_cqe *timeout_completion;
+
+        assert(kernel_io_uring_create(
+                   4u, &timeout_parameters, &second_ring_id) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_CQ_RING,
+                   0u, &timeout_cq) == 0);
+        timeout_completion = (struct edge_linux_io_uring_cqe *)(
+            (uint8_t *)timeout_cq.address +
+            timeout_parameters.cq_off.cqes);
+
+        assert(kernel_io_uring_timeout_add(
+                   second_ring_id, 0x4d54494du, 100u, 0u,
+                   -EDGE_LINUX_ETIME, 0, 10u, 3u, 1) == 0);
+        assert(kernel_io_uring_collect(second_ring_id, 99u) == 0);
+        assert(kernel_io_uring_collect(second_ring_id, 100u) == 1);
+        assert(timeout_completion[0].user_data == 0x4d54494du);
+        assert(timeout_completion[0].result == -EDGE_LINUX_ETIME &&
+               timeout_completion[0].flags == 2u);
+        assert(kernel_io_uring_collect(second_ring_id, 109u) == 0);
+        assert(kernel_io_uring_collect(second_ring_id, 110u) == 1);
+        assert(timeout_completion[1].result == -EDGE_LINUX_ETIME &&
+               timeout_completion[1].flags == 2u);
+        assert(kernel_io_uring_collect(second_ring_id, 120u) == 1);
+        assert(timeout_completion[2].result == -EDGE_LINUX_ETIME &&
+               timeout_completion[2].flags == 0u);
+        assert(kernel_io_uring_pending_cancel(
+                   second_ring_id, 0x4d54494du) == -EDGE_LINUX_ENOENT);
+
+        assert(kernel_io_uring_timeout_add(
+                   second_ring_id, 0x494e4654u, 200u, 0u,
+                   -EDGE_LINUX_ETIME, 0, 5u, 0u, 1) == 0);
+        assert(kernel_io_uring_collect(second_ring_id, 200u) == 1);
+        assert(timeout_completion[3].flags == 2u);
+        assert(kernel_io_uring_timeout_update(
+                   second_ring_id, 0x494e4654u, 20u, 0,
+                   200u, 1000u) == 0);
+        assert(kernel_io_uring_collect(second_ring_id, 219u) == 0);
+        assert(kernel_io_uring_collect(second_ring_id, 220u) == 1);
+        assert(timeout_completion[4].user_data == 0x494e4654u);
+        assert(timeout_completion[4].flags == 2u);
+        assert(kernel_io_uring_pending_cancel(
+                   second_ring_id, 0x494e4654u) == 0);
+
+        for (uint32_t index = 0; index < 3u; ++index)
+            assert(kernel_io_uring_completion_add(
+                       second_ring_id, 0x46494c54u + index,
+                       0, 0) == 0);
+        assert(kernel_io_uring_timeout_add(
+                   second_ring_id, 0x52455454u, 300u, 0u,
+                   -EDGE_LINUX_ETIME, 0, 10u, 0u, 1) == 0);
+        assert(kernel_io_uring_collect(second_ring_id, 300u) == 0);
+        *page_u32(&timeout_cq, timeout_parameters.cq_off.head) = 1u;
+        assert(kernel_io_uring_collect(second_ring_id, 300u) == 1);
+        assert(timeout_completion[0].user_data == 0x52455454u);
+        assert(timeout_completion[0].result == -EDGE_LINUX_ETIME &&
+               timeout_completion[0].flags == 2u);
+        assert(kernel_io_uring_pending_cancel(
+                   second_ring_id, 0x52455454u) == 0);
+
+        test_page_release(0, &timeout_cq);
+        kernel_io_uring_release(second_ring_id);
+    }
     for (uint32_t index = 0; index < TEST_PAGE_COUNT; ++index)
         assert(g_references[index] == 0);
 

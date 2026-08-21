@@ -4,6 +4,14 @@
 #include <stdint.h>
 
 #if defined(__x86_64__)
+#pragma GCC target("no-sse,no-sse2")
+#if defined(__clang__)
+#pragma clang attribute push( \
+    __attribute__((target("no-sse,no-sse2"))), apply_to = function)
+#endif
+#endif
+
+#if defined(__x86_64__)
 #define SYS_close 3
 #define SYS_exit 60
 #define SYS_mmap 9
@@ -29,12 +37,19 @@
 #define IORING_ENTER_GETEVENTS 1u
 #define IORING_OP_TIMEOUT 11u
 #define IORING_OP_TIMEOUT_REMOVE 12u
+#define IORING_TIMEOUT_ABS (1u << 0)
 #define IORING_TIMEOUT_UPDATE (1u << 1)
+#define IORING_TIMEOUT_ETIME_SUCCESS (1u << 5)
+#define IORING_TIMEOUT_MULTISHOT (1u << 6)
+#define IORING_TIMEOUT_IMMEDIATE_ARG (1u << 7)
+#define IORING_CQE_F_MORE (1u << 1)
 #define IORING_OFF_SQ_RING 0x00000000ull
 #define IORING_OFF_CQ_RING 0x08000000ull
 #define IORING_OFF_SQES 0x10000000ull
 #define ENOENT 2
+#define EINVAL 22
 #define ETIME 62
+#define ECANCELED 125
 
 struct kernel_timespec {
     int64_t seconds;
@@ -147,11 +162,37 @@ static long print_text(const char *text) {
         SYS_write, 1, (long)text, text_length(text), 0, 0, 0);
 }
 
+static void print_number(long value) {
+    char buffer[32];
+    uint32_t position = sizeof(buffer);
+    unsigned long magnitude;
+
+    buffer[--position] = '\n';
+    magnitude = value < 0 ? (unsigned long)(-value) : (unsigned long)value;
+    do {
+        buffer[--position] = (char)('0' + magnitude % 10u);
+        magnitude /= 10u;
+    } while (magnitude);
+    if (value < 0) buffer[--position] = '-';
+    (void)raw_syscall6(
+        SYS_write, 1, (long)&buffer[position], sizeof(buffer) - position,
+        0, 0, 0);
+}
+
 static int check(const char *name, int condition) {
     if (condition) return 0;
     print_text("FAIL ");
     print_text(name);
     print_text("\n");
+    return 1;
+}
+
+static int check_result(const char *name, long result, long expected) {
+    if (result == expected) return 0;
+    print_text("FAIL ");
+    print_text(name);
+    print_text(" result=");
+    print_number(result);
     return 1;
 }
 
@@ -192,6 +233,8 @@ static int run_probe(void) {
     struct io_uring_sqe request;
     struct kernel_timespec long_timeout = {60, 0};
     struct kernel_timespec short_timeout = {0, 20000000};
+    struct kernel_timespec multishot_timeout = {0, 20000000};
+    struct kernel_timespec updateable_multishot_timeout = {0, 200000000};
     void *sq_ring;
     void *cq_ring;
     struct io_uring_sqe *sqes;
@@ -209,11 +252,18 @@ static int run_probe(void) {
     bytes_zero(&parameters, sizeof(parameters));
     descriptor = raw_syscall6(
         SYS_io_uring_setup, 8, (long)&parameters, 0, 0, 0, 0);
-    if (descriptor < 0) return 1;
+    if (descriptor < 0) {
+        print_text("FAIL setup ring ");
+        print_number(descriptor);
+        settle_console_output();
+        return 1;
+    }
     sq_ring = map_ring(descriptor, IORING_OFF_SQ_RING);
     cq_ring = map_ring(descriptor, IORING_OFF_CQ_RING);
     sqes = map_ring(descriptor, IORING_OFF_SQES);
     if (!sq_ring || !cq_ring || !sqes) {
+        print_text("FAIL map ring\n");
+        settle_console_output();
         failures = 1;
         goto close_ring;
     }
@@ -284,6 +334,149 @@ static int run_probe(void) {
         cqes[completion & *cq_mask].result == -ENOENT);
     __atomic_store_n(cq_head, completion + 1u, __ATOMIC_RELEASE);
 
+    bytes_zero(&request, sizeof(request));
+    request.opcode = IORING_OP_TIMEOUT;
+    request.descriptor = -1;
+    request.offset = 2u;
+    request.address = (uint64_t)(uintptr_t)&multishot_timeout;
+    request.length = 1u;
+    request.operation_flags = IORING_TIMEOUT_MULTISHOT;
+    request.user_data = 0x4d54494d4546494eull;
+    completion = __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE);
+    failures += check_result("submit finite multishot timeout", submit(
+        descriptor, sq_tail, sq_mask, sq_array, sqes, &request, 1), 1);
+    failures += check("first finite multishot timeout",
+        __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == completion + 1u &&
+        cqes[completion & *cq_mask].user_data == request.user_data &&
+        cqes[completion & *cq_mask].result == -ETIME &&
+        (cqes[completion & *cq_mask].flags & IORING_CQE_F_MORE) != 0);
+    __atomic_store_n(cq_head, completion + 1u, __ATOMIC_RELEASE);
+
+    completion = __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE);
+    failures += check("wait finite multishot final", raw_syscall6(
+        SYS_io_uring_enter, descriptor, 0, 1,
+        IORING_ENTER_GETEVENTS, 0, 0) == 0);
+    failures += check("finite multishot final",
+        __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == completion + 1u &&
+        cqes[completion & *cq_mask].user_data == request.user_data &&
+        cqes[completion & *cq_mask].result == -ETIME &&
+        (cqes[completion & *cq_mask].flags & IORING_CQE_F_MORE) == 0);
+    __atomic_store_n(cq_head, completion + 1u, __ATOMIC_RELEASE);
+
+    request.address =
+        (uint64_t)(uintptr_t)&updateable_multishot_timeout;
+    request.user_data = 0x4d54494d45555044ull;
+    completion = __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE);
+    failures += check_result("submit updateable multishot timeout", submit(
+        descriptor, sq_tail, sq_mask, sq_array, sqes, &request, 1), 1);
+    failures += check("updateable multishot first",
+        __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == completion + 1u &&
+        cqes[completion & *cq_mask].user_data == request.user_data &&
+        (cqes[completion & *cq_mask].flags & IORING_CQE_F_MORE) != 0);
+    __atomic_store_n(cq_head, completion + 1u, __ATOMIC_RELEASE);
+
+    bytes_zero(&request, sizeof(request));
+    request.opcode = IORING_OP_TIMEOUT_REMOVE;
+    request.descriptor = -1;
+    request.address = 0x4d54494d45555044ull;
+    request.offset = (uint64_t)(uintptr_t)&short_timeout;
+    request.operation_flags = IORING_TIMEOUT_UPDATE;
+    request.user_data = 0x4d54494d55504431ull;
+    completion = __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE);
+    failures += check("update multishot timeout", submit(
+        descriptor, sq_tail, sq_mask, sq_array, sqes, &request, 1) == 1);
+    failures += check("multishot update completion",
+        __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == completion + 1u &&
+        cqes[completion & *cq_mask].user_data == request.user_data &&
+        cqes[completion & *cq_mask].result == 0);
+    __atomic_store_n(cq_head, completion + 1u, __ATOMIC_RELEASE);
+
+    completion = __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE);
+    failures += check("wait updated multishot timeout", raw_syscall6(
+        SYS_io_uring_enter, descriptor, 0, 1,
+        IORING_ENTER_GETEVENTS, 0, 0) == 0);
+    failures += check("updated multishot remains active",
+        __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == completion + 1u &&
+        cqes[completion & *cq_mask].user_data ==
+            0x4d54494d45555044ull &&
+        cqes[completion & *cq_mask].result == -ETIME &&
+        (cqes[completion & *cq_mask].flags & IORING_CQE_F_MORE) != 0);
+    __atomic_store_n(cq_head, completion + 1u, __ATOMIC_RELEASE);
+
+    bytes_zero(&request, sizeof(request));
+    request.opcode = IORING_OP_TIMEOUT_REMOVE;
+    request.descriptor = -1;
+    request.address = 0x4d54494d45555044ull;
+    request.user_data = 0x4d54494d524d5631ull;
+    completion = __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE);
+    failures += check("remove updated multishot timeout", submit(
+        descriptor, sq_tail, sq_mask, sq_array, sqes, &request, 2) == 1);
+    failures += check("multishot removal completion count",
+        __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == completion + 2u);
+    {
+        struct io_uring_cqe *first = &cqes[completion & *cq_mask];
+        struct io_uring_cqe *second =
+            &cqes[(completion + 1u) & *cq_mask];
+        int removal_ok =
+            (first->user_data == request.user_data && first->result == 0) ||
+            (second->user_data == request.user_data && second->result == 0);
+        int target_ok =
+            (first->user_data == 0x4d54494d45555044ull &&
+             first->result == -ECANCELED) ||
+            (second->user_data == 0x4d54494d45555044ull &&
+             second->result == -ECANCELED);
+        failures += check("multishot removal results",
+                          removal_ok && target_ok);
+    }
+    __atomic_store_n(cq_head, completion + 2u, __ATOMIC_RELEASE);
+
+    bytes_zero(&request, sizeof(request));
+    request.opcode = IORING_OP_TIMEOUT;
+    request.descriptor = -1;
+    request.address = (uint64_t)(uintptr_t)&multishot_timeout;
+    request.length = 1u;
+    request.operation_flags = IORING_TIMEOUT_MULTISHOT |
+                              IORING_TIMEOUT_ABS;
+    request.user_data = 0x4d54494d494e564cull;
+    completion = __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE);
+    failures += check("submit invalid absolute multishot", submit(
+        descriptor, sq_tail, sq_mask, sq_array, sqes, &request, 1) == 1);
+    failures += check("invalid absolute multishot result",
+        __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == completion + 1u &&
+        cqes[completion & *cq_mask].user_data == request.user_data &&
+        cqes[completion & *cq_mask].result == -EINVAL);
+    __atomic_store_n(cq_head, completion + 1u, __ATOMIC_RELEASE);
+
+    request.offset = 0u;
+    request.operation_flags = IORING_TIMEOUT_ETIME_SUCCESS;
+    request.user_data = 0x4554494d45535543ull;
+    completion = __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE);
+    failures += check_result("submit etime-success timeout", submit(
+        descriptor, sq_tail, sq_mask, sq_array, sqes, &request, 1), 1);
+    failures += check("etime-success preserves result",
+        __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == completion + 1u &&
+        cqes[completion & *cq_mask].user_data == request.user_data &&
+        cqes[completion & *cq_mask].result == -ETIME);
+    __atomic_store_n(cq_head, completion + 1u, __ATOMIC_RELEASE);
+
+#ifdef EDGEOS_EXPECT_TIMEOUT_IMMEDIATE_ARG
+    bytes_zero(&request, sizeof(request));
+    request.opcode = IORING_OP_TIMEOUT;
+    request.descriptor = -1;
+    request.address = 1000000u;
+    request.length = 1u;
+    request.operation_flags = IORING_TIMEOUT_IMMEDIATE_ARG;
+    request.user_data = 0x494d4d4544494154ull;
+    completion = __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE);
+    failures += check("submit immediate timeout", submit(
+        descriptor, sq_tail, sq_mask, sq_array, sqes, &request, 1) == 1);
+    failures += check("immediate timeout result",
+        __atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) == completion + 1u &&
+        cqes[completion & *cq_mask].user_data == request.user_data &&
+        cqes[completion & *cq_mask].result == -ETIME);
+    __atomic_store_n(cq_head, completion + 1u, __ATOMIC_RELEASE);
+#endif
+
     (void)raw_syscall6(SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
     (void)raw_syscall6(SYS_munmap, (long)cq_ring, PAGE_SIZE, 0, 0, 0, 0);
     (void)raw_syscall6(SYS_munmap, (long)sqes, PAGE_SIZE, 0, 0, 0, 0);
@@ -300,8 +493,12 @@ void _start(void) {
     const char *result = failures ?
         "IO_URING_TIMEOUT_UPDATE_ABI_PROBE_FAIL\n" :
         "IO_URING_TIMEOUT_UPDATE_ABI_PROBE_PASS\n";
+    (void)print_text(result);
     settle_console_output();
-    if (print_text(result) != (long)text_length(result)) ++failures;
     raw_syscall6(SYS_exit, failures ? 1 : 0, 0, 0, 0, 0, 0);
     for (;;) { }
 }
+
+#if defined(__x86_64__) && defined(__clang__)
+#pragma clang attribute pop
+#endif

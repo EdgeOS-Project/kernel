@@ -30,7 +30,7 @@ EDGEOS_ASSESSMENTS = [
             "probe and disabled-ring registration",
             "completion eventfd registration and notification",
             "single-shot and multishot poll completions with update operations",
-            "relative and absolute timeout requests",
+            "relative, absolute, immediate-argument and multishot timeout requests",
             "completion-count timeouts",
             "timeout removal and user-data cancellation",
             "classic and extended temporary signal-mask enter arguments",
@@ -52,7 +52,6 @@ EDGEOS_ASSESSMENTS = [
         "missing": [
             "asynchronous worker execution",
             "fixed buffers with user-page pinning",
-            "multishot timeout operations",
             "fully interruptible enter suspension and extended wait deadlines",
             "pending asynchronous descriptor leases across close and reuse",
             "remaining supported VFS and socket operations",
@@ -78,8 +77,8 @@ EDGEOS_ASSESSMENTS = [
                 "setxattr, fgetxattr, getxattr, ftruncate, sync_file_range, "
                 "futex_wake, fixed-file registration, retained lifetime, updates, "
                 "extended resource layouts, tag completion events, registered-ring "
-                "descriptor lifetime, timeout update, poll update, multishot poll "
-                "and operation probe"
+                "descriptor lifetime, timeout update, finite and updated multishot "
+                "timeouts, poll update, multishot poll and operation probe"
             ),
         },
     },
