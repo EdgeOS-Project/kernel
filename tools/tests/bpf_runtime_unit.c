@@ -387,6 +387,46 @@ static void test_percpu_maps(void) {
     kernel_bpf_object_release(hash);
 }
 
+static void test_lru_percpu_hash_map(void) {
+    uint64_t values[3][4] = {
+        { 101u, 102u, 103u, 104u },
+        { 201u, 202u, 203u, 204u },
+        { 301u, 302u, 303u, 304u },
+    };
+    uint64_t output[4] = { 0u, 0u, 0u, 0u };
+    uint32_t keys[3] = { 41u, 42u, 43u };
+    kernel_bpf_map_create_request_t invalid = {
+        .type = KERNEL_BPF_MAP_TYPE_LRU_PERCPU_HASH,
+        .key_size = sizeof(keys[0]),
+        .value_size = sizeof(values[0][0]),
+        .max_entries = 2u,
+        .flags = KERNEL_BPF_MAP_NO_PREALLOC,
+    };
+    int object = create_map(
+        KERNEL_BPF_MAP_TYPE_LRU_PERCPU_HASH, sizeof(keys[0]),
+        sizeof(values[0][0]), 2u, "lru_percpu");
+
+    assert(object >= 0);
+    assert(kernel_bpf_map_update(
+               object, &keys[0], values[0], KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_update(
+               object, &keys[1], values[1], KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_lookup(object, &keys[0], output) == 0);
+    assert(memcmp(output, values[0], sizeof(output)) == 0);
+    assert(kernel_bpf_map_update(
+               object, &keys[2], values[2], KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_lookup(object, &keys[0], output) ==
+           -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_map_lookup(object, &keys[1], output) == 0);
+    assert(memcmp(output, values[1], sizeof(output)) == 0);
+    assert(kernel_bpf_map_lookup(object, &keys[2], output) == 0);
+    assert(memcmp(output, values[2], sizeof(output)) == 0);
+    kernel_bpf_object_release(object);
+
+    strcpy(invalid.name, "bad_lru_percpu");
+    assert(kernel_bpf_map_create(&invalid) == -EDGE_LINUX_ENOTSUPP);
+}
+
 static void test_batch_and_freeze(void) {
     uint32_t keys[] = { 1u, 2u, 3u };
     uint64_t values[] = { 11u, 22u, 33u };
@@ -569,6 +609,7 @@ int main(void) {
     test_lru_hash_map();
     test_queue_stack_maps();
     test_percpu_maps();
+    test_lru_percpu_hash_map();
     test_batch_and_freeze();
     test_program();
     test_ids();

@@ -53,6 +53,7 @@
 #define BPF_MAP_TYPE_PERCPU_HASH 5u
 #define BPF_MAP_TYPE_PERCPU_ARRAY 6u
 #define BPF_MAP_TYPE_LRU_HASH 9u
+#define BPF_MAP_TYPE_LRU_PERCPU_HASH 10u
 #define BPF_MAP_TYPE_QUEUE 22u
 #define BPF_MAP_TYPE_STACK 23u
 #define BPF_PROG_TYPE_CGROUP_DEVICE 15u
@@ -775,6 +776,48 @@ static int test_percpu_maps(void) {
     return failures;
 }
 
+static int test_lru_percpu_hash_map(void) {
+    uint64_t first[256];
+    uint64_t second[256];
+    uint64_t third[256];
+    uint64_t output[256];
+    uint32_t keys[3] = { 41u, 42u, 43u };
+    long descriptor = create_map(
+        BPF_MAP_TYPE_LRU_PERCPU_HASH, 2u, "lru_percpu");
+    int failures = 0;
+
+    for (uint32_t cpu = 0; cpu < 256u; ++cpu) {
+        first[cpu] = 100u + cpu;
+        second[cpu] = 200u + cpu;
+        third[cpu] = 300u + cpu;
+    }
+    failures += expect_true("lru percpu create", descriptor >= 0);
+    if (descriptor < 0) return failures + 1;
+    failures += expect("lru percpu first", map_element(
+        BPF_MAP_UPDATE_ELEM, descriptor, &keys[0], first, BPF_ANY), 0);
+    failures += expect("lru percpu second", map_element(
+        BPF_MAP_UPDATE_ELEM, descriptor, &keys[1], second, BPF_ANY), 0);
+    clear_bytes(output, sizeof(output));
+    failures += expect("lru percpu walk lookup", map_element(
+        BPF_MAP_LOOKUP_ELEM, descriptor, &keys[0], output, 0), 0);
+    failures += expect_true(
+        "lru percpu walk value",
+        output[0] == first[0] && output[1] == first[1]);
+    failures += expect("lru percpu eviction", map_element(
+        BPF_MAP_UPDATE_ELEM, descriptor, &keys[2], third, BPF_ANY), 0);
+    failures += expect("lru percpu oldest missing", map_element(
+        BPF_MAP_LOOKUP_ELEM, descriptor, &keys[0], output, 0), -ENOENT);
+    failures += expect("lru percpu second retained", map_element(
+        BPF_MAP_LOOKUP_ELEM, descriptor, &keys[1], output, 0), 0);
+    failures += expect_true(
+        "lru percpu retained value",
+        output[0] == second[0] && output[1] == second[1]);
+    failures += expect("lru percpu third retained", map_element(
+        BPF_MAP_LOOKUP_ELEM, descriptor, &keys[2], output, 0), 0);
+    (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+    return failures;
+}
+
 static uint32_t batch_pair_mask(const uint32_t *keys,
                                 const uint64_t *values, uint32_t count) {
     uint32_t observed_mask = 0u;
@@ -1108,6 +1151,7 @@ START_ATTRIBUTES void _start(void) {
     failures += test_lru_hash_map();
     failures += test_queue_stack_maps();
     failures += test_percpu_maps();
+    failures += test_lru_percpu_hash_map();
     failures += test_batch_and_freeze();
     failures += test_program();
     failures += test_attribute_tail();

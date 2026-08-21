@@ -162,6 +162,7 @@ EDGEOS_ASSESSMENTS = [
             "LRU hash maps with access-order eviction and lookup-and-delete operations",
             "queue and stack maps with push, peek, pop and full-map replacement semantics",
             "per-CPU array and hash maps with possible-CPU value layouts, padded value slots and explicit CPU access modes",
+            "per-CPU LRU hash maps with shared eviction order and possible-CPU values",
             "map and program ID enumeration and descriptor reopening",
             "map information queries",
             "program information, translated instruction and SHA-256 tag queries",
@@ -171,7 +172,7 @@ EDGEOS_ASSESSMENTS = [
         ],
         "missing": [
             "map-in-map families, ring buffers and remaining map types",
-            "per-CPU LRU and no-common-LRU modes",
+            "no-common-LRU mode with independent per-CPU eviction lists",
             "additional attachment families and program types",
             "complete allow-override, multi-position and link semantics",
             "BTF objects, pinning and link objects",
@@ -188,7 +189,7 @@ EDGEOS_ASSESSMENTS = [
                 "array and hash maps, map element operations, object IDs, "
                 "LRU hash creation, access-order eviction, element operations, "
                 "queue and stack creation, push, peek, pop and replacement, "
-                "per-CPU array and hash bulk value layouts, CPU selection, all-CPU updates and element operations, "
+                "per-CPU array, hash and LRU hash layouts, CPU selection, all-CPU updates and element operations, "
                 "descriptor reopening, map and program information, "
                 "translated instructions, SHA-256 tags and cgroup-device "
                 "program loading, attachment, detachment and query behavior"
