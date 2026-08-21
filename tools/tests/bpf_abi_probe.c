@@ -54,6 +54,8 @@
 #define BPF_MAP_TYPE_PERCPU_ARRAY 6u
 #define BPF_MAP_TYPE_LRU_HASH 9u
 #define BPF_MAP_TYPE_LRU_PERCPU_HASH 10u
+#define BPF_MAP_TYPE_ARRAY_OF_MAPS 12u
+#define BPF_MAP_TYPE_HASH_OF_MAPS 13u
 #define BPF_MAP_TYPE_QUEUE 22u
 #define BPF_MAP_TYPE_STACK 23u
 #define BPF_F_NO_COMMON_LRU (1u << 1)
@@ -375,6 +377,23 @@ static long create_map_flags(uint32_t type, uint32_t entries,
     attribute.map_create.value_size = 8u;
     attribute.map_create.max_entries = entries;
     attribute.map_create.map_flags = flags;
+    for (index = 0; name[index] && index + 1u < 16u; ++index)
+        attribute.map_create.map_name[index] = name[index];
+    return bpf_call(BPF_MAP_CREATE, &attribute);
+}
+
+static long create_map_in_map(uint32_t type, uint32_t entries,
+                              uint32_t inner_descriptor,
+                              const char *name) {
+    union bpf_attr attribute;
+    unsigned long index;
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.map_create.map_type = type;
+    attribute.map_create.key_size = 4u;
+    attribute.map_create.value_size = 4u;
+    attribute.map_create.max_entries = entries;
+    attribute.map_create.inner_map_fd = inner_descriptor;
     for (index = 0; name[index] && index + 1u < 16u; ++index)
         attribute.map_create.map_name[index] = name[index];
     return bpf_call(BPF_MAP_CREATE, &attribute);
@@ -859,6 +878,75 @@ static int test_no_common_lru(void) {
     return failures;
 }
 
+static int test_map_in_map(void) {
+    union bpf_attr attribute;
+    struct bpf_map_info info;
+    uint32_t key = 0u;
+    uint32_t inner_id = 0u;
+    uint32_t output_id = 0u;
+    uint32_t inner_descriptor;
+    long inner = create_map(BPF_MAP_TYPE_ARRAY, 2u, "inner_map");
+    long outer;
+    int failures = 0;
+
+    failures += expect_true("map in map inner create", inner >= 0);
+    if (inner < 0) return failures + 1;
+    clear_bytes(&info, sizeof(info));
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.info.bpf_fd = (uint32_t)inner;
+    attribute.info.info_len = sizeof(info);
+    attribute.info.info = (uint64_t)(uintptr_t)&info;
+    failures += expect("map in map inner info", bpf_call(
+        BPF_OBJ_GET_INFO_BY_FD, &attribute), 0);
+    inner_id = info.id;
+    outer = create_map_in_map(
+        BPF_MAP_TYPE_ARRAY_OF_MAPS, 2u, (uint32_t)inner,
+        "array_of_maps");
+    failures += expect_true("array of maps create", outer >= 0);
+    if (outer < 0) {
+        (void)raw_syscall6(SYS_close, inner, 0, 0, 0, 0, 0);
+        return failures + 1;
+    }
+    inner_descriptor = (uint32_t)inner;
+    failures += expect("array of maps update", map_element(
+        BPF_MAP_UPDATE_ELEM, outer, &key,
+        (uint64_t *)(uintptr_t)&inner_descriptor, BPF_ANY), 0);
+    (void)raw_syscall6(SYS_close, inner, 0, 0, 0, 0, 0);
+    failures += expect("array of maps lookup", map_element(
+        BPF_MAP_LOOKUP_ELEM, outer, &key,
+        (uint64_t *)(uintptr_t)&output_id, 0), 0);
+    failures += expect_true("array of maps id", output_id == inner_id);
+    failures += expect("array of maps delete", map_element(
+        BPF_MAP_DELETE_ELEM, outer, &key, 0, 0), 0);
+    failures += expect("array of maps empty", map_element(
+        BPF_MAP_LOOKUP_ELEM, outer, &key,
+        (uint64_t *)(uintptr_t)&output_id, 0), -ENOENT);
+    (void)raw_syscall6(SYS_close, outer, 0, 0, 0, 0, 0);
+
+    inner = create_map(BPF_MAP_TYPE_HASH, 2u, "inner_hash");
+    failures += expect_true("hash of maps inner create", inner >= 0);
+    if (inner < 0) return failures + 1;
+    outer = create_map_in_map(
+        BPF_MAP_TYPE_HASH_OF_MAPS, 2u, (uint32_t)inner,
+        "hash_of_maps");
+    failures += expect_true("hash of maps create", outer >= 0);
+    if (outer >= 0) {
+        inner_descriptor = (uint32_t)inner;
+        failures += expect("hash of maps update", map_element(
+            BPF_MAP_UPDATE_ELEM, outer, &key,
+            (uint64_t *)(uintptr_t)&inner_descriptor, BPF_NOEXIST), 0);
+        failures += expect("hash of maps duplicate", map_element(
+            BPF_MAP_UPDATE_ELEM, outer, &key,
+            (uint64_t *)(uintptr_t)&inner_descriptor, BPF_NOEXIST),
+            -EEXIST);
+        failures += expect("hash of maps delete", map_element(
+            BPF_MAP_DELETE_ELEM, outer, &key, 0, 0), 0);
+        (void)raw_syscall6(SYS_close, outer, 0, 0, 0, 0, 0);
+    }
+    (void)raw_syscall6(SYS_close, inner, 0, 0, 0, 0, 0);
+    return failures;
+}
+
 static uint32_t batch_pair_mask(const uint32_t *keys,
                                 const uint64_t *values, uint32_t count) {
     uint32_t observed_mask = 0u;
@@ -1194,6 +1282,7 @@ START_ATTRIBUTES void _start(void) {
     failures += test_percpu_maps();
     failures += test_lru_percpu_hash_map();
     failures += test_no_common_lru();
+    failures += test_map_in_map();
     failures += test_batch_and_freeze();
     failures += test_program();
     failures += test_attribute_tail();

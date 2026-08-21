@@ -23,6 +23,8 @@
 #define KERNEL_BPF_MAP_TYPE_PERCPU_ARRAY 6u
 #define KERNEL_BPF_MAP_TYPE_LRU_HASH 9u
 #define KERNEL_BPF_MAP_TYPE_LRU_PERCPU_HASH 10u
+#define KERNEL_BPF_MAP_TYPE_ARRAY_OF_MAPS 12u
+#define KERNEL_BPF_MAP_TYPE_HASH_OF_MAPS 13u
 #define KERNEL_BPF_MAP_TYPE_QUEUE 22u
 #define KERNEL_BPF_MAP_TYPE_STACK 23u
 
@@ -67,6 +69,7 @@ typedef struct kernel_bpf_map_create_request {
     uint32_t value_size;
     uint32_t max_entries;
     uint32_t flags;
+    int32_t inner_map_object_id;
     char name[KERNEL_BPF_OBJECT_NAME_LENGTH];
 } kernel_bpf_map_create_request_t;
 
