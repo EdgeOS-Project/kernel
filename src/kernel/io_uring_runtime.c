@@ -59,7 +59,8 @@
 typedef struct kernel_io_uring_pending {
     uint8_t used;
     uint8_t kind;
-    uint16_t reserved;
+    uint8_t realtime_clock;
+    uint8_t reserved;
     int32_t descriptor;
     uint32_t events;
     uint32_t completion_target;
@@ -850,7 +851,8 @@ static int io_uring_pending_add(int32_t ring_id, uint8_t kind,
                                 uint64_t user_data, int32_t descriptor,
                                 uint32_t events, uint64_t deadline_us,
                                 uint32_t completion_target,
-                                int32_t expiration_result) {
+                                int32_t expiration_result,
+                                int realtime_clock) {
     kernel_io_uring_t *ring;
     uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
     uint32_t slot;
@@ -869,6 +871,7 @@ static int io_uring_pending_add(int32_t ring_id, uint8_t kind,
             ring->pending[slot].kind = kind;
             ring->pending[slot].descriptor = descriptor;
             ring->pending[slot].events = events;
+            ring->pending[slot].realtime_clock = realtime_clock ? 1u : 0u;
             ring->pending[slot].deadline_us = deadline_us;
             ring->pending[slot].completion_target = completion_target;
             ring->pending[slot].expiration_result = expiration_result;
@@ -886,10 +889,53 @@ static int io_uring_pending_add(int32_t ring_id, uint8_t kind,
 int kernel_io_uring_timeout_add(int32_t ring_id, uint64_t user_data,
                                 uint64_t deadline_us,
                                 uint32_t completion_target,
-                                int32_t expiration_result) {
+                                int32_t expiration_result,
+                                int realtime_clock) {
     return io_uring_pending_add(
         ring_id, IO_URING_PENDING_TIMEOUT, user_data, -1, 0,
-        deadline_us, completion_target, expiration_result);
+        deadline_us, completion_target, expiration_result, realtime_clock);
+}
+
+int kernel_io_uring_timeout_update(int32_t ring_id, uint64_t user_data,
+                                   uint64_t value_us, int absolute,
+                                   uint64_t monotonic_now_us,
+                                   uint64_t realtime_now_us) {
+    kernel_io_uring_t *ring;
+    uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
+    int result = -EDGE_LINUX_ENOENT;
+
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+    } else {
+        for (uint32_t slot = 0; slot < KERNEL_IO_URING_MAX_PENDING; ++slot) {
+            kernel_io_uring_pending_t *pending = &ring->pending[slot];
+            uint64_t deadline;
+
+            if (!pending->used ||
+                pending->kind != IO_URING_PENDING_TIMEOUT ||
+                pending->user_data != user_data)
+                continue;
+            if (!absolute) {
+                deadline = value_us > UINT64_MAX - monotonic_now_us ?
+                           UINT64_MAX : monotonic_now_us + value_us;
+            } else if (pending->realtime_clock) {
+                deadline = value_us <= realtime_now_us ? monotonic_now_us :
+                    (value_us - realtime_now_us >
+                         UINT64_MAX - monotonic_now_us ?
+                     UINT64_MAX :
+                     monotonic_now_us + value_us - realtime_now_us);
+            } else {
+                deadline = value_us;
+            }
+            pending->deadline_us = deadline;
+            pending->completion_target = 0u;
+            result = 0;
+            break;
+        }
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
 }
 
 int kernel_io_uring_poll_add(int32_t ring_id, uint64_t user_data,
@@ -897,7 +943,7 @@ int kernel_io_uring_poll_add(int32_t ring_id, uint64_t user_data,
     if (descriptor < 0 || !events) return -EDGE_LINUX_EINVAL;
     return io_uring_pending_add(
         ring_id, IO_URING_PENDING_POLL, user_data, descriptor,
-        events, UINT64_MAX, 0, 0);
+        events, UINT64_MAX, 0, 0, 0);
 }
 
 int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data) {

@@ -247,7 +247,8 @@ int main(void) {
     assert(completion[0].result == 7 && completion[0].flags == 0);
 
     assert(kernel_io_uring_timeout_add(
-               ring_id, 0x54494d45u, 100u, 0, -EDGE_LINUX_ETIME) == 0);
+               ring_id, 0x54494d45u, 100u, 0,
+               -EDGE_LINUX_ETIME, 0) == 0);
     assert(kernel_io_uring_collect(ring_id, 99u) == 0);
     assert(kernel_io_uring_collect(ring_id, 100u) == 1);
     assert(kernel_io_uring_completion_count(ring_id) == 2);
@@ -263,8 +264,22 @@ int main(void) {
     assert(completion[2].result == 1);
 
     assert(kernel_io_uring_timeout_add(
+               ring_id, 0x55504454u, UINT64_MAX, 7u,
+               -EDGE_LINUX_ETIME, 0) == 0);
+    assert(kernel_io_uring_timeout_update(
+               ring_id, 0x55504454u, 20u, 0, 100u, 1000u) == 0);
+    assert(kernel_io_uring_collect(ring_id, 119u) == 0);
+    assert(kernel_io_uring_collect(ring_id, 120u) == 1);
+    assert(kernel_io_uring_completion_count(ring_id) == 4);
+    assert(completion[3].user_data == 0x55504454u);
+    assert(completion[3].result == -EDGE_LINUX_ETIME);
+    assert(kernel_io_uring_timeout_update(
+               ring_id, 0x55504454u, 1u, 0, 120u, 1000u) ==
+           -EDGE_LINUX_ENOENT);
+
+    assert(kernel_io_uring_timeout_add(
                ring_id, 0x43414e43u, UINT64_MAX, 0,
-               -EDGE_LINUX_ETIME) == 0);
+               -EDGE_LINUX_ETIME, 0) == 0);
     assert(kernel_io_uring_pending_cancel(ring_id, 0x43414e43u) == 0);
     assert(kernel_io_uring_pending_cancel(ring_id, 0x43414e43u) ==
            -EDGE_LINUX_ENOENT);
@@ -275,13 +290,13 @@ int main(void) {
         assert(kernel_io_uring_files_update_tagged(
                    ring_id, 0u, update, tags, 1u) == 1);
     }
-    assert(completion[3].user_data == 0x54414741u);
-    assert(completion[3].result == 0 && completion[3].flags == 0);
-    assert(kernel_io_uring_files_unregister(ring_id) == 0);
-    assert(completion[4].user_data == 0x54414743u);
+    assert(completion[4].user_data == 0x54414741u);
     assert(completion[4].result == 0 && completion[4].flags == 0);
-    assert(completion[5].user_data == 0x54414742u);
+    assert(kernel_io_uring_files_unregister(ring_id) == 0);
+    assert(completion[5].user_data == 0x54414743u);
     assert(completion[5].result == 0 && completion[5].flags == 0);
+    assert(completion[6].user_data == 0x54414742u);
+    assert(completion[6].result == 0 && completion[6].flags == 0);
     assert(g_fixed_file_references == 0u);
 
     test_page_release(0, &sq_ring);

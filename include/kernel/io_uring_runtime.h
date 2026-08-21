@@ -79,7 +79,12 @@ int kernel_io_uring_fixed_file_materialize(int32_t ring_id,
 int kernel_io_uring_timeout_add(int32_t ring_id, uint64_t user_data,
                                 uint64_t deadline_us,
                                 uint32_t completion_target,
-                                int32_t expiration_result);
+                                int32_t expiration_result,
+                                int realtime_clock);
+int kernel_io_uring_timeout_update(int32_t ring_id, uint64_t user_data,
+                                   uint64_t value_us, int absolute,
+                                   uint64_t monotonic_now_us,
+                                   uint64_t realtime_now_us);
 int kernel_io_uring_poll_add(int32_t ring_id, uint64_t user_data,
                              int32_t descriptor, uint32_t events);
 int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data);

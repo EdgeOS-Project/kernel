@@ -8133,6 +8133,7 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IO_URING_OP_SUPPORTED        1u
 #define EDGE_LINUX_IORING_FSYNC_DATASYNC        1u
 #define EDGE_LINUX_IORING_TIMEOUT_ABS            (1u << 0)
+#define EDGE_LINUX_IORING_TIMEOUT_UPDATE         (1u << 1)
 #define EDGE_LINUX_IORING_TIMEOUT_BOOTTIME       (1u << 2)
 #define EDGE_LINUX_IORING_TIMEOUT_REALTIME       (1u << 3)
 #define EDGE_LINUX_IORING_TIMEOUT_ETIME_SUCCESS  (1u << 5)
@@ -8141,6 +8142,9 @@ static int64_t edge_linux_sys_aio(
      EDGE_LINUX_IORING_TIMEOUT_BOOTTIME | \
      EDGE_LINUX_IORING_TIMEOUT_REALTIME | \
      EDGE_LINUX_IORING_TIMEOUT_ETIME_SUCCESS)
+#define EDGE_LINUX_IORING_TIMEOUT_UPDATE_SUPPORTED \
+    (EDGE_LINUX_IORING_TIMEOUT_UPDATE | \
+     EDGE_LINUX_IORING_TIMEOUT_ABS)
 #define EDGE_LINUX_IORING_POLL_ALLOWED 0x201fu
 #define EDGE_LINUX_IORING_PENDING_RESULT (INT32_MIN + 1)
 
@@ -8191,8 +8195,42 @@ static int32_t edge_linux_io_uring_timeout(
     result = kernel_io_uring_timeout_add(
         ring_id, submission->user_data, deadline, completion_target,
         (flags & EDGE_LINUX_IORING_TIMEOUT_ETIME_SUCCESS) ?
-            0 : -EDGE_LINUX_ETIME);
+            0 : -EDGE_LINUX_ETIME,
+        (flags & EDGE_LINUX_IORING_TIMEOUT_REALTIME) != 0);
     return result < 0 ? result : EDGE_LINUX_IORING_PENDING_RESULT;
+}
+
+static int32_t edge_linux_io_uring_timeout_remove_update(
+        edge_linux_syscall_context_t *context, int32_t ring_id,
+        const struct edge_linux_io_uring_sqe *submission) {
+    linux_timespec64_t timeout;
+    uint32_t flags = submission->operation_flags;
+    uint64_t value;
+    int result;
+
+    if (submission->buffer_index || submission->length ||
+        submission->splice_descriptor || submission->address3 ||
+        submission->reserved2)
+        return -EDGE_LINUX_EINVAL;
+    if (!flags) {
+        if (submission->offset) return -EDGE_LINUX_EINVAL;
+        return kernel_io_uring_pending_cancel(
+            ring_id, submission->address);
+    }
+    if (!(flags & EDGE_LINUX_IORING_TIMEOUT_UPDATE) ||
+        (flags & ~EDGE_LINUX_IORING_TIMEOUT_UPDATE_SUPPORTED))
+        return -EDGE_LINUX_EINVAL;
+    if (!submission->offset) return -EDGE_LINUX_EFAULT;
+    if (edge_linux_copy_from_user(
+            context, &timeout, submission->offset,
+            sizeof(timeout)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    result = edge_linux_timespec_microseconds(&timeout, &value);
+    if (result < 0) return result;
+    return kernel_io_uring_timeout_update(
+        ring_id, submission->address, value,
+        (flags & EDGE_LINUX_IORING_TIMEOUT_ABS) != 0,
+        boottime_monotonic_us(), boottime_realtime_us());
 }
 
 static int32_t edge_linux_io_uring_poll(
@@ -8634,7 +8672,6 @@ static int32_t edge_linux_io_uring_execute_descriptor(
         result = edge_linux_io_uring_poll(ring_id, submission);
         break;
     case EDGE_LINUX_IORING_OP_POLL_REMOVE:
-    case EDGE_LINUX_IORING_OP_TIMEOUT_REMOVE:
     case EDGE_LINUX_IORING_OP_ASYNC_CANCEL:
         if (!submission->address || submission->offset ||
             submission->length || submission->operation_flags ||
@@ -8643,6 +8680,10 @@ static int32_t edge_linux_io_uring_execute_descriptor(
         else
             result = kernel_io_uring_pending_cancel(
                 ring_id, submission->address);
+        break;
+    case EDGE_LINUX_IORING_OP_TIMEOUT_REMOVE:
+        result = edge_linux_io_uring_timeout_remove_update(
+            context, ring_id, submission);
         break;
     case EDGE_LINUX_IORING_OP_TIMEOUT:
         result = edge_linux_io_uring_timeout(
@@ -8919,7 +8960,8 @@ static int64_t edge_linux_sys_io_uring_enter(
                 ring_id, submission.user_data, operation_result, 0);
         if (operation_result == 0 &&
             (submission.opcode == EDGE_LINUX_IORING_OP_POLL_REMOVE ||
-             submission.opcode == EDGE_LINUX_IORING_OP_TIMEOUT_REMOVE ||
+             (submission.opcode == EDGE_LINUX_IORING_OP_TIMEOUT_REMOVE &&
+              submission.operation_flags == 0u) ||
              submission.opcode == EDGE_LINUX_IORING_OP_ASYNC_CANCEL))
             (void)kernel_io_uring_completion_add_async(
                 ring_id, submission.address, -EDGE_LINUX_ECANCELED, 0);
