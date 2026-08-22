@@ -10,7 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 INVENTORY = ROOT / "tools/uapi/linux_uapi_inventory.json"
-REFERENCE_COMMIT = "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
+REFERENCE_COMMIT = "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
 ARCHITECTURES = {"x86_64", "aarch64", "ia32", "x32"}
 ARCHITECTURE_STATUSES = {
     "partial",

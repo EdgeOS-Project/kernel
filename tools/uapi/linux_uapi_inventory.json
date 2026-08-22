@@ -1,8 +1,8 @@
 {
   "schema": 2,
   "reference": {
-    "commit": "2c7c88a412aa6d09cd04b414211b4ef8553b5309",
-    "version": "7.2.0-rc2",
+    "commit": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa",
+    "version": "7.2.0-rc3",
     "policy": "The commit hash, not a release nickname, is authoritative."
   },
   "status_semantics": {
@@ -115,7 +115,7 @@
       ],
       "linux_oracle": {
         "status": "partial",
-        "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309",
+        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa",
         "scope": "setup, mmap, 128-byte SQE and 32-byte CQE layouts, NOP, NOP128, extended NOP flags, fixed and mixed SQE/CQE layouts, frozen opcode numbering, eventfd, poll, timeout, cancellation, openat, openat2, close, statx, fallocate, send, recv, sendmsg, recvmsg, shutdown, connect, accept, fadvise, madvise, epoll_ctl, tee, renameat, unlinkat, mkdirat, symlinkat, linkat, socket, bind, listen, fsetxattr, setxattr, fgetxattr, getxattr, ftruncate, sync_file_range, futex_wake, fixed-file registration, retained lifetime, register and submission-queue updates, extended resource layouts, tag completion events, fixed-file installation, frozen opcode extent, registered-ring descriptor lifetime, timeout update, finite and updated multishot timeouts, relative and absolute enter deadlines, minimum-wait batching, registered wait layouts and errors from the frozen source oracle, poll update, multishot poll, per-ring clock, fixed-file allocation range, operation probe, pipe creation and direct fixed-file allocation, plus packet-pipe record boundaries, short-read truncation and splice with ordinary or fixed input and output descriptors, plus MSG_RING data, flag forwarding, disabled targets and buffered CQ overflow, plus registered-file transfer with explicit and allocated slots, skipped target completions and retained lifetime after source-table removal, plus legacy and extended fixed-buffer registration, tagged updates, range errors and real pipe data through READ_FIXED and WRITE_FIXED, plus frozen-source READV_FIXED and WRITEV_FIXED layouts with EdgeOS runtime data, plus legacy provided-buffer add, remove, empty-group, READ and single-iovec READV selection behavior with returned buffer IDs, plus user-provided buffer-ring registration, READ and READV selection, returned IDs, head status, user and kernel-allocated mmap ring lifetime, unregistration and legacy-versus-ring failed-I/O buffer consumption, plus incremental address and length updates, min-left retirement and BUF_MORE completions on kernel-allocated and user-provided rings, plus SEND_ZC and SENDMSG_ZC copied sends, fixed-file and fixed-buffer validation, vectorized payloads, notification CQEs and report-usage results"
       }
     },
@@ -167,7 +167,7 @@
       ],
       "linux_oracle": {
         "status": "partial",
-        "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309",
+        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa",
         "scope": "array and hash maps, map element operations, object IDs, LRU hash creation, access-order eviction, element operations, queue and stack creation, push, peek, pop and replacement, per-CPU array, hash and LRU hash layouts, CPU selection, all-CPU updates, no-common-LRU eviction domains and map-in-map element and batch operations, descriptor reopening, map and program information, translated instructions, SHA-256 tags and cgroup-device program loading, attachment, detachment and query behavior, plus cgroup link object creation, replacement, information, ID enumeration and lifetime"
       }
     }
@@ -190,7 +190,7 @@
       ],
       "linux_oracle": {
         "status": "required",
-        "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
+        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
       }
     },
     {
@@ -208,7 +208,7 @@
       "runtime_tests": [],
       "linux_oracle": {
         "status": "required",
-        "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
+        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
       }
     },
     {
@@ -226,7 +226,7 @@
       "runtime_tests": [],
       "linux_oracle": {
         "status": "required",
-        "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
+        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
       }
     },
     {
@@ -244,7 +244,7 @@
       ],
       "linux_oracle": {
         "status": "required",
-        "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
+        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
       }
     },
     {
@@ -260,7 +260,7 @@
       "runtime_tests": [],
       "linux_oracle": {
         "status": "required",
-        "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
+        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
       }
     },
     {
@@ -278,7 +278,7 @@
       "runtime_tests": [],
       "linux_oracle": {
         "status": "required",
-        "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
+        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
       }
     },
     {
@@ -296,7 +296,7 @@
       "runtime_tests": [],
       "linux_oracle": {
         "status": "required",
-        "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
+        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
       }
     },
     {
@@ -314,7 +314,7 @@
       "runtime_tests": [],
       "linux_oracle": {
         "status": "required",
-        "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
+        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
       }
     },
     {
@@ -332,7 +332,7 @@
       "runtime_tests": [],
       "linux_oracle": {
         "status": "required",
-        "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
+        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
       }
     },
     {
@@ -350,7 +350,7 @@
       "runtime_tests": [],
       "linux_oracle": {
         "status": "required",
-        "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
+        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
       }
     },
     {
@@ -368,7 +368,7 @@
       "runtime_tests": [],
       "linux_oracle": {
         "status": "required",
-        "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
+        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
       }
     },
     {
@@ -384,7 +384,7 @@
       "runtime_tests": [],
       "linux_oracle": {
         "status": "required",
-        "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
+        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
       }
     },
     {
@@ -408,7 +408,7 @@
       ],
       "linux_oracle": {
         "status": "required",
-        "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
+        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
       }
     },
     {
@@ -426,7 +426,7 @@
       "runtime_tests": [],
       "linux_oracle": {
         "status": "required",
-        "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
+        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
       }
     },
     {
@@ -446,7 +446,7 @@
       ],
       "linux_oracle": {
         "status": "required",
-        "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
+        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
       }
     },
     {
@@ -464,7 +464,7 @@
       "runtime_tests": [],
       "linux_oracle": {
         "status": "required",
-        "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
+        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
       }
     },
     {
@@ -482,7 +482,7 @@
       ],
       "linux_oracle": {
         "status": "required",
-        "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
+        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
       }
     },
     {
@@ -500,7 +500,7 @@
       ],
       "linux_oracle": {
         "status": "required",
-        "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
+        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
       }
     },
     {
@@ -518,7 +518,7 @@
       "runtime_tests": [],
       "linux_oracle": {
         "status": "required",
-        "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
+        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
       }
     }
   ],

@@ -13,7 +13,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 INVENTORY = ROOT / "tools/syscalls/linux_syscall_inventory.json"
 SHARED_SOURCE_DIRECTORY = ROOT / "src/kernel"
-LINUX_REFERENCE_COMMIT = "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
+LINUX_REFERENCE_COMMIT = "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
 EVIDENCE_STATUSES = {
     "explicit-enosys",
     "oracle-verified-enosys",

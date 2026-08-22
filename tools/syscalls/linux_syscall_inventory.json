@@ -2,8 +2,8 @@
   "schema": 1,
   "description": "Canonical EdgeOS Linux syscall ABI inventory",
   "linux_reference": {
-    "commit": "2c7c88a412aa6d09cd04b414211b4ef8553b5309",
-    "version": "7.2.0-rc2",
+    "commit": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa",
+    "version": "7.2.0-rc3",
     "policy": "The commit hash is authoritative."
   },
   "status_semantics": {
@@ -4069,7 +4069,7 @@
       "semantic_id": "map_shadow_stack",
       "shared_handler": null,
       "architecture_exceptions": [
-        "x86_64 control-flow enforcement ABI"
+        "x86_64 shadow-stack and AArch64 guarded-control-stack ABI"
       ],
       "runtime_tests": [],
       "linux_oracle": "required",

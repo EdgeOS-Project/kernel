@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Iterable
 
 
-REFERENCE_COMMIT = "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
+REFERENCE_COMMIT = "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
 
 EDGEOS_ASSESSMENTS = [
     {

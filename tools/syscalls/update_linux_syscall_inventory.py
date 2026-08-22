@@ -13,8 +13,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 TEST_TOOLS = ROOT / "tools/tests"
 INVENTORY = ROOT / "tools/syscalls/linux_syscall_inventory.json"
-LINUX_REFERENCE_COMMIT = "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
-LINUX_REFERENCE_VERSION = "7.2.0-rc2"
+LINUX_REFERENCE_COMMIT = "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
+LINUX_REFERENCE_VERSION = "7.2.0-rc3"
 sys.path.insert(0, str(TEST_TOOLS))
 
 from arch_syscall_parity import normalize, parse  # noqa: E402
@@ -25,7 +25,9 @@ ARCHITECTURE_EXCEPTIONS = {
     "get_thread_area": ["legacy x86_64 TLS descriptor ABI"],
     "ioperm": ["x86_64 I/O-port permission mechanism"],
     "iopl": ["x86_64 I/O privilege mechanism"],
-    "map_shadow_stack": ["x86_64 control-flow enforcement ABI"],
+    "map_shadow_stack": [
+        "x86_64 shadow-stack and AArch64 guarded-control-stack ABI"
+    ],
     "modify_ldt": ["x86_64 descriptor-table ABI"],
     "rt_sigreturn": ["Architecture-specific signal-frame restoration"],
     "set_thread_area": ["legacy x86_64 TLS descriptor ABI"],
