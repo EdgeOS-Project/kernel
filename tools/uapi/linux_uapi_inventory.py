@@ -272,7 +272,13 @@ COVERAGE_ASSESSMENTS = [
     coverage_assessment("ioctl-platform", "partial", NATIVE_ARCHITECTURES),
     coverage_assessment(
         "ioctl-events", "partial", NATIVE_ARCHITECTURES,
-        kconfig=["PERF_EVENTS", "USERFAULTFD"]),
+        kconfig=["PERF_EVENTS", "USERFAULTFD"],
+        runtime_tests=[
+            "tools/tests/perf_event_abi_probe.c",
+            "tools/tests/perf_event_runtime_unit.c",
+            "tools/tests/userfaultfd_abi_probe.c",
+            "tools/tests/userfaultfd_runtime_unit.c",
+        ]),
     coverage_assessment("socket-options", "partial", NATIVE_ARCHITECTURES,
                         kconfig=["NET"]),
     coverage_assessment(

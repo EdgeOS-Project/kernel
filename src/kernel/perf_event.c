@@ -18,11 +18,13 @@ typedef struct kernel_perf_event {
     uint8_t enabled;
     uint8_t enable_on_exec;
     uint8_t remove_on_exec;
+    uint8_t inherited;
+    uint8_t padding8[3];
     uint32_t references;
     int32_t target_tid;
     int32_t cpu;
     int32_t group_leader;
-    uint32_t padding;
+    int32_t inherit_root;
     uint64_t id;
     kernel_perf_event_attr_t attr;
     uint64_t baseline;
@@ -149,7 +151,7 @@ static int perf_event_sample(const kernel_perf_event_t *event,
         perf_event_cpu_sample(event, value);
 }
 
-static uint64_t perf_event_current_count_locked(
+static uint64_t perf_event_local_count_locked(
     const kernel_perf_event_t *event) {
     uint64_t sampled;
 
@@ -159,6 +161,26 @@ static uint64_t perf_event_current_count_locked(
     return perf_saturating_add(
         event->accumulated,
         sampled >= event->baseline ? sampled - event->baseline : 0);
+}
+
+static uint64_t perf_event_current_count_locked(
+    const kernel_perf_event_t *event) {
+    uint64_t count;
+    int root_id;
+
+    if (!event) return 0;
+    count = perf_event_local_count_locked(event);
+    if (event->inherited) return count;
+    root_id = (int)(event - g_perf_events);
+    for (int index = 0; index < EDGE_RUNTIME_MAX_PERF_EVENTS; ++index) {
+        const kernel_perf_event_t *child = &g_perf_events[index];
+        if (!child->used || !child->inherited ||
+            child->inherit_root != root_id)
+            continue;
+        count = perf_saturating_add(
+            count, perf_event_local_count_locked(child));
+    }
+    return count;
 }
 
 static uint64_t perf_event_enabled_time_locked(
@@ -189,7 +211,7 @@ static void perf_event_disable_locked(kernel_perf_event_t *event) {
     uint64_t now;
 
     if (!event || !event->enabled) return;
-    event->accumulated = perf_event_current_count_locked(event);
+    event->accumulated = perf_event_local_count_locked(event);
     now = boottime_monotonic_us();
     if (now >= event->enabled_started_us)
         event->enabled_accumulated_us = perf_saturating_add(
@@ -227,8 +249,6 @@ static int perf_event_request_valid(
         return -EDGE_LINUX_EINVAL;
     if (attr->config == KERNEL_PERF_COUNT_SW_BPF_OUTPUT)
         return -EDGE_LINUX_EOPNOTSUPP;
-    if (attr->flags & KERNEL_PERF_ATTR_INHERIT)
-        return -EDGE_LINUX_EOPNOTSUPP;
     if (attr->reserved2 || (attr->auxiliary_action & ~7u))
         return -EDGE_LINUX_EINVAL;
     if (attr->sample_period || attr->sample_type || attr->wakeup_events ||
@@ -240,7 +260,7 @@ static int perf_event_request_valid(
     if (attr->read_format & ~KERNEL_PERF_FORMAT_MASK)
         return -EDGE_LINUX_EINVAL;
     unsupported_flags = attr->flags &
-        ~(KERNEL_PERF_ATTR_DISABLED |
+        ~(KERNEL_PERF_ATTR_DISABLED | KERNEL_PERF_ATTR_INHERIT |
           KERNEL_PERF_ATTR_PINNED | KERNEL_PERF_ATTR_EXCLUSIVE |
           KERNEL_PERF_ATTR_EXCLUDE_USER |
           KERNEL_PERF_ATTR_EXCLUDE_KERNEL |
@@ -288,6 +308,8 @@ int kernel_perf_event_open(const kernel_perf_event_open_request_t *request) {
         }
         if (leader->target_tid != request->target_tid ||
             leader->cpu != request->cpu ||
+            ((leader->attr.flags ^ request->attr.flags) &
+             KERNEL_PERF_ATTR_INHERIT) ||
             (request->attr.flags & (KERNEL_PERF_ATTR_PINNED |
                                     KERNEL_PERF_ATTR_EXCLUSIVE))) {
             perf_event_unlock();
@@ -315,6 +337,7 @@ int kernel_perf_event_open(const kernel_perf_event_open_request_t *request) {
     event->target_tid = request->target_tid;
     event->cpu = request->cpu;
     event->group_leader = leader ? request->group_id : result;
+    event->inherit_root = -1;
     if (leader) ++leader->references;
     event->attr = request->attr;
     event->enable_on_exec =
@@ -348,11 +371,10 @@ int kernel_perf_event_retain(int event_id) {
     return result;
 }
 
-void kernel_perf_event_release(int event_id) {
+static void perf_event_drop_reference_locked(int event_id) {
     kernel_perf_event_t *event;
     int leader_id = -1;
 
-    perf_event_lock();
     event = perf_event_get_locked(event_id);
     if (event && event->references && !--event->references) {
         if (event->group_leader != event_id)
@@ -362,6 +384,11 @@ void kernel_perf_event_release(int event_id) {
         if (event && event->references && !--event->references)
             memset(event, 0, sizeof(*event));
     }
+}
+
+void kernel_perf_event_release(int event_id) {
+    perf_event_lock();
+    perf_event_drop_reference_locked(event_id);
     perf_event_unlock();
 }
 
@@ -503,9 +530,17 @@ int kernel_perf_event_control(int event_id, uint32_t command,
     leader_id = event->group_leader;
     for (int index = 0; index < EDGE_RUNTIME_MAX_PERF_EVENTS; ++index) {
         kernel_perf_event_t *member = &g_perf_events[index];
-        if (!member->used ||
-            ((flags & KERNEL_PERF_IOC_FLAG_GROUP) ?
-                 member->group_leader != leader_id : index != event_id))
+        kernel_perf_event_t *root = member;
+        int root_id = index;
+
+        if (!member->used) continue;
+        if (member->inherited) {
+            root_id = member->inherit_root;
+            root = perf_event_get_locked(root_id);
+            if (!root || root->inherited) continue;
+        }
+        if ((flags & KERNEL_PERF_IOC_FLAG_GROUP) ?
+                root->group_leader != leader_id : root_id != event_id)
             continue;
         if (command == KERNEL_PERF_IOC_ENABLE)
             perf_event_enable_locked(member);
@@ -516,6 +551,105 @@ int kernel_perf_event_control(int event_id, uint32_t command,
     }
     perf_event_unlock();
     return 0;
+}
+
+void kernel_perf_event_task_fork(int32_t parent_tid, int32_t child_tid) {
+    int source_slots[EDGE_RUNTIME_MAX_PERF_EVENTS];
+    int child_slots[EDGE_RUNTIME_MAX_PERF_EVENTS];
+    uint32_t count = 0;
+
+    if (parent_tid <= 0 || child_tid <= 0 || parent_tid == child_tid)
+        return;
+    perf_event_lock();
+    for (int index = 0; index < EDGE_RUNTIME_MAX_PERF_EVENTS; ++index) {
+        kernel_perf_event_t *source = &g_perf_events[index];
+        int free_slot = -1;
+        int root_id;
+        kernel_perf_event_t *root;
+
+        if (!source->used || source->target_tid != parent_tid ||
+            !(source->attr.flags & KERNEL_PERF_ATTR_INHERIT))
+            continue;
+        root_id = source->inherited ? source->inherit_root : index;
+        root = perf_event_get_locked(root_id);
+        if (!root || root->inherited || root->references == UINT32_MAX)
+            continue;
+        for (int candidate = 0;
+             candidate < EDGE_RUNTIME_MAX_PERF_EVENTS; ++candidate) {
+            int reserved = 0;
+            if (g_perf_events[candidate].used) continue;
+            for (uint32_t prior = 0; prior < count; ++prior)
+                if (child_slots[prior] == candidate) reserved = 1;
+            if (!reserved) {
+                free_slot = candidate;
+                break;
+            }
+        }
+        if (free_slot < 0) break;
+        source_slots[count] = index;
+        child_slots[count] = free_slot;
+        ++count;
+    }
+    for (uint32_t position = 0; position < count; ++position) {
+        kernel_perf_event_t *source =
+            &g_perf_events[source_slots[position]];
+        kernel_perf_event_t *child =
+            &g_perf_events[child_slots[position]];
+        kernel_perf_event_t *root;
+        uint64_t sampled = 0;
+        int root_id = source->inherited ?
+            source->inherit_root : source_slots[position];
+
+        root = perf_event_get_locked(root_id);
+        if (!root || root->references == UINT32_MAX) continue;
+        memset(child, 0, sizeof(*child));
+        child->used = 1;
+        child->inherited = 1;
+        child->references = 1;
+        child->target_tid = child_tid;
+        child->cpu = source->cpu;
+        child->inherit_root = root_id;
+        child->attr = source->attr;
+        child->enable_on_exec = source->enable_on_exec;
+        child->remove_on_exec = source->remove_on_exec;
+        child->id = g_perf_event_next_id++;
+        if (!child->id) child->id = g_perf_event_next_id++;
+        child->enabled = source->enabled;
+        if (child->enabled) {
+            (void)perf_event_sample(child, &sampled);
+            child->baseline = sampled;
+            child->enabled_started_us = boottime_monotonic_us();
+        }
+        ++root->references;
+    }
+    for (uint32_t position = 0; position < count; ++position) {
+        kernel_perf_event_t *source =
+            &g_perf_events[source_slots[position]];
+        kernel_perf_event_t *child =
+            perf_event_get_locked(child_slots[position]);
+        int child_leader = -1;
+
+        if (!child || !child->inherited) continue;
+        if (source->group_leader == source_slots[position]) {
+            child->group_leader = child_slots[position];
+            continue;
+        }
+        for (uint32_t leader = 0; leader < count; ++leader)
+            if (source_slots[leader] == source->group_leader) {
+                child_leader = child_slots[leader];
+                break;
+            }
+        if (child_leader >= 0) {
+            child->group_leader = child_leader;
+            continue;
+        }
+        {
+            int root_id = child->inherit_root;
+            memset(child, 0, sizeof(*child));
+            perf_event_drop_reference_locked(root_id);
+        }
+    }
+    perf_event_unlock();
 }
 
 void kernel_perf_event_task_exec(int32_t tid) {
@@ -540,7 +674,19 @@ void kernel_perf_event_task_exit(int32_t tid) {
         kernel_perf_event_t *event = &g_perf_events[index];
         if (!event->used || event->target_tid != tid) continue;
         perf_event_disable_locked(event);
-        event->target_tid = -2;
+        if (!event->inherited) {
+            event->target_tid = -2;
+            continue;
+        }
+        {
+            int root_id = event->inherit_root;
+            kernel_perf_event_t *root = perf_event_get_locked(root_id);
+            if (root && !root->inherited)
+                root->accumulated = perf_saturating_add(
+                    root->accumulated, event->accumulated);
+            memset(event, 0, sizeof(*event));
+            perf_event_drop_reference_locked(root_id);
+        }
     }
     perf_event_unlock();
 }

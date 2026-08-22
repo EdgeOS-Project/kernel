@@ -9,17 +9,22 @@
 #include "kernel/perf_event.h"
 #include "kernel/process_runtime.h"
 
-static kernel_proc_task_view_t g_task;
+static kernel_proc_task_view_t g_tasks[2];
 static kernel_scheduler_cpu_stats_t g_cpu;
 static uint64_t g_now_us;
 
 uint64_t boottime_monotonic_us(void) { return g_now_us; }
 
 int kernel_proc_task_view_get(int32_t tid, kernel_proc_task_view_t *view) {
-    if (!view || tid != g_task.tid || g_task.state == KERNEL_PROC_TASK_ZOMBIE)
-        return -1;
-    *view = g_task;
-    return 0;
+    if (!view) return -1;
+    for (uint32_t index = 0; index < 2u; ++index) {
+        if (tid != g_tasks[index].tid ||
+            g_tasks[index].state == KERNEL_PROC_TASK_ZOMBIE)
+            continue;
+        *view = g_tasks[index];
+        return 0;
+    }
+    return -1;
 }
 
 int kernel_arch_scheduler_cpu_stats(
@@ -45,10 +50,13 @@ int main(void) {
     int member;
     int failures = 0;
 
-    memset(&g_task, 0, sizeof(g_task));
-    g_task.tid = 42;
-    g_task.tgid = 42;
-    g_task.state = KERNEL_PROC_TASK_RUNNING;
+    memset(g_tasks, 0, sizeof(g_tasks));
+    g_tasks[0].tid = 42;
+    g_tasks[0].tgid = 42;
+    g_tasks[0].state = KERNEL_PROC_TASK_RUNNING;
+    g_tasks[1].tid = 43;
+    g_tasks[1].tgid = 43;
+    g_tasks[1].state = KERNEL_PROC_TASK_RUNNING;
     memset(&request, 0, sizeof(request));
     request.attr.type = KERNEL_PERF_TYPE_SOFTWARE;
     request.attr.size = KERNEL_PERF_ATTR_SIZE_CURRENT;
@@ -72,8 +80,8 @@ int main(void) {
     failures += check(kernel_perf_event_control(
                           leader, KERNEL_PERF_IOC_ENABLE, 0, 0) == 0,
                       "enable");
-    g_task.usage.user_time_us = 700;
-    g_task.usage.sys_time_us = 300;
+    g_tasks[0].usage.user_time_us = 700;
+    g_tasks[0].usage.sys_time_us = 300;
     g_now_us = 1500;
     failures += check(kernel_perf_event_read(leader, values, 16) == 32,
                       "enabled read");
@@ -86,7 +94,7 @@ int main(void) {
     failures += check(kernel_perf_event_control(
                           leader, KERNEL_PERF_IOC_DISABLE, 0, 0) == 0,
                       "disable");
-    g_task.usage.user_time_us += 1000;
+    g_tasks[0].usage.user_time_us += 1000;
     failures += check(kernel_perf_event_read(leader, values, 16) == 32 &&
                       values[0] == 1000000u,
                       "disabled counter remains stable");
@@ -108,14 +116,14 @@ int main(void) {
     {
         int sibling = kernel_perf_event_open(&request);
         failures += check(sibling >= 0, "group sibling");
-        g_task.usage.minor_faults = 9;
-        g_task.usage.voluntary_ctxt_switches = 4;
+        g_tasks[0].usage.minor_faults = 9;
+        g_tasks[0].usage.voluntary_ctxt_switches = 4;
         failures += check(kernel_perf_event_control(
                               member, KERNEL_PERF_IOC_ENABLE,
                               KERNEL_PERF_IOC_FLAG_GROUP, 0) == 0,
                           "group enable");
-        g_task.usage.minor_faults = 12;
-        g_task.usage.voluntary_ctxt_switches = 10;
+        g_tasks[0].usage.minor_faults = 12;
+        g_tasks[0].usage.voluntary_ctxt_switches = 10;
         failures += check(kernel_perf_event_read(member, values, 16) == 40,
                           "group read size");
         failures += check(values[0] == 2 && values[1] == 3 &&
@@ -140,10 +148,32 @@ int main(void) {
                           -EDGE_LINUX_EINVAL,
                       "invalid software event");
     request.attr.config = KERNEL_PERF_COUNT_SW_TASK_CLOCK;
-    request.attr.flags = KERNEL_PERF_ATTR_INHERIT;
-    failures += check(kernel_perf_event_open(&request) ==
-                          -EDGE_LINUX_EOPNOTSUPP,
-                      "unsupported inheritance is explicit");
+    request.attr.read_format = 0;
+    request.attr.flags = KERNEL_PERF_ATTR_DISABLED |
+                         KERNEL_PERF_ATTR_INHERIT;
+    {
+        int inherited = kernel_perf_event_open(&request);
+        failures += check(inherited >= 0, "open inherited task clock");
+        failures += check(kernel_perf_event_control(
+                              inherited, KERNEL_PERF_IOC_ENABLE,
+                              0, 0) == 0,
+                          "enable inherited task clock");
+        g_tasks[0].usage.user_time_us += 100u;
+        kernel_perf_event_task_fork(42, 43);
+        g_tasks[0].usage.user_time_us += 200u;
+        g_tasks[1].usage.user_time_us = 500u;
+        failures += check(kernel_perf_event_read(
+                              inherited, values, 16) == 8 &&
+                              values[0] == 800000u,
+                          "live child count is aggregated");
+        kernel_perf_event_task_exit(43);
+        g_tasks[1].state = KERNEL_PROC_TASK_ZOMBIE;
+        failures += check(kernel_perf_event_read(
+                              inherited, values, 16) == 8 &&
+                              values[0] == 800000u,
+                          "exited child count remains aggregated");
+        kernel_perf_event_release(inherited);
+    }
     request.attr.flags = 0;
     request.cpu = -2;
     failures += check(kernel_perf_event_open(&request) ==

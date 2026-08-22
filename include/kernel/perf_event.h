@@ -129,6 +129,7 @@ int64_t kernel_perf_event_read(int event_id, uint64_t *values,
 int kernel_perf_event_control(int event_id, uint32_t command,
                               uint32_t flags, uint64_t *id_out);
 void kernel_perf_event_task_exec(int32_t tid);
+void kernel_perf_event_task_fork(int32_t parent_tid, int32_t child_tid);
 void kernel_perf_event_task_exit(int32_t tid);
 
 #endif

@@ -7,16 +7,20 @@
 #define SYS_read 0
 #define SYS_write 1
 #define SYS_close 3
+#define SYS_clone 56
 #define SYS_ioctl 16
 #define SYS_exit 60
+#define SYS_wait4 61
 #define SYS_perf_event_open 298
 #elif defined(__aarch64__)
 #define SYS_close 57
+#define SYS_clone 220
 #define SYS_read 63
 #define SYS_write 64
 #define SYS_exit 93
 #define SYS_ioctl 29
 #define SYS_perf_event_open 241
+#define SYS_wait4 260
 #else
 #error "perf_event_abi_probe requires a Linux 64-bit architecture"
 #endif
@@ -29,6 +33,7 @@
 #define PERF_FORMAT_ID (1u << 2)
 #define PERF_FORMAT_GROUP (1u << 3)
 #define PERF_ATTR_DISABLED (1ull << 0)
+#define PERF_ATTR_INHERIT (1ull << 1)
 #define PERF_ATTR_EXCLUDE_KERNEL (1ull << 5)
 #define PERF_FLAG_FD_CLOEXEC (1u << 3)
 #define PERF_IOC_ENABLE 0x2400u
@@ -40,6 +45,7 @@
 #define EACCES 13
 #define EINVAL 22
 #define EPERM 1
+#define SIGCHLD 17
 
 struct perf_event_attr {
     uint32_t type;
@@ -259,6 +265,47 @@ static int run_tests(void) {
         (void)raw_syscall6(SYS_close, sibling, 0, 0, 0, 0, 0);
     if (leader >= 0)
         (void)raw_syscall6(SYS_close, leader, 0, 0, 0, 0, 0);
+
+    clear_bytes(&attr, sizeof(attr));
+    attr.type = PERF_TYPE_SOFTWARE;
+    attr.size = sizeof(attr);
+    attr.config = PERF_COUNT_SW_TASK_CLOCK;
+    attr.flags = PERF_ATTR_INHERIT | PERF_ATTR_EXCLUDE_KERNEL;
+    leader = perf_open(&attr, -1, 0);
+    failures += expect_true("inherited event", leader >= 0);
+    if (leader >= 0) {
+        uint64_t before = 0;
+        uint64_t after = 0;
+        int child_status = -1;
+        long child;
+
+        failures += expect("inherited read before", raw_syscall6(
+            SYS_read, leader, (long)&before, sizeof(before),
+            0, 0, 0), sizeof(before));
+        child = raw_syscall6(
+            SYS_clone, SIGCHLD, 0, 0, 0, 0, 0);
+        if (child == 0) {
+            burn_cpu();
+            burn_cpu();
+            raw_syscall6(SYS_exit, 0, 0, 0, 0, 0, 0);
+            for (;;) { }
+        }
+        failures += expect_true("inherited fork", child > 0);
+        if (child > 0) {
+            failures += expect("inherited wait", raw_syscall6(
+                SYS_wait4, child, (long)&child_status,
+                0, 0, 0, 0), child);
+            failures += expect("inherited child status", child_status, 0);
+            failures += expect("inherited disable", raw_syscall6(
+                SYS_ioctl, leader, PERF_IOC_DISABLE, 0, 0, 0, 0), 0);
+            failures += expect("inherited read after", raw_syscall6(
+                SYS_read, leader, (long)&after, sizeof(after),
+                0, 0, 0), sizeof(after));
+            failures += expect_true(
+                "inherited child contribution", after > before);
+        }
+        (void)raw_syscall6(SYS_close, leader, 0, 0, 0, 0, 0);
+    }
 
     clear_bytes(&attr, sizeof(attr));
     attr.type = PERF_TYPE_SOFTWARE;

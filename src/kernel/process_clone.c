@@ -11,6 +11,7 @@
 #include "kernel/linux_ptrace.h"
 #include "kernel/landlock_runtime.h"
 #include "kernel/namespace_runtime.h"
+#include "kernel/perf_event.h"
 #include "kernel/process_runtime.h"
 #include "kernel/scheduler_policy.h"
 
@@ -160,8 +161,15 @@ int64_t kernel_process_clone(const kernel_clone_request_t *request) {
     if (status < 0) return clone_fail(&state, status);
 #endif
 
+#ifdef CONFIG_PERF_EVENTS
+    kernel_perf_event_task_fork(
+        parent_identity.global_tid, state.child_global_pid);
+#endif
     status = process_clone_arch_publish(&state, ptrace_event);
     if (status < 0) {
+#ifdef CONFIG_PERF_EVENTS
+        kernel_perf_event_task_exit(state.child_global_pid);
+#endif
 #ifdef CONFIG_LANDLOCK
         kernel_landlock_task_exit(
             state.child_global_pid,
