@@ -16,6 +16,7 @@
 #define EDGE_LINUX_ETHTOOL_MSG_LINKMODES_GET 4u
 #define EDGE_LINUX_ETHTOOL_MSG_LINKSTATE_GET 6u
 #define EDGE_LINUX_ETHTOOL_MSG_CHANNELS_GET 17u
+#define EDGE_LINUX_ETHTOOL_MSG_STATS_GET 32u
 
 int edge_linux_ethtool_respond(
     uint32_t network_namespace, uint32_t port_id,

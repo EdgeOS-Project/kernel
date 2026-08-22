@@ -27,9 +27,14 @@ ETHTOOL_MSG_LINKINFO_GET = 2
 ETHTOOL_MSG_LINKMODES_GET = 4
 ETHTOOL_MSG_LINKSTATE_GET = 6
 ETHTOOL_MSG_CHANNELS_GET = 17
+ETHTOOL_MSG_STATS_GET = 32
 ETHTOOL_A_HEADER = 1
 ETHTOOL_A_HEADER_DEV_INDEX = 1
 ETHTOOL_A_HEADER_DEV_NAME = 2
+ETHTOOL_A_STATS_HEADER = 2
+ETHTOOL_A_STATS_GROUPS = 3
+ETHTOOL_A_STATS_GRP = 4
+ETHTOOL_A_STATS_SRC = 5
 
 
 def align4(value):
@@ -174,6 +179,33 @@ channel_values = parse_ethtool(
     channels[0][4], ETHTOOL_MSG_CHANNELS_GET, b"eth0")
 assert struct.unpack("=I", channel_values[5][1])[0] == 1
 assert struct.unpack("=I", channel_values[9][1])[0] == 1
+
+stats_header = attribute(
+    ETHTOOL_A_STATS_HEADER | NLA_F_NESTED,
+    attribute(ETHTOOL_A_HEADER_DEV_NAME, b"eth0\0"),
+)
+stats_groups = attribute(
+    ETHTOOL_A_STATS_GROUPS | NLA_F_NESTED,
+    attribute(1, b"") +
+    attribute(2, struct.pack("=I", 5)) +
+    attribute(4, struct.pack("=I", 1 << 1)),
+)
+sock.sendto(generic_request(
+    ethtool_family, ETHTOOL_MSG_STATS_GET, 110,
+    NLM_F_REQUEST, stats_header + stats_groups), (0, 0))
+stats = list(messages(sock.recv(65535)))
+assert len(stats) == 1 and stats[0][0] == ethtool_family
+stats_values = parse_attributes(stats[0][4], 4)
+assert stats_values[ETHTOOL_A_STATS_HEADER][0] & NLA_F_NESTED
+stats_reply_header = parse_attributes(
+    stats_values[ETHTOOL_A_STATS_HEADER][1])
+assert stats_reply_header[ETHTOOL_A_HEADER_DEV_NAME][1].rstrip(b"\0") == b"eth0"
+assert struct.unpack("=I", stats_values[ETHTOOL_A_STATS_SRC][1])[0] == 0
+stats_group = parse_attributes(stats_values[ETHTOOL_A_STATS_GRP][1])
+assert struct.unpack("=I", stats_group[2][1])[0] == 1
+assert struct.unpack("=I", stats_group[3][1])[0] == 18
+last_mac_stat = parse_attributes(stats_group[4][1])
+assert 12 in last_mac_stat and len(last_mac_stat[12][1]) == 8
 
 empty_header = attribute(ETHTOOL_A_HEADER | NLA_F_NESTED, b"")
 sock.sendto(generic_request(
