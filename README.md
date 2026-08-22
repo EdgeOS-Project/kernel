@@ -2,14 +2,17 @@
 
 ![EdgeOS running Debian KDE Plasma on AArch64](docs/images/edgeos-kde-arm64-desktop.png)
 
+![EdgeOS running Debian GNOME on AArch64](docs/images/edgeos-gnome-arm64-desktop.png)
+
 EdgeOS is an independent Unix-like kernel for x86_64 and AArch64. It is not a
 Linux fork. Linux userspace is the compatibility target: the kernel loads Linux
 ELF64 binaries and implements the Linux-facing system call and device
 interfaces needed by existing software.
 
 Development systems currently boot Debian with systemd on both architectures.
-X11/XFCE, KDE Plasma on Wayland, Chromium, Firefox, LibreOffice and Docker have
-all been run on EdgeOS development VMs using unmodified Debian packages.
+X11/XFCE, KDE Plasma and GNOME on Wayland, Chromium, Firefox, LibreOffice and
+Docker have all been run on EdgeOS development VMs using unmodified Debian
+packages.
 
 This repository contains the kernel. Root filesystems, desktop packages and
 virtual-machine management tools are separate projects.
@@ -19,11 +22,11 @@ virtual-machine management tools are separate projects.
 | | Count |
 | --- | ---: |
 | Canonical Linux syscall IDs | 385 |
-| Shared syscall handlers | 299 |
-| AArch64 policies using shared handlers | 265 |
-| BSD driver manifests | 258 |
-| Buildable BSD driver packages | 253 |
-| Source-locked BSD files | 2,862 |
+| Shared syscall handlers | 358 |
+| AArch64 policies using shared handlers | 321 |
+| BSD driver manifests | 261 |
+| Buildable BSD driver packages | 256 |
+| Source-locked BSD files | 2,866 |
 
 The syscall figures come from `tools/syscalls/linux_syscall_inventory.json`.
 The driver figures come from the generated BSD Bridge build plan and source
