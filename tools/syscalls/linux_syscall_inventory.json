@@ -3465,7 +3465,12 @@
           "route": "enosys",
           "evidence_status": "explicit-enosys"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 294,
+          "status": "enosys",
+          "route": "enosys",
+          "evidence_status": "explicit-enosys"
+        }
       }
     },
     {
@@ -3483,7 +3488,12 @@
           "route": "enosys",
           "evidence_status": "explicit-enosys"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 104,
+          "status": "enosys",
+          "route": "enosys",
+          "evidence_status": "explicit-enosys"
+        }
       }
     },
     {
@@ -3856,17 +3866,24 @@
       "semantic_id": "lookup_dcookie",
       "shared_handler": null,
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/linux_reserved_syscalls_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 212,
           "status": "enosys",
           "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "evidence_status": "oracle-verified-enosys"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 18,
+          "status": "enosys",
+          "route": "enosys",
+          "evidence_status": "oracle-verified-enosys"
+        }
       }
     },
     {
@@ -4081,7 +4098,12 @@
           "route": "enosys",
           "evidence_status": "explicit-enosys"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 453,
+          "status": "enosys",
+          "route": "enosys",
+          "evidence_status": "explicit-enosys"
+        }
       }
     },
     {
@@ -5063,7 +5085,12 @@
           "route": "enosys",
           "evidence_status": "oracle-verified-enosys"
         },
-        "aarch64": null
+        "aarch64": {
+          "number": 42,
+          "status": "enosys",
+          "route": "enosys",
+          "evidence_status": "oracle-verified-enosys"
+        }
       }
     },
     {

@@ -42,6 +42,7 @@ LINUX_RESERVED_ENOSYS_X86_64 = {
     "get_kernel_syms",
     "getpmsg",
     "get_thread_area",
+    "lookup_dcookie",
     "nfsservctl",
     "putpmsg",
     "query_module",
@@ -50,6 +51,13 @@ LINUX_RESERVED_ENOSYS_X86_64 = {
     "tuxcall",
     "uselib",
     "vserver",
+}
+AARCH64_LINUX_ENOSYS_NUMBERS = {
+    "lookup_dcookie": 18,
+    "nfsservctl": 42,
+    "kexec_load": 104,
+    "kexec_file_load": 294,
+    "map_shadow_stack": 453,
 }
 LINUX_RESERVED_SYSCALL_PROBE = (
     "tools/tests/linux_reserved_syscalls_abi_probe.c"
@@ -106,6 +114,14 @@ def architecture_entry(
 
 def build_document() -> dict[str, Any]:
     report = parse()
+    for name, number in AARCH64_LINUX_ENOSYS_NUMBERS.items():
+        existing_number = report["arm64"]["numbers"].get(name)
+        if existing_number is not None and existing_number != number:
+            raise ValueError(
+                f"aarch64 {name} moved from {number} to {existing_number}"
+            )
+        report["arm64"]["numbers"][name] = number
+        report["arm64"]["routes"][name] = "enosys"
     existing = load_existing()
     names = sorted(
         set(report["x86_64"]["numbers"]) | set(report["arm64"]["numbers"])

@@ -14,6 +14,13 @@ ROOT = Path(__file__).resolve().parents[2]
 INVENTORY = ROOT / "tools/syscalls/linux_syscall_inventory.json"
 SHARED_SOURCE_DIRECTORY = ROOT / "src/kernel"
 LINUX_REFERENCE_COMMIT = "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
+AARCH64_LINUX_ENOSYS_NUMBERS = {
+    "lookup_dcookie": 18,
+    "nfsservctl": 42,
+    "kexec_load": 104,
+    "kexec_file_load": 294,
+    "map_shadow_stack": 453,
+}
 EVIDENCE_STATUSES = {
     "explicit-enosys",
     "oracle-verified-enosys",
@@ -40,8 +47,13 @@ def validate_architecture(
     entries: list[dict[str, Any]],
     report: dict[str, Any],
 ) -> None:
-    source_numbers = report[source_name]["numbers"]
-    source_routes = report[source_name]["routes"]
+    source_numbers = dict(report[source_name]["numbers"])
+    source_routes = dict(report[source_name]["routes"])
+    if architecture == "aarch64":
+        source_numbers.update(AARCH64_LINUX_ENOSYS_NUMBERS)
+        source_routes.update({
+            name: "enosys" for name in AARCH64_LINUX_ENOSYS_NUMBERS
+        })
     inventory_numbers: dict[str, int] = {}
     number_owners: dict[int, str] = {}
 
@@ -95,6 +107,15 @@ def validate_architecture(
             f"{architecture} syscall-number inventory drift: "
             f"missing={missing} extra={extra} wrong={wrong}"
         )
+
+    if architecture == "aarch64":
+        by_name = {entry["id"]: entry for entry in entries}
+        for name, number in AARCH64_LINUX_ENOSYS_NUMBERS.items():
+            mapping = by_name[name]["architectures"]["aarch64"]
+            if mapping is None or mapping.get("number") != number or \
+               mapping.get("status") != "enosys" or \
+               mapping.get("route") != "enosys":
+                fail(f"aarch64 {name} does not preserve Linux ENOSYS ABI")
 
     for entry in entries:
         name = entry["id"]
