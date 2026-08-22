@@ -4031,8 +4031,10 @@ static int64_t edge_linux_sys_memfd_secret(
 #define EDGE_LINUX_BPF_OBJ_GET_INFO_BY_FD 15u
 #define EDGE_LINUX_BPF_PROG_QUERY        16u
 #define EDGE_LINUX_BPF_BTF_LOAD          18u
+#define EDGE_LINUX_BPF_BTF_GET_FD_BY_ID  19u
 #define EDGE_LINUX_BPF_MAP_LOOKUP_AND_DELETE_ELEM 21u
 #define EDGE_LINUX_BPF_MAP_FREEZE        22u
+#define EDGE_LINUX_BPF_BTF_GET_NEXT_ID   23u
 #define EDGE_LINUX_BPF_MAP_LOOKUP_BATCH  24u
 #define EDGE_LINUX_BPF_MAP_LOOKUP_AND_DELETE_BATCH 25u
 #define EDGE_LINUX_BPF_MAP_UPDATE_BATCH  26u
@@ -4089,6 +4091,17 @@ typedef struct edge_linux_bpf_info_attribute {
     uint32_t info_length;
     uint64_t info;
 } edge_linux_bpf_info_attribute_t;
+
+typedef struct edge_linux_bpf_btf_load_attribute {
+    uint64_t btf;
+    uint64_t log_buffer;
+    uint32_t btf_size;
+    uint32_t log_size;
+    uint32_t log_level;
+    uint32_t log_true_size;
+    uint32_t flags;
+    int32_t token_descriptor;
+} edge_linux_bpf_btf_load_attribute_t;
 
 typedef struct edge_linux_bpf_program_load_attribute {
     uint32_t program_type;
@@ -4198,11 +4211,23 @@ typedef struct edge_linux_bpf_program_info {
     uint32_t padding;
 } edge_linux_bpf_program_info_t;
 
+typedef struct edge_linux_bpf_btf_info {
+    uint64_t btf;
+    uint32_t btf_size;
+    uint32_t id;
+    uint64_t name;
+    uint32_t name_length;
+    uint32_t kernel_btf;
+} edge_linux_bpf_btf_info_t;
+
 _Static_assert(sizeof(edge_linux_bpf_program_info_t) == 232u,
                "Linux bpf_prog_info layout changed");
+_Static_assert(sizeof(edge_linux_bpf_btf_info_t) == 32u,
+               "Linux bpf_btf_info layout changed");
 
 #define EDGE_LINUX_BPF_MAP_INFO_KNOWN_SIZE 100u
 #define EDGE_LINUX_BPF_PROGRAM_INFO_KNOWN_SIZE 228u
+#define EDGE_LINUX_BPF_BTF_INFO_KNOWN_SIZE 32u
 
 static int edge_linux_bpf_user_tail_zero(
     edge_linux_syscall_context_t *context, uint64_t user_buffer,
@@ -4256,6 +4281,9 @@ static int edge_linux_bpf_copy_attribute(
     return 0;
 }
 
+static void edge_linux_bpf_free_pages(uint8_t *buffer,
+                                      uint32_t page_count);
+
 static int edge_linux_bpf_license_is_gpl_compatible(const char *license) {
     static const char *const compatible[] = {
         "GPL",
@@ -4288,9 +4316,14 @@ static int64_t edge_linux_bpf_map_create(
     if ((attribute.map_type != KERNEL_BPF_MAP_TYPE_ARRAY_OF_MAPS &&
          attribute.map_type != KERNEL_BPF_MAP_TYPE_HASH_OF_MAPS &&
          attribute.inner_map_descriptor) || attribute.numa_node ||
-        attribute.interface_index || attribute.btf_descriptor ||
-        attribute.btf_key_type_id || attribute.btf_value_type_id ||
+        attribute.interface_index ||
         attribute.btf_vmlinux_value_type_id || attribute.map_extra)
+        return -EDGE_LINUX_EINVAL;
+    if ((!attribute.btf_descriptor &&
+         (attribute.btf_key_type_id || attribute.btf_value_type_id)) ||
+        (attribute.btf_descriptor &&
+         (!attribute.btf_value_type_id ||
+          (!!attribute.key_size != !!attribute.btf_key_type_id))))
         return -EDGE_LINUX_EINVAL;
     memset(&request, 0, sizeof(request));
     request.type = attribute.map_type;
@@ -4298,6 +4331,14 @@ static int64_t edge_linux_bpf_map_create(
     request.value_size = attribute.value_size;
     request.max_entries = attribute.max_entries;
     request.flags = attribute.map_flags;
+    if (attribute.btf_descriptor) {
+        request.btf_object_id = kernel_bpf_descriptor_object(
+            (int32_t)attribute.btf_descriptor, KERNEL_BPF_OBJECT_BTF);
+        if (request.btf_object_id < 0) return request.btf_object_id;
+        request.btf_present = 1u;
+        request.btf_key_type_id = attribute.btf_key_type_id;
+        request.btf_value_type_id = attribute.btf_value_type_id;
+    }
     if (attribute.map_type == KERNEL_BPF_MAP_TYPE_ARRAY_OF_MAPS ||
         attribute.map_type == KERNEL_BPF_MAP_TYPE_HASH_OF_MAPS) {
         request.inner_map_object_id = kernel_bpf_descriptor_object(
@@ -4310,6 +4351,67 @@ static int64_t edge_linux_bpf_map_create(
     object_id = kernel_bpf_map_create(&request);
     if (object_id < 0) return object_id;
     return kernel_bpf_create_descriptor(object_id);
+}
+
+static int64_t edge_linux_bpf_btf_load(
+    edge_linux_syscall_context_t *context, uint64_t user_attribute,
+    uint32_t attribute_size) {
+    edge_linux_bpf_btf_load_attribute_t attribute;
+    uint8_t *data;
+    uint32_t pages;
+    int object_id;
+    int status;
+
+    status = edge_linux_bpf_copy_attribute(
+        context, &attribute, sizeof(attribute),
+        offsetof(edge_linux_bpf_btf_load_attribute_t, log_true_size),
+        user_attribute, attribute_size);
+    if (status < 0) return status;
+    if (!attribute.btf || !attribute.btf_size)
+        return -EDGE_LINUX_EINVAL;
+    if (attribute.btf_size > 16u * 1024u * 1024u)
+        return -EDGE_LINUX_E2BIG;
+    if (attribute.flags || attribute.token_descriptor ||
+        attribute.log_level > 7u ||
+        ((!attribute.log_buffer || !attribute.log_size) &&
+         (attribute.log_buffer || attribute.log_size ||
+          attribute.log_level)))
+        return -EDGE_LINUX_EINVAL;
+    if (attribute.log_buffer && attribute.log_size) {
+        const char empty = 0;
+
+        if (edge_linux_copy_to_user(
+                context, attribute.log_buffer, &empty, 1u) < 0)
+            return -EDGE_LINUX_EFAULT;
+        attribute.log_true_size = 1u;
+        if (attribute_size >=
+                offsetof(edge_linux_bpf_btf_load_attribute_t,
+                         log_true_size) + sizeof(attribute.log_true_size) &&
+            edge_linux_copy_to_user(
+                context,
+                user_attribute + offsetof(
+                    edge_linux_bpf_btf_load_attribute_t, log_true_size),
+                &attribute.log_true_size,
+                sizeof(attribute.log_true_size)) < 0)
+            return -EDGE_LINUX_EFAULT;
+    }
+    pages = (attribute.btf_size + 4095u) / 4096u;
+    data = (uint8_t *)arch_vm_alloc_pages(pages);
+    if (!data) return -EDGE_LINUX_ENOMEM;
+    if (edge_linux_copy_from_user(
+            context, data, attribute.btf, attribute.btf_size) < 0) {
+        status = -EDGE_LINUX_EFAULT;
+        goto out;
+    }
+    object_id = kernel_bpf_btf_create(data, attribute.btf_size);
+    if (object_id < 0) {
+        status = object_id;
+        goto out;
+    }
+    status = kernel_bpf_create_descriptor(object_id);
+out:
+    edge_linux_bpf_free_pages(data, pages);
+    return status;
 }
 
 static void edge_linux_bpf_free_pages(uint8_t *buffer,
@@ -4683,7 +4785,10 @@ static int64_t edge_linux_bpf_object_id_command(
     kernel_bpf_object_kind_t kind =
         command == EDGE_LINUX_BPF_PROG_GET_NEXT_ID ||
         command == EDGE_LINUX_BPF_PROG_GET_FD_BY_ID ?
-            KERNEL_BPF_OBJECT_PROGRAM : KERNEL_BPF_OBJECT_MAP;
+            KERNEL_BPF_OBJECT_PROGRAM :
+        command == EDGE_LINUX_BPF_BTF_GET_NEXT_ID ||
+        command == EDGE_LINUX_BPF_BTF_GET_FD_BY_ID ?
+            KERNEL_BPF_OBJECT_BTF : KERNEL_BPF_OBJECT_MAP;
     int object_id;
     int status;
 
@@ -4695,7 +4800,8 @@ static int64_t edge_linux_bpf_object_id_command(
     if (attribute.open_flags || attribute.token_descriptor)
         return -EDGE_LINUX_EINVAL;
     if (command == EDGE_LINUX_BPF_PROG_GET_NEXT_ID ||
-        command == EDGE_LINUX_BPF_MAP_GET_NEXT_ID) {
+        command == EDGE_LINUX_BPF_MAP_GET_NEXT_ID ||
+        command == EDGE_LINUX_BPF_BTF_GET_NEXT_ID) {
         status = kernel_bpf_object_next_user_id(
             kind, attribute.start_or_object_id, &attribute.next_id);
         if (status < 0) return status;
@@ -4745,6 +4851,9 @@ static int64_t edge_linux_bpf_object_info(
         linux_info.value_size = runtime_info.value_size;
         linux_info.max_entries = runtime_info.max_entries;
         linux_info.map_flags = runtime_info.flags;
+        linux_info.btf_id = runtime_info.btf_id;
+        linux_info.btf_key_type_id = runtime_info.btf_key_type_id;
+        linux_info.btf_value_type_id = runtime_info.btf_value_type_id;
         memcpy(linux_info.name, runtime_info.name, sizeof(linux_info.name));
         copied = attribute.info_length < sizeof(linux_info) ?
             attribute.info_length : sizeof(linux_info);
@@ -4816,6 +4925,58 @@ static int64_t edge_linux_bpf_object_info(
         linux_info.verified_instructions =
             runtime_info.verified_instructions;
         memcpy(linux_info.name, runtime_info.name, sizeof(linux_info.name));
+        if (copied && edge_linux_copy_to_user(
+                context, attribute.info, &linux_info, copied) < 0)
+            return -EDGE_LINUX_EFAULT;
+        attribute.info_length = sizeof(linux_info);
+    } else if (kind == KERNEL_BPF_OBJECT_BTF) {
+        kernel_bpf_btf_info_t runtime_info;
+        edge_linux_bpf_btf_info_t linux_info;
+        edge_linux_bpf_btf_info_t requested;
+        uint32_t actual_size;
+        uint32_t copied;
+
+        status = edge_linux_bpf_user_tail_zero(
+            context, attribute.info,
+            EDGE_LINUX_BPF_BTF_INFO_KNOWN_SIZE,
+            attribute.info_length);
+        if (status < 0) return status;
+        memset(&requested, 0, sizeof(requested));
+        copied = attribute.info_length < sizeof(requested) ?
+            attribute.info_length : sizeof(requested);
+        if (copied && edge_linux_copy_from_user(
+                context, &requested, attribute.info, copied) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if ((!requested.name) != (!requested.name_length))
+            return -EDGE_LINUX_EINVAL;
+        status = kernel_bpf_btf_info(object_id, &runtime_info);
+        if (status < 0) return status;
+        status = kernel_bpf_btf_copy(object_id, 0, 0, &actual_size);
+        if (status < 0) return status;
+        if (requested.btf_size) {
+            uint8_t *data;
+            uint32_t pages = (actual_size + 4095u) / 4096u;
+            uint32_t copy_size = requested.btf_size < actual_size ?
+                requested.btf_size : actual_size;
+
+            if (!requested.btf) return -EDGE_LINUX_EFAULT;
+            data = (uint8_t *)arch_vm_alloc_pages(pages);
+            if (!data) return -EDGE_LINUX_ENOMEM;
+            status = kernel_bpf_btf_copy(
+                object_id, data, actual_size, &actual_size);
+            if (status == 0 && edge_linux_copy_to_user(
+                    context, requested.btf, data, copy_size) < 0)
+                status = -EDGE_LINUX_EFAULT;
+            edge_linux_bpf_free_pages(data, pages);
+            if (status < 0) return status;
+        }
+        memset(&linux_info, 0, sizeof(linux_info));
+        linux_info.btf = requested.btf;
+        linux_info.btf_size = actual_size;
+        linux_info.id = runtime_info.id;
+        linux_info.name = requested.name;
+        linux_info.name_length = 0u;
+        linux_info.kernel_btf = runtime_info.kernel_btf;
         if (copied && edge_linux_copy_to_user(
                 context, attribute.info, &linux_info, copied) < 0)
             return -EDGE_LINUX_EFAULT;
@@ -5015,11 +5176,20 @@ static int64_t edge_linux_sys_bpf(
         return edge_linux_bpf_object_id_command(
             context, command, user_attribute, attribute_size);
     }
+    if (command == EDGE_LINUX_BPF_BTF_GET_FD_BY_ID ||
+        command == EDGE_LINUX_BPF_BTF_GET_NEXT_ID) {
+        if (!privileged) return -EDGE_LINUX_EPERM;
+        return edge_linux_bpf_object_id_command(
+            context, command, user_attribute, attribute_size);
+    }
     if (command == EDGE_LINUX_BPF_OBJ_GET_INFO_BY_FD)
         return edge_linux_bpf_object_info(
             context, user_attribute, attribute_size);
-    if (command == EDGE_LINUX_BPF_BTF_LOAD)
-        return -EDGE_LINUX_EINVAL;
+    if (command == EDGE_LINUX_BPF_BTF_LOAD) {
+        if (!privileged) return -EDGE_LINUX_EPERM;
+        return edge_linux_bpf_btf_load(
+            context, user_attribute, attribute_size);
+    }
     if (command == EDGE_LINUX_BPF_PROG_ATTACH ||
         command == EDGE_LINUX_BPF_PROG_DETACH) {
         if (!privileged) return -EDGE_LINUX_EPERM;

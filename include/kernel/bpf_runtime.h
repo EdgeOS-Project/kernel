@@ -54,6 +54,7 @@
 typedef enum kernel_bpf_object_kind {
     KERNEL_BPF_OBJECT_MAP = 1,
     KERNEL_BPF_OBJECT_PROGRAM = 2,
+    KERNEL_BPF_OBJECT_BTF = 3,
 } kernel_bpf_object_kind_t;
 
 typedef struct kernel_bpf_instruction {
@@ -70,6 +71,10 @@ typedef struct kernel_bpf_map_create_request {
     uint32_t max_entries;
     uint32_t flags;
     int32_t inner_map_object_id;
+    int32_t btf_object_id;
+    uint32_t btf_key_type_id;
+    uint32_t btf_value_type_id;
+    uint8_t btf_present;
     char name[KERNEL_BPF_OBJECT_NAME_LENGTH];
 } kernel_bpf_map_create_request_t;
 
@@ -90,8 +95,17 @@ typedef struct kernel_bpf_map_info {
     uint32_t value_size;
     uint32_t max_entries;
     uint32_t flags;
+    uint32_t btf_id;
+    uint32_t btf_key_type_id;
+    uint32_t btf_value_type_id;
     char name[KERNEL_BPF_OBJECT_NAME_LENGTH];
 } kernel_bpf_map_info_t;
+
+typedef struct kernel_bpf_btf_info {
+    uint32_t id;
+    uint32_t size;
+    uint32_t kernel_btf;
+} kernel_bpf_btf_info_t;
 
 typedef struct kernel_bpf_program_info {
     uint32_t type;
@@ -117,6 +131,7 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request);
 int kernel_bpf_program_create(
     const kernel_bpf_program_create_request_t *request,
     const kernel_bpf_instruction_t *instructions);
+int kernel_bpf_btf_create(const void *data, uint32_t size);
 int kernel_bpf_object_retain(int object_id);
 void kernel_bpf_object_release(int object_id);
 int kernel_bpf_object_kind(int object_id, kernel_bpf_object_kind_t *kind);
@@ -134,6 +149,9 @@ int kernel_bpf_program_info(int object_id, kernel_bpf_program_info_t *info);
 int kernel_bpf_program_copy_instructions(int object_id, void *buffer,
                                          uint32_t capacity,
                                          uint32_t *actual_size);
+int kernel_bpf_btf_info(int object_id, kernel_bpf_btf_info_t *info);
+int kernel_bpf_btf_copy(int object_id, void *buffer, uint32_t capacity,
+                        uint32_t *actual_size);
 int kernel_bpf_map_lookup_flags(int object_id, const void *key, void *value,
                                 uint64_t flags);
 int kernel_bpf_map_lookup(int object_id, const void *key, void *value);

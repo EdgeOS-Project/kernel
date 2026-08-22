@@ -141,6 +141,8 @@
         "no-common-LRU maps with rounded capacity and independent per-CPU eviction domains",
         "array-of-maps and hash-of-maps creation, template validation, element and batch operations and referenced-map lifetime",
         "map and program ID enumeration and descriptor reopening",
+        "BTF loading, validation, descriptor lifetime, ID enumeration, reopening and data readback",
+        "BTF-associated map creation and map information metadata",
         "map information queries",
         "program information, translated instruction and SHA-256 tag queries",
         "bounded cgroup-device program verification and execution",
@@ -152,7 +154,7 @@
         "remaining specialized map families and their concurrency semantics",
         "additional attachment families and program types",
         "complete allow-override, multi-position and link semantics",
-        "BTF objects, pinning and link objects",
+        "BTF type graph semantic validation, object pinning and link objects",
         "ia32 and x32 compatibility layouts"
       ],
       "runtime_tests": [
@@ -162,7 +164,7 @@
       "linux_oracle": {
         "status": "partial",
         "reference": "2c7c88a412aa6d09cd04b414211b4ef8553b5309",
-        "scope": "array and hash maps, map element operations, object IDs, LRU hash creation, access-order eviction, element operations, queue and stack creation, push, peek, pop and replacement, per-CPU array, hash and LRU hash layouts, CPU selection, all-CPU updates, no-common-LRU eviction domains and map-in-map element and batch operations, descriptor reopening, map and program information, translated instructions, SHA-256 tags and cgroup-device program loading, attachment, detachment and query behavior"
+        "scope": "array and hash maps, map element operations, object IDs, LRU hash creation, access-order eviction, element operations, queue and stack creation, push, peek, pop and replacement, per-CPU array, hash and LRU hash layouts, CPU selection, all-CPU updates, no-common-LRU eviction domains and map-in-map element and batch operations, descriptor reopening, BTF loading, basic header and section validation, ID enumeration, reopening, data readback and typed-map metadata, map and program information, translated instructions, SHA-256 tags and cgroup-device program loading, attachment, detachment and query behavior"
       }
     }
   ],

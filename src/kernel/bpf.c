@@ -74,6 +74,9 @@ typedef struct kernel_bpf_map {
     uint32_t inner_key_size;
     uint32_t inner_value_size;
     uint32_t inner_flags;
+    int32_t btf_object_id;
+    uint32_t btf_key_type_id;
+    uint32_t btf_value_type_id;
     uint64_t access_sequence;
     uint8_t frozen;
     uint8_t *storage;
@@ -95,6 +98,12 @@ typedef struct kernel_bpf_program {
     char name[KERNEL_BPF_OBJECT_NAME_LENGTH];
 } kernel_bpf_program_t;
 
+typedef struct kernel_bpf_btf {
+    uint32_t size;
+    uint32_t storage_pages;
+    uint8_t *data;
+} kernel_bpf_btf_t;
+
 typedef struct kernel_bpf_object {
     uint8_t used;
     uint8_t kind;
@@ -104,8 +113,23 @@ typedef struct kernel_bpf_object {
     union {
         kernel_bpf_map_t map;
         kernel_bpf_program_t program;
+        kernel_bpf_btf_t btf;
     } value;
 } kernel_bpf_object_t;
+
+typedef struct kernel_btf_header {
+    uint16_t magic;
+    uint8_t version;
+    uint8_t flags;
+    uint32_t header_length;
+    uint32_t type_offset;
+    uint32_t type_length;
+    uint32_t string_offset;
+    uint32_t string_length;
+} kernel_btf_header_t;
+
+#define KERNEL_BTF_MAGIC 0xeb9fu
+#define KERNEL_BTF_VERSION 1u
 
 typedef struct kernel_bpf_attachment {
     uint8_t used;
@@ -315,6 +339,7 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
     kernel_bpf_map_info_t inner_info;
     int object_id;
     int status;
+    int btf_retained = 0;
 
     if (!request || !bpf_name_valid(request->name) ||
         request->key_size > KERNEL_BPF_MAX_KEY_SIZE ||
@@ -322,10 +347,29 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
         request->value_size > KERNEL_BPF_MAX_VALUE_SIZE ||
         !request->max_entries)
         return -EDGE_LINUX_EINVAL;
-    if (bpf_map_type_is_queue_stack(request->type)) {
-        if (request->key_size) return -EDGE_LINUX_EINVAL;
-    } else if (!request->key_size) {
+    if (!request->btf_present &&
+        (request->btf_key_type_id || request->btf_value_type_id))
         return -EDGE_LINUX_EINVAL;
+    if (request->btf_present) {
+        kernel_bpf_object_kind_t kind;
+
+        if (!request->btf_value_type_id ||
+            (!!request->key_size != !!request->btf_key_type_id) ||
+            kernel_bpf_object_kind(request->btf_object_id, &kind) < 0 ||
+            kind != KERNEL_BPF_OBJECT_BTF)
+            return -EDGE_LINUX_EINVAL;
+        status = kernel_bpf_object_retain(request->btf_object_id);
+        if (status < 0) return status;
+        btf_retained = 1;
+    }
+    if (bpf_map_type_is_queue_stack(request->type)) {
+        if (request->key_size) {
+            status = -EDGE_LINUX_EINVAL;
+            goto fail_btf;
+        }
+    } else if (!request->key_size) {
+        status = -EDGE_LINUX_EINVAL;
+        goto fail_btf;
     }
     value_stride = bpf_align8(request->value_size);
     possible_cpu_count =
@@ -339,22 +383,22 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
     if (bpf_map_type_is_map_in_map(request->type)) {
         status = kernel_bpf_map_info(
             request->inner_map_object_id, &inner_info);
-        if (status < 0) return status;
+        if (status < 0) goto fail_btf;
         if (bpf_map_type_is_map_in_map(inner_info.type))
-            return -EDGE_LINUX_EINVAL;
+            goto invalid_btf;
         if (request->value_size != sizeof(uint32_t))
-            return -EDGE_LINUX_EINVAL;
+            goto invalid_btf;
     }
     if (request->type == KERNEL_BPF_MAP_TYPE_ARRAY ||
         request->type == KERNEL_BPF_MAP_TYPE_PERCPU_ARRAY) {
         if (request->key_size != sizeof(uint32_t) || request->flags)
-            return -EDGE_LINUX_EINVAL;
+            goto invalid_btf;
         stride = request->type == KERNEL_BPF_MAP_TYPE_PERCPU_ARRAY ?
             value_stride * possible_cpu_count : value_stride;
     } else if (request->type == KERNEL_BPF_MAP_TYPE_HASH ||
                request->type == KERNEL_BPF_MAP_TYPE_PERCPU_HASH) {
         if (request->flags & ~KERNEL_BPF_MAP_NO_PREALLOC)
-            return -EDGE_LINUX_EINVAL;
+            goto invalid_btf;
         stride = request->type == KERNEL_BPF_MAP_TYPE_PERCPU_HASH ?
             bpf_align8(1u + request->key_size) +
                 value_stride * possible_cpu_count :
@@ -362,9 +406,9 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
     } else if (request->type == KERNEL_BPF_MAP_TYPE_LRU_HASH ||
                request->type == KERNEL_BPF_MAP_TYPE_LRU_PERCPU_HASH) {
         if (request->flags & KERNEL_BPF_MAP_NO_PREALLOC)
-            return -EDGE_LINUX_ENOTSUPP;
+            goto unsupported_btf;
         if (request->flags & ~KERNEL_BPF_MAP_NO_COMMON_LRU)
-            return -EDGE_LINUX_EINVAL;
+            goto invalid_btf;
         if (request->flags & KERNEL_BPF_MAP_NO_COMMON_LRU) {
             uint64_t rounded =
                 ((uint64_t)actual_max_entries + possible_cpu_count - 1u) /
@@ -373,7 +417,10 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
             if (rounded > UINT32_MAX)
                 rounded = actual_max_entries -
                     actual_max_entries % possible_cpu_count;
-            if (!rounded) return -EDGE_LINUX_E2BIG;
+            if (!rounded) {
+                status = -EDGE_LINUX_E2BIG;
+                goto fail_btf;
+            }
             actual_max_entries = (uint32_t)rounded;
         }
         stride = request->type == KERNEL_BPF_MAP_TYPE_LRU_PERCPU_HASH ?
@@ -383,24 +430,27 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
                 sizeof(uint64_t);
     } else if (request->type == KERNEL_BPF_MAP_TYPE_ARRAY_OF_MAPS) {
         if (request->key_size != sizeof(uint32_t) || request->flags)
-            return -EDGE_LINUX_EINVAL;
+            goto invalid_btf;
         stride = sizeof(int32_t);
     } else if (request->type == KERNEL_BPF_MAP_TYPE_HASH_OF_MAPS) {
         if (request->flags & ~KERNEL_BPF_MAP_NO_PREALLOC)
-            return -EDGE_LINUX_EINVAL;
+            goto invalid_btf;
         stride = bpf_align8(
             1u + request->key_size + sizeof(int32_t));
     } else if (bpf_map_type_is_queue_stack(request->type)) {
-        if (request->flags) return -EDGE_LINUX_EINVAL;
+        if (request->flags) goto invalid_btf;
         stride = bpf_align8(request->value_size);
     } else {
-        return -EDGE_LINUX_EINVAL;
+        goto invalid_btf;
     }
     bytes = (uint64_t)stride * actual_max_entries;
     status = bpf_allocation_size(bytes, &pages);
-    if (status < 0) return status;
+    if (status < 0) goto fail_btf;
     storage = (uint8_t *)arch_vm_alloc_pages(pages);
-    if (!storage) return -EDGE_LINUX_ENOMEM;
+    if (!storage) {
+        status = -EDGE_LINUX_ENOMEM;
+        goto fail_btf;
+    }
     memset(storage, 0, (uint64_t)pages * BPF_PAGE_SIZE);
     if (request->type == KERNEL_BPF_MAP_TYPE_ARRAY_OF_MAPS) {
         for (uint32_t index = 0; index < actual_max_entries; ++index) {
@@ -425,10 +475,77 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
         object->value.map.inner_key_size = inner_info.key_size;
         object->value.map.inner_value_size = inner_info.value_size;
         object->value.map.inner_flags = inner_info.flags;
+        object->value.map.btf_object_id = request->btf_present ?
+            request->btf_object_id : -1;
+        object->value.map.btf_key_type_id = request->btf_key_type_id;
+        object->value.map.btf_value_type_id = request->btf_value_type_id;
         object->value.map.storage_pages = pages;
         object->value.map.storage = storage;
         memcpy(object->value.map.name, request->name,
                KERNEL_BPF_OBJECT_NAME_LENGTH);
+    }
+    bpf_unlock();
+    if (object_id < 0) {
+        bpf_free_pages(storage, pages);
+        if (btf_retained) kernel_bpf_object_release(request->btf_object_id);
+    }
+    return object_id;
+
+unsupported_btf:
+    status = -EDGE_LINUX_ENOTSUPP;
+    goto fail_btf;
+invalid_btf:
+    status = -EDGE_LINUX_EINVAL;
+fail_btf:
+    if (btf_retained) kernel_bpf_object_release(request->btf_object_id);
+    return status;
+}
+
+static int bpf_btf_validate(const uint8_t *data, uint32_t size) {
+    kernel_btf_header_t header;
+    uint64_t payload_size;
+    uint64_t type_end;
+    uint64_t string_end;
+
+    if (!data || size < sizeof(header)) return -EDGE_LINUX_EINVAL;
+    memcpy(&header, data, sizeof(header));
+    if (header.magic != KERNEL_BTF_MAGIC ||
+        header.version != KERNEL_BTF_VERSION || header.flags ||
+        header.header_length < sizeof(header) ||
+        header.header_length > size)
+        return -EDGE_LINUX_EINVAL;
+    payload_size = size - header.header_length;
+    type_end = (uint64_t)header.type_offset + header.type_length;
+    string_end = (uint64_t)header.string_offset + header.string_length;
+    if (type_end > payload_size || string_end > payload_size ||
+        header.string_offset < type_end || !header.string_length)
+        return -EDGE_LINUX_EINVAL;
+    if (data[header.header_length + header.string_offset] != 0)
+        return -EDGE_LINUX_EINVAL;
+    return 0;
+}
+
+int kernel_bpf_btf_create(const void *data, uint32_t size) {
+    kernel_bpf_object_t *object;
+    uint8_t *storage;
+    uint32_t pages;
+    int object_id;
+    int status;
+
+    status = bpf_btf_validate((const uint8_t *)data, size);
+    if (status < 0) return status;
+    status = bpf_allocation_size(size, &pages);
+    if (status < 0) return status;
+    storage = (uint8_t *)arch_vm_alloc_pages(pages);
+    if (!storage) return -EDGE_LINUX_ENOMEM;
+    memset(storage, 0, (uint64_t)pages * BPF_PAGE_SIZE);
+    memcpy(storage, data, size);
+    bpf_lock();
+    object_id = bpf_allocate_object_locked(KERNEL_BPF_OBJECT_BTF, &object);
+    if (object_id >= 0) {
+        object->value.btf.size = size;
+        object->value.btf.storage_pages = pages;
+        object->value.btf.data = storage;
     }
     bpf_unlock();
     if (object_id < 0) bpf_free_pages(storage, pages);
@@ -713,6 +830,7 @@ void kernel_bpf_object_release(int object_id) {
     uint32_t map_entries = 0u;
     uint32_t map_stride = 0u;
     uint32_t map_key_size = 0u;
+    int32_t map_btf_object = -1;
 
     bpf_lock();
     object = bpf_object_locked(object_id);
@@ -724,9 +842,13 @@ void kernel_bpf_object_release(int object_id) {
             map_entries = object->value.map.max_entries;
             map_stride = object->value.map.entry_stride;
             map_key_size = object->value.map.key_size;
+            map_btf_object = object->value.map.btf_object_id;
         } else if (object->kind == KERNEL_BPF_OBJECT_PROGRAM) {
             storage = object->value.program.instructions;
             pages = object->value.program.storage_pages;
+        } else if (object->kind == KERNEL_BPF_OBJECT_BTF) {
+            storage = object->value.btf.data;
+            pages = object->value.btf.storage_pages;
         }
         memset(object, 0, sizeof(*object));
     }
@@ -746,6 +868,8 @@ void kernel_bpf_object_release(int object_id) {
             if (inner >= 0) kernel_bpf_object_release(inner);
         }
     }
+    if (map_btf_object >= 0)
+        kernel_bpf_object_release(map_btf_object);
     bpf_free_pages(storage, pages);
 }
 
@@ -840,6 +964,14 @@ int kernel_bpf_map_info(int object_id, kernel_bpf_map_info_t *info) {
     info->value_size = object->value.map.value_size;
     info->max_entries = object->value.map.max_entries;
     info->flags = object->value.map.flags;
+    if (object->value.map.btf_object_id >= 0) {
+        kernel_bpf_object_t *btf = bpf_object_locked(
+            object->value.map.btf_object_id);
+        if (btf && btf->kind == KERNEL_BPF_OBJECT_BTF)
+            info->btf_id = btf->user_id;
+    }
+    info->btf_key_type_id = object->value.map.btf_key_type_id;
+    info->btf_value_type_id = object->value.map.btf_value_type_id;
     memcpy(info->name, object->value.map.name, sizeof(info->name));
     bpf_unlock();
     return 0;
@@ -922,6 +1054,47 @@ int kernel_bpf_program_copy_instructions(int object_id, void *buffer,
     if (capacity > size) capacity = size;
     if (capacity)
         memcpy(buffer, object->value.program.instructions, capacity);
+    bpf_unlock();
+    return 0;
+}
+
+int kernel_bpf_btf_info(int object_id, kernel_bpf_btf_info_t *info) {
+    kernel_bpf_object_t *object;
+
+    if (!info) return -EDGE_LINUX_EINVAL;
+    bpf_lock();
+    object = bpf_object_locked(object_id);
+    if (!object || object->kind != KERNEL_BPF_OBJECT_BTF) {
+        bpf_unlock();
+        return -EDGE_LINUX_EBADF;
+    }
+    memset(info, 0, sizeof(*info));
+    info->id = object->user_id;
+    info->size = object->value.btf.size;
+    bpf_unlock();
+    return 0;
+}
+
+int kernel_bpf_btf_copy(int object_id, void *buffer, uint32_t capacity,
+                        uint32_t *actual_size) {
+    kernel_bpf_object_t *object;
+    uint32_t copied;
+
+    if (!actual_size) return -EDGE_LINUX_EINVAL;
+    bpf_lock();
+    object = bpf_object_locked(object_id);
+    if (!object || object->kind != KERNEL_BPF_OBJECT_BTF) {
+        bpf_unlock();
+        return -EDGE_LINUX_EBADF;
+    }
+    *actual_size = object->value.btf.size;
+    if (capacity && !buffer) {
+        bpf_unlock();
+        return -EDGE_LINUX_EFAULT;
+    }
+    copied = capacity < object->value.btf.size ?
+        capacity : object->value.btf.size;
+    if (copied) memcpy(buffer, object->value.btf.data, copied);
     bpf_unlock();
     return 0;
 }

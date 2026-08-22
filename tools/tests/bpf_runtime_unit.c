@@ -717,6 +717,80 @@ static void test_program(void) {
     kernel_bpf_object_release(object);
 }
 
+static void test_btf_objects(void) {
+    struct test_btf_blob {
+        uint16_t magic;
+        uint8_t version;
+        uint8_t flags;
+        uint32_t header_length;
+        uint32_t type_offset;
+        uint32_t type_length;
+        uint32_t string_offset;
+        uint32_t string_length;
+        uint8_t strings[1];
+    } __attribute__((packed)) blob = {
+        .magic = 0xeb9fu,
+        .version = 1u,
+        .header_length = 24u,
+        .string_length = 1u,
+    };
+    kernel_bpf_btf_info_t btf_info;
+    kernel_bpf_map_info_t map_info;
+    kernel_bpf_map_create_request_t request = {
+        .type = KERNEL_BPF_MAP_TYPE_HASH,
+        .key_size = sizeof(uint32_t),
+        .value_size = sizeof(uint64_t),
+        .max_entries = 2u,
+        .btf_key_type_id = 1u,
+        .btf_value_type_id = 2u,
+        .btf_present = 1u,
+    };
+    uint8_t copied[sizeof(blob)];
+    uint32_t actual_size = 0u;
+    uint32_t next_id = 0u;
+    int btf;
+    int retained;
+    int map;
+
+    btf = kernel_bpf_btf_create(&blob, sizeof(blob));
+    assert(btf >= 0);
+    assert(kernel_bpf_btf_info(btf, &btf_info) == 0);
+    assert(btf_info.id != 0u && btf_info.size == sizeof(blob));
+    assert(kernel_bpf_btf_copy(
+               btf, copied, sizeof(copied), &actual_size) == 0);
+    assert(actual_size == sizeof(blob));
+    assert(memcmp(copied, &blob, sizeof(blob)) == 0);
+    assert(kernel_bpf_object_next_user_id(
+               KERNEL_BPF_OBJECT_BTF, btf_info.id - 1u,
+               &next_id) == 0);
+    assert(next_id == btf_info.id);
+    retained = kernel_bpf_object_from_user_id(
+        KERNEL_BPF_OBJECT_BTF, btf_info.id);
+    assert(retained == btf);
+    kernel_bpf_object_release(retained);
+
+    request.btf_object_id = btf;
+    strcpy(request.name, "typed_hash");
+    map = kernel_bpf_map_create(&request);
+    assert(map >= 0);
+    assert(kernel_bpf_map_info(map, &map_info) == 0);
+    assert(map_info.btf_id == btf_info.id);
+    assert(map_info.btf_key_type_id == 1u);
+    assert(map_info.btf_value_type_id == 2u);
+    kernel_bpf_object_release(btf);
+    assert(kernel_bpf_btf_info(request.btf_object_id, &btf_info) == 0);
+    kernel_bpf_object_release(map);
+    assert(kernel_bpf_btf_info(request.btf_object_id, &btf_info) < 0);
+
+    blob.magic = 0u;
+    assert(kernel_bpf_btf_create(&blob, sizeof(blob)) ==
+           -EDGE_LINUX_EINVAL);
+    blob.magic = 0xeb9fu;
+    blob.string_length = 0u;
+    assert(kernel_bpf_btf_create(&blob, sizeof(blob)) ==
+           -EDGE_LINUX_EINVAL);
+}
+
 static void test_ids(void) {
     uint32_t first_id;
     uint32_t next_id;
@@ -750,6 +824,7 @@ int main(void) {
     test_map_in_map();
     test_batch_and_freeze();
     test_program();
+    test_btf_objects();
     test_ids();
     puts("bpf_runtime_unit: PASS");
     return 0;

@@ -41,8 +41,11 @@
 #define BPF_MAP_GET_FD_BY_ID 14u
 #define BPF_OBJ_GET_INFO_BY_FD 15u
 #define BPF_PROG_QUERY 16u
+#define BPF_BTF_LOAD 18u
+#define BPF_BTF_GET_FD_BY_ID 19u
 #define BPF_MAP_LOOKUP_AND_DELETE_ELEM 21u
 #define BPF_MAP_FREEZE 22u
+#define BPF_BTF_GET_NEXT_ID 23u
 #define BPF_MAP_LOOKUP_BATCH 24u
 #define BPF_MAP_LOOKUP_AND_DELETE_BATCH 25u
 #define BPF_MAP_UPDATE_BATCH 26u
@@ -156,6 +159,16 @@ union bpf_attr {
         uint64_t info;
     } info;
     struct {
+        uint64_t btf;
+        uint64_t log_buf;
+        uint32_t btf_size;
+        uint32_t log_size;
+        uint32_t log_level;
+        uint32_t log_true_size;
+        uint32_t btf_flags;
+        int32_t btf_token_fd;
+    } btf_load;
+    struct {
         uint64_t in_batch;
         uint64_t out_batch;
         uint64_t keys;
@@ -232,6 +245,15 @@ struct bpf_prog_info {
     uint32_t padding;
 };
 
+struct bpf_btf_info {
+    uint64_t btf;
+    uint32_t btf_size;
+    uint32_t id;
+    uint64_t name;
+    uint32_t name_len;
+    uint32_t kernel_btf;
+};
+
 struct bpf_insn {
     uint8_t code;
     uint8_t registers;
@@ -245,6 +267,8 @@ _Static_assert(sizeof(struct bpf_map_info) == 104u,
                "bpf_map_info probe layout mismatch");
 _Static_assert(sizeof(struct bpf_prog_info) == 232u,
                "bpf_prog_info probe layout mismatch");
+_Static_assert(sizeof(struct bpf_btf_info) == 32u,
+               "bpf_btf_info probe layout mismatch");
 _Static_assert(sizeof(struct bpf_insn) == 8u,
                "bpf_insn probe layout mismatch");
 
@@ -293,6 +317,13 @@ static int text_equal(const char *left, const char *right) {
     unsigned long index = 0;
     while (left[index] && right[index] && left[index] == right[index]) ++index;
     return left[index] == right[index];
+}
+
+static int bytes_equal(const uint8_t *left, const uint8_t *right,
+                       unsigned long length) {
+    for (unsigned long index = 0; index < length; ++index)
+        if (left[index] != right[index]) return 0;
+    return 1;
 }
 
 static void print_text(const char *text) {
@@ -1277,6 +1308,118 @@ static int test_program(void) {
     return failures;
 }
 
+static int test_btf_objects(void) {
+    struct test_btf_blob {
+        uint16_t magic;
+        uint8_t version;
+        uint8_t flags;
+        uint32_t hdr_len;
+        uint32_t type_off;
+        uint32_t type_len;
+        uint32_t str_off;
+        uint32_t str_len;
+        uint32_t name_off;
+        uint32_t info;
+        uint32_t size;
+        uint32_t int_data;
+        char strings[5];
+    } __attribute__((packed)) blob = {
+        .magic = 0xeb9fu,
+        .version = 1u,
+        .hdr_len = 24u,
+        .type_len = 16u,
+        .str_off = 16u,
+        .str_len = 5u,
+        .name_off = 1u,
+        .info = 1u << 24,
+        .size = 4u,
+        .int_data = (1u << 24) | 32u,
+        .strings = { 0, 'i', 'n', 't', 0 },
+    };
+    union bpf_attr attribute;
+    struct bpf_btf_info info;
+    struct bpf_map_info map_info;
+    uint8_t copy[sizeof(blob)];
+    long descriptor;
+    long reopened;
+    long map_descriptor;
+    int failures = 0;
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.btf_load.btf = (uint64_t)(uintptr_t)&blob;
+    attribute.btf_load.btf_size = sizeof(blob);
+    descriptor = bpf_call(BPF_BTF_LOAD, &attribute);
+    failures += expect_true("BTF load", descriptor >= 0);
+    if (descriptor < 0) return failures + 1;
+
+    clear_bytes(&copy, sizeof(copy));
+    clear_bytes(&info, sizeof(info));
+    info.btf = (uint64_t)(uintptr_t)copy;
+    info.btf_size = sizeof(copy);
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.info.bpf_fd = (uint32_t)descriptor;
+    attribute.info.info_len = sizeof(info);
+    attribute.info.info = (uint64_t)(uintptr_t)&info;
+    failures += expect("BTF info", bpf_call(
+        BPF_OBJ_GET_INFO_BY_FD, &attribute), 0);
+    failures += expect_true(
+        "BTF info values",
+        info.id != 0u && info.btf_size == sizeof(blob) &&
+        bytes_equal(copy, (const uint8_t *)&blob, sizeof(blob)));
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.id.start_or_object_id = info.id - 1u;
+    failures += expect("BTF next id", bpf_call(
+        BPF_BTF_GET_NEXT_ID, &attribute), 0);
+    failures += expect("BTF next id value", attribute.id.next_id, info.id);
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.id.start_or_object_id = info.id;
+    reopened = bpf_call(BPF_BTF_GET_FD_BY_ID, &attribute);
+    failures += expect_true("BTF reopen", reopened >= 0);
+    if (reopened >= 0)
+        (void)raw_syscall6(SYS_close, reopened, 0, 0, 0, 0, 0);
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.map_create.map_type = BPF_MAP_TYPE_HASH;
+    attribute.map_create.key_size = 4u;
+    attribute.map_create.value_size = 4u;
+    attribute.map_create.max_entries = 2u;
+    attribute.map_create.btf_fd = (uint32_t)descriptor;
+    attribute.map_create.btf_key_type_id = 1u;
+    attribute.map_create.btf_value_type_id = 1u;
+    map_descriptor = bpf_call(BPF_MAP_CREATE, &attribute);
+    failures += expect_true("typed map create", map_descriptor >= 0);
+    if (map_descriptor >= 0) {
+        clear_bytes(&map_info, sizeof(map_info));
+        clear_bytes(&attribute, sizeof(attribute));
+        attribute.info.bpf_fd = (uint32_t)map_descriptor;
+        attribute.info.info_len = sizeof(map_info);
+        attribute.info.info = (uint64_t)(uintptr_t)&map_info;
+        failures += expect("typed map info", bpf_call(
+            BPF_OBJ_GET_INFO_BY_FD, &attribute), 0);
+        failures += expect_true(
+            "typed map BTF values",
+            map_info.btf_id == info.id &&
+            map_info.btf_key_type_id == 1u &&
+            map_info.btf_value_type_id == 1u);
+        (void)raw_syscall6(
+            SYS_close, map_descriptor, 0, 0, 0, 0, 0);
+    }
+
+    blob.magic = 0u;
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.btf_load.btf = (uint64_t)(uintptr_t)&blob;
+    attribute.btf_load.btf_size = sizeof(blob);
+    failures += expect("BTF invalid magic", bpf_call(
+        BPF_BTF_LOAD, &attribute), -EINVAL);
+    blob.magic = 0xeb9fu;
+    attribute.btf_load.btf_flags = 1u;
+    failures += expect("BTF invalid flags", bpf_call(
+        BPF_BTF_LOAD, &attribute), -EINVAL);
+    (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+    return failures;
+}
+
 static int test_attribute_tail(void) {
     union bpf_attr attribute;
 
@@ -1308,6 +1451,7 @@ START_ATTRIBUTES void _start(void) {
     failures += test_map_in_map();
     failures += test_batch_and_freeze();
     failures += test_program();
+    failures += test_btf_objects();
     failures += test_attribute_tail();
     print_text(failures ? "BPF_ABI_PROBE_FAIL\n" :
                           "BPF_ABI_PROBE_PASS\n");
