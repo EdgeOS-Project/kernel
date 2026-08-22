@@ -171,13 +171,18 @@ EDGEOS_ASSESSMENTS = [
             "bounded cgroup-device program verification and execution",
             "cgroup-device attachment, detachment and direct or effective queries",
             "hierarchical cgroup-device checks for device open and creation",
+            "LPM trie maps with longest-prefix lookup and batch operations",
+            "Bloom filter maps with Linux hash selection and peek semantics",
+            "BTF object loading, information queries, ID enumeration and descriptor reopening",
+            "BTF-backed map creation with retained BTF object lifetime",
         ],
         "missing": [
             "ring buffers and remaining map types",
             "remaining specialized map families and their concurrency semantics",
             "additional attachment families and program types",
             "complete allow-override, multi-position and link semantics",
-            "BTF objects, pinning and link objects",
+            "BPF filesystem pinning and link objects",
+            "complete BTF type-graph validation and program integration",
             "ia32 and x32 compatibility layouts",
         ],
         "runtime_tests": [
@@ -198,6 +203,89 @@ EDGEOS_ASSESSMENTS = [
             ),
         },
     },
+]
+
+
+def coverage_assessment(
+        identifier: str, status: str, architectures: dict[str, str],
+        *, kconfig: list[str] | None = None,
+        runtime_tests: list[str] | None = None) -> dict[str, object]:
+    """Describe the evidence boundary for an extracted UAPI group."""
+    return {
+        "id": identifier,
+        "status": status,
+        "kconfig": kconfig or [],
+        "architectures": architectures,
+        "runtime_tests": runtime_tests or [],
+        "linux_oracle": {
+            "status": "required" if status != "verified" else "verified",
+            "reference": REFERENCE_COMMIT,
+        },
+    }
+
+
+NATIVE_ARCHITECTURES = {
+    "x86_64": "partial",
+    "aarch64": "partial",
+    "ia32": "unimplemented",
+    "x32": "unimplemented",
+}
+
+COMPAT_ARCHITECTURES = {
+    "x86_64": "not-applicable",
+    "aarch64": "not-applicable",
+    "ia32": "unimplemented",
+    "x32": "unimplemented",
+}
+
+COVERAGE_ASSESSMENTS = [
+    coverage_assessment(
+        "syscalls-native", "partial", NATIVE_ARCHITECTURES,
+        runtime_tests=[
+            "tools/syscalls/linux_syscall_inventory.json",
+            "tools/tests/validate_syscall_inventory.py",
+            "tools/tests/arch_syscall_parity.py",
+        ]),
+    coverage_assessment("syscalls-ia32", "unimplemented", COMPAT_ARCHITECTURES,
+                        kconfig=["COMPAT_IA32"]),
+    coverage_assessment("syscalls-x32", "unimplemented", COMPAT_ARCHITECTURES,
+                        kconfig=["X86_X32_ABI"]),
+    coverage_assessment(
+        "ioctl-tty", "partial", NATIVE_ARCHITECTURES,
+        runtime_tests=["tools/tests/tty_session_unit.c"]),
+    coverage_assessment("ioctl-input", "partial", NATIVE_ARCHITECTURES),
+    coverage_assessment("ioctl-graphics", "partial", NATIVE_ARCHITECTURES,
+                        kconfig=["DRM"]),
+    coverage_assessment("ioctl-media", "partial", NATIVE_ARCHITECTURES,
+                        kconfig=["MEDIA_SUPPORT"]),
+    coverage_assessment("ioctl-audio", "partial", NATIVE_ARCHITECTURES,
+                        kconfig=["SOUND"]),
+    coverage_assessment("ioctl-usb", "partial", NATIVE_ARCHITECTURES,
+                        kconfig=["USB"]),
+    coverage_assessment("ioctl-storage", "partial", NATIVE_ARCHITECTURES,
+                        kconfig=["BLOCK"]),
+    coverage_assessment("ioctl-network", "partial", NATIVE_ARCHITECTURES,
+                        kconfig=["NET"]),
+    coverage_assessment("ioctl-platform", "partial", NATIVE_ARCHITECTURES),
+    coverage_assessment(
+        "ioctl-events", "partial", NATIVE_ARCHITECTURES,
+        kconfig=["PERF_EVENTS", "USERFAULTFD"]),
+    coverage_assessment("socket-options", "partial", NATIVE_ARCHITECTURES,
+                        kconfig=["NET"]),
+    coverage_assessment(
+        "io-uring", "partial", NATIVE_ARCHITECTURES,
+        kconfig=["IO_URING"],
+        runtime_tests=["tools/tests/io_uring_runtime_unit.c"]),
+    coverage_assessment("netlink", "partial", NATIVE_ARCHITECTURES,
+                        kconfig=["NET"]),
+    coverage_assessment(
+        "procfs", "partial", NATIVE_ARCHITECTURES,
+        runtime_tests=["tools/tests/proc_task_unit.c"]),
+    coverage_assessment(
+        "sysfs", "partial", NATIVE_ARCHITECTURES,
+        runtime_tests=["tools/tests/sysfs_uevent_abi_probe.c"]),
+    coverage_assessment("cgroup-v2", "partial", NATIVE_ARCHITECTURES,
+                        kconfig=["CGROUPS"]),
 ]
 
 IOCTL_HEADERS = {
@@ -387,7 +475,8 @@ def reference_version(tree: Path) -> str:
 def symbol_domain(tree: Path, headers: Iterable[str], *,
                   prefixes: tuple[str, ...] | None = None,
                   require_ioctl: bool = False,
-                  include_enums: bool = False) -> dict[str, object]:
+                  include_enums: bool = False,
+                  assessment_id: str) -> dict[str, object]:
     items: list[dict[str, object]] = []
     sources: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
@@ -408,12 +497,15 @@ def symbol_domain(tree: Path, headers: Iterable[str], *,
                 "name": symbol["name"],
                 "header": relative,
                 "expression": symbol["expression"],
+                "assessment": assessment_id,
+                "status": "unreviewed",
             })
     items.sort(key=lambda item: (str(item["name"]), str(item["header"])))
     return {
         "sources": sources,
         "item_defaults": {
             "status": "unreviewed",
+            "assessment": assessment_id,
             "kconfig": [],
             "architectures": ["x86_64", "aarch64", "ia32", "x32"],
             "runtime_tests": [],
@@ -443,18 +535,31 @@ def build_inventory(tree: Path) -> dict[str, object]:
             {"common", "64", "renameat", "rlimit", "memfd_secret"},
         ),
     }
+    for architecture, entries in syscall_architectures.items():
+        assessment = {
+            "x86_64": "syscalls-native",
+            "aarch64": "syscalls-native",
+            "ia32": "syscalls-ia32",
+            "x32": "syscalls-x32",
+        }[architecture]
+        for entry in entries:
+            entry["assessment"] = assessment
+            entry["status"] = "unreviewed"
     ioctl_groups = {
-        name: symbol_domain(tree, headers, require_ioctl=True)
+        name: symbol_domain(
+            tree, headers, require_ioctl=True,
+            assessment_id=f"ioctl-{name}")
         for name, headers in IOCTL_HEADERS.items()
     }
     io_uring_header = tree / "include/uapi/linux/io_uring.h"
     io_uring_domain = symbol_domain(
         tree, ("include/uapi/linux/io_uring.h",),
-        prefixes=("IORING_", "IOSQE_"), include_enums=True)
+        prefixes=("IORING_", "IOSQE_"), include_enums=True,
+        assessment_id="io-uring")
     io_uring_domain["opcodes"] = enum_sequence(
         io_uring_header, "io_uring_op", "IORING_OP_")
     return {
-        "schema": 1,
+        "schema": 2,
         "reference": {
             "commit": commit,
             "version": reference_version(tree),
@@ -474,6 +579,7 @@ def build_inventory(tree: Path) -> dict[str, object]:
             "default_status": "unreviewed",
         },
         "edgeos_assessments": EDGEOS_ASSESSMENTS,
+        "coverage_assessments": COVERAGE_ASSESSMENTS,
         "domains": {
             "syscalls": {
                 "sources": [
@@ -499,11 +605,11 @@ def build_inventory(tree: Path) -> dict[str, object]:
             "ioctl": ioctl_groups,
             "socket_options": symbol_domain(
                 tree, SOCKET_HEADERS, prefixes=SOCKET_PREFIXES,
-                include_enums=True),
+                include_enums=True, assessment_id="socket-options"),
             "io_uring": io_uring_domain,
             "netlink": symbol_domain(
                 tree, NETLINK_HEADERS, prefixes=NETLINK_PREFIXES,
-                include_enums=True),
+                include_enums=True, assessment_id="netlink"),
             "virtual_filesystems": {
                 "sources": [
                     "Documentation/filesystems/proc.rst",
@@ -512,6 +618,26 @@ def build_inventory(tree: Path) -> dict[str, object]:
                 ],
                 "status": "snapshot-required",
                 "reason": "procfs, sysfs and cgroup paths are dynamic and need runtime snapshots.",
+                "filesystems": [
+                    {
+                        "name": "procfs",
+                        "assessment": "procfs",
+                        "status": "partial",
+                        "oracle": "runtime-snapshot",
+                    },
+                    {
+                        "name": "sysfs",
+                        "assessment": "sysfs",
+                        "status": "partial",
+                        "oracle": "runtime-snapshot",
+                    },
+                    {
+                        "name": "cgroup-v2",
+                        "assessment": "cgroup-v2",
+                        "status": "partial",
+                        "oracle": "runtime-snapshot",
+                    },
+                ],
             },
         },
     }

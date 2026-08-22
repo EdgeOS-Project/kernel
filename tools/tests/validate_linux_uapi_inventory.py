@@ -12,6 +12,15 @@ ROOT = Path(__file__).resolve().parents[2]
 INVENTORY = ROOT / "tools/uapi/linux_uapi_inventory.json"
 REFERENCE_COMMIT = "2c7c88a412aa6d09cd04b414211b4ef8553b5309"
 ARCHITECTURES = {"x86_64", "aarch64", "ia32", "x32"}
+ARCHITECTURE_STATUSES = {
+    "partial",
+    "runtime-verified",
+    "runtime-verified-partial",
+    "unimplemented",
+    "configured-off",
+    "unsupported-subsystem",
+    "not-applicable",
+}
 STATUSES = {
     "unreviewed",
     "unimplemented",
@@ -46,7 +55,7 @@ def validate_sources(sources: object, domain: str) -> None:
         seen.add(path)
 
 
-def validate_syscalls(domain: object) -> None:
+def validate_syscalls(domain: object, coverage_ids: set[str]) -> None:
     require(isinstance(domain, dict), "syscalls: domain must be an object")
     validate_sources(domain.get("sources"), "syscalls")
     architectures = domain.get("architectures")
@@ -75,6 +84,10 @@ def validate_syscalls(domain: object) -> None:
                     f"syscalls/{architecture}: invalid name at {number}")
             require(isinstance(abi, str) and abi,
                     f"syscalls/{architecture}: invalid ABI for {name}")
+            require(entry.get("status") in STATUSES,
+                    f"syscalls/{architecture}: invalid status for {name}")
+            require(entry.get("assessment") in coverage_ids,
+                    f"syscalls/{architecture}: unclassified {name}")
             identity = (number, name, abi)
             require(identity not in identities,
                     f"syscalls/{architecture}: duplicate {identity}")
@@ -86,7 +99,8 @@ def validate_syscalls(domain: object) -> None:
             number_names[number] = name
 
 
-def validate_symbol_domain(domain: object, name: str) -> None:
+def validate_symbol_domain(domain: object, name: str,
+                           coverage_ids: set[str]) -> None:
     require(isinstance(domain, dict), f"{name}: domain must be an object")
     validate_sources(domain.get("sources"), name)
     defaults = domain.get("item_defaults")
@@ -94,6 +108,9 @@ def validate_symbol_domain(domain: object, name: str) -> None:
     require(defaults.get("status") in STATUSES, f"{name}: invalid default status")
     require(defaults.get("linux_oracle") == "required",
             f"{name}: Linux oracle must be required")
+    assessment = defaults.get("assessment")
+    require(assessment in coverage_ids,
+            f"{name}: invalid default assessment")
     items = domain.get("items")
     require(isinstance(items, list), f"{name}: items must be a list")
     identities: set[tuple[str, str]] = set()
@@ -105,11 +122,15 @@ def validate_symbol_domain(domain: object, name: str) -> None:
         require(identity not in identities, f"{name}: duplicate item {identity}")
         require(isinstance(item.get("expression"), str),
                 f"{name}: item lacks expression")
+        require(item.get("status") in STATUSES,
+                f"{name}: invalid item status for {identity}")
+        require(item.get("assessment") == assessment,
+                f"{name}: unclassified item {identity}")
         identities.add(identity)
 
 
-def validate_io_uring(domain: object) -> None:
-    validate_symbol_domain(domain, "io_uring")
+def validate_io_uring(domain: object, coverage_ids: set[str]) -> None:
+    validate_symbol_domain(domain, "io_uring", coverage_ids)
     require(isinstance(domain, dict), "io_uring: domain must be an object")
     opcodes = domain.get("opcodes")
     require(isinstance(opcodes, list) and opcodes,
@@ -160,9 +181,43 @@ def validate_assessments(assessments: object) -> None:
         domains.add(domain)
 
 
+def validate_coverage_assessments(assessments: object) -> set[str]:
+    require(isinstance(assessments, list) and assessments,
+            "coverage assessments must be a non-empty list")
+    identifiers: set[str] = set()
+    for assessment in assessments:
+        require(isinstance(assessment, dict), "invalid coverage assessment")
+        identifier = assessment.get("id")
+        require(isinstance(identifier, str) and identifier,
+                "coverage assessment lacks an id")
+        require(identifier not in identifiers,
+                f"duplicate coverage assessment {identifier}")
+        require(assessment.get("status") in STATUSES,
+                f"{identifier}: invalid coverage status")
+        architectures = assessment.get("architectures")
+        require(isinstance(architectures, dict) and
+                set(architectures) == ARCHITECTURES,
+                f"{identifier}: incomplete architecture coverage")
+        require(all(value in ARCHITECTURE_STATUSES
+                    for value in architectures.values()),
+                f"{identifier}: invalid architecture status")
+        tests = assessment.get("runtime_tests")
+        require(isinstance(tests, list),
+                f"{identifier}: runtime tests must be a list")
+        for test in tests:
+            require(isinstance(test, str) and (ROOT / test).is_file(),
+                    f"{identifier}: missing runtime test {test}")
+        oracle = assessment.get("linux_oracle")
+        require(isinstance(oracle, dict) and
+                oracle.get("reference") == REFERENCE_COMMIT,
+                f"{identifier}: missing frozen Linux oracle")
+        identifiers.add(identifier)
+    return identifiers
+
+
 def validate(document: object) -> None:
     require(isinstance(document, dict), "inventory must be an object")
-    require(document.get("schema") == 1, "unsupported inventory schema")
+    require(document.get("schema") == 2, "unsupported inventory schema")
     reference = document.get("reference")
     require(isinstance(reference, dict), "missing Linux reference")
     require(reference.get("commit") == REFERENCE_COMMIT,
@@ -179,23 +234,38 @@ def validate(document: object) -> None:
     require(scope.get("default_status") == "unreviewed",
             "new UAPI entries must default to unreviewed")
     validate_assessments(document.get("edgeos_assessments"))
+    coverage_ids = validate_coverage_assessments(
+        document.get("coverage_assessments"))
     domains = document.get("domains")
     require(isinstance(domains, dict), "missing domains")
     require({"syscalls", "ioctl", "socket_options", "io_uring", "netlink",
              "virtual_filesystems"}.issubset(domains), "missing required domain")
-    validate_syscalls(domains["syscalls"])
+    validate_syscalls(domains["syscalls"], coverage_ids)
     ioctl = domains["ioctl"]
     require(isinstance(ioctl, dict) and ioctl, "missing ioctl groups")
     for group, domain in ioctl.items():
-        validate_symbol_domain(domain, f"ioctl/{group}")
-    validate_symbol_domain(domains["socket_options"], "socket_options")
-    validate_io_uring(domains["io_uring"])
-    validate_symbol_domain(domains["netlink"], "netlink")
+        validate_symbol_domain(domain, f"ioctl/{group}", coverage_ids)
+    validate_symbol_domain(domains["socket_options"], "socket_options",
+                           coverage_ids)
+    validate_io_uring(domains["io_uring"], coverage_ids)
+    validate_symbol_domain(domains["netlink"], "netlink", coverage_ids)
     virtual_filesystems = domains["virtual_filesystems"]
     require(isinstance(virtual_filesystems, dict),
             "virtual_filesystems: domain must be an object")
     require(virtual_filesystems.get("status") == "snapshot-required",
             "virtual_filesystems: runtime snapshots must be required")
+    filesystems = virtual_filesystems.get("filesystems")
+    require(isinstance(filesystems, list) and
+            {item.get("name") for item in filesystems} ==
+            {"procfs", "sysfs", "cgroup-v2"},
+            "virtual_filesystems: incomplete snapshot groups")
+    for filesystem in filesystems:
+        require(filesystem.get("assessment") in coverage_ids,
+                f"virtual_filesystems: unclassified {filesystem.get('name')}")
+        require(filesystem.get("status") in STATUSES,
+                f"virtual_filesystems: invalid status for {filesystem.get('name')}")
+        require(filesystem.get("oracle") == "runtime-snapshot",
+                f"virtual_filesystems: missing snapshot oracle for {filesystem.get('name')}")
 
 
 def main() -> int:

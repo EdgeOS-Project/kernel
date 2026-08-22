@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 
 from tools.uapi.linux_uapi_inventory import (
+    COVERAGE_ASSESSMENTS,
     EDGEOS_ASSESSMENTS,
     define_symbols,
     enum_sequence,
@@ -168,6 +169,47 @@ class LinuxUapiInventoryTests(unittest.TestCase):
             )
             self.assertIsNotNone(frozen_bit, name)
             self.assertEqual(int(bit), int(frozen_bit.group(1)), name)
+
+    def test_coverage_groups_have_unique_identifiers(self) -> None:
+        identifiers = [item["id"] for item in COVERAGE_ASSESSMENTS]
+        self.assertEqual(len(identifiers), len(set(identifiers)))
+        self.assertTrue({
+            "syscalls-native", "syscalls-ia32", "syscalls-x32",
+            "socket-options", "io-uring", "netlink", "procfs", "sysfs",
+            "cgroup-v2",
+        }.issubset(identifiers))
+
+    def test_extracted_entries_are_explicitly_classified(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        inventory = json.loads(
+            (root / "tools/uapi/linux_uapi_inventory.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        coverage_ids = {
+            item["id"] for item in inventory["coverage_assessments"]
+        }
+        for entries in inventory["domains"]["syscalls"]["architectures"].values():
+            self.assertTrue(entries)
+            self.assertTrue(all(
+                item["assessment"] in coverage_ids and
+                item["status"] == "unreviewed"
+                for item in entries
+            ))
+        symbol_domains = [
+            *inventory["domains"]["ioctl"].values(),
+            inventory["domains"]["socket_options"],
+            inventory["domains"]["io_uring"],
+            inventory["domains"]["netlink"],
+        ]
+        for domain in symbol_domains:
+            assessment = domain["item_defaults"]["assessment"]
+            self.assertIn(assessment, coverage_ids)
+            self.assertTrue(all(
+                item["assessment"] == assessment and
+                item["status"] == "unreviewed"
+                for item in domain["items"]
+            ))
 
 
 if __name__ == "__main__":
