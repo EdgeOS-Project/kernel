@@ -1300,6 +1300,7 @@ bsd_module_loaded_snapshot_at(uint32_t index,
         snapshot->address = (uint64_t)(uintptr_t)
             bsd_linker_image_base(module->container->image);
         snapshot->references = module->refs > 1u ? module->refs - 1u : 0u;
+        snapshot->identity = (uint32_t)module->id;
         result = 0;
         break;
     }

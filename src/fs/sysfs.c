@@ -20,6 +20,7 @@
 #include "kernel/console_device.h"
 #include "kernel/device_uevent.h"
 #include "kernel/input_device.h"
+#include "kernel/linux_module.h"
 #include "kernel/namespace_runtime.h"
 #include "kernel/process_runtime.h"
 #include "kernel/virtgpu_runtime.h"
@@ -74,8 +75,28 @@ enum {
     SYS_PCI_DEVICES = 1501,
     SYS_PCI_NODE_BASE = 1600,
     SYS_LOOP_NODE_BASE = 11000,
-    SYS_NET_DYNAMIC_NODE_BASE = 20000
+    SYS_NET_DYNAMIC_NODE_BASE = 20000,
+    SYS_MODULE = 30000
 };
+
+enum {
+    SYS_MODULE_NODE_ROOT = 0,
+    SYS_MODULE_NODE_CORESIZE,
+    SYS_MODULE_NODE_INITSIZE,
+    SYS_MODULE_NODE_REFCOUNT,
+    SYS_MODULE_NODE_TAINT,
+    SYS_MODULE_NODE_INITSTATE,
+    SYS_MODULE_NODE_HOLDERS,
+    SYS_MODULE_NODE_PARAMETERS,
+    SYS_MODULE_NODE_SECTIONS,
+    SYS_MODULE_NODE_SECTION_TEXT,
+    SYS_MODULE_NODE_COUNT
+};
+
+#define SYS_MODULE_DYNAMIC_BASE UINT32_C(0x00300000)
+#define SYS_MODULE_NODE(module, kind) \
+    (SYS_MODULE_DYNAMIC_BASE + (uint32_t)(module) * SYS_MODULE_NODE_COUNT + \
+     (uint32_t)(kind))
 
 #ifdef CONFIG_LOOP_DEVICE
 enum {
@@ -324,6 +345,9 @@ static const sys_entry_t g_entries[] = {
     { SYS_FS, SYS_CGROUP, VFS_INODE_DIR | 0555, "cgroup" },
     { SYS_ROOT, SYS_CLASS, VFS_INODE_DIR | 0555, "class" },
     { SYS_ROOT, SYS_BLOCK, VFS_INODE_DIR | 0555, "block" },
+#ifdef CONFIG_MODULES
+    { SYS_ROOT, SYS_MODULE, VFS_INODE_DIR | 0555, "module" },
+#endif
     { SYS_CLASS, SYS_GRAPHICS, VFS_INODE_DIR | 0555, "graphics" },
     { SYS_CLASS, SYS_DRM_CLASS, VFS_INODE_DIR | 0555, "drm" },
     { SYS_CLASS, SYS_INPUT_CLASS, VFS_INODE_DIR | 0555, "input" },
@@ -1032,6 +1056,31 @@ static void inode_set(vfs_inode_t *inode, uint32_t node, uint16_t mode) {
     inode->fs_private[0] = node;
 }
 
+static void inode_set_module(vfs_inode_t *inode, uint32_t module,
+                             uint32_t identity, uint32_t kind,
+                             uint16_t mode) {
+    inode_set(inode, SYS_MODULE_NODE(module, kind), mode);
+    inode->ino = UINT32_C(0xf5000000) ^ (identity << 8) ^ kind;
+    inode->fs_private[1] = identity;
+}
+
+static int sys_module_inode(const vfs_inode_t *inode, uint32_t *module,
+                            uint32_t *kind) {
+    kernel_linux_module_snapshot_t snapshot;
+    uint32_t relative;
+    uint32_t index;
+
+    if (!inode || inode->fs_private[0] < SYS_MODULE_DYNAMIC_BASE)
+        return 0;
+    relative = inode->fs_private[0] - SYS_MODULE_DYNAMIC_BASE;
+    if (kernel_linux_module_find_identity(
+            inode->fs_private[1], &index, &snapshot) < 0)
+        return 0;
+    if (module) *module = index;
+    if (kind) *kind = relative % SYS_MODULE_NODE_COUNT;
+    return 1;
+}
+
 #ifdef CONFIG_BSD_DRIVER_BRIDGE
 static void
 inode_set_bsd_cdev(vfs_inode_t *inode,
@@ -1129,6 +1178,63 @@ static int sys_lookup(vfs_superblock_t *sb, vfs_inode_t *directory,
     uint32_t attribute;
     (void)sb;
     if (!directory || !name || !out) return -1;
+#ifdef CONFIG_MODULES
+    if (directory->fs_private[0] == SYS_MODULE) {
+        uint32_t module;
+
+        if (kernel_linux_module_find(name, &module, 0) < 0) return -1;
+        kernel_linux_module_snapshot_t snapshot;
+
+        if (kernel_linux_module_snapshot_at(module, &snapshot) < 0)
+            return -1;
+        inode_set_module(out, module, snapshot.identity, SYS_MODULE_NODE_ROOT,
+                         VFS_INODE_DIR | 0555);
+        return 0;
+    }
+    {
+        static const char *const names[] = {
+            "coresize", "initsize", "refcnt", "taint", "initstate",
+            "holders", "parameters", "sections"
+        };
+        static const uint16_t modes[] = {
+            VFS_INODE_FILE | 0444, VFS_INODE_FILE | 0444,
+            VFS_INODE_FILE | 0444, VFS_INODE_FILE | 0444,
+            VFS_INODE_FILE | 0444, VFS_INODE_DIR | 0555,
+            VFS_INODE_DIR | 0555, VFS_INODE_DIR | 0555
+        };
+        uint32_t module;
+        uint32_t kind;
+
+        if (sys_module_inode(directory, &module, &kind)) {
+            if (kind == SYS_MODULE_NODE_ROOT) {
+                for (uint32_t index = 0;
+                     index < sizeof(names) / sizeof(names[0]); ++index) {
+                    if (!text_equal(name, names[index])) continue;
+                    kernel_linux_module_snapshot_t snapshot;
+
+                    if (kernel_linux_module_snapshot_at(
+                            module, &snapshot) < 0)
+                        return -1;
+                    inode_set_module(out, module, snapshot.identity,
+                        SYS_MODULE_NODE_CORESIZE + index, modes[index]);
+                    return 0;
+                }
+            } else if (kind == SYS_MODULE_NODE_SECTIONS &&
+                       text_equal(name, ".text")) {
+                kernel_linux_module_snapshot_t snapshot;
+
+                if (kernel_linux_module_snapshot_at(
+                        module, &snapshot) < 0)
+                    return -1;
+                inode_set_module(out, module, snapshot.identity,
+                                 SYS_MODULE_NODE_SECTION_TEXT,
+                                 VFS_INODE_FILE | 0444);
+                return 0;
+            }
+            return -1;
+        }
+    }
+#endif
 #ifdef CONFIG_LOOP_DEVICE
     if (directory->fs_private[0] == SYS_DEV_BLOCK) {
         char loop_name[8];
@@ -1827,6 +1933,28 @@ static int sys_read(vfs_superblock_t *sb, vfs_inode_t *inode, uint32_t offset,
     kernel_console_device_t console_device;
     (void)sb;
     if (!inode || !out) return -1;
+#ifdef CONFIG_MODULES
+    {
+        uint32_t module;
+        uint32_t kind;
+
+        if (sys_module_inode(inode, &module, &kind) &&
+            ((kind >= SYS_MODULE_NODE_CORESIZE &&
+              kind <= SYS_MODULE_NODE_INITSTATE) ||
+             kind == SYS_MODULE_NODE_SECTION_TEXT)) {
+            enum kernel_linux_module_attribute attribute =
+                kind == SYS_MODULE_NODE_SECTION_TEXT ?
+                    KERNEL_LINUX_MODULE_SECTION_TEXT :
+                    (enum kernel_linux_module_attribute)kind;
+            int result = kernel_linux_module_attribute_render(
+                module, attribute, value, sizeof(value));
+
+            if (result < 0) return -1;
+            size = (uint32_t)result;
+            goto copy_value;
+        }
+    }
+#endif
 #ifdef CONFIG_LOOP_DEVICE
     {
         uint32_t loop_device;
@@ -2607,6 +2735,62 @@ static int sys_readdir(vfs_superblock_t *sb, vfs_inode_t *directory,
     kernel_console_device_t console_device;
     (void)sb;
     if (!directory || !name || !out) return -1;
+#ifdef CONFIG_MODULES
+    if (directory->fs_private[0] == SYS_MODULE) {
+        kernel_linux_module_snapshot_t snapshot;
+
+        if (kernel_linux_module_snapshot_at(position, &snapshot) < 0)
+            return -1;
+        strcpy(name, snapshot.name);
+        inode_set_module(out, position, snapshot.identity,
+                         SYS_MODULE_NODE_ROOT,
+                         VFS_INODE_DIR | 0555);
+        return 0;
+    }
+    {
+        static const char *const names[] = {
+            "coresize", "initsize", "refcnt", "taint", "initstate",
+            "holders", "parameters", "sections"
+        };
+        static const uint16_t modes[] = {
+            VFS_INODE_FILE | 0444, VFS_INODE_FILE | 0444,
+            VFS_INODE_FILE | 0444, VFS_INODE_FILE | 0444,
+            VFS_INODE_FILE | 0444, VFS_INODE_DIR | 0555,
+            VFS_INODE_DIR | 0555, VFS_INODE_DIR | 0555
+        };
+        uint32_t module;
+        uint32_t kind;
+
+        if (sys_module_inode(directory, &module, &kind)) {
+            if (kind == SYS_MODULE_NODE_ROOT) {
+                if (position >= sizeof(names) / sizeof(names[0])) return -1;
+                strcpy(name, names[position]);
+                kernel_linux_module_snapshot_t snapshot;
+
+                if (kernel_linux_module_snapshot_at(
+                        module, &snapshot) < 0)
+                    return -1;
+                inode_set_module(out, module, snapshot.identity,
+                    SYS_MODULE_NODE_CORESIZE + position, modes[position]);
+                return 0;
+            }
+            if (kind == SYS_MODULE_NODE_SECTIONS) {
+                if (position != 0u) return -1;
+                strcpy(name, ".text");
+                kernel_linux_module_snapshot_t snapshot;
+
+                if (kernel_linux_module_snapshot_at(
+                        module, &snapshot) < 0)
+                    return -1;
+                inode_set_module(out, module, snapshot.identity,
+                                 SYS_MODULE_NODE_SECTION_TEXT,
+                                 VFS_INODE_FILE | 0444);
+                return 0;
+            }
+            return -1;
+        }
+    }
+#endif
 #ifdef CONFIG_LOOP_DEVICE
     if (directory->fs_private[0] == SYS_DEV_BLOCK) {
         char loop_name[8];

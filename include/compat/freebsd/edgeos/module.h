@@ -46,6 +46,7 @@ typedef struct {
     uint64_t size;
     uint64_t address;
     uint32_t references;
+    uint32_t identity;
 } bsd_module_loaded_snapshot_t;
 
 void bsd_static_record_register(enum bsd_static_record_kind kind,
