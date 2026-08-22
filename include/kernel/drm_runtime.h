@@ -25,6 +25,23 @@
 #define EDGE_DRM_PRIME_CAP_IMPORT            0x01u
 #define EDGE_DRM_PRIME_CAP_EXPORT            0x02u
 
+typedef struct edge_drm_runtime_stats {
+    uint64_t atomic_commits;
+    uint64_t atomic_cursor_only_commits;
+    uint64_t atomic_primary_commits;
+    uint64_t primary_present_calls;
+    uint64_t damage_present_calls;
+    uint64_t present_duration_total_us;
+    uint64_t present_duration_max_us;
+    uint64_t present_duration_over_16ms;
+    uint64_t flip_events_requested;
+    uint64_t flip_events_delivered;
+    uint64_t flip_events_busy;
+    uint64_t flip_lateness_total_us;
+    uint64_t flip_lateness_max_us;
+    uint64_t flip_lateness_over_16ms;
+} edge_drm_runtime_stats_t;
+
 int edge_drm_path_is_card(const char *path);
 int edge_drm_path_is_render(const char *path);
 int edge_drm_path_is_device(const char *path);
@@ -40,6 +57,7 @@ void edge_drm_release_client(uint64_t client_identity);
 void edge_drm_pump_deferred(void);
 void edge_drm_scanout_activity(void);
 int edge_drm_scanout_refresh_required(void);
+void edge_drm_get_runtime_stats(edge_drm_runtime_stats_t *stats);
 
 int edge_drm_mmap_prepare(uint64_t client_identity, uint64_t offset,
                           uint64_t length, uint32_t *page_count);

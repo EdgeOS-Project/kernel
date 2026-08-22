@@ -11,7 +11,13 @@
 static volatile uint32_t g_deferred_work_requested;
 static volatile uint32_t g_deferred_work_tick_count;
 static volatile uint32_t g_display_work_requested;
+static volatile uint64_t g_display_work_deadline_us;
 static volatile uint32_t g_input_work_requested;
+
+__attribute__((weak)) void kernel_arch_display_deadline_request(
+    uint64_t deadline_us) {
+    (void)deadline_us;
+}
 
 void kernel_deferred_work_request(void) {
     __atomic_store_n(&g_deferred_work_requested, 1u, __ATOMIC_RELEASE);
@@ -60,6 +66,41 @@ int kernel_display_work_pending(void) {
 int kernel_display_work_take(void) {
     return __atomic_exchange_n(&g_display_work_requested, 0u,
                                __ATOMIC_ACQ_REL) != 0u;
+}
+
+void kernel_display_deadline_request(uint64_t deadline_us) {
+    uint64_t current;
+
+    if (!deadline_us) return;
+    current = __atomic_load_n(&g_display_work_deadline_us,
+                              __ATOMIC_ACQUIRE);
+    while ((!current || deadline_us < current) &&
+           !__atomic_compare_exchange_n(
+               &g_display_work_deadline_us, &current, deadline_us, 0,
+               __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+    }
+    if (!current || deadline_us < current)
+        kernel_arch_display_deadline_request(deadline_us);
+}
+
+uint64_t kernel_display_deadline(void) {
+    return __atomic_load_n(&g_display_work_deadline_us,
+                           __ATOMIC_ACQUIRE);
+}
+
+int kernel_display_deadline_poll(uint64_t now_us) {
+    uint64_t deadline = __atomic_load_n(
+        &g_display_work_deadline_us, __ATOMIC_ACQUIRE);
+
+    while (deadline && now_us >= deadline) {
+        if (__atomic_compare_exchange_n(
+                &g_display_work_deadline_us, &deadline, 0u, 0,
+                __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+            kernel_display_work_request();
+            return 1;
+        }
+    }
+    return 0;
 }
 
 void kernel_input_work_request(void) {

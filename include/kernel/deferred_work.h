@@ -23,6 +23,11 @@ void kernel_display_work_request(void);
 int kernel_display_work_pending(void);
 int kernel_display_work_take(void);
 
+/* Arm a precise wakeup for display work without raising the base timer rate. */
+void kernel_display_deadline_request(uint64_t deadline_us);
+uint64_t kernel_display_deadline(void);
+int kernel_display_deadline_poll(uint64_t now_us);
+
 /* Input wakeups are latency-sensitive and may be serviced by any CPU. */
 void kernel_input_work_request(void);
 int kernel_input_work_pending(void);
