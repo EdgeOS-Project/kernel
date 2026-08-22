@@ -48,6 +48,7 @@ typedef struct fd_backend_mock {
     uint32_t operation_acquire_for_owner_calls;
     uint32_t operation_acquire_for_pid_calls;
     uint32_t operation_description_id_calls;
+    uint32_t operation_ready_calls;
     uint32_t operation_release_calls;
     uint32_t operation_transfer_calls;
     uint32_t operation_clone_calls;
@@ -85,6 +86,7 @@ typedef struct fd_backend_mock {
     int operation_release_result;
     int operation_transfer_result;
     int operation_clone_result;
+    int operation_ready_result;
     int64_t operation_vector_io_result;
     int64_t operation_file_range_result;
     int64_t operation_socket_result;
@@ -236,6 +238,21 @@ static int backend_operation_description_id(
     ++mock->operation_description_id_calls;
     *description_id = snapshot->object_generation;
     return *description_id ? 0 : -EDGE_LINUX_EBADF;
+}
+
+static int backend_operation_ready(
+        void *opaque, void *storage, uint32_t operation) {
+    fd_backend_mock_t *mock = (fd_backend_mock_t *)opaque;
+    const fd_operation_mock_snapshot_t *snapshot =
+        (const fd_operation_mock_snapshot_t *)storage;
+
+    assert(mock);
+    assert(storage == mock->operation_storage ||
+           storage == mock->operation_clone_storage);
+    assert(snapshot->marker == FD_OPERATION_MOCK_MARKER);
+    assert(operation == KERNEL_IO_READ_CURRENT);
+    ++mock->operation_ready_calls;
+    return mock->operation_ready_result;
 }
 
 static int backend_operation_release(
@@ -697,6 +714,7 @@ static const kernel_fd_backend_ops_t g_backend_ops = {
     .operation_clone = backend_operation_clone,
     .operation_description_id =
         backend_operation_description_id,
+    .operation_ready = backend_operation_ready,
     .operation_vector_io = backend_operation_vector_io,
     .operation_file_range =
         backend_operation_file_range,
@@ -1216,6 +1234,7 @@ static void test_operation_lease(void) {
     memset(&second, 0, sizeof(second));
     first.allocation_limit = 64;
     first.operation_generation = 41;
+    first.operation_ready_result = 1;
     first.operation_lease = &lease;
     second.allocation_limit = 64;
     second.operation_lease = &lease;
@@ -1292,6 +1311,9 @@ static void test_operation_lease(void) {
     assert(snapshot->marker == FD_OPERATION_MOCK_MARKER);
     assert(snapshot->descriptor == 5);
     assert(snapshot->object_generation == 41);
+    assert(kernel_fd_operation_ready(
+               &lease, KERNEL_IO_READ_CURRENT) == 1);
+    assert(first.operation_ready_calls == 1);
     assert(kernel_fd_operation_vector_io_supported(&lease));
     first.operation_vector_io_result = 73;
     assert(kernel_fd_operation_vector_io(
@@ -1326,6 +1348,9 @@ static void test_operation_lease(void) {
     assert(second.operation_release_calls == 0);
     assert(second.operation_vector_io_calls == 0);
     assert(!kernel_fd_operation_view(&lease));
+    assert(kernel_fd_operation_ready(
+               &lease, KERNEL_IO_READ_CURRENT) ==
+           -EDGE_LINUX_EINVAL);
     assert(!kernel_fd_operation_vector_io_supported(&lease));
     assert(kernel_fd_operation_vector_io(
                &lease, &vector_request) ==

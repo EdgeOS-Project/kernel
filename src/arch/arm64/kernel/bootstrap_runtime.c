@@ -25875,6 +25875,22 @@ static int arm64_fd_operation_description_id(
     return 0;
 }
 
+static int arm64_fd_operation_ready(
+        void *context, void *storage, uint32_t operation) {
+    kernel_task_t *task = current_task();
+    bootstrap_fd_t *entry = (bootstrap_fd_t *)storage;
+    uint32_t requested;
+
+    (void)context;
+    if (!task || !entry || !entry->used)
+        return -LINUX_EBADF;
+    requested = (operation == KERNEL_IO_WRITE_CURRENT ||
+                 operation == KERNEL_IO_WRITE_POSITIONAL) ?
+                    LINUX_POLLOUT : LINUX_POLLIN;
+    return (fd_ready_mask(task, entry) &
+            (requested | LINUX_POLLERR | LINUX_POLLHUP)) != 0;
+}
+
 static int arm64_fd_operation_release(
         void *context, void *storage) {
     (void)context;
@@ -26583,6 +26599,7 @@ static const kernel_fd_backend_ops_t arm64_fd_backend_ops = {
     .operation_clone = arm64_fd_operation_clone,
     .operation_description_id =
         arm64_fd_operation_description_id,
+    .operation_ready = arm64_fd_operation_ready,
     .operation_vector_io = arm64_fd_operation_vector_io,
     .operation_file_range =
         arm64_fd_operation_file_range,

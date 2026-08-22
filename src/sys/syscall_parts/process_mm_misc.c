@@ -1939,6 +1939,20 @@ static int x86_fd_operation_description_id(
     return *description_id ? 0 : -EBADF;
 }
 
+static int x86_fd_operation_ready(
+        void *context, void *storage, uint32_t operation) {
+    edge_fd_t *entry = (edge_fd_t *)storage;
+    int16_t events;
+
+    (void)context;
+    if (!entry || !entry->used) return -EBADF;
+    events = (operation == KERNEL_IO_WRITE_CURRENT ||
+              operation == KERNEL_IO_WRITE_POSITIONAL) ?
+                 LINUX_POLLOUT : LINUX_POLLIN;
+    return (poll_fd_revents(entry, events) &
+            (events | LINUX_POLLERR | LINUX_POLLHUP)) != 0;
+}
+
 static int x86_fd_operation_release(
         void *context, void *storage) {
     int result;
@@ -2575,6 +2589,7 @@ static const kernel_fd_backend_ops_t x86_fd_backend_ops = {
     .operation_clone = x86_fd_operation_clone,
     .operation_description_id =
         x86_fd_operation_description_id,
+    .operation_ready = x86_fd_operation_ready,
     .operation_vector_io = x86_fd_operation_vector_io,
     .operation_file_range =
         x86_fd_operation_file_range,

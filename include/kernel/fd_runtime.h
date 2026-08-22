@@ -101,6 +101,8 @@ typedef int (*kernel_fd_operation_clone_fn)(
     void *context, void *destination_storage, const void *source_storage);
 typedef int (*kernel_fd_operation_description_id_fn)(
     void *context, const void *storage, uint64_t *description_id);
+typedef int (*kernel_fd_operation_ready_fn)(
+    void *context, void *storage, uint32_t operation);
 struct kernel_io_vector_request;
 typedef int64_t (*kernel_fd_operation_vector_io_fn)(
     void *context, void *storage,
@@ -164,6 +166,8 @@ const void *kernel_fd_operation_view(
 int kernel_fd_operation_description_id(
     const kernel_fd_operation_lease_t *lease,
     uint64_t *description_id);
+int kernel_fd_operation_ready(
+    kernel_fd_operation_lease_t *lease, uint32_t operation);
 int kernel_fd_operation_vector_io_available(void);
 int kernel_fd_operation_vector_io_supported(
     const kernel_fd_operation_lease_t *lease);
@@ -319,6 +323,8 @@ typedef struct kernel_fd_backend_ops {
     kernel_fd_operation_clone_fn operation_clone;
     kernel_fd_operation_description_id_fn
         operation_description_id;
+    /* Test readiness against the retained open file description. */
+    kernel_fd_operation_ready_fn operation_ready;
     /*
      * Optional whole-vector operation on the retained descriptor snapshot.
      * Backends that provide it must not look up the numeric descriptor again.

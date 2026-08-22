@@ -216,6 +216,24 @@ int kernel_fd_operation_description_id(
         internal->backend_storage.bytes, description_id);
 }
 
+int kernel_fd_operation_ready(
+        kernel_fd_operation_lease_t *lease, uint32_t operation) {
+    fd_operation_lease_internal_t *internal;
+
+    if (!lease) return -EDGE_LINUX_EINVAL;
+    internal = fd_operation_lease_internal(lease);
+    if (__atomic_load_n(
+            &internal->state, __ATOMIC_ACQUIRE) !=
+        KERNEL_FD_OPERATION_LEASE_ACTIVE)
+        return -EDGE_LINUX_EINVAL;
+    if (!internal->backend_ops ||
+        !internal->backend_ops->operation_ready)
+        return -EDGE_LINUX_EOPNOTSUPP;
+    return internal->backend_ops->operation_ready(
+        internal->backend_context,
+        internal->backend_storage.bytes, operation);
+}
+
 int kernel_fd_operation_vector_io_available(void) {
     return g_backend_ops && g_backend_ops->operation_vector_io;
 }

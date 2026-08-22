@@ -10262,17 +10262,6 @@ static int64_t edge_linux_sys_io_uring_enter(
             (wait_replayed && completion_count >= minimum &&
              (!minimum_deadline_us || now_us >= minimum_deadline_us)))
             goto wait_complete;
-        if (submitted && wait_deadline_us > now_us) {
-            uint64_t polling_deadline =
-                edge_linux_io_uring_wait_now(ring_id) + 5000u;
-            while (kernel_io_uring_completion_count(ring_id) < minimum &&
-                   edge_linux_io_uring_wait_now(ring_id) < polling_deadline &&
-                   edge_linux_io_uring_wait_now(ring_id) < wait_deadline_us) {
-                (void)kernel_io_uring_collect(
-                    ring_id, boottime_monotonic_us());
-                arch_cpu_relax();
-            }
-        }
         for (;;) {
             int released;
             int yielded;

@@ -18,6 +18,8 @@ static uint8_t g_pages[TEST_PAGE_COUNT][KERNEL_IO_URING_PAGE_SIZE]
     __attribute__((aligned(KERNEL_IO_URING_PAGE_SIZE)));
 static uint32_t g_references[TEST_PAGE_COUNT];
 static int32_t g_ready_descriptor = -1;
+static uint32_t g_ready_generation;
+static uint32_t g_descriptor_generation[128];
 static uint32_t g_fixed_file_references;
 static uint32_t g_materialize_flags;
 
@@ -31,6 +33,8 @@ int kernel_fd_operation_acquire(
     if (!lease || descriptor < 0 || descriptor == 99)
         return -EDGE_LINUX_EBADF;
     *(int32_t *)(void *)lease = descriptor + 1;
+    ((uint32_t *)(void *)lease)[1] =
+        descriptor < 128 ? g_descriptor_generation[descriptor] : 0u;
     ++g_fixed_file_references;
     return 0;
 }
@@ -42,6 +46,10 @@ int kernel_fd_operation_acquire_from_publication(
         !publication->descriptors || index >= publication->count || !lease)
         return -EDGE_LINUX_EINVAL;
     *(int32_t *)(void *)lease = publication->descriptors[index] + 1;
+    ((uint32_t *)(void *)lease)[1] =
+        publication->descriptors[index] >= 0 &&
+        publication->descriptors[index] < 128 ?
+            g_descriptor_generation[publication->descriptors[index]] : 0u;
     ++g_fixed_file_references;
     return 0;
 }
@@ -60,7 +68,10 @@ int kernel_fd_operation_move(
         *(int32_t *)(void *)source <= 0)
         return -EDGE_LINUX_EINVAL;
     *(int32_t *)(void *)destination = *(int32_t *)(void *)source;
+    ((uint32_t *)(void *)destination)[1] =
+        ((uint32_t *)(void *)source)[1];
     *(int32_t *)(void *)source = 0;
+    ((uint32_t *)(void *)source)[1] = 0u;
     return 0;
 }
 
@@ -73,6 +84,8 @@ int kernel_fd_operation_clone(
         return -EDGE_LINUX_EINVAL;
     *(int32_t *)(void *)destination =
         *(const int32_t *)(const void *)source;
+    ((uint32_t *)(void *)destination)[1] =
+        ((const uint32_t *)(const void *)source)[1];
     ++g_fixed_file_references;
     return 0;
 }
@@ -81,6 +94,7 @@ int kernel_fd_operation_release(kernel_fd_operation_lease_t *lease) {
     if (!lease || *(int32_t *)(void *)lease <= 0)
         return -EDGE_LINUX_EBADF;
     *(int32_t *)(void *)lease = 0;
+    ((uint32_t *)(void *)lease)[1] = 0u;
     assert(g_fixed_file_references != 0u);
     --g_fixed_file_references;
     return 0;
@@ -119,6 +133,16 @@ int kernel_io_descriptor_ready(int32_t descriptor,
                                kernel_io_operation_t operation) {
     (void)operation;
     return descriptor == g_ready_descriptor;
+}
+
+int kernel_fd_operation_ready(
+        kernel_fd_operation_lease_t *lease, uint32_t operation) {
+    const int32_t descriptor = *(int32_t *)(void *)lease - 1;
+
+    (void)operation;
+    if (descriptor < 0) return -EDGE_LINUX_EBADF;
+    return descriptor == g_ready_descriptor &&
+           ((uint32_t *)(void *)lease)[1] == g_ready_generation;
 }
 
 static int test_page_allocate(void *context, kernel_io_uring_page_t *page) {
@@ -685,6 +709,25 @@ int main(void) {
     assert(completion[2].user_data == 0x504f4c4cu);
     assert(completion[2].result == 1);
 
+    {
+        uint32_t references_before_poll = g_fixed_file_references;
+
+        g_descriptor_generation[10] = 7u;
+        g_ready_generation = 8u;
+        g_ready_descriptor = 10;
+        assert(kernel_io_uring_poll_add(
+                   ring_id, 0x4c454153u, 10, 1u, 0) == 0);
+        assert(g_fixed_file_references == references_before_poll + 1u);
+        g_descriptor_generation[10] = 8u;
+        assert(kernel_io_uring_collect(ring_id, 103u) == 0);
+        g_ready_generation = 7u;
+        assert(kernel_io_uring_collect(ring_id, 104u) == 1);
+        assert(g_fixed_file_references == references_before_poll);
+        assert(completion[3].user_data == 0x4c454153u);
+        assert(completion[3].result == 1);
+        g_ready_generation = 0u;
+    }
+
     assert(kernel_io_uring_timeout_add(
                ring_id, 0x55504454u, UINT64_MAX, 7u,
                -EDGE_LINUX_ETIME, 0, 0u, 0u, 0) == 0);
@@ -692,9 +735,9 @@ int main(void) {
                ring_id, 0x55504454u, 20u, 0, 100u, 1000u) == 0);
     assert(kernel_io_uring_collect(ring_id, 119u) == 0);
     assert(kernel_io_uring_collect(ring_id, 120u) == 1);
-    assert(kernel_io_uring_completion_count(ring_id) == 4);
-    assert(completion[3].user_data == 0x55504454u);
-    assert(completion[3].result == -EDGE_LINUX_ETIME);
+    assert(kernel_io_uring_completion_count(ring_id) == 5);
+    assert(completion[4].user_data == 0x55504454u);
+    assert(completion[4].result == -EDGE_LINUX_ETIME);
     assert(kernel_io_uring_timeout_update(
                ring_id, 0x55504454u, 1u, 0, 120u, 1000u) ==
            -EDGE_LINUX_ENOENT);
@@ -712,13 +755,13 @@ int main(void) {
         assert(kernel_io_uring_files_update_tagged(
                    ring_id, 0u, update, tags, 1u) == 1);
     }
-    assert(completion[4].user_data == 0x54414741u);
-    assert(completion[4].result == 0 && completion[4].flags == 0);
-    assert(kernel_io_uring_files_unregister(ring_id) == 0);
-    assert(completion[5].user_data == 0x54414743u);
+    assert(completion[5].user_data == 0x54414741u);
     assert(completion[5].result == 0 && completion[5].flags == 0);
-    assert(completion[6].user_data == 0x54414742u);
+    assert(kernel_io_uring_files_unregister(ring_id) == 0);
+    assert(completion[6].user_data == 0x54414743u);
     assert(completion[6].result == 0 && completion[6].flags == 0);
+    assert(completion[7].user_data == 0x54414742u);
+    assert(completion[7].result == 0 && completion[7].flags == 0);
     assert(g_fixed_file_references == 0u);
 
     g_ready_descriptor = -1;
@@ -727,8 +770,8 @@ int main(void) {
     assert(kernel_io_uring_collect(ring_id, 121u) == 0);
     g_ready_descriptor = 9;
     assert(kernel_io_uring_collect(ring_id, 122u) == 1);
-    assert(completion[7].user_data == 0x4d554c54u);
-    assert(completion[7].result == 1 && completion[7].flags == 2u);
+    assert(completion[8].user_data == 0x4d554c54u);
+    assert(completion[8].result == 1 && completion[8].flags == 2u);
     assert(kernel_io_uring_collect(ring_id, 123u) == 0);
     g_ready_descriptor = -1;
     assert(kernel_io_uring_collect(ring_id, 124u) == 0);
@@ -737,8 +780,8 @@ int main(void) {
                0x4e455755u, 1) == 0);
     g_ready_descriptor = 9;
     assert(kernel_io_uring_collect(ring_id, 125u) == 1);
-    assert(completion[8].user_data == 0x4e455755u);
-    assert(completion[8].result == 1 && completion[8].flags == 2u);
+    assert(completion[9].user_data == 0x4e455755u);
+    assert(completion[9].result == 1 && completion[9].flags == 2u);
     assert(kernel_io_uring_pending_cancel(ring_id, 0x4e455755u) == 0);
     assert(kernel_io_uring_poll_update(
                ring_id, 0x4e455755u, 0, 0u, 1,
@@ -747,7 +790,7 @@ int main(void) {
     g_ready_descriptor = -1;
     assert(kernel_io_uring_poll_add(
                ring_id, 0x52455452u, 9, 1u, 1) == 0);
-    for (uint32_t index = 0; index < 7u; ++index)
+    for (uint32_t index = 0; index < 6u; ++index)
         assert(kernel_io_uring_completion_add(
                    ring_id, 0x46494c4cu + index, 0, 0) == 0);
     g_ready_descriptor = 9;

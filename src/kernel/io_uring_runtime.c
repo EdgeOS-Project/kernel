@@ -88,6 +88,7 @@ typedef struct kernel_io_uring_pending {
     uint32_t repeat_count;
     uint32_t reserved2;
     uint64_t sequence;
+    kernel_fd_operation_lease_t descriptor_lease;
 } kernel_io_uring_pending_t;
 
 typedef struct kernel_io_uring_fixed_buffer {
@@ -340,6 +341,15 @@ static void io_uring_release_storage(kernel_io_uring_t *ring) {
     io_uring_release_fixed_files(
         ring->fixed_file_pages, ring->fixed_file_used,
         ring->fixed_file_count, ring->fixed_file_page_count);
+    for (uint32_t slot = 0;
+         slot < KERNEL_IO_URING_MAX_PENDING; ++slot) {
+        kernel_io_uring_pending_t *pending = &ring->pending[slot];
+        if (pending->used &&
+            pending->kind == IO_URING_PENDING_POLL &&
+            kernel_fd_operation_view(&pending->descriptor_lease))
+            (void)kernel_fd_operation_release(
+                &pending->descriptor_lease);
+    }
     for (uint32_t page = 0;
          page < KERNEL_IO_URING_MAX_PBUF_PAGES; ++page) {
         if (ring->pbuf_page_used[page])
@@ -2262,11 +2272,20 @@ static int io_uring_pending_add(int32_t ring_id, uint8_t kind,
                                 int32_t expiration_result,
                                 int realtime_clock, uint64_t interval_us,
                                 uint32_t repeat_count, int multishot) {
+    kernel_fd_operation_lease_t descriptor_lease = {0};
     kernel_io_uring_t *ring;
-    uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
+    uint64_t flags;
     uint32_t slot;
     int result = 0;
+    int lease_transferred = 0;
 
+    if (kind == IO_URING_PENDING_POLL) {
+        result = kernel_fd_operation_acquire(
+            descriptor, &descriptor_lease);
+        if (result < 0) return result;
+    }
+
+    flags = spin_lock_irqsave(&g_io_uring_lock);
     ring = io_uring_lookup_locked(ring_id);
     if (!ring) result = -EDGE_LINUX_EBADF;
     else {
@@ -2276,6 +2295,13 @@ static int io_uring_pending_add(int32_t ring_id, uint8_t kind,
             result = -EDGE_LINUX_EAGAIN;
         } else {
             memset(&ring->pending[slot], 0, sizeof(ring->pending[slot]));
+            if (kind == IO_URING_PENDING_POLL) {
+                result = kernel_fd_operation_move(
+                    &ring->pending[slot].descriptor_lease,
+                    &descriptor_lease);
+                if (result < 0) goto pending_add_done;
+                lease_transferred = 1;
+            }
             ring->pending[slot].used = 1u;
             ring->pending[slot].kind = kind;
             ring->pending[slot].descriptor = descriptor;
@@ -2294,7 +2320,10 @@ static int io_uring_pending_add(int32_t ring_id, uint8_t kind,
             ring->pending[slot].sequence = ring->next_pending_sequence;
         }
     }
+pending_add_done:
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (kind == IO_URING_PENDING_POLL && !lease_transferred)
+        (void)kernel_fd_operation_release(&descriptor_lease);
     return result;
 }
 
@@ -2420,6 +2449,7 @@ int kernel_io_uring_poll_update(int32_t ring_id, uint64_t old_user_data,
 }
 
 int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data) {
+    kernel_fd_operation_lease_t descriptor_lease = {0};
     kernel_io_uring_t *ring;
     uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
     uint32_t slot;
@@ -2432,19 +2462,49 @@ int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data) {
             if (!ring->pending[slot].used ||
                 ring->pending[slot].user_data != user_data)
                 continue;
+            if (ring->pending[slot].kind == IO_URING_PENDING_POLL) {
+                result = kernel_fd_operation_move(
+                    &descriptor_lease,
+                    &ring->pending[slot].descriptor_lease);
+                if (result < 0) break;
+            }
             memset(&ring->pending[slot], 0, sizeof(ring->pending[slot]));
             result = 0;
             break;
         }
     }
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (kernel_fd_operation_view(&descriptor_lease))
+        (void)kernel_fd_operation_release(&descriptor_lease);
     return result;
+}
+
+static void io_uring_pending_snapshot(
+        kernel_io_uring_pending_t *destination,
+        const kernel_io_uring_pending_t *source) {
+    memset(destination, 0, sizeof(*destination));
+    destination->used = source->used;
+    destination->kind = source->kind;
+    destination->realtime_clock = source->realtime_clock;
+    destination->multishot = source->multishot;
+    destination->ready_latched = source->ready_latched;
+    destination->descriptor = source->descriptor;
+    destination->events = source->events;
+    destination->completion_target = source->completion_target;
+    destination->expiration_result = source->expiration_result;
+    destination->user_data = source->user_data;
+    destination->deadline_us = source->deadline_us;
+    destination->interval_us = source->interval_us;
+    destination->repeat_count = source->repeat_count;
+    destination->sequence = source->sequence;
 }
 
 uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us) {
     uint32_t count = 0;
     for (uint32_t slot = 0; slot < KERNEL_IO_URING_MAX_PENDING; ++slot) {
         kernel_io_uring_pending_t pending;
+        kernel_fd_operation_lease_t poll_lease = {0};
+        kernel_fd_operation_lease_t release_lease = {0};
         kernel_io_uring_t *ring;
         uint32_t completion_count;
         uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
@@ -2460,7 +2520,7 @@ uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us) {
             spin_unlock_irqrestore(&g_io_uring_lock, flags);
             break;
         }
-        pending = ring->pending[slot];
+        io_uring_pending_snapshot(&pending, &ring->pending[slot]);
         if (!pending.used) {
             spin_unlock_irqrestore(&g_io_uring_lock, flags);
             continue;
@@ -2493,15 +2553,22 @@ uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us) {
             }
             spin_unlock_irqrestore(&g_io_uring_lock, flags);
         } else if (pending.kind == IO_URING_PENDING_POLL) {
+            if (kernel_fd_operation_clone(
+                    &poll_lease,
+                    &ring->pending[slot].descriptor_lease) < 0) {
+                spin_unlock_irqrestore(&g_io_uring_lock, flags);
+                continue;
+            }
             spin_unlock_irqrestore(&g_io_uring_lock, flags);
             if ((pending.events & 0x2003u) &&
-                kernel_io_descriptor_ready(
-                    pending.descriptor, KERNEL_IO_READ_CURRENT))
+                kernel_fd_operation_ready(
+                    &poll_lease, KERNEL_IO_READ_CURRENT) > 0)
                 result |= (int32_t)(pending.events & 0x2003u);
             if ((pending.events & 0x0004u) &&
-                kernel_io_descriptor_ready(
-                    pending.descriptor, KERNEL_IO_WRITE_CURRENT))
+                kernel_fd_operation_ready(
+                    &poll_lease, KERNEL_IO_WRITE_CURRENT) > 0)
                 result |= 0x0004;
+            (void)kernel_fd_operation_release(&poll_lease);
             if (!result) {
                 flags = spin_lock_irqsave(&g_io_uring_lock);
                 ring = io_uring_lookup_locked(ring_id);
@@ -2521,6 +2588,13 @@ uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us) {
                 if (ring->pending[slot].multishot)
                     completion_flags = 1u << 1;
                 if (!ring->pending[slot].multishot) {
+                    if (kernel_fd_operation_move(
+                            &release_lease,
+                            &ring->pending[slot].descriptor_lease) < 0) {
+                        spin_unlock_irqrestore(
+                            &g_io_uring_lock, flags);
+                        continue;
+                    }
                     memset(&ring->pending[slot], 0,
                            sizeof(ring->pending[slot]));
                     remove = 1;
@@ -2530,6 +2604,8 @@ uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us) {
                 }
             }
             spin_unlock_irqrestore(&g_io_uring_lock, flags);
+            if (kernel_fd_operation_view(&release_lease))
+                (void)kernel_fd_operation_release(&release_lease);
         } else {
             spin_unlock_irqrestore(&g_io_uring_lock, flags);
             continue;
