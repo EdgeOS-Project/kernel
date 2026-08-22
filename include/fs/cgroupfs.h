@@ -75,6 +75,9 @@ void cgroupfs_cpu_account_runtime(uint32_t cgroup_id, uint64_t runtime_us,
 void cgroupfs_cpu_account_runtime_mode(uint32_t cgroup_id,
                                        uint64_t runtime_us,
                                        uint64_t now_us, int system_time);
+void cgroupfs_cpu_note_pressure(uint32_t cgroup_id, uint64_t now_us,
+                                uint64_t some_stall_us,
+                                uint64_t full_stall_us);
 int cgroupfs_cpu_task_runnable(uint32_t cgroup_id, uint64_t now_us);
 void cgroupfs_cpu_effective_scheduler_state(
     uint32_t cgroup_id, const edge_linux_scheduler_state_t *task_state,

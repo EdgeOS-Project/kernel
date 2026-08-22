@@ -126,6 +126,18 @@ def validate_cross_mount_rename():
 
 def validate_cgroup():
     subprocess.run(["rc-service", "cgroups", "start"], check=True)
+    cpu_pressure = read_text(os.path.join(CGROUP_BASE, "cpu.pressure"))
+    pressure_lines = cpu_pressure.splitlines()
+    assert len(pressure_lines) == 2
+    assert pressure_lines[0].startswith("some avg10=")
+    assert pressure_lines[1].startswith("full avg10=")
+    assert all(" total=" in line for line in pressure_lines)
+    io_pressure = read_text(os.path.join(CGROUP_BASE, "io.pressure"))
+    io_pressure_lines = io_pressure.splitlines()
+    assert len(io_pressure_lines) == 2
+    assert io_pressure_lines[0].startswith("some avg10=")
+    assert io_pressure_lines[1].startswith("full avg10=")
+    assert all(" total=" in line for line in io_pressure_lines)
     assert not os.path.exists(os.path.join(CGROUP_BASE, "cgroup.kill"))
     assert not os.path.exists(os.path.join(CGROUP_BASE, "cgroup.freeze"))
     populated = os.path.join(CGROUP_BASE, "edgeos-populated-test")

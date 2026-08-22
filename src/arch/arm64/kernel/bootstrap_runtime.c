@@ -3701,6 +3701,8 @@ static void task_state_set(kernel_task_t *task,
             task_scheduler_counter_add(
                 &g_scheduler_cpu_wait_us[edgeos_arm64_smp_current_cpu()],
                 wait);
+            cgroupfs_cpu_note_pressure(
+                task->cgroup_id, now_us, wait, 0u);
             task->scheduler_wait_start_us = 0u;
         }
     }

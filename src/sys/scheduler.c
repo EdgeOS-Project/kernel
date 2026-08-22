@@ -1131,6 +1131,8 @@ static task_t *pick_next_runnable_locked(scheduler_cpu_t *cpu,
                 best->scheduler_wait_us > UINT64_MAX - wait ? UINT64_MAX :
                 best->scheduler_wait_us + wait;
             scheduler_counter_add(&cpu->runqueue_wait_us, wait);
+            cgroupfs_cpu_note_pressure(
+                best->cgroup_id, now, wait, 0u);
             best->scheduler_wait_start_us = 0u;
         }
         return best;

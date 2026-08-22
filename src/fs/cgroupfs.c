@@ -80,6 +80,7 @@ enum cgroupfs_inode_kind {
     CGROUPFS_INODE_CPU_UCLAMP_MIN,
     CGROUPFS_INODE_CPU_UCLAMP_MAX,
     CGROUPFS_INODE_CPU_STAT,
+    CGROUPFS_INODE_CPU_PRESSURE,
     CGROUPFS_INODE_PIDS_CURRENT,
     CGROUPFS_INODE_PIDS_MAX,
     CGROUPFS_INODE_PIDS_EVENTS,
@@ -105,7 +106,8 @@ enum cgroupfs_inode_kind {
     CGROUPFS_INODE_IO_STAT,
     CGROUPFS_INODE_IO_WEIGHT,
     CGROUPFS_INODE_IO_MAX,
-    CGROUPFS_INODE_LAST = CGROUPFS_INODE_IO_MAX
+    CGROUPFS_INODE_IO_PRESSURE,
+    CGROUPFS_INODE_LAST = CGROUPFS_INODE_IO_PRESSURE
 };
 
 typedef struct {
@@ -174,6 +176,7 @@ typedef struct {
     uint64_t cpu_nr_throttled;
     uint64_t cpu_throttled_us;
     uint64_t cpu_throttle_start_us;
+    edge_mm_pressure_state_t cpu_pressure;
     uint64_t cpu_scheduler_vruntime_us;
     uint8_t cpu_scheduler_vruntime_valid;
     uint32_t pids_max;
@@ -206,6 +209,7 @@ typedef struct {
     uint64_t memory_oom_group_kill_events_local;
     uint8_t memory_oom_group;
     uint32_t io_weight;
+    edge_mm_pressure_state_t io_pressure;
     uint64_t memory_swap_current;
     uint64_t memory_swap_peak;
     uint64_t memory_swap_high;
@@ -255,6 +259,7 @@ static const cgroupfs_interface_t g_cgroup_interfaces[] = {
     { "cpu.uclamp.min", CGROUPFS_INODE_CPU_UCLAMP_MIN, 0644 },
     { "cpu.uclamp.max", CGROUPFS_INODE_CPU_UCLAMP_MAX, 0644 },
     { "cpu.stat", CGROUPFS_INODE_CPU_STAT, 0444 },
+    { "cpu.pressure", CGROUPFS_INODE_CPU_PRESSURE, 0444 },
     { "pids.current", CGROUPFS_INODE_PIDS_CURRENT, 0444 },
     { "pids.max", CGROUPFS_INODE_PIDS_MAX, 0644 },
     { "pids.events", CGROUPFS_INODE_PIDS_EVENTS, 0444 },
@@ -279,7 +284,8 @@ static const cgroupfs_interface_t g_cgroup_interfaces[] = {
     { "memory.reclaim", CGROUPFS_INODE_MEMORY_RECLAIM, 0200 },
     { "io.stat", CGROUPFS_INODE_IO_STAT, 0444 },
     { "io.weight", CGROUPFS_INODE_IO_WEIGHT, 0644 },
-    { "io.max", CGROUPFS_INODE_IO_MAX, 0644 }
+    { "io.max", CGROUPFS_INODE_IO_MAX, 0644 },
+    { "io.pressure", CGROUPFS_INODE_IO_PRESSURE, 0444 }
 };
 
 static cgroupfs_state_t g_cgroupfs;
@@ -582,7 +588,8 @@ static int cgroupfs_cpu_interface(uint32_t kind) {
            kind == CGROUPFS_INODE_CPU_IDLE ||
            kind == CGROUPFS_INODE_CPU_UCLAMP_MIN ||
            kind == CGROUPFS_INODE_CPU_UCLAMP_MAX ||
-           kind == CGROUPFS_INODE_CPU_STAT;
+           kind == CGROUPFS_INODE_CPU_STAT ||
+           kind == CGROUPFS_INODE_CPU_PRESSURE;
 }
 
 static int cgroupfs_cpuset_interface(uint32_t kind) {
@@ -668,7 +675,8 @@ static int cgroupfs_memory_interface(uint32_t kind) {
 static int cgroupfs_io_interface(uint32_t kind) {
     return kind == CGROUPFS_INODE_IO_STAT ||
            kind == CGROUPFS_INODE_IO_WEIGHT ||
-           kind == CGROUPFS_INODE_IO_MAX;
+           kind == CGROUPFS_INODE_IO_MAX ||
+           kind == CGROUPFS_INODE_IO_PRESSURE;
 }
 
 static int cgroupfs_io_available_locked(uint32_t node) {
@@ -1532,11 +1540,13 @@ static uint64_t cgroupfs_io_reserve_deadline(uint64_t *cursor,
 void cgroupfs_io_begin(uint32_t major, uint32_t minor, int write,
                        uint64_t bytes) {
     uint32_t node;
+    uint32_t pressure_node;
     uint64_t now_us;
     uint64_t deadline_us;
 
     if (!bytes || !g_cgroupfs.initialized) return;
     node = cgroupfs_current_node();
+    pressure_node = node;
     now_us = boottime_monotonic_us();
     deadline_us = now_us;
     cgroupfs_lock(&g_cgroupfs_lock);
@@ -1582,8 +1592,27 @@ void cgroupfs_io_begin(uint32_t major, uint32_t minor, int write,
         node = cgroupfs_node_valid(group->parent, 0) ? group->parent : 0;
     }
     cgroupfs_unlock(&g_cgroupfs_lock);
-    if (deadline_us > now_us)
+    if (deadline_us > now_us) {
+        uint64_t wake_us;
+        uint64_t stall_us;
+
         (void)kernel_current_sleep_until(deadline_us, 0, 0, 0);
+        wake_us = boottime_monotonic_us();
+        stall_us = wake_us > now_us ? wake_us - now_us : 0u;
+        if (!stall_us) return;
+        cgroupfs_lock(&g_cgroupfs_lock);
+        if (!cgroupfs_node_valid(pressure_node, 0)) pressure_node = 0;
+        for (uint32_t guard = 0; guard < CGROUPFS_MAX_NODES; ++guard) {
+            cgroupfs_node_t *group = &g_cgroupfs.nodes[pressure_node];
+
+            edge_mm_pressure_record(&group->io_pressure, wake_us,
+                                    stall_us, 0u);
+            if (!pressure_node) break;
+            pressure_node = cgroupfs_node_valid(group->parent, 0) ?
+                            group->parent : 0;
+        }
+        cgroupfs_unlock(&g_cgroupfs_lock);
+    }
 }
 
 void cgroupfs_io_complete(uint32_t major, uint32_t minor, int write,
@@ -1851,6 +1880,26 @@ void cgroupfs_cpu_account_runtime_mode(uint32_t cgroup_id,
 void cgroupfs_cpu_account_runtime(uint32_t cgroup_id, uint64_t runtime_us,
                                   uint64_t now_us) {
     cgroupfs_cpu_account_runtime_mode(cgroup_id, runtime_us, now_us, 0);
+}
+
+void cgroupfs_cpu_note_pressure(uint32_t cgroup_id, uint64_t now_us,
+                                uint64_t some_stall_us,
+                                uint64_t full_stall_us) {
+    if ((!some_stall_us && !full_stall_us) || !g_cgroupfs.initialized)
+        return;
+    /* Scheduling paths cannot wait for a filesystem operation to finish. */
+    if (!cgroupfs_try_lock(&g_cgroupfs_lock)) return;
+    if (!cgroupfs_node_valid(cgroup_id, 0)) cgroup_id = 0;
+    cgroup_id = cgroupfs_cpu_domain_locked(cgroup_id);
+    for (uint32_t guard = 0; guard < CGROUPFS_MAX_NODES; ++guard) {
+        cgroupfs_node_t *group = &g_cgroupfs.nodes[cgroup_id];
+
+        edge_mm_pressure_record(&group->cpu_pressure, now_us,
+                                some_stall_us, full_stall_us);
+        if (!cgroup_id) break;
+        cgroup_id = cgroupfs_cpu_parent_domain_locked(cgroup_id);
+    }
+    cgroupfs_unlock(&g_cgroupfs_lock);
 }
 
 int cgroupfs_cpu_task_runnable(uint32_t cgroup_id, uint64_t now_us) {
@@ -2188,6 +2237,17 @@ static int cgroupfs_render(vfs_inode_t *inode, char *buffer,
                                 group->cpu_throttled_us) < 0 ||
             cgroupfs_append(buffer, capacity, &offset, "\n") < 0)
             return -1;
+    } else if (kind == CGROUPFS_INODE_CPU_PRESSURE) {
+        edge_mm_pressure_snapshot_t pressure;
+        int rendered;
+
+        edge_mm_pressure_snapshot_at(
+            &g_cgroupfs.nodes[node].cpu_pressure,
+            boottime_monotonic_us(), &pressure);
+        rendered = kernel_proc_memory_pressure_render(
+            buffer, capacity, &pressure);
+        if (rendered < 0) return -1;
+        offset = (uint32_t)rendered;
     } else if (kind == CGROUPFS_INODE_PIDS_CURRENT) {
         cgroupfs_rebuild_task_counts_locked();
         if (cgroupfs_append_u32(
@@ -2454,6 +2514,17 @@ static int cgroupfs_render(vfs_inode_t *inode, char *buffer,
             if (cgroupfs_append(buffer, capacity, &offset, "\n") < 0)
                 return -1;
         }
+    } else if (kind == CGROUPFS_INODE_IO_PRESSURE) {
+        edge_mm_pressure_snapshot_t pressure;
+        int rendered;
+
+        edge_mm_pressure_snapshot_at(
+            &g_cgroupfs.nodes[node].io_pressure,
+            boottime_monotonic_us(), &pressure);
+        rendered = kernel_proc_memory_pressure_render(
+            buffer, capacity, &pressure);
+        if (rendered < 0) return -1;
+        offset = (uint32_t)rendered;
     } else {
         return -1;
     }
