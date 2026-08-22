@@ -92,6 +92,19 @@ int main(void) {
            (int64_t)(sizeof(payload) - 1u));
     assert(memcmp(output, payload, sizeof(payload) - 1u) == 0);
 
+    memset(arguments, 0, sizeof(arguments));
+    arguments[0] = (uint64_t)key;
+    arguments[2] = sizeof(output);
+    assert(kernel_keyring_keyctl(
+               &parent, &access, EDGE_LINUX_KEYCTL_GET_SECURITY,
+               arguments) == 1);
+    arguments[1] = (uint64_t)(uintptr_t)output;
+    memset(output, 0xff, sizeof(output));
+    assert(kernel_keyring_keyctl(
+               &parent, &access, EDGE_LINUX_KEYCTL_GET_SECURITY,
+               arguments) == 1);
+    assert(output[0] == 0);
+
     assert(kernel_keyring_request_key(
                &child, &access, (uint64_t)(uintptr_t)"user",
                (uint64_t)(uintptr_t)"unit-key", 0, 0) == key);

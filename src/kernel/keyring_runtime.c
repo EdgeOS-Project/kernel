@@ -1014,6 +1014,16 @@ int64_t kernel_keyring_keyctl(
         key_unlock(&g_key_lock);
         return key_copy_result(
             access, arguments[1], arguments[2], output, length);
+    case EDGE_LINUX_KEYCTL_GET_SECURITY:
+        if (key_permission_locked(identity, state, key, 1u) < 0) {
+            result = -EDGE_LINUX_EACCES;
+            break;
+        }
+        output[0] = 0;
+        key_unlock(&g_key_lock);
+        if (!arguments[1] || !arguments[2]) return 1;
+        return key_copy_result(
+            access, arguments[1], arguments[2], output, 1u);
     case EDGE_LINUX_KEYCTL_CLEAR:
         if (key->kind != KERNEL_KEY_KIND_KEYRING)
             result = -EDGE_LINUX_ENOTDIR;

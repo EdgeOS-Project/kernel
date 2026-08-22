@@ -28,6 +28,7 @@
 #define KEYCTL_UNLINK 9
 #define KEYCTL_SEARCH 10
 #define KEYCTL_READ 11
+#define KEYCTL_GET_SECURITY 17
 #define KEYCTL_CAPABILITIES 31
 
 #define EKEYREVOKED 128
@@ -159,6 +160,21 @@ void _start(void) {
         if (raw_syscall6(SYS_keyctl, KEYCTL_DESCRIBE, key,
                          (long)output, sizeof(output), 0, 0) <= 0) {
             print_text("FAIL describe\n");
+            ++failures;
+        }
+        failures += expect_result(
+            "security-size",
+            raw_syscall6(SYS_keyctl, KEYCTL_GET_SECURITY, key,
+                         0, sizeof(output), 0, 0),
+            1);
+        output[0] = (char)0xff;
+        failures += expect_result(
+            "security",
+            raw_syscall6(SYS_keyctl, KEYCTL_GET_SECURITY, key,
+                         (long)output, sizeof(output), 0, 0),
+            1);
+        if (output[0] != 0) {
+            print_text("FAIL security-label\n");
             ++failures;
         }
         found = raw_syscall6(
