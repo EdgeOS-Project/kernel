@@ -23,13 +23,16 @@
 #define KERNEL_BPF_MAP_TYPE_PERCPU_ARRAY 6u
 #define KERNEL_BPF_MAP_TYPE_LRU_HASH 9u
 #define KERNEL_BPF_MAP_TYPE_LRU_PERCPU_HASH 10u
+#define KERNEL_BPF_MAP_TYPE_LPM_TRIE 11u
 #define KERNEL_BPF_MAP_TYPE_ARRAY_OF_MAPS 12u
 #define KERNEL_BPF_MAP_TYPE_HASH_OF_MAPS 13u
 #define KERNEL_BPF_MAP_TYPE_QUEUE 22u
 #define KERNEL_BPF_MAP_TYPE_STACK 23u
+#define KERNEL_BPF_MAP_TYPE_BLOOM_FILTER 30u
 
 #define KERNEL_BPF_MAP_NO_PREALLOC (1u << 0)
 #define KERNEL_BPF_MAP_NO_COMMON_LRU (1u << 1)
+#define KERNEL_BPF_MAP_ZERO_SEED (1u << 6)
 
 #define KERNEL_BPF_ANY     0u
 #define KERNEL_BPF_NOEXIST 1u
@@ -74,6 +77,7 @@ typedef struct kernel_bpf_map_create_request {
     int32_t btf_object_id;
     uint32_t btf_key_type_id;
     uint32_t btf_value_type_id;
+    uint64_t map_extra;
     uint8_t btf_present;
     char name[KERNEL_BPF_OBJECT_NAME_LENGTH];
 } kernel_bpf_map_create_request_t;
@@ -98,6 +102,7 @@ typedef struct kernel_bpf_map_info {
     uint32_t btf_id;
     uint32_t btf_key_type_id;
     uint32_t btf_value_type_id;
+    uint64_t map_extra;
     char name[KERNEL_BPF_OBJECT_NAME_LENGTH];
 } kernel_bpf_map_info_t;
 

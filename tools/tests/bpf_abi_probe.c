@@ -57,11 +57,15 @@
 #define BPF_MAP_TYPE_PERCPU_ARRAY 6u
 #define BPF_MAP_TYPE_LRU_HASH 9u
 #define BPF_MAP_TYPE_LRU_PERCPU_HASH 10u
+#define BPF_MAP_TYPE_LPM_TRIE 11u
 #define BPF_MAP_TYPE_ARRAY_OF_MAPS 12u
 #define BPF_MAP_TYPE_HASH_OF_MAPS 13u
 #define BPF_MAP_TYPE_QUEUE 22u
 #define BPF_MAP_TYPE_STACK 23u
+#define BPF_MAP_TYPE_BLOOM_FILTER 30u
+#define BPF_F_NO_PREALLOC (1u << 0)
 #define BPF_F_NO_COMMON_LRU (1u << 1)
+#define BPF_F_ZERO_SEED (1u << 6)
 #define BPF_PROG_TYPE_CGROUP_DEVICE 15u
 #define BPF_CGROUP_DEVICE 6u
 #define BPF_ANY 0u
@@ -86,6 +90,7 @@
 #define ENOENT 2
 #define EPERM 1
 #define ENOTSUPP 524
+#define EOPNOTSUPP 95
 
 union bpf_attr {
     struct {
@@ -456,6 +461,19 @@ static long map_element(uint32_t command, long descriptor,
     return bpf_call(command, &attribute);
 }
 
+static long map_element_raw(uint32_t command, long descriptor,
+                            const void *key, void *value,
+                            uint64_t flags) {
+    union bpf_attr attribute;
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.map_element.map_fd = (uint32_t)descriptor;
+    attribute.map_element.key = (uint64_t)(uintptr_t)key;
+    attribute.map_element.value = (uint64_t)(uintptr_t)value;
+    attribute.map_element.flags = flags;
+    return bpf_call(command, &attribute);
+}
+
 static long map_batch(uint32_t command, long descriptor,
                       uint32_t *input_cursor, uint32_t *output_cursor,
                       uint32_t *keys, uint64_t *values, uint32_t *count,
@@ -725,6 +743,151 @@ static int test_queue_stack_maps(void) {
     attribute.map_create.value_size = 8u;
     attribute.map_create.max_entries = 2u;
     failures += expect("queue invalid key size", bpf_call(
+        BPF_MAP_CREATE, &attribute), -EINVAL);
+    return failures;
+}
+
+static int test_lpm_trie_map(void) {
+    struct lpm_key {
+        uint32_t prefix_length;
+        uint8_t address[4];
+    } keys[] = {
+        { .prefix_length = 0u, .address = { 0u, 0u, 0u, 0u } },
+        { .prefix_length = 8u, .address = { 10u, 0u, 0u, 0u } },
+        { .prefix_length = 24u, .address = { 10u, 1u, 2u, 0u } },
+    };
+    struct lpm_key query = {
+        .prefix_length = 32u,
+        .address = { 10u, 1u, 2u, 3u },
+    };
+    struct lpm_key replacement = {
+        .prefix_length = 8u,
+        .address = { 10u, 99u, 88u, 77u },
+    };
+    union bpf_attr attribute;
+    struct bpf_map_info info;
+    uint32_t values[] = { 1u, 8u, 24u, 88u };
+    uint32_t output = 0u;
+    long descriptor;
+    int failures = 0;
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.map_create.map_type = BPF_MAP_TYPE_LPM_TRIE;
+    attribute.map_create.key_size = sizeof(keys[0]);
+    attribute.map_create.value_size = sizeof(values[0]);
+    attribute.map_create.max_entries = 3u;
+    attribute.map_create.map_flags = BPF_F_NO_PREALLOC;
+    descriptor = bpf_call(BPF_MAP_CREATE, &attribute);
+    failures += expect_true("LPM trie create", descriptor >= 0);
+    if (descriptor < 0) return failures + 1;
+    for (uint32_t index = 0; index < 3u; ++index)
+        failures += expect("LPM trie insert", map_element_raw(
+            BPF_MAP_UPDATE_ELEM, descriptor, &keys[index],
+            &values[index], BPF_NOEXIST), 0);
+    failures += expect("LPM trie lookup /24", map_element_raw(
+        BPF_MAP_LOOKUP_ELEM, descriptor, &query, &output, 0u), 0);
+    failures += expect("LPM trie /24 value", output, values[2]);
+    query.address[1] = 2u;
+    failures += expect("LPM trie lookup /8", map_element_raw(
+        BPF_MAP_LOOKUP_ELEM, descriptor, &query, &output, 0u), 0);
+    failures += expect("LPM trie /8 value", output, values[1]);
+    query.address[0] = 192u;
+    failures += expect("LPM trie lookup /0", map_element_raw(
+        BPF_MAP_LOOKUP_ELEM, descriptor, &query, &output, 0u), 0);
+    failures += expect("LPM trie /0 value", output, values[0]);
+    failures += expect("LPM trie duplicate prefix", map_element_raw(
+        BPF_MAP_UPDATE_ELEM, descriptor, &replacement,
+        &values[3], BPF_NOEXIST), -EEXIST);
+    failures += expect("LPM trie replace prefix", map_element_raw(
+        BPF_MAP_UPDATE_ELEM, descriptor, &replacement,
+        &values[3], BPF_EXIST), 0);
+    failures += expect("LPM trie delete", map_element_raw(
+        BPF_MAP_DELETE_ELEM, descriptor, &keys[2], 0, 0u), 0);
+    failures += expect("LPM trie restore", map_element_raw(
+        BPF_MAP_UPDATE_ELEM, descriptor, &keys[2],
+        &values[2], BPF_ANY), 0);
+    clear_bytes(&replacement, sizeof(replacement));
+    failures += expect("LPM trie first key", map_element_raw(
+        BPF_MAP_GET_NEXT_KEY, descriptor, 0, &replacement, 0u), 0);
+    failures += expect("LPM trie specific-first order",
+                       replacement.prefix_length, 24u);
+    query.prefix_length = 33u;
+    failures += expect("LPM trie invalid prefix", map_element_raw(
+        BPF_MAP_LOOKUP_ELEM, descriptor, &query, &output, 0u), -ENOENT);
+    clear_bytes(&info, sizeof(info));
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.info.bpf_fd = (uint32_t)descriptor;
+    attribute.info.info_len = sizeof(info);
+    attribute.info.info = (uint64_t)(uintptr_t)&info;
+    failures += expect("LPM trie info", bpf_call(
+        BPF_OBJ_GET_INFO_BY_FD, &attribute), 0);
+    failures += expect_true(
+        "LPM trie info values",
+        info.type == BPF_MAP_TYPE_LPM_TRIE &&
+        info.key_size == sizeof(keys[0]) && info.value_size == 4u);
+    (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.map_create.map_type = BPF_MAP_TYPE_LPM_TRIE;
+    attribute.map_create.key_size = sizeof(keys[0]);
+    attribute.map_create.value_size = 4u;
+    attribute.map_create.max_entries = 1u;
+    failures += expect("LPM trie requires no-prealloc", bpf_call(
+        BPF_MAP_CREATE, &attribute), -EINVAL);
+    return failures;
+}
+
+static int test_bloom_filter_map(void) {
+    union bpf_attr attribute;
+    struct bpf_map_info info;
+    uint32_t present = 0x11223344u;
+    uint32_t missing = 0x55667788u;
+    long descriptor;
+    int failures = 0;
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.map_create.map_type = BPF_MAP_TYPE_BLOOM_FILTER;
+    attribute.map_create.value_size = sizeof(present);
+    attribute.map_create.max_entries = 100u;
+    attribute.map_create.map_flags = BPF_F_ZERO_SEED;
+    attribute.map_create.map_extra = 3u;
+    descriptor = bpf_call(BPF_MAP_CREATE, &attribute);
+    failures += expect_true("bloom filter create", descriptor >= 0);
+    if (descriptor < 0) return failures + 1;
+    failures += expect("bloom filter missing", map_element_raw(
+        BPF_MAP_LOOKUP_ELEM, descriptor, 0, &missing, 0u), -ENOENT);
+    failures += expect("bloom filter insert", map_element_raw(
+        BPF_MAP_UPDATE_ELEM, descriptor, 0, &present, BPF_ANY), 0);
+    failures += expect("bloom filter present", map_element_raw(
+        BPF_MAP_LOOKUP_ELEM, descriptor, 0, &present, 0u), 0);
+    failures += expect("bloom filter invalid update flag", map_element_raw(
+        BPF_MAP_UPDATE_ELEM, descriptor, 0, &present, BPF_EXIST), -EINVAL);
+    failures += expect("bloom filter delete", map_element_raw(
+        BPF_MAP_DELETE_ELEM, descriptor, 0, 0, 0u), -EOPNOTSUPP);
+    clear_bytes(&info, sizeof(info));
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.info.bpf_fd = (uint32_t)descriptor;
+    attribute.info.info_len = sizeof(info);
+    attribute.info.info = (uint64_t)(uintptr_t)&info;
+    failures += expect("bloom filter info", bpf_call(
+        BPF_OBJ_GET_INFO_BY_FD, &attribute), 0);
+    failures += expect_true(
+        "bloom filter info values",
+        info.type == BPF_MAP_TYPE_BLOOM_FILTER &&
+        info.key_size == 0u && info.value_size == sizeof(present) &&
+        info.map_extra == 3u);
+    (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.map_create.map_type = BPF_MAP_TYPE_BLOOM_FILTER;
+    attribute.map_create.key_size = 4u;
+    attribute.map_create.value_size = 4u;
+    attribute.map_create.max_entries = 100u;
+    failures += expect("bloom filter invalid key", bpf_call(
+        BPF_MAP_CREATE, &attribute), -EINVAL);
+    attribute.map_create.key_size = 0u;
+    attribute.map_create.map_extra = 16u;
+    failures += expect("bloom filter invalid extra", bpf_call(
         BPF_MAP_CREATE, &attribute), -EINVAL);
     return failures;
 }
@@ -1445,6 +1608,8 @@ START_ATTRIBUTES void _start(void) {
     failures += test_hash_map();
     failures += test_lru_hash_map();
     failures += test_queue_stack_maps();
+    failures += test_lpm_trie_map();
+    failures += test_bloom_filter_map();
     failures += test_percpu_maps();
     failures += test_lru_percpu_hash_map();
     failures += test_no_common_lru();

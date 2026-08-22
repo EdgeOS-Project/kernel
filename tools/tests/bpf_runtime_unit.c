@@ -278,6 +278,127 @@ static void test_queue_stack_maps(void) {
     assert(kernel_bpf_map_create(&invalid) == -EDGE_LINUX_EINVAL);
 }
 
+static void test_lpm_trie_map(void) {
+    struct lpm_key {
+        uint32_t prefix_length;
+        uint8_t address[4];
+    } keys[] = {
+        { .prefix_length = 0u, .address = { 0u, 0u, 0u, 0u } },
+        { .prefix_length = 8u, .address = { 10u, 0u, 0u, 0u } },
+        { .prefix_length = 24u, .address = { 10u, 1u, 2u, 0u } },
+    };
+    kernel_bpf_map_create_request_t request = {
+        .type = KERNEL_BPF_MAP_TYPE_LPM_TRIE,
+        .key_size = sizeof(keys[0]),
+        .value_size = sizeof(uint32_t),
+        .max_entries = 3u,
+        .flags = KERNEL_BPF_MAP_NO_PREALLOC,
+    };
+    struct lpm_key query = {
+        .prefix_length = 32u,
+        .address = { 10u, 1u, 2u, 3u },
+    };
+    struct lpm_key replacement = {
+        .prefix_length = 8u,
+        .address = { 10u, 99u, 88u, 77u },
+    };
+    struct lpm_key next;
+    uint32_t values[] = { 1u, 8u, 24u, 88u };
+    uint32_t output = 0u;
+    int object;
+
+    strcpy(request.name, "routes");
+    object = kernel_bpf_map_create(&request);
+    assert(object >= 0);
+    for (uint32_t index = 0; index < 3u; ++index)
+        assert(kernel_bpf_map_update(
+                   object, &keys[index], &values[index],
+                   KERNEL_BPF_NOEXIST) == 0);
+    assert(kernel_bpf_map_lookup(object, &query, &output) == 0);
+    assert(output == values[2]);
+    query.address[1] = 2u;
+    assert(kernel_bpf_map_lookup(object, &query, &output) == 0);
+    assert(output == values[1]);
+    query.address[0] = 192u;
+    assert(kernel_bpf_map_lookup(object, &query, &output) == 0);
+    assert(output == values[0]);
+    assert(kernel_bpf_map_update(
+               object, &replacement, &values[3],
+               KERNEL_BPF_NOEXIST) == -EDGE_LINUX_EEXIST);
+    assert(kernel_bpf_map_update(
+               object, &replacement, &values[3],
+               KERNEL_BPF_EXIST) == 0);
+    query.address[0] = 10u;
+    assert(kernel_bpf_map_lookup(object, &query, &output) == 0);
+    assert(output == values[3]);
+    assert(kernel_bpf_map_delete(object, &keys[2]) == 0);
+    query.address[1] = 1u;
+    assert(kernel_bpf_map_lookup(object, &query, &output) == 0);
+    assert(output == values[3]);
+    assert(kernel_bpf_map_update(
+               object, &keys[2], &values[2], KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_next_key(object, 0, &next) == 0);
+    assert(next.prefix_length == 24u);
+    assert(kernel_bpf_map_next_key(object, &next, &next) == 0);
+    assert(next.prefix_length == 8u);
+    assert(kernel_bpf_map_next_key(object, &next, &next) == 0);
+    assert(next.prefix_length == 0u);
+    assert(kernel_bpf_map_next_key(object, &next, &next) ==
+           -EDGE_LINUX_ENOENT);
+    query.prefix_length = 33u;
+    assert(kernel_bpf_map_lookup(object, &query, &output) ==
+           -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_map_delete(object, &query) ==
+           -EDGE_LINUX_EINVAL);
+    kernel_bpf_object_release(object);
+
+    request.flags = 0u;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+}
+
+static void test_bloom_filter_map(void) {
+    kernel_bpf_map_create_request_t request = {
+        .type = KERNEL_BPF_MAP_TYPE_BLOOM_FILTER,
+        .value_size = sizeof(uint32_t),
+        .max_entries = 100u,
+        .flags = KERNEL_BPF_MAP_ZERO_SEED,
+        .map_extra = 3u,
+    };
+    kernel_bpf_map_info_t info;
+    uint32_t present = 0x11223344u;
+    uint32_t missing = 0x55667788u;
+    uint32_t next = 0u;
+    int object;
+
+    strcpy(request.name, "bloom");
+    object = kernel_bpf_map_create(&request);
+    assert(object >= 0);
+    assert(kernel_bpf_map_info(object, &info) == 0);
+    assert(info.type == KERNEL_BPF_MAP_TYPE_BLOOM_FILTER);
+    assert(info.map_extra == 3u);
+    assert(kernel_bpf_map_lookup(object, 0, &missing) ==
+           -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_map_update(
+               object, 0, &present, KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_lookup(object, 0, &present) == 0);
+    assert(kernel_bpf_map_update(
+               object, 0, &present, KERNEL_BPF_EXIST) ==
+           -EDGE_LINUX_EINVAL);
+    assert(kernel_bpf_map_delete(object, 0) ==
+           -EDGE_LINUX_EOPNOTSUPP);
+    assert(kernel_bpf_map_next_key(object, 0, &next) ==
+           -EDGE_LINUX_EOPNOTSUPP);
+    assert(kernel_bpf_map_lookup_and_delete(
+               object, 0, &present) == -EDGE_LINUX_EOPNOTSUPP);
+    kernel_bpf_object_release(object);
+
+    request.key_size = sizeof(uint32_t);
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+    request.key_size = 0u;
+    request.map_extra = 16u;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+}
+
 static void test_percpu_maps(void) {
     uint8_t array_values[4][8];
     uint8_t array_output[4][8];
@@ -818,6 +939,8 @@ int main(void) {
     test_hash_map();
     test_lru_hash_map();
     test_queue_stack_maps();
+    test_lpm_trie_map();
+    test_bloom_filter_map();
     test_percpu_maps();
     test_lru_percpu_hash_map();
     test_no_common_lru();

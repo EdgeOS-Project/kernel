@@ -4317,7 +4317,9 @@ static int64_t edge_linux_bpf_map_create(
          attribute.map_type != KERNEL_BPF_MAP_TYPE_HASH_OF_MAPS &&
          attribute.inner_map_descriptor) || attribute.numa_node ||
         attribute.interface_index ||
-        attribute.btf_vmlinux_value_type_id || attribute.map_extra)
+        attribute.btf_vmlinux_value_type_id ||
+        (attribute.map_extra &&
+         attribute.map_type != KERNEL_BPF_MAP_TYPE_BLOOM_FILTER))
         return -EDGE_LINUX_EINVAL;
     if ((!attribute.btf_descriptor &&
          (attribute.btf_key_type_id || attribute.btf_value_type_id)) ||
@@ -4331,6 +4333,7 @@ static int64_t edge_linux_bpf_map_create(
     request.value_size = attribute.value_size;
     request.max_entries = attribute.max_entries;
     request.flags = attribute.map_flags;
+    request.map_extra = attribute.map_extra;
     if (attribute.btf_descriptor) {
         request.btf_object_id = kernel_bpf_descriptor_object(
             (int32_t)attribute.btf_descriptor, KERNEL_BPF_OBJECT_BTF);
@@ -4446,7 +4449,8 @@ static int64_t edge_linux_bpf_map_element(
     if (!info.key_size &&
         (command == EDGE_LINUX_BPF_MAP_DELETE_ELEM ||
          command == EDGE_LINUX_BPF_MAP_GET_NEXT_KEY))
-        return -EDGE_LINUX_EINVAL;
+        return info.type == KERNEL_BPF_MAP_TYPE_BLOOM_FILTER ?
+            -EDGE_LINUX_EOPNOTSUPP : -EDGE_LINUX_EINVAL;
     if (!info.key_size && attribute.key) return -EDGE_LINUX_EINVAL;
     if (info.key_size && !attribute.key &&
         command != EDGE_LINUX_BPF_MAP_GET_NEXT_KEY)
@@ -4478,9 +4482,17 @@ static int64_t edge_linux_bpf_map_element(
         goto out;
     }
     if (command == EDGE_LINUX_BPF_MAP_LOOKUP_ELEM) {
+        if (info.type == KERNEL_BPF_MAP_TYPE_BLOOM_FILTER &&
+            edge_linux_copy_from_user(
+                context, value, attribute.value, value_size) < 0) {
+            status = -EDGE_LINUX_EFAULT;
+            goto out;
+        }
         status = kernel_bpf_map_lookup_flags(
             object_id, key, value, attribute.flags);
-        if (status == 0 && edge_linux_copy_to_user(
+        if (status == 0 &&
+            info.type != KERNEL_BPF_MAP_TYPE_BLOOM_FILTER &&
+            edge_linux_copy_to_user(
                 context, attribute.value, value, value_size) < 0)
             status = -EDGE_LINUX_EFAULT;
     } else if (command == EDGE_LINUX_BPF_MAP_UPDATE_ELEM) {
@@ -4854,6 +4866,7 @@ static int64_t edge_linux_bpf_object_info(
         linux_info.btf_id = runtime_info.btf_id;
         linux_info.btf_key_type_id = runtime_info.btf_key_type_id;
         linux_info.btf_value_type_id = runtime_info.btf_value_type_id;
+        linux_info.map_extra = runtime_info.map_extra;
         memcpy(linux_info.name, runtime_info.name, sizeof(linux_info.name));
         copied = attribute.info_length < sizeof(linux_info) ?
             attribute.info_length : sizeof(linux_info);

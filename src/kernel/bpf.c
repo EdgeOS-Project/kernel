@@ -77,7 +77,11 @@ typedef struct kernel_bpf_map {
     int32_t btf_object_id;
     uint32_t btf_key_type_id;
     uint32_t btf_value_type_id;
+    uint64_t map_extra;
     uint64_t access_sequence;
+    uint32_t bloom_bit_mask;
+    uint32_t bloom_hash_count;
+    uint32_t bloom_seed;
     uint8_t frozen;
     uint8_t *storage;
     char name[KERNEL_BPF_OBJECT_NAME_LENGTH];
@@ -219,6 +223,14 @@ static int bpf_map_type_is_queue_stack(uint32_t type) {
            type == KERNEL_BPF_MAP_TYPE_STACK;
 }
 
+static int bpf_map_is_lpm_trie(const kernel_bpf_map_t *map) {
+    return map && map->type == KERNEL_BPF_MAP_TYPE_LPM_TRIE;
+}
+
+static int bpf_map_is_bloom_filter(const kernel_bpf_map_t *map) {
+    return map && map->type == KERNEL_BPF_MAP_TYPE_BLOOM_FILTER;
+}
+
 static int bpf_map_is_queue_stack(const kernel_bpf_map_t *map) {
     return map && bpf_map_type_is_queue_stack(map->type);
 }
@@ -334,6 +346,8 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
     uint32_t value_stride;
     uint32_t possible_cpu_count;
     uint32_t actual_max_entries;
+    uint32_t bloom_bit_count = 0u;
+    uint32_t bloom_hash_count = 0u;
     uint64_t bytes;
     uint8_t *storage;
     kernel_bpf_map_info_t inner_info;
@@ -362,7 +376,8 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
         if (status < 0) return status;
         btf_retained = 1;
     }
-    if (bpf_map_type_is_queue_stack(request->type)) {
+    if (bpf_map_type_is_queue_stack(request->type) ||
+        request->type == KERNEL_BPF_MAP_TYPE_BLOOM_FILTER) {
         if (request->key_size) {
             status = -EDGE_LINUX_EINVAL;
             goto fail_btf;
@@ -440,10 +455,38 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
     } else if (bpf_map_type_is_queue_stack(request->type)) {
         if (request->flags) goto invalid_btf;
         stride = bpf_align8(request->value_size);
+    } else if (request->type == KERNEL_BPF_MAP_TYPE_LPM_TRIE) {
+        if (request->key_size < sizeof(uint32_t) + 1u ||
+            request->key_size > sizeof(uint32_t) + 256u ||
+            request->flags != KERNEL_BPF_MAP_NO_PREALLOC ||
+            request->map_extra)
+            goto invalid_btf;
+        stride = bpf_align8(
+            1u + request->key_size + request->value_size);
+    } else if (request->type == KERNEL_BPF_MAP_TYPE_BLOOM_FILTER) {
+        uint64_t estimated_bits;
+        uint64_t rounded_bits = 64u;
+
+        if (request->key_size ||
+            (request->flags & ~KERNEL_BPF_MAP_ZERO_SEED) ||
+            (request->map_extra & ~0xfull))
+            goto invalid_btf;
+        bloom_hash_count = (uint32_t)(request->map_extra & 0xfull);
+        if (!bloom_hash_count) bloom_hash_count = 5u;
+        estimated_bits =
+            (uint64_t)request->max_entries * bloom_hash_count;
+        estimated_bits = estimated_bits / 5u * 7u;
+        while (rounded_bits < estimated_bits &&
+               rounded_bits < (1ull << 31u))
+            rounded_bits <<= 1u;
+        if (rounded_bits > UINT32_MAX) goto invalid_btf;
+        bloom_bit_count = (uint32_t)rounded_bits;
+        stride = (bloom_bit_count + 7u) / 8u;
     } else {
         goto invalid_btf;
     }
-    bytes = (uint64_t)stride * actual_max_entries;
+    bytes = request->type == KERNEL_BPF_MAP_TYPE_BLOOM_FILTER ?
+        stride : (uint64_t)stride * actual_max_entries;
     status = bpf_allocation_size(bytes, &pages);
     if (status < 0) goto fail_btf;
     storage = (uint8_t *)arch_vm_alloc_pages(pages);
@@ -479,6 +522,13 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
             request->btf_object_id : -1;
         object->value.map.btf_key_type_id = request->btf_key_type_id;
         object->value.map.btf_value_type_id = request->btf_value_type_id;
+        object->value.map.map_extra = request->map_extra;
+        object->value.map.bloom_bit_mask = bloom_bit_count ?
+            bloom_bit_count - 1u : 0u;
+        object->value.map.bloom_hash_count = bloom_hash_count;
+        object->value.map.bloom_seed =
+            request->flags & KERNEL_BPF_MAP_ZERO_SEED ?
+                0u : object->user_id * 0x9e3779b9u;
         object->value.map.storage_pages = pages;
         object->value.map.storage = storage;
         memcpy(object->value.map.name, request->name,
@@ -972,6 +1022,7 @@ int kernel_bpf_map_info(int object_id, kernel_bpf_map_info_t *info) {
     }
     info->btf_key_type_id = object->value.map.btf_key_type_id;
     info->btf_value_type_id = object->value.map.btf_value_type_id;
+    info->map_extra = object->value.map.map_extra;
     memcpy(info->name, object->value.map.name, sizeof(info->name));
     bpf_unlock();
     return 0;
@@ -1313,6 +1364,174 @@ static int bpf_map_hash_find(kernel_bpf_map_t *map, const void *key,
     return 0;
 }
 
+static uint32_t bpf_lpm_prefix_length(const void *key) {
+    uint32_t prefix_length;
+
+    memcpy(&prefix_length, key, sizeof(prefix_length));
+    return prefix_length;
+}
+
+static int bpf_lpm_prefix_equal(const uint8_t *left,
+                                const uint8_t *right,
+                                uint32_t bit_count) {
+    uint32_t full_bytes = bit_count / 8u;
+    uint32_t remaining_bits = bit_count % 8u;
+
+    if (full_bytes && memcmp(left, right, full_bytes) != 0) return 0;
+    if (remaining_bits) {
+        uint8_t mask = (uint8_t)(0xffu << (8u - remaining_bits));
+        if ((left[full_bytes] & mask) != (right[full_bytes] & mask))
+            return 0;
+    }
+    return 1;
+}
+
+static int bpf_lpm_key_order(const void *left, const void *right) {
+    const uint8_t *left_data =
+        (const uint8_t *)left + sizeof(uint32_t);
+    const uint8_t *right_data =
+        (const uint8_t *)right + sizeof(uint32_t);
+    uint32_t left_prefix = bpf_lpm_prefix_length(left);
+    uint32_t right_prefix = bpf_lpm_prefix_length(right);
+    uint32_t common_prefix = left_prefix < right_prefix ?
+        left_prefix : right_prefix;
+
+    for (uint32_t bit = 0; bit < common_prefix; ++bit) {
+        uint8_t mask = (uint8_t)(1u << (7u - bit % 8u));
+        int left_set = (left_data[bit / 8u] & mask) != 0;
+        int right_set = (right_data[bit / 8u] & mask) != 0;
+
+        if (left_set != right_set) return left_set ? 1 : -1;
+    }
+    if (left_prefix == right_prefix) return 0;
+    return left_prefix > right_prefix ? -1 : 1;
+}
+
+static uint32_t bpf_map_lpm_ordered_index(kernel_bpf_map_t *map,
+                                          uint32_t ordinal) {
+    uint32_t previous = UINT32_MAX;
+
+    for (uint32_t position = 0; position <= ordinal; ++position) {
+        uint32_t selected = UINT32_MAX;
+
+        for (uint32_t index = 0; index < map->max_entries; ++index) {
+            uint8_t *entry = bpf_map_entry(map, index);
+
+            if (!entry[0] ||
+                (previous != UINT32_MAX &&
+                 bpf_lpm_key_order(
+                     entry + 1u,
+                     bpf_map_entry(map, previous) + 1u) <= 0))
+                continue;
+            if (selected == UINT32_MAX ||
+                bpf_lpm_key_order(
+                    entry + 1u,
+                    bpf_map_entry(map, selected) + 1u) < 0)
+                selected = index;
+        }
+        if (selected == UINT32_MAX) return UINT32_MAX;
+        previous = selected;
+    }
+    return previous;
+}
+
+static int bpf_map_lpm_find_exact(kernel_bpf_map_t *map,
+                                  const void *key,
+                                  uint32_t *found,
+                                  uint32_t *free_slot) {
+    const uint8_t *data = (const uint8_t *)key + sizeof(uint32_t);
+    uint32_t prefix_length = bpf_lpm_prefix_length(key);
+    uint32_t max_prefix = (map->key_size - sizeof(uint32_t)) * 8u;
+
+    if (prefix_length > max_prefix) return -EDGE_LINUX_EINVAL;
+
+    *found = UINT32_MAX;
+    *free_slot = UINT32_MAX;
+    for (uint32_t index = 0; index < map->max_entries; ++index) {
+        uint8_t *entry = bpf_map_entry(map, index);
+        uint32_t stored_prefix;
+
+        if (!entry[0]) {
+            if (*free_slot == UINT32_MAX) *free_slot = index;
+            continue;
+        }
+        stored_prefix = bpf_lpm_prefix_length(entry + 1u);
+        if (stored_prefix == prefix_length &&
+            bpf_lpm_prefix_equal(
+                entry + 1u + sizeof(uint32_t), data,
+                prefix_length)) {
+            *found = index;
+            break;
+        }
+    }
+    return 0;
+}
+
+static int bpf_map_lpm_lookup(kernel_bpf_map_t *map, const void *key,
+                              uint32_t *found) {
+    const uint8_t *data = (const uint8_t *)key + sizeof(uint32_t);
+    uint32_t query_prefix = bpf_lpm_prefix_length(key);
+    uint32_t max_prefix = (map->key_size - sizeof(uint32_t)) * 8u;
+    uint32_t best_prefix = 0u;
+    int have_match = 0;
+
+    if (query_prefix > max_prefix) return -EDGE_LINUX_ENOENT;
+    *found = UINT32_MAX;
+    for (uint32_t index = 0; index < map->max_entries; ++index) {
+        uint8_t *entry = bpf_map_entry(map, index);
+        uint32_t stored_prefix;
+
+        if (!entry[0]) continue;
+        stored_prefix = bpf_lpm_prefix_length(entry + 1u);
+        if (stored_prefix > query_prefix ||
+            !bpf_lpm_prefix_equal(
+                entry + 1u + sizeof(uint32_t), data,
+                stored_prefix))
+            continue;
+        if (!have_match || stored_prefix > best_prefix) {
+            have_match = 1;
+            best_prefix = stored_prefix;
+            *found = index;
+        }
+    }
+    return have_match ? 0 : -EDGE_LINUX_ENOENT;
+}
+
+static uint32_t bpf_bloom_hash(const kernel_bpf_map_t *map,
+                               const void *value, uint32_t index) {
+    const uint8_t *bytes = (const uint8_t *)value;
+    uint32_t hash = 2166136261u ^ map->bloom_seed ^
+        (index + 1u) * 0x9e3779b9u;
+
+    for (uint32_t offset = 0; offset < map->value_size; ++offset) {
+        hash ^= bytes[offset];
+        hash *= 16777619u;
+        hash ^= hash >> 13u;
+    }
+    hash ^= hash >> 16u;
+    hash *= 0x85ebca6bu;
+    hash ^= hash >> 13u;
+    return hash & map->bloom_bit_mask;
+}
+
+static int bpf_map_bloom_lookup(kernel_bpf_map_t *map,
+                                const void *value) {
+    for (uint32_t index = 0; index < map->bloom_hash_count; ++index) {
+        uint32_t bit = bpf_bloom_hash(map, value, index);
+        if (!(map->storage[bit / 8u] & (uint8_t)(1u << (bit % 8u))))
+            return -EDGE_LINUX_ENOENT;
+    }
+    return 0;
+}
+
+static void bpf_map_bloom_update(kernel_bpf_map_t *map,
+                                 const void *value) {
+    for (uint32_t index = 0; index < map->bloom_hash_count; ++index) {
+        uint32_t bit = bpf_bloom_hash(map, value, index);
+        map->storage[bit / 8u] |= (uint8_t)(1u << (bit % 8u));
+    }
+}
+
 static int bpf_map_inner_compatible_locked(
         const kernel_bpf_map_t *outer, int inner_object_id) {
     kernel_bpf_object_t *inner = bpf_object_locked(inner_object_id);
@@ -1360,7 +1579,13 @@ int kernel_bpf_map_lookup_flags(int object_id, const void *key, void *value,
         if (status == 0) status = -EDGE_LINUX_EINVAL;
         goto out;
     }
-    if (bpf_map_is_queue_stack(map)) {
+    if (bpf_map_is_bloom_filter(map)) {
+        if (key) {
+            status = -EDGE_LINUX_EINVAL;
+            goto out;
+        }
+        status = bpf_map_bloom_lookup(map, value);
+    } else if (bpf_map_is_queue_stack(map)) {
         if (key) {
             status = -EDGE_LINUX_EINVAL;
             goto out;
@@ -1383,6 +1608,10 @@ int kernel_bpf_map_lookup_flags(int object_id, const void *key, void *value,
         } else {
             bpf_map_copy_value_out(map, index, value, flags);
         }
+    } else if (bpf_map_is_lpm_trie(map)) {
+        status = bpf_map_lpm_lookup(map, key, &index);
+        if (status < 0) goto out;
+        bpf_map_copy_value_out(map, index, value, flags);
     } else {
         bpf_map_hash_find(map, key, &index, &free_slot);
         if (index == UINT32_MAX) {
@@ -1450,7 +1679,13 @@ int kernel_bpf_map_update(int object_id, const void *key, const void *value,
         status = -EDGE_LINUX_EPERM;
         goto out;
     }
-    if (bpf_map_is_queue_stack(map)) {
+    if (bpf_map_is_bloom_filter(map)) {
+        if (key || flags != KERNEL_BPF_ANY) {
+            status = -EDGE_LINUX_EINVAL;
+            goto out;
+        }
+        bpf_map_bloom_update(map, value);
+    } else if (bpf_map_is_queue_stack(map)) {
         if (key || flags == KERNEL_BPF_NOEXIST ||
             flags > KERNEL_BPF_EXIST) {
             status = -EDGE_LINUX_EINVAL;
@@ -1490,6 +1725,37 @@ int kernel_bpf_map_update(int object_id, const void *key, const void *value,
         } else {
             bpf_map_copy_value_in(map, index, value, flags);
         }
+    } else if (bpf_map_is_lpm_trie(map)) {
+        uint32_t prefix_length = bpf_lpm_prefix_length(key);
+        uint32_t max_prefix =
+            (map->key_size - sizeof(uint32_t)) * 8u;
+
+        if (prefix_length > max_prefix) {
+            status = -EDGE_LINUX_EINVAL;
+            goto out;
+        }
+        bpf_map_lpm_find_exact(map, key, &index, &free_slot);
+        replacing = index != UINT32_MAX;
+        if (replacing && flags == KERNEL_BPF_NOEXIST) {
+            status = -EDGE_LINUX_EEXIST;
+            goto out;
+        }
+        if (!replacing && flags == KERNEL_BPF_EXIST) {
+            status = -EDGE_LINUX_ENOENT;
+            goto out;
+        }
+        if (!replacing) {
+            if (free_slot == UINT32_MAX) {
+                status = -EDGE_LINUX_ENOSPC;
+                goto out;
+            }
+            index = free_slot;
+            ++map->entry_count;
+        }
+        entry = bpf_map_entry(map, index);
+        entry[0] = 1u;
+        memcpy(entry + 1u, key, map->key_size);
+        bpf_map_copy_value_in(map, index, value, flags);
     } else {
         bpf_map_hash_find(map, key, &index, &free_slot);
         replacing = index != UINT32_MAX;
@@ -1569,6 +1835,10 @@ int kernel_bpf_map_lookup_and_delete(int object_id, const void *key,
         status = bpf_map_queue_stack_get(map, value, 1);
         goto out;
     }
+    if (bpf_map_is_bloom_filter(map) || bpf_map_is_lpm_trie(map)) {
+        status = -EDGE_LINUX_EOPNOTSUPP;
+        goto out;
+    }
     if (!key) {
         status = -EDGE_LINUX_EFAULT;
         goto out;
@@ -1623,6 +1893,10 @@ int kernel_bpf_map_delete(int object_id, const void *key) {
         status = -EDGE_LINUX_EINVAL;
         goto out;
     }
+    if (bpf_map_is_bloom_filter(map)) {
+        status = -EDGE_LINUX_EOPNOTSUPP;
+        goto out;
+    }
     if (!key) {
         status = -EDGE_LINUX_EFAULT;
         goto out;
@@ -1646,7 +1920,13 @@ int kernel_bpf_map_delete(int object_id, const void *key) {
         }
         goto out;
     }
-    bpf_map_hash_find(map, key, &index, &free_slot);
+    if (bpf_map_is_lpm_trie(map)) {
+        status = bpf_map_lpm_find_exact(
+            map, key, &index, &free_slot);
+        if (status < 0) goto out;
+    } else {
+        bpf_map_hash_find(map, key, &index, &free_slot);
+    }
     if (index == UINT32_MAX) {
         status = -EDGE_LINUX_ENOENT;
         goto out;
@@ -1683,6 +1963,10 @@ int kernel_bpf_map_next_key(int object_id, const void *key, void *next_key) {
         status = -EDGE_LINUX_EINVAL;
         goto out;
     }
+    if (bpf_map_is_bloom_filter(map)) {
+        status = -EDGE_LINUX_EOPNOTSUPP;
+        goto out;
+    }
     if (bpf_map_is_array(map)) {
         if (key) {
             memcpy(&index, key, sizeof(index));
@@ -1697,7 +1981,37 @@ int kernel_bpf_map_next_key(int object_id, const void *key, void *next_key) {
         memcpy(next_key, &next, sizeof(next));
         goto out;
     }
-    if (key) bpf_map_hash_find(map, key, &index, &free_slot);
+    if (bpf_map_is_lpm_trie(map)) {
+        uint32_t selected = UINT32_MAX;
+        int exact = 0;
+
+        if (key && bpf_map_lpm_find_exact(
+                map, key, &index, &free_slot) == 0)
+            exact = index != UINT32_MAX;
+        for (uint32_t candidate = 0;
+             candidate < map->max_entries; ++candidate) {
+            uint8_t *entry = bpf_map_entry(map, candidate);
+
+            if (!entry[0] ||
+                (exact && bpf_lpm_key_order(entry + 1u, key) <= 0))
+                continue;
+            if (selected == UINT32_MAX ||
+                bpf_lpm_key_order(
+                    entry + 1u,
+                    bpf_map_entry(map, selected) + 1u) < 0)
+                selected = candidate;
+        }
+        if (selected == UINT32_MAX) {
+            status = -EDGE_LINUX_ENOENT;
+            goto out;
+        }
+        memcpy(next_key, bpf_map_entry(map, selected) + 1u,
+               map->key_size);
+        goto out;
+    }
+    if (key) {
+        bpf_map_hash_find(map, key, &index, &free_slot);
+    }
     next = index == UINT32_MAX ? 0u : index + 1u;
     while (next < map->max_entries && !bpf_map_entry(map, next)[0]) ++next;
     if (next >= map->max_entries) {
@@ -1742,7 +2056,8 @@ int kernel_bpf_map_batch_next_flags(int object_id, uint32_t *cursor,
         status = -EDGE_LINUX_EPERM;
         goto out;
     }
-    if (delete_element && !bpf_map_is_hash(map)) {
+    if (delete_element && !bpf_map_is_hash(map) &&
+        !bpf_map_is_lpm_trie(map)) {
         status = -EDGE_LINUX_EINVAL;
         goto out;
     }
@@ -1771,6 +2086,22 @@ int kernel_bpf_map_batch_next_flags(int object_id, uint32_t *cursor,
         } else {
             bpf_map_copy_value_out(map, index, value, flags);
         }
+    } else if (bpf_map_is_lpm_trie(map)) {
+        index = bpf_map_lpm_ordered_index(map, *cursor);
+        if (index == UINT32_MAX) {
+            status = -EDGE_LINUX_ENOENT;
+            goto out;
+        }
+        memcpy(key, bpf_map_entry(map, index) + 1u, map->key_size);
+        bpf_map_copy_value_out(map, index, value, flags);
+        if (delete_element) {
+            memset(bpf_map_entry(map, index), 0, map->entry_stride);
+            if (map->entry_count) --map->entry_count;
+        } else {
+            ++*cursor;
+        }
+        *has_more = map->entry_count > *cursor;
+        goto out;
     } else {
         while (index < map->max_entries && !bpf_map_entry(map, index)[0])
             ++index;
