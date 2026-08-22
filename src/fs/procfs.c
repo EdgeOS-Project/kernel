@@ -157,7 +157,8 @@ enum {
     PROC_KERNEL_VERSION,
     PROC_SYS_KERNEL_KEYS,
     PROC_ROOT_MAXKEYS,
-    PROC_MODULES
+    PROC_MODULES,
+    PROC_DISKSTATS
 };
 
 static const char *const g_namespace_names[] = {
@@ -564,6 +565,7 @@ static int proc_lookup(vfs_superblock_t *sb, vfs_inode_t *dir,
         else if (text_eq(name, "kmsg")) inode_set(out, PROC_KMSG, VFS_INODE_FILE | 0400);
         else if (text_eq(name, "ioports")) inode_set(out, PROC_IOPORTS, VFS_INODE_FILE | 0444);
         else if (text_eq(name, "modules")) inode_set(out, PROC_MODULES, VFS_INODE_FILE | 0444);
+        else if (text_eq(name, "diskstats")) inode_set(out, PROC_DISKSTATS, VFS_INODE_FILE | 0444);
         else if (text_eq(name, "net")) inode_set(out, PROC_NET_DIR, VFS_INODE_DIR | 0555);
         else if (text_eq(name, "tty")) inode_set(out, PROC_TTY, VFS_INODE_DIR | 0555);
         else if (text_eq(name, "asound") && arch_proc_sound_available())
@@ -1365,6 +1367,44 @@ static int proc_generate(uint32_t node, int32_t pid, uint32_t auxiliary,
             return -1;
     } else if (node == PROC_IOPORTS) {
         return arch_cpu_proc_ioports(buffer, capacity);
+    } else if (node == PROC_DISKSTATS) {
+        int devices = block_count();
+        for (int index = 0; index < devices; ++index) {
+            block_device_t *device = block_get(index);
+            block_io_statistics_t statistics;
+            uint32_t major;
+            uint32_t minor;
+            if (!device ||
+                block_linux_major_minor(device, &major, &minor) < 0 ||
+                block_io_statistics_snapshot(device, &statistics) < 0)
+                continue;
+            if (append_u64(buffer, capacity, &length, major) < 0 ||
+                append(buffer, capacity, &length, " ") < 0 ||
+                append_u64(buffer, capacity, &length, minor) < 0 ||
+                append(buffer, capacity, &length, " ") < 0 ||
+                append(buffer, capacity, &length, device->name) < 0 ||
+                append(buffer, capacity, &length, " ") < 0 ||
+                append_u64(buffer, capacity, &length,
+                           statistics.read_ios) < 0 ||
+                append(buffer, capacity, &length, " 0 ") < 0 ||
+                append_u64(buffer, capacity, &length,
+                           statistics.read_sectors) < 0 ||
+                append(buffer, capacity, &length, " 0 ") < 0 ||
+                append_u64(buffer, capacity, &length,
+                           statistics.write_ios) < 0 ||
+                append(buffer, capacity, &length, " 0 ") < 0 ||
+                append_u64(buffer, capacity, &length,
+                           statistics.write_sectors) < 0 ||
+                append(buffer, capacity, &length, " 0 ") < 0 ||
+                append_u64(buffer, capacity, &length,
+                           statistics.in_flight) < 0 ||
+                append(buffer, capacity, &length,
+                       " 0 0 0 0 0 0 ") < 0 ||
+                append_u64(buffer, capacity, &length,
+                           statistics.flush_ios) < 0 ||
+                append(buffer, capacity, &length, " 0\n") < 0)
+                return -1;
+        }
     } else if (node == PROC_TTY_DRIVERS) {
         kernel_console_device_t serial;
 
@@ -1929,7 +1969,7 @@ static int proc_readdir(vfs_superblock_t *sb, vfs_inode_t *dir, uint32_t index,
         "mounts", "mountinfo", "filesystems", "devices", "cmdline", "version",
         "cgroups", "uptime", "meminfo", "vmstat", "zoneinfo", "buddyinfo",
         "pagetypeinfo", "pressure", "cpuinfo", "stat", "schedstat", "loadavg", "swaps", "kmsg",
-        "ioports", "modules", "net", "tty", "sys", "self"
+        "ioports", "modules", "diskstats", "net", "tty", "sys", "self"
     };
     (void)sb;
     if (!dir || !name || !out) return -1;

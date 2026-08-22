@@ -75,6 +75,33 @@ static void block_io_policy_complete(block_device_t *device, int write,
     g_block_io_policy_complete(major, minor, write, bytes);
 }
 
+static void block_statistics_begin(block_device_t *device) {
+    if (!device) return;
+    __atomic_fetch_add(&device->io_statistics.in_flight, 1u,
+                       __ATOMIC_RELAXED);
+}
+
+static void block_statistics_complete(block_device_t *device, int write,
+                                      uint32_t sectors, int success) {
+    uint64_t sectors_512;
+    if (!device) return;
+    __atomic_fetch_sub(&device->io_statistics.in_flight, 1u,
+                       __ATOMIC_RELAXED);
+    if (!success) return;
+    sectors_512 = ((uint64_t)sectors * device->sector_size + 511u) / 512u;
+    if (write) {
+        __atomic_fetch_add(&device->io_statistics.write_ios, 1u,
+                           __ATOMIC_RELAXED);
+        __atomic_fetch_add(&device->io_statistics.write_sectors, sectors_512,
+                           __ATOMIC_RELAXED);
+    } else {
+        __atomic_fetch_add(&device->io_statistics.read_ios, 1u,
+                           __ATOMIC_RELAXED);
+        __atomic_fetch_add(&device->io_statistics.read_sectors, sectors_512,
+                           __ATOMIC_RELAXED);
+    }
+}
+
 static int block_linux_disk_index_allocate(void) {
     uint8_t used[BLOCK_MAX_DEVICES];
 
@@ -435,13 +462,16 @@ static int block_read_sectors_direct(block_device_t *dev, uint32_t lba,
         if (chunk > max_batch) chunk = max_batch;
         block_io_policy_begin(dev, 0,
                               (uint64_t)chunk * dev->sector_size);
+        block_statistics_begin(dev);
         if (dev->ops.read_sectors(dev, lba + done, chunk,
                                   dst + done * dev->sector_size) == 0) {
+            block_statistics_complete(dev, 0, chunk, 1);
             block_io_policy_complete(
                 dev, 0, (uint64_t)chunk * dev->sector_size);
             done += chunk;
             continue;
         }
+        block_statistics_complete(dev, 0, chunk, 0);
         if (chunk <= 1) return -1;
         max_batch = chunk / 2;
         if (max_batch == 0) max_batch = 1;
@@ -834,13 +864,16 @@ static int block_write_sectors_direct(block_device_t *dev, uint32_t lba,
         if (chunk > max_batch) chunk = max_batch;
         block_io_policy_begin(dev, 1,
                               (uint64_t)chunk * dev->sector_size);
+        block_statistics_begin(dev);
         if (dev->ops.write_sectors(dev, lba + done, chunk,
                                    src + done * dev->sector_size) == 0) {
+            block_statistics_complete(dev, 1, chunk, 1);
             block_io_policy_complete(
                 dev, 1, (uint64_t)chunk * dev->sector_size);
             done += chunk;
             continue;
         }
+        block_statistics_complete(dev, 1, chunk, 0);
         if (chunk <= 1) return -1;
         max_batch = chunk / 2;
         if (max_batch == 0) max_batch = 1;
@@ -885,9 +918,16 @@ int block_write_sectors(block_device_t *dev, uint32_t lba, uint32_t count, const
 }
 
 int block_flush(block_device_t *dev) {
+    int result;
     if (!dev || !dev->present) return -1;
     if (!dev->ops.flush) return 0;
-    return dev->ops.flush(dev);
+    block_statistics_begin(dev);
+    result = dev->ops.flush(dev);
+    block_statistics_complete(dev, 0, 0u, 0);
+    if (result == 0)
+        __atomic_fetch_add(&dev->io_statistics.flush_ios, 1u,
+                           __ATOMIC_RELAXED);
+    return result;
 }
 
 uint64_t block_device_size_bytes(const block_device_t *dev) {
@@ -1200,6 +1240,24 @@ int block_linux_major_minor(const block_device_t *dev, uint32_t *major, uint32_t
     }
     *major = maj;
     *minor = min;
+    return 0;
+}
+
+int block_io_statistics_snapshot(const block_device_t *dev,
+                                 block_io_statistics_t *statistics) {
+    if (!dev || !dev->present || !statistics) return -1;
+    statistics->read_ios = __atomic_load_n(
+        &dev->io_statistics.read_ios, __ATOMIC_RELAXED);
+    statistics->read_sectors = __atomic_load_n(
+        &dev->io_statistics.read_sectors, __ATOMIC_RELAXED);
+    statistics->write_ios = __atomic_load_n(
+        &dev->io_statistics.write_ios, __ATOMIC_RELAXED);
+    statistics->write_sectors = __atomic_load_n(
+        &dev->io_statistics.write_sectors, __ATOMIC_RELAXED);
+    statistics->flush_ios = __atomic_load_n(
+        &dev->io_statistics.flush_ios, __ATOMIC_RELAXED);
+    statistics->in_flight = __atomic_load_n(
+        &dev->io_statistics.in_flight, __ATOMIC_RELAXED);
     return 0;
 }
 

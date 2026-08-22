@@ -73,6 +73,7 @@ main(void)
     block_device_t *disk0;
     block_device_t *disk1;
     block_device_t *partition;
+    block_io_statistics_t statistics;
     uint32_t major;
     uint32_t minor;
     char long_name[BLOCK_NAME_MAX + 1];
@@ -148,16 +149,34 @@ main(void)
     assert(test_read_calls == 1);
     assert(test_last_read_lba == 0);
     assert(test_last_read_count == 8);
+    assert(block_io_statistics_snapshot(disk0, &statistics) == 0);
+    assert(statistics.read_ios == 1u);
+    assert(statistics.read_sectors == 8u);
+    assert(statistics.in_flight == 0u);
     for (uint32_t index = 0; index < 512u; ++index)
         assert(read_buffer[index] == 1);
 
     memset(read_buffer, 0, sizeof(read_buffer));
     assert(block_read_sectors(disk0, 2, 2, read_buffer) == 0);
     assert(test_read_calls == 1);
+    assert(block_io_statistics_snapshot(disk0, &statistics) == 0);
+    assert(statistics.read_ios == 1u);
+    assert(statistics.read_sectors == 8u);
     for (uint32_t index = 0; index < 512u; ++index) {
         assert(read_buffer[index] == 2);
         assert(read_buffer[512u + index] == 3);
     }
+
+    memset(read_buffer, 0xa5, 512u);
+    assert(block_write_sectors(disk0, 4, 1, read_buffer) == 0);
+    assert(block_io_statistics_snapshot(disk0, &statistics) == 0);
+    assert(statistics.write_ios == 1u);
+    assert(statistics.write_sectors == 1u);
+    assert(statistics.in_flight == 0u);
+
+    assert(block_flush(disk0) == 0);
+    assert(block_io_statistics_snapshot(disk0, &statistics) == 0);
+    assert(statistics.flush_ios == 1u);
     assert(block_unregister(disk0) == 0);
 
     assert(block_register("parent", 512, 128, 0, 0, operations) == 0);

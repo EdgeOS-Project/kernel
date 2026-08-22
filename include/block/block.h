@@ -19,6 +19,15 @@ enum {
 
 typedef struct block_device block_device_t;
 
+typedef struct {
+    uint64_t read_ios;
+    uint64_t read_sectors;
+    uint64_t write_ios;
+    uint64_t write_sectors;
+    uint64_t flush_ios;
+    uint32_t in_flight;
+} block_io_statistics_t;
+
 typedef void (*block_io_policy_begin_fn)(uint32_t major, uint32_t minor,
                                          int write, uint64_t bytes);
 typedef void (*block_io_policy_complete_fn)(uint32_t major, uint32_t minor,
@@ -45,6 +54,7 @@ struct block_device {
     uint32_t max_transfer_sectors;
     uint8_t cache_enabled;
     int32_t linux_disk_index;
+    block_io_statistics_t io_statistics;
 };
 
 void block_init(void);
@@ -75,6 +85,8 @@ int block_is_partition(const block_device_t *dev);
 int block_partition_parent_name(const block_device_t *dev, char *out, uint32_t max);
 int block_partition_number(const block_device_t *dev);
 int block_linux_major_minor(const block_device_t *dev, uint32_t *major, uint32_t *minor);
+int block_io_statistics_snapshot(const block_device_t *dev,
+                                 block_io_statistics_t *statistics);
 void block_set_io_policy(block_io_policy_begin_fn begin,
                          block_io_policy_complete_fn complete);
 int block_disk_name_by_index(uint32_t idx, char *out, uint32_t max);
