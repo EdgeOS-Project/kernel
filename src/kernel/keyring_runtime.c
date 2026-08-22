@@ -12,8 +12,8 @@
 #include "string.h"
 #include "sys/boottime.h"
 
-#define KERNEL_KEY_MAX 64u
-#define KERNEL_KEY_TASK_MAX 256u
+#define KERNEL_KEY_MAX 256u
+#define KERNEL_KEY_TASK_MAX 2048u
 #define KERNEL_KEY_LINK_MAX 64u
 #define KERNEL_KEY_TYPE_MAX 32u
 #define KERNEL_KEY_DESCRIPTION_MAX 4096u
@@ -119,6 +119,59 @@ static kernel_key_object_t *key_find_locked(int32_t serial) {
             g_keys[index].serial == serial)
             return &g_keys[index];
     return 0;
+}
+
+static int key_serial_has_task_reference_locked(int32_t serial) {
+    uint32_t index;
+
+    if (serial <= 0) return 0;
+    for (index = 0; index < KERNEL_KEY_TASK_MAX; ++index) {
+        const kernel_key_task_state_t *state = &g_key_tasks[index];
+        if (state->used &&
+            (state->thread_keyring == serial ||
+             state->session_keyring == serial))
+            return 1;
+    }
+    return 0;
+}
+
+static int key_serial_has_link_reference_locked(int32_t serial) {
+    uint32_t key_index;
+
+    if (serial <= 0) return 0;
+    for (key_index = 0; key_index < KERNEL_KEY_MAX; ++key_index) {
+        const kernel_key_object_t *ring = &g_keys[key_index];
+        uint32_t link_index;
+
+        if (!ring->used || ring->kind != KERNEL_KEY_KIND_KEYRING)
+            continue;
+        for (link_index = 0; link_index < ring->link_count; ++link_index)
+            if (ring->links[link_index] == serial) return 1;
+    }
+    return 0;
+}
+
+static void key_release_unreferenced_locked(int32_t serial,
+                                            uint32_t depth) {
+    int32_t children[KERNEL_KEY_LINK_MAX];
+    kernel_key_object_t *key;
+    uint32_t child_count;
+    uint32_t index;
+
+    if (depth > KERNEL_KEY_SEARCH_DEPTH_MAX ||
+        key_serial_has_task_reference_locked(serial) ||
+        key_serial_has_link_reference_locked(serial))
+        return;
+    key = key_find_locked(serial);
+    if (!key) return;
+    child_count = key->kind == KERNEL_KEY_KIND_KEYRING ?
+        key->link_count : 0u;
+    if (child_count)
+        memcpy(children, key->links,
+               child_count * sizeof(children[0]));
+    memset(key, 0, sizeof(*key));
+    for (index = 0; index < child_count; ++index)
+        key_release_unreferenced_locked(children[index], depth + 1u);
 }
 
 static int key_is_expired(const kernel_key_object_t *key) {
@@ -754,6 +807,8 @@ int64_t kernel_keyring_keyctl(
         goto out;
     }
     if (command == EDGE_LINUX_KEYCTL_JOIN_SESSION_KEYRING) {
+        int32_t previous_session;
+
         key_unlock(&g_key_lock);
         key_lock(&g_key_copy_lock);
         result = key_copy_user_string(
@@ -779,8 +834,11 @@ int64_t kernel_keyring_keyctl(
                     EDGE_LINUX_KEY_USR_READ | EDGE_LINUX_KEY_USR_LINK);
         if (!ring) result = -EDGE_LINUX_EDQUOT;
         else {
+            previous_session = state->session_keyring;
             state->session_keyring = ring->serial;
             result = ring->serial;
+            if (previous_session != ring->serial)
+                key_release_unreferenced_locked(previous_session, 0u);
         }
         key_unlock(&g_key_copy_lock);
         goto out;
@@ -1133,16 +1191,22 @@ void kernel_keyring_task_exit(int32_t global_tid, int32_t global_tgid,
     key_lock(&g_key_lock);
     for (index = 0; index < KERNEL_KEY_TASK_MAX; ++index) {
         kernel_key_task_state_t *state = &g_key_tasks[index];
+        int32_t session_keyring;
+        int32_t thread_keyring;
         if (!state->used ||
             (whole_thread_group ? state->tgid != global_tgid :
                                   state->tid != global_tid))
             continue;
+        thread_keyring = state->thread_keyring;
+        session_keyring = state->session_keyring;
         if (state->thread_keyring) {
             kernel_key_object_t *ring = key_find_locked(
                 state->thread_keyring);
             if (ring) ring->invalidated = 1u;
         }
         memset(state, 0, sizeof(*state));
+        key_release_unreferenced_locked(thread_keyring, 0u);
+        key_release_unreferenced_locked(session_keyring, 0u);
     }
     if (whole_thread_group) {
         for (index = 0; index < KERNEL_KEY_MAX; ++index) {
@@ -1160,6 +1224,13 @@ void kernel_keyring_task_exit(int32_t global_tid, int32_t global_tgid,
                 if (!*cursor && value == (uint32_t)global_tgid)
                     ring->invalidated = 1u;
             }
+        }
+    }
+    if (whole_thread_group) {
+        for (index = 0; index < KERNEL_KEY_MAX; ++index) {
+            kernel_key_object_t *ring = &g_keys[index];
+            if (ring->used && ring->invalidated)
+                key_release_unreferenced_locked(ring->serial, 0u);
         }
     }
     key_unlock(&g_key_lock);

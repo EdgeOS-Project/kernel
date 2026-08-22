@@ -150,6 +150,18 @@ int main(void) {
                &parent, &access, EDGE_LINUX_KEYCTL_READ, arguments) ==
            -EDGE_LINUX_EKEYEXPIRED);
 
+    for (int32_t index = 0; index < 512; ++index) {
+        kernel_linux_identity_t transient = identity(
+            1000 + index, 1000 + index, parent.global_tgid, 1000);
+        memset(arguments, 0, sizeof(arguments));
+        assert(kernel_keyring_keyctl(
+                   &transient, &access,
+                   EDGE_LINUX_KEYCTL_JOIN_SESSION_KEYRING,
+                   arguments) > 0);
+        kernel_keyring_task_exit(
+            transient.global_tid, transient.global_tgid, 1);
+    }
+
     kernel_keyring_task_exit(parent.global_tid, parent.global_tgid, 1);
     puts("keyring_runtime_unit: PASS");
     return 0;
