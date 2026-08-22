@@ -757,9 +757,11 @@ static void test_program(void) {
     uint32_t count = 0;
     uint32_t flags[4];
     int objects[4];
+    int links[4];
     int object;
     int deny_object;
     int replacement_object;
+    int link_object;
 
     strcpy(request.name, "allow_dev");
     object = kernel_bpf_program_create(&request, instructions);
@@ -833,6 +835,49 @@ static void test_program(void) {
     assert(count == 2u && objects[0] == deny_object &&
            objects[1] == replacement_object);
     kernel_bpf_cgroup_release(4u);
+
+    link_object = kernel_bpf_cgroup_link_create(
+        5u, object, KERNEL_BPF_CGROUP_DEVICE, 0u);
+    assert(link_object >= 0);
+    {
+        kernel_bpf_link_info_t link_info;
+        uint32_t link_user_id = 0u;
+
+        assert(kernel_bpf_link_info(link_object, &link_info) == 0);
+        assert(link_info.type == 3u && !link_info.detached &&
+               link_info.program_id == info.id &&
+               link_info.cgroup_id == 5u);
+        assert(kernel_bpf_object_user_id(
+                   link_object, &link_user_id) == 0);
+        count = 0u;
+        assert(kernel_bpf_cgroup_query_links(
+                   5u, objects, flags, links, 4u, &count, 0) == 0);
+        assert(count == 1u && objects[0] == object &&
+               links[0] == link_object &&
+               flags[0] == KERNEL_BPF_F_ALLOW_MULTI);
+        assert(kernel_bpf_link_update(
+                   link_object, deny_object, 0u, -1) == 0);
+        result = 1u;
+        assert(kernel_bpf_cgroup_device_run(
+                   5u, &context, &result) == 0 && result == 0u);
+        assert(kernel_bpf_link_detach(link_object) == 0);
+        assert(kernel_bpf_link_detach(link_object) ==
+               -EDGE_LINUX_ENOENT);
+        assert(kernel_bpf_link_info(link_object, &link_info) == 0 &&
+               link_info.detached && link_info.program_id != 0u);
+        kernel_bpf_object_release(link_object);
+        assert(kernel_bpf_object_from_user_id(
+                   KERNEL_BPF_OBJECT_LINK, link_user_id) ==
+               -EDGE_LINUX_ENOENT);
+    }
+    link_object = kernel_bpf_cgroup_link_create(
+        5u, replacement_object, KERNEL_BPF_CGROUP_DEVICE, 0u);
+    assert(link_object >= 0);
+    kernel_bpf_object_release(link_object);
+    count = 1u;
+    assert(kernel_bpf_cgroup_query_links(
+               5u, objects, flags, links, 4u, &count, 0) == 0 &&
+           count == 0u);
     kernel_bpf_object_release(deny_object);
     kernel_bpf_object_release(replacement_object);
     kernel_bpf_object_release(object);

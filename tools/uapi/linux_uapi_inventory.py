@@ -175,13 +175,14 @@ EDGEOS_ASSESSMENTS = [
             "Bloom filter maps with Linux hash selection and peek semantics",
             "BTF object loading, information queries, ID enumeration and descriptor reopening",
             "BTF-backed map creation with retained BTF object lifetime",
+            "cgroup link objects with descriptor lifetime, ID enumeration, information queries, program replacement, explicit detach and close-time detach",
         ],
         "missing": [
             "ring buffers and remaining map types",
             "remaining specialized map families and their concurrency semantics",
             "additional attachment families and program types",
-            "complete allow-override, multi-position and link semantics",
-            "BPF filesystem pinning and link objects",
+            "complete allow-override and multi-position attachment semantics",
+            "BPF filesystem pinning",
             "complete BTF type-graph validation and program integration",
             "ia32 and x32 compatibility layouts",
         ],
@@ -199,7 +200,9 @@ EDGEOS_ASSESSMENTS = [
                 "per-CPU array, hash and LRU hash layouts, CPU selection, all-CPU updates, no-common-LRU eviction domains and map-in-map element and batch operations, "
                 "descriptor reopening, map and program information, "
                 "translated instructions, SHA-256 tags and cgroup-device "
-                "program loading, attachment, detachment and query behavior"
+                "program loading, attachment, detachment and query behavior, "
+                "plus cgroup link object creation, replacement, information, "
+                "ID enumeration and lifetime"
             ),
         },
     },

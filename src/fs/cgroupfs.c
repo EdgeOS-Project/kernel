@@ -3827,12 +3827,28 @@ int cgroupfs_bpf_program_detach(vfs_superblock_t *sb,
     return status;
 }
 
-int cgroupfs_bpf_program_query(vfs_superblock_t *sb,
-                               const vfs_inode_t *inode,
-                               int effective, int *object_ids,
-                               uint32_t *attach_flags,
-                               uint32_t capacity, uint32_t *count,
-                               uint64_t *revision) {
+int cgroupfs_bpf_link_create(vfs_superblock_t *sb,
+                             const vfs_inode_t *inode,
+                             int object_id, uint32_t attach_type,
+                             uint32_t flags) {
+    uint32_t node;
+    int status;
+
+    cgroupfs_initialize();
+    cgroupfs_lock(&g_cgroupfs_lock);
+    status = cgroupfs_bpf_target_node_locked(sb, inode, &node);
+    if (status == 0)
+        status = kernel_bpf_cgroup_link_create(
+            node, object_id, attach_type, flags);
+    cgroupfs_unlock(&g_cgroupfs_lock);
+    return status;
+}
+
+static int cgroupfs_bpf_program_query_internal(
+        vfs_superblock_t *sb, const vfs_inode_t *inode,
+        int effective, int *object_ids, uint32_t *attach_flags,
+        int *link_object_ids, uint32_t capacity, uint32_t *count,
+        uint64_t *revision) {
     uint32_t chain[CGROUPFS_MAX_NODES];
     uint32_t chain_count = 0u;
     uint32_t node;
@@ -3863,9 +3879,10 @@ int cgroupfs_bpf_program_query(vfs_superblock_t *sb,
         uint64_t local_revision = 0u;
 
         node = effective ? chain[--chain_count] : chain[0];
-        status = kernel_bpf_cgroup_query(
+        status = kernel_bpf_cgroup_query_links(
             node, remaining ? object_ids + total : 0,
             remaining && attach_flags ? attach_flags + total : 0,
+            remaining && link_object_ids ? link_object_ids + total : 0,
             remaining, &local_count, &local_revision);
         if (status < 0 && status != -EDGE_LINUX_ENOSPC) return status;
         if (status == -EDGE_LINUX_ENOSPC) overflow = 1;
@@ -3883,6 +3900,29 @@ int cgroupfs_bpf_program_query(vfs_superblock_t *sb,
     }
     *count = total;
     return overflow || total > capacity ? -EDGE_LINUX_ENOSPC : 0;
+}
+
+int cgroupfs_bpf_program_query(vfs_superblock_t *sb,
+                               const vfs_inode_t *inode,
+                               int effective, int *object_ids,
+                               uint32_t *attach_flags,
+                               uint32_t capacity, uint32_t *count,
+                               uint64_t *revision) {
+    return cgroupfs_bpf_program_query_internal(
+        sb, inode, effective, object_ids, attach_flags, 0,
+        capacity, count, revision);
+}
+
+int cgroupfs_bpf_program_query_links(vfs_superblock_t *sb,
+                                     const vfs_inode_t *inode,
+                                     int effective, int *object_ids,
+                                     uint32_t *attach_flags,
+                                     int *link_object_ids,
+                                     uint32_t capacity, uint32_t *count,
+                                     uint64_t *revision) {
+    return cgroupfs_bpf_program_query_internal(
+        sb, inode, effective, object_ids, attach_flags,
+        link_object_ids, capacity, count, revision);
 }
 
 int cgroupfs_bpf_device_allowed(

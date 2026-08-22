@@ -108,6 +108,15 @@ typedef struct kernel_bpf_btf {
     uint8_t *data;
 } kernel_bpf_btf_t;
 
+typedef struct kernel_bpf_link {
+    int32_t program_object_id;
+    uint32_t cgroup_id;
+    uint32_t attach_type;
+    uint32_t attach_flags;
+    uint8_t detached;
+    uint8_t padding[3];
+} kernel_bpf_link_t;
+
 typedef struct kernel_bpf_object {
     uint8_t used;
     uint8_t kind;
@@ -118,6 +127,7 @@ typedef struct kernel_bpf_object {
         kernel_bpf_map_t map;
         kernel_bpf_program_t program;
         kernel_bpf_btf_t btf;
+        kernel_bpf_link_t link;
     } value;
 } kernel_bpf_object_t;
 
@@ -140,6 +150,7 @@ typedef struct kernel_bpf_attachment {
     uint8_t padding[3];
     uint32_t cgroup_id;
     int32_t object_id;
+    int32_t link_object_id;
     uint32_t flags;
     uint64_t sequence;
 } kernel_bpf_attachment_t;
@@ -319,6 +330,8 @@ static kernel_bpf_object_t *bpf_object_locked(int object_id) {
         return 0;
     return &g_bpf_objects[object_id];
 }
+
+static uint64_t *bpf_cgroup_revision_locked(uint32_t cgroup_id);
 
 static int bpf_allocate_object_locked(kernel_bpf_object_kind_t kind,
                                       kernel_bpf_object_t **object_out) {
@@ -881,6 +894,7 @@ void kernel_bpf_object_release(int object_id) {
     uint32_t map_stride = 0u;
     uint32_t map_key_size = 0u;
     int32_t map_btf_object = -1;
+    int32_t released_link_program = -1;
 
     bpf_lock();
     object = bpf_object_locked(object_id);
@@ -899,6 +913,25 @@ void kernel_bpf_object_release(int object_id) {
         } else if (object->kind == KERNEL_BPF_OBJECT_BTF) {
             storage = object->value.btf.data;
             pages = object->value.btf.storage_pages;
+        } else if (object->kind == KERNEL_BPF_OBJECT_LINK) {
+            released_link_program =
+                object->value.link.program_object_id;
+            if (!object->value.link.detached) {
+                for (uint32_t index = 0;
+                     index < EDGE_RUNTIME_MAX_BPF_ATTACHMENTS; ++index) {
+                    kernel_bpf_attachment_t *attachment =
+                        &g_bpf_attachments[index];
+                    if (!attachment->used ||
+                        attachment->link_object_id != object_id)
+                        continue;
+                    if (bpf_cgroup_revision_locked(
+                            attachment->cgroup_id))
+                        ++*bpf_cgroup_revision_locked(
+                            attachment->cgroup_id);
+                    memset(attachment, 0, sizeof(*attachment));
+                    break;
+                }
+            }
         }
         memset(object, 0, sizeof(*object));
     }
@@ -920,6 +953,8 @@ void kernel_bpf_object_release(int object_id) {
     }
     if (map_btf_object >= 0)
         kernel_bpf_object_release(map_btf_object);
+    if (released_link_program >= 0)
+        kernel_bpf_object_release(released_link_program);
     bpf_free_pages(storage, pages);
 }
 
@@ -1078,6 +1113,31 @@ int kernel_bpf_program_info(int object_id, kernel_bpf_program_info_t *info) {
     info->run_count = object->value.program.run_count;
     memcpy(info->tag, object->value.program.tag, sizeof(info->tag));
     memcpy(info->name, object->value.program.name, sizeof(info->name));
+    bpf_unlock();
+    return 0;
+}
+
+int kernel_bpf_link_info(int object_id, kernel_bpf_link_info_t *info) {
+    kernel_bpf_object_t *object;
+    kernel_bpf_object_t *program;
+
+    if (!info) return -EDGE_LINUX_EINVAL;
+    bpf_lock();
+    object = bpf_object_locked(object_id);
+    if (!object || object->kind != KERNEL_BPF_OBJECT_LINK) {
+        bpf_unlock();
+        return -EDGE_LINUX_EBADF;
+    }
+    memset(info, 0, sizeof(*info));
+    info->type = 3u;
+    info->id = object->user_id;
+    info->attach_type = object->value.link.attach_type;
+    info->cgroup_id = object->value.link.cgroup_id;
+    info->attach_flags = object->value.link.attach_flags;
+    info->detached = object->value.link.detached;
+    program = bpf_object_locked(object->value.link.program_object_id);
+    if (program && program->kind == KERNEL_BPF_OBJECT_PROGRAM)
+        info->program_id = program->user_id;
     bpf_unlock();
     return 0;
 }
@@ -2284,6 +2344,183 @@ static uint64_t *bpf_cgroup_revision_locked(uint32_t cgroup_id) {
     return &g_bpf_cgroup_revisions[cgroup_id];
 }
 
+static int bpf_cgroup_program_valid_locked(
+        kernel_bpf_object_t *object, uint32_t attach_type) {
+    return object && object->kind == KERNEL_BPF_OBJECT_PROGRAM &&
+           object->value.program.type ==
+               KERNEL_BPF_PROG_TYPE_CGROUP_DEVICE &&
+           attach_type == KERNEL_BPF_CGROUP_DEVICE &&
+           (object->value.program.expected_attach_type == 0u ||
+            object->value.program.expected_attach_type == attach_type);
+}
+
+int kernel_bpf_cgroup_link_create(uint32_t cgroup_id, int object_id,
+                                  uint32_t attach_type, uint32_t flags) {
+    kernel_bpf_attachment_t *free_attachment = 0;
+    kernel_bpf_object_t *program;
+    kernel_bpf_object_t *link;
+    uint64_t *revision;
+    int link_object_id;
+    int result = 0;
+
+    /* Position-relative cgroup links are added with their ordering backend. */
+    if (flags) return -EDGE_LINUX_EINVAL;
+    bpf_lock();
+    revision = bpf_cgroup_revision_locked(cgroup_id);
+    program = bpf_object_locked(object_id);
+    if (!revision ||
+        !bpf_cgroup_program_valid_locked(program, attach_type)) {
+        result = program ? -EDGE_LINUX_EINVAL : -EDGE_LINUX_EBADF;
+        goto out;
+    }
+    for (uint32_t index = 0;
+         index < EDGE_RUNTIME_MAX_BPF_ATTACHMENTS; ++index) {
+        kernel_bpf_attachment_t *attachment = &g_bpf_attachments[index];
+
+        if (!attachment->used) {
+            if (!free_attachment) free_attachment = attachment;
+            continue;
+        }
+        if (attachment->cgroup_id == cgroup_id &&
+            !(attachment->flags & KERNEL_BPF_F_ALLOW_MULTI)) {
+            result = -EDGE_LINUX_EINVAL;
+            goto out;
+        }
+    }
+    if (!free_attachment) {
+        result = -EDGE_LINUX_ENOSPC;
+        goto out;
+    }
+    if (program->references == UINT32_MAX) {
+        result = -EDGE_LINUX_EBUSY;
+        goto out;
+    }
+    link_object_id = bpf_allocate_object_locked(
+        KERNEL_BPF_OBJECT_LINK, &link);
+    if (link_object_id < 0) {
+        result = link_object_id;
+        goto out;
+    }
+    ++program->references;
+    link->value.link.program_object_id = object_id;
+    link->value.link.cgroup_id = cgroup_id;
+    link->value.link.attach_type = attach_type;
+    link->value.link.attach_flags = flags;
+    memset(free_attachment, 0, sizeof(*free_attachment));
+    free_attachment->used = 1u;
+    free_attachment->cgroup_id = cgroup_id;
+    free_attachment->object_id = object_id;
+    free_attachment->link_object_id = link_object_id;
+    free_attachment->flags = KERNEL_BPF_F_ALLOW_MULTI;
+    ++g_bpf_attachment_sequence;
+    if (!g_bpf_attachment_sequence) ++g_bpf_attachment_sequence;
+    free_attachment->sequence = g_bpf_attachment_sequence;
+    ++*revision;
+    result = link_object_id;
+out:
+    bpf_unlock();
+    return result;
+}
+
+int kernel_bpf_link_update(int link_object_id, int new_object_id,
+                           uint32_t flags, int old_object_id) {
+    kernel_bpf_object_t *link;
+    kernel_bpf_object_t *new_program;
+    kernel_bpf_object_t *old_program;
+    kernel_bpf_attachment_t *attachment = 0;
+    int released_object = -1;
+    int result = 0;
+
+    if ((flags & ~KERNEL_BPF_F_REPLACE) ||
+        ((flags & KERNEL_BPF_F_REPLACE) != 0) != (old_object_id >= 0))
+        return -EDGE_LINUX_EINVAL;
+    bpf_lock();
+    link = bpf_object_locked(link_object_id);
+    new_program = bpf_object_locked(new_object_id);
+    if (!link || link->kind != KERNEL_BPF_OBJECT_LINK) {
+        result = -EDGE_LINUX_EBADF;
+        goto out;
+    }
+    if (link->value.link.detached) {
+        result = -EDGE_LINUX_ENOENT;
+        goto out;
+    }
+    if (!bpf_cgroup_program_valid_locked(
+            new_program, link->value.link.attach_type)) {
+        result = new_program ? -EDGE_LINUX_EINVAL : -EDGE_LINUX_EBADF;
+        goto out;
+    }
+    old_program = bpf_object_locked(link->value.link.program_object_id);
+    if (!old_program ||
+        ((flags & KERNEL_BPF_F_REPLACE) &&
+         link->value.link.program_object_id != old_object_id)) {
+        result = -EDGE_LINUX_EPERM;
+        goto out;
+    }
+    if (link->value.link.program_object_id == new_object_id) {
+        result = -EDGE_LINUX_EEXIST;
+        goto out;
+    }
+    for (uint32_t index = 0;
+         index < EDGE_RUNTIME_MAX_BPF_ATTACHMENTS; ++index) {
+        if (g_bpf_attachments[index].used &&
+            g_bpf_attachments[index].link_object_id == link_object_id) {
+            attachment = &g_bpf_attachments[index];
+            break;
+        }
+    }
+    if (!attachment) {
+        result = -EDGE_LINUX_ENOENT;
+        goto out;
+    }
+    if (new_program->references == UINT32_MAX) {
+        result = -EDGE_LINUX_EBUSY;
+        goto out;
+    }
+    ++new_program->references;
+    released_object = link->value.link.program_object_id;
+    link->value.link.program_object_id = new_object_id;
+    attachment->object_id = new_object_id;
+    if (bpf_cgroup_revision_locked(link->value.link.cgroup_id))
+        ++*bpf_cgroup_revision_locked(link->value.link.cgroup_id);
+out:
+    bpf_unlock();
+    if (released_object >= 0)
+        kernel_bpf_object_release(released_object);
+    return result;
+}
+
+int kernel_bpf_link_detach(int link_object_id) {
+    kernel_bpf_object_t *link;
+    int result = -EDGE_LINUX_ENOENT;
+
+    bpf_lock();
+    link = bpf_object_locked(link_object_id);
+    if (!link || link->kind != KERNEL_BPF_OBJECT_LINK) {
+        bpf_unlock();
+        return -EDGE_LINUX_EBADF;
+    }
+    if (link->value.link.detached) {
+        bpf_unlock();
+        return -EDGE_LINUX_ENOENT;
+    }
+    for (uint32_t index = 0;
+         index < EDGE_RUNTIME_MAX_BPF_ATTACHMENTS; ++index) {
+        kernel_bpf_attachment_t *attachment = &g_bpf_attachments[index];
+        if (!attachment->used ||
+            attachment->link_object_id != link_object_id)
+            continue;
+        memset(attachment, 0, sizeof(*attachment));
+        link->value.link.detached = 1u;
+        if (bpf_cgroup_revision_locked(link->value.link.cgroup_id))
+            ++*bpf_cgroup_revision_locked(link->value.link.cgroup_id);
+        result = 0;
+        break;
+    }
+    bpf_unlock();
+    return result;
+}
+
 int kernel_bpf_cgroup_attach(uint32_t cgroup_id, int object_id,
                              uint32_t flags, int replace_object_id) {
     kernel_bpf_attachment_t *free_attachment = 0;
@@ -2343,7 +2580,7 @@ int kernel_bpf_cgroup_attach(uint32_t cgroup_id, int object_id,
     if (flags & KERNEL_BPF_F_REPLACE) {
         kernel_bpf_object_t *replaced =
             bpf_object_locked(replace_object_id);
-        if (!replacement || !replaced ||
+        if (!replacement || replacement->link_object_id >= 0 || !replaced ||
             replaced->kind != KERNEL_BPF_OBJECT_PROGRAM) {
             status = -EDGE_LINUX_ENOENT;
             goto out;
@@ -2370,6 +2607,7 @@ int kernel_bpf_cgroup_attach(uint32_t cgroup_id, int object_id,
         free_attachment->used = 1u;
         free_attachment->cgroup_id = cgroup_id;
         free_attachment->object_id = object_id;
+        free_attachment->link_object_id = -1;
         free_attachment->flags =
             flags & ~KERNEL_BPF_F_REPLACE;
         ++g_bpf_attachment_sequence;
@@ -2412,9 +2650,11 @@ int kernel_bpf_cgroup_detach(uint32_t cgroup_id, int object_id) {
     return released_count ? 0 : -EDGE_LINUX_ENOENT;
 }
 
-int kernel_bpf_cgroup_query(uint32_t cgroup_id, int *object_ids,
-                            uint32_t *attach_flags, uint32_t capacity,
-                            uint32_t *count, uint64_t *revision) {
+int kernel_bpf_cgroup_query_links(uint32_t cgroup_id, int *object_ids,
+                                  uint32_t *attach_flags,
+                                  int *link_object_ids,
+                                  uint32_t capacity, uint32_t *count,
+                                  uint64_t *revision) {
     uint64_t *stored_revision;
     uint64_t previous_sequence = 0u;
     uint32_t found = 0u;
@@ -2443,6 +2683,8 @@ int kernel_bpf_cgroup_query(uint32_t cgroup_id, int *object_ids,
         if (found < capacity) {
             object_ids[found] = attachment->object_id;
             if (attach_flags) attach_flags[found] = attachment->flags;
+            if (link_object_ids)
+                link_object_ids[found] = attachment->link_object_id;
         }
         previous_sequence = attachment->sequence;
         ++found;
@@ -2451,6 +2693,13 @@ int kernel_bpf_cgroup_query(uint32_t cgroup_id, int *object_ids,
     if (revision) *revision = *stored_revision;
     bpf_unlock();
     return found > capacity ? -EDGE_LINUX_ENOSPC : 0;
+}
+
+int kernel_bpf_cgroup_query(uint32_t cgroup_id, int *object_ids,
+                            uint32_t *attach_flags, uint32_t capacity,
+                            uint32_t *count, uint64_t *revision) {
+    return kernel_bpf_cgroup_query_links(
+        cgroup_id, object_ids, attach_flags, 0, capacity, count, revision);
 }
 
 int kernel_bpf_cgroup_device_run(

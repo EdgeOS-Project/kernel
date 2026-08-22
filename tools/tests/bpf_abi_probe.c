@@ -50,6 +50,11 @@
 #define BPF_MAP_LOOKUP_AND_DELETE_BATCH 25u
 #define BPF_MAP_UPDATE_BATCH 26u
 #define BPF_MAP_DELETE_BATCH 27u
+#define BPF_LINK_CREATE 28u
+#define BPF_LINK_UPDATE 29u
+#define BPF_LINK_GET_FD_BY_ID 30u
+#define BPF_LINK_GET_NEXT_ID 31u
+#define BPF_LINK_DETACH 34u
 
 #define BPF_MAP_TYPE_HASH 1u
 #define BPF_MAP_TYPE_ARRAY 2u
@@ -65,6 +70,7 @@
 #define BPF_MAP_TYPE_BLOOM_FILTER 30u
 #define BPF_F_NO_PREALLOC (1u << 0)
 #define BPF_F_NO_COMMON_LRU (1u << 1)
+#define BPF_F_REPLACE (1u << 2)
 #define BPF_F_ZERO_SEED (1u << 6)
 #define BPF_PROG_TYPE_CGROUP_DEVICE 15u
 #define BPF_CGROUP_DEVICE 6u
@@ -183,6 +189,24 @@ union bpf_attr {
         uint64_t elem_flags;
         uint64_t flags;
     } batch;
+    struct {
+        uint32_t prog_fd;
+        uint32_t target_fd;
+        uint32_t attach_type;
+        uint32_t flags;
+        uint32_t relative_fd;
+        uint32_t padding;
+        uint64_t expected_revision;
+    } link_create;
+    struct {
+        uint32_t link_fd;
+        uint32_t new_prog_fd;
+        uint32_t flags;
+        uint32_t old_prog_fd;
+    } link_update;
+    struct {
+        uint32_t link_fd;
+    } link_detach;
     uint8_t padding[144];
 };
 
@@ -259,6 +283,16 @@ struct bpf_btf_info {
     uint32_t kernel_btf;
 };
 
+struct bpf_link_info {
+    uint32_t type;
+    uint32_t id;
+    uint32_t prog_id;
+    uint32_t padding;
+    uint64_t cgroup_id;
+    uint32_t attach_type;
+    uint32_t padding2;
+};
+
 struct bpf_insn {
     uint8_t code;
     uint8_t registers;
@@ -274,6 +308,8 @@ _Static_assert(sizeof(struct bpf_prog_info) == 232u,
                "bpf_prog_info probe layout mismatch");
 _Static_assert(sizeof(struct bpf_btf_info) == 32u,
                "bpf_btf_info probe layout mismatch");
+_Static_assert(sizeof(struct bpf_link_info) == 32u,
+               "bpf_link_info probe layout mismatch");
 _Static_assert(sizeof(struct bpf_insn) == 8u,
                "bpf_insn probe layout mismatch");
 
@@ -1333,8 +1369,13 @@ static int test_program(void) {
     uint32_t program_id;
     uint32_t queried_id = 0u;
     uint32_t queried_flags = UINT32_MAX;
+    uint32_t queried_link_id = 0u;
+    uint32_t queried_link_flags = UINT32_MAX;
+    uint32_t replacement_program_id = 0u;
     long cgroup_descriptor;
     long descriptor;
+    long link_descriptor;
+    long replacement_descriptor = -1;
     long reopened;
     int failures = 0;
 
@@ -1464,6 +1505,152 @@ static int test_program(void) {
             BPF_PROG_QUERY, &attribute), 0);
         failures += expect("query cgroup empty count",
                            attribute.prog_query.prog_count, 0);
+
+        clear_bytes(&attribute, sizeof(attribute));
+        attribute.link_create.prog_fd = (uint32_t)descriptor;
+        attribute.link_create.target_fd =
+            (uint32_t)cgroup_descriptor;
+        attribute.link_create.attach_type = BPF_CGROUP_DEVICE;
+        link_descriptor = bpf_call(BPF_LINK_CREATE, &attribute);
+        failures += expect_true("cgroup link create", link_descriptor >= 0);
+        if (link_descriptor >= 0) {
+            struct bpf_link_info link_info;
+            uint32_t link_id;
+
+            clear_bytes(&link_info, sizeof(link_info));
+            clear_bytes(&attribute, sizeof(attribute));
+            attribute.info.bpf_fd = (uint32_t)link_descriptor;
+            attribute.info.info_len = sizeof(link_info);
+            attribute.info.info = (uint64_t)(uintptr_t)&link_info;
+            failures += expect("cgroup link info", bpf_call(
+                BPF_OBJ_GET_INFO_BY_FD, &attribute), 0);
+            failures += expect_true(
+                "cgroup link info values",
+                link_info.type == 3u && link_info.id != 0u &&
+                link_info.prog_id == program_id &&
+                link_info.attach_type == BPF_CGROUP_DEVICE);
+            link_id = link_info.id;
+
+            clear_bytes(&attribute, sizeof(attribute));
+            attribute.id.start_or_object_id = link_id - 1u;
+            failures += expect("link next id", bpf_call(
+                BPF_LINK_GET_NEXT_ID, &attribute), 0);
+            failures += expect("link next id value",
+                               attribute.id.next_id, link_id);
+            clear_bytes(&attribute, sizeof(attribute));
+            attribute.id.start_or_object_id = link_id;
+            reopened = bpf_call(BPF_LINK_GET_FD_BY_ID, &attribute);
+            failures += expect_true("link reopen", reopened >= 0);
+            if (reopened >= 0)
+                (void)raw_syscall6(
+                    SYS_close, reopened, 0, 0, 0, 0, 0);
+
+            clear_bytes(&attribute, sizeof(attribute));
+            attribute.prog_query.target_fd =
+                (uint32_t)cgroup_descriptor;
+            attribute.prog_query.attach_type = BPF_CGROUP_DEVICE;
+            attribute.prog_query.prog_ids =
+                (uint64_t)(uintptr_t)&queried_id;
+            attribute.prog_query.prog_count = 1u;
+            attribute.prog_query.link_ids =
+                (uint64_t)(uintptr_t)&queried_link_id;
+            attribute.prog_query.link_attach_flags =
+                (uint64_t)(uintptr_t)&queried_link_flags;
+            failures += expect("query cgroup link", bpf_call(
+                BPF_PROG_QUERY, &attribute), 0);
+            failures += expect_true(
+                "query cgroup link values",
+                attribute.prog_query.prog_count == 1u &&
+                queried_id == program_id && queried_link_id == link_id &&
+                queried_link_flags == 0u);
+
+            clear_bytes(&attribute, sizeof(attribute));
+            attribute.prog_load.prog_type = BPF_PROG_TYPE_CGROUP_DEVICE;
+            attribute.prog_load.insn_count = 2u;
+            attribute.prog_load.insns =
+                (uint64_t)(uintptr_t)instructions;
+            attribute.prog_load.license =
+                (uint64_t)(uintptr_t)license;
+            attribute.prog_load.prog_name[0] = 'a';
+            attribute.prog_load.prog_name[1] = 'l';
+            attribute.prog_load.prog_name[2] = 'l';
+            attribute.prog_load.prog_name[3] = 'o';
+            attribute.prog_load.prog_name[4] = 'w';
+            attribute.prog_load.prog_name[5] = '2';
+            replacement_descriptor = bpf_call(
+                BPF_PROG_LOAD, &attribute);
+            failures += expect_true(
+                "replacement program load", replacement_descriptor >= 0);
+            if (replacement_descriptor >= 0) {
+                clear_bytes(&info, sizeof(info));
+                clear_bytes(&attribute, sizeof(attribute));
+                attribute.info.bpf_fd =
+                    (uint32_t)replacement_descriptor;
+                attribute.info.info_len = sizeof(info);
+                attribute.info.info =
+                    (uint64_t)(uintptr_t)&info;
+                failures += expect("replacement program info", bpf_call(
+                    BPF_OBJ_GET_INFO_BY_FD, &attribute), 0);
+                replacement_program_id = info.id;
+
+                clear_bytes(&attribute, sizeof(attribute));
+                attribute.link_update.link_fd =
+                    (uint32_t)link_descriptor;
+                attribute.link_update.new_prog_fd =
+                    (uint32_t)replacement_descriptor;
+                failures += expect("cgroup link update", bpf_call(
+                    BPF_LINK_UPDATE, &attribute), 0);
+
+                clear_bytes(&link_info, sizeof(link_info));
+                clear_bytes(&attribute, sizeof(attribute));
+                attribute.info.bpf_fd = (uint32_t)link_descriptor;
+                attribute.info.info_len = sizeof(link_info);
+                attribute.info.info =
+                    (uint64_t)(uintptr_t)&link_info;
+                failures += expect("updated cgroup link info", bpf_call(
+                    BPF_OBJ_GET_INFO_BY_FD, &attribute), 0);
+                failures += expect(
+                    "updated cgroup link program",
+                    link_info.prog_id, replacement_program_id);
+
+                queried_id = 0u;
+                clear_bytes(&attribute, sizeof(attribute));
+                attribute.prog_query.target_fd =
+                    (uint32_t)cgroup_descriptor;
+                attribute.prog_query.attach_type = BPF_CGROUP_DEVICE;
+                attribute.prog_query.prog_ids =
+                    (uint64_t)(uintptr_t)&queried_id;
+                attribute.prog_query.prog_count = 1u;
+                failures += expect("query updated cgroup link", bpf_call(
+                    BPF_PROG_QUERY, &attribute), 0);
+                failures += expect(
+                    "query updated cgroup program",
+                    queried_id, replacement_program_id);
+
+                clear_bytes(&attribute, sizeof(attribute));
+                attribute.link_update.link_fd =
+                    (uint32_t)link_descriptor;
+                attribute.link_update.new_prog_fd = (uint32_t)descriptor;
+                attribute.link_update.flags = BPF_F_REPLACE;
+                attribute.link_update.old_prog_fd =
+                    (uint32_t)replacement_descriptor;
+                failures += expect("cgroup link guarded update", bpf_call(
+                    BPF_LINK_UPDATE, &attribute), 0);
+            }
+
+            clear_bytes(&attribute, sizeof(attribute));
+            attribute.link_detach.link_fd =
+                (uint32_t)link_descriptor;
+            failures += expect("cgroup link detach", bpf_call(
+                BPF_LINK_DETACH, &attribute), 0);
+            failures += expect("cgroup link detach repeated", bpf_call(
+                BPF_LINK_DETACH, &attribute), -ENOENT);
+            (void)raw_syscall6(
+                SYS_close, link_descriptor, 0, 0, 0, 0, 0);
+        }
+        if (replacement_descriptor >= 0)
+            (void)raw_syscall6(
+                SYS_close, replacement_descriptor, 0, 0, 0, 0, 0);
         (void)raw_syscall6(
             SYS_close, cgroup_descriptor, 0, 0, 0, 0, 0);
     }

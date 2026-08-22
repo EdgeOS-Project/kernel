@@ -58,6 +58,7 @@ typedef enum kernel_bpf_object_kind {
     KERNEL_BPF_OBJECT_MAP = 1,
     KERNEL_BPF_OBJECT_PROGRAM = 2,
     KERNEL_BPF_OBJECT_BTF = 3,
+    KERNEL_BPF_OBJECT_LINK = 4,
 } kernel_bpf_object_kind_t;
 
 typedef struct kernel_bpf_instruction {
@@ -125,6 +126,16 @@ typedef struct kernel_bpf_program_info {
     char name[KERNEL_BPF_OBJECT_NAME_LENGTH];
 } kernel_bpf_program_info_t;
 
+typedef struct kernel_bpf_link_info {
+    uint32_t type;
+    uint32_t id;
+    uint32_t program_id;
+    uint32_t attach_type;
+    uint64_t cgroup_id;
+    uint32_t attach_flags;
+    uint32_t detached;
+} kernel_bpf_link_info_t;
+
 typedef struct kernel_bpf_cgroup_device_context {
     uint32_t access_type;
     uint32_t major;
@@ -157,6 +168,7 @@ int kernel_bpf_program_copy_instructions(int object_id, void *buffer,
 int kernel_bpf_btf_info(int object_id, kernel_bpf_btf_info_t *info);
 int kernel_bpf_btf_copy(int object_id, void *buffer, uint32_t capacity,
                         uint32_t *actual_size);
+int kernel_bpf_link_info(int object_id, kernel_bpf_link_info_t *info);
 int kernel_bpf_map_lookup_flags(int object_id, const void *key, void *value,
                                 uint64_t flags);
 int kernel_bpf_map_lookup(int object_id, const void *key, void *value);
@@ -184,6 +196,16 @@ int kernel_bpf_cgroup_detach(uint32_t cgroup_id, int object_id);
 int kernel_bpf_cgroup_query(uint32_t cgroup_id, int *object_ids,
                             uint32_t *attach_flags, uint32_t capacity,
                             uint32_t *count, uint64_t *revision);
+int kernel_bpf_cgroup_query_links(uint32_t cgroup_id, int *object_ids,
+                                  uint32_t *attach_flags,
+                                  int *link_object_ids,
+                                  uint32_t capacity, uint32_t *count,
+                                  uint64_t *revision);
+int kernel_bpf_cgroup_link_create(uint32_t cgroup_id, int object_id,
+                                  uint32_t attach_type, uint32_t flags);
+int kernel_bpf_link_update(int link_object_id, int new_object_id,
+                           uint32_t flags, int old_object_id);
+int kernel_bpf_link_detach(int link_object_id);
 int kernel_bpf_cgroup_device_run(
     uint32_t cgroup_id,
     const kernel_bpf_cgroup_device_context_t *context,

@@ -30,6 +30,17 @@ int cgroupfs_bpf_program_query(vfs_superblock_t *sb,
                                uint32_t *attach_flags,
                                uint32_t capacity, uint32_t *count,
                                uint64_t *revision);
+int cgroupfs_bpf_link_create(vfs_superblock_t *sb,
+                             const vfs_inode_t *inode,
+                             int object_id, uint32_t attach_type,
+                             uint32_t flags);
+int cgroupfs_bpf_program_query_links(vfs_superblock_t *sb,
+                                     const vfs_inode_t *inode,
+                                     int effective, int *object_ids,
+                                     uint32_t *attach_flags,
+                                     int *link_object_ids,
+                                     uint32_t capacity, uint32_t *count,
+                                     uint64_t *revision);
 int cgroupfs_bpf_device_allowed(
     uint32_t cgroup_id,
     const kernel_bpf_cgroup_device_context_t *context);
