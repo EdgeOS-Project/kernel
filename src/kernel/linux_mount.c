@@ -795,12 +795,14 @@ static int64_t edge_linux_mount_locked(
     if (!filesystem || !filesystem[0]) filesystem = "ext4";
 
     if (edge_linux_mount_is(filesystem, "proc")) {
-        if (vfs_mount_exists(target, "proc", 0)) return 0;
+        if (vfs_mount_exists(target, "proc", 0))
+            return -EDGE_LINUX_EBUSY;
         status = procfs_mount(source && source[0] ? source : "proc", target);
         return edge_linux_mount_finish(target, vfs_flags, status);
     }
     if (edge_linux_mount_is(filesystem, "sysfs")) {
-        if (vfs_mount_exists(target, "sysfs", 0)) return 0;
+        if (vfs_mount_exists(target, "sysfs", 0))
+            return -EDGE_LINUX_EBUSY;
         status = sysfs_mount(source && source[0] ? source : "sysfs", target);
         return edge_linux_mount_finish(target, vfs_flags, status);
     }

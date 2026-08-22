@@ -4,6 +4,6 @@
 #ifndef EDGEOS_KERNEL_BOOT_FILESYSTEMS_H
 #define EDGEOS_KERNEL_BOOT_FILESYSTEMS_H
 
-int kernel_boot_mount_sysfs(void);
+int kernel_boot_mount_api_filesystems(void);
 
 #endif /* EDGEOS_KERNEL_BOOT_FILESYSTEMS_H */

@@ -608,11 +608,9 @@ void kmain(uint32_t magic, void *mb_info) {
     vfs_mkdir("/var");
     vfs_mkdir("/var/run");
     vfs_mkdir("/run");
-    vfs_mkdir("/proc");
     ensure_default_dev_entries();
-    (void)vfs_mount("proc", "/proc", "proc");
-    if (kernel_boot_mount_sysfs() < 0)
-        printf("[fs] failed to mount sysfs\n");
+    if (kernel_boot_mount_api_filesystems() < 0)
+        printf("[fs] failed to mount API filesystems\n");
     if (vfs_read_file("/etc/hostname", (char[8]){0}, 1) < 0) {
         (void)vfs_write_file("/etc/hostname", "edgeos\n", 7);
     }

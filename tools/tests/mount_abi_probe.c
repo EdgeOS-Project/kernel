@@ -44,6 +44,7 @@
 #define AT_EMPTY_PATH 0x1000u
 #define AT_RECURSIVE 0x8000u
 #define E2BIG 7
+#define EBUSY 16
 #define EEXIST 17
 #define EFAULT 14
 #define EINVAL 22
@@ -360,6 +361,10 @@ static int run_tests(void) {
     failures += expect_result("unknown mount flag",
         mount_call("tmpfs", tmpfs_target, "tmpfs", 1ul << 63, 0),
         -EINVAL);
+    failures += expect_result("duplicate proc mount",
+        mount_call("proc", "/proc", "proc", 0, 0), -EBUSY);
+    failures += expect_result("duplicate sysfs mount",
+        mount_call("sysfs", "/sys", "sysfs", 0, 0), -EBUSY);
     failures += expect_result("tmpfs mount",
         mount_call("tmpfs", tmpfs_target, "tmpfs", 0, "mode=0755"), 0);
     failures += expect_result("private propagation",

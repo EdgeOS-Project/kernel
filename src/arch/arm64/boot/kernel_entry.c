@@ -193,8 +193,8 @@ void edgeos_arm64_el1_main(edgeos_arm64_bootinfo_t *bootinfo) {
         bootlog_stage("ARM64: Root filesystem mounted");
     }
     (void)kernel_boot_log_start();
-    if (kernel_boot_mount_sysfs() < 0) {
-        arm64_serial_puts("arm64: failed to mount sysfs device model; halted\n");
+    if (kernel_boot_mount_api_filesystems() < 0) {
+        arm64_serial_puts("arm64: failed to mount API filesystems; halted\n");
         for (;;) __asm__ __volatile__("wfe");
     }
     {

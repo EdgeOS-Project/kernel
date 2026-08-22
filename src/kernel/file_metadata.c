@@ -57,13 +57,18 @@ void kernel_file_metadata_from_inode(vfs_superblock_t *superblock,
     metadata->change_time.seconds = inode->ctime;
     metadata->attributes_mask |= EDGE_LINUX_STATX_ATTR_IMMUTABLE |
                                  EDGE_LINUX_STATX_ATTR_APPEND |
-                                 EDGE_LINUX_STATX_ATTR_NODUMP;
+                                 EDGE_LINUX_STATX_ATTR_NODUMP |
+                                 EDGE_LINUX_STATX_ATTR_MOUNT_ROOT;
     if (inode->metadata_flags & VFS_FILE_XFLAG_IMMUTABLE)
         metadata->attributes |= EDGE_LINUX_STATX_ATTR_IMMUTABLE;
     if (inode->metadata_flags & VFS_FILE_XFLAG_APPEND)
         metadata->attributes |= EDGE_LINUX_STATX_ATTR_APPEND;
     if (inode->metadata_flags & VFS_FILE_XFLAG_NODUMP)
         metadata->attributes |= EDGE_LINUX_STATX_ATTR_NODUMP;
+    if (superblock &&
+        vfs_inode_same_object(superblock, inode,
+                              superblock, &superblock->root))
+        metadata->attributes |= EDGE_LINUX_STATX_ATTR_MOUNT_ROOT;
     kernel_file_metadata_set_mount_id(
         metadata, superblock ? superblock->mount_id : 0u);
 }

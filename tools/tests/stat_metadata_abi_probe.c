@@ -27,6 +27,10 @@
 #define STATX_MNT_ID 0x00001000U
 #endif
 
+#ifndef STATX_ATTR_MOUNT_ROOT
+#define STATX_ATTR_MOUNT_ROOT 0x00002000ULL
+#endif
+
 #ifndef STATX__RESERVED
 #define STATX__RESERVED 0x80000000U
 #endif
@@ -222,6 +226,31 @@ static void test_validation(void) {
         close(descriptor);
         unlink("/tmp/edgeos-stat-not-directory");
     }
+}
+
+static void test_mount_root_attribute(const char *regular_file) {
+    struct statx root;
+    struct statx proc;
+    struct statx regular;
+
+    memset(&root, 0, sizeof(root));
+    memset(&proc, 0, sizeof(proc));
+    memset(&regular, 0, sizeof(regular));
+    check_true("statx_root_mount_attribute",
+               call_statx(AT_FDCWD, "/", AT_STATX_DONT_SYNC,
+                          STATX_BASIC_STATS, &root) == 0 &&
+               (root.stx_attributes_mask & STATX_ATTR_MOUNT_ROOT) != 0 &&
+               (root.stx_attributes & STATX_ATTR_MOUNT_ROOT) != 0);
+    check_true("statx_proc_mount_attribute",
+               call_statx(AT_FDCWD, "/proc", AT_STATX_DONT_SYNC,
+                          STATX_BASIC_STATS, &proc) == 0 &&
+               (proc.stx_attributes_mask & STATX_ATTR_MOUNT_ROOT) != 0 &&
+               (proc.stx_attributes & STATX_ATTR_MOUNT_ROOT) != 0);
+    check_true("statx_regular_not_mount_root",
+               call_statx(AT_FDCWD, regular_file, AT_STATX_DONT_SYNC,
+                          STATX_BASIC_STATS, &regular) == 0 &&
+               (regular.stx_attributes_mask & STATX_ATTR_MOUNT_ROOT) != 0 &&
+               (regular.stx_attributes & STATX_ATTR_MOUNT_ROOT) == 0);
 }
 
 static void test_terminal_device(const char *path) {
@@ -490,6 +519,7 @@ int main(int argc, char **argv) {
 
     test_regular_and_symlink(directory, file, link);
     test_validation();
+    test_mount_root_attribute(file);
     test_anonymous_descriptors();
     if (argc > 1) test_terminal_device(argv[1]);
 
