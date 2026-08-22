@@ -82,6 +82,7 @@ EDGE_SHARED_SRCS := \
 	$(SRC)/kernel/input_device.c \
 	$(SRC)/kernel/itimer_runtime.c \
 	$(SRC)/kernel/linux_abi.c \
+	$(SRC)/kernel/linux_input.c \
 	$(SRC)/kernel/linux_vdso.c \
 	$(SRC)/kernel/linux_vdso_image.c \
 	$(SRC)/kernel/linux_mount.c \

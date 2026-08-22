@@ -203,6 +203,9 @@ static void input_event_push(int event_id, uint16_t type, uint16_t code, int32_t
     ev.type = type;
     ev.code = code;
     ev.value = value;
+    if (event_id >= 0)
+        input_device_event_state_update((uint32_t)event_id, type, code,
+                                        value);
     /*
      * Evdev readers must never observe a partially queued struct input_event.
      * Xorg/libinput poll the fd and then read fixed-size records; exposing the

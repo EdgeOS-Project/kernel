@@ -13,12 +13,18 @@
 #define LINUX_EV_REL 2u
 #define LINUX_EV_ABS 3u
 #define LINUX_EV_MSC 4u
+#define LINUX_EV_SW 5u
+#define LINUX_EV_LED 17u
+#define LINUX_EV_SND 18u
 #define LINUX_REL_X 0u
 #define LINUX_REL_Y 1u
 #define LINUX_REL_WHEEL 8u
 #define LINUX_BTN_LEFT 0x110u
 #define LINUX_BTN_RIGHT 0x111u
 #define LINUX_BTN_MIDDLE 0x112u
+#define LINUX_ABS_MT_SLOT 0x2fu
+#define LINUX_ABS_MT_FIRST 0x30u
+#define LINUX_ABS_MT_LAST 0x3du
 
 typedef struct {
     uint8_t present;
@@ -33,7 +39,15 @@ typedef struct {
     uint8_t key_bits[EDGE_INPUT_BITMAP_BYTES];
     uint8_t relative_bits[EDGE_INPUT_BITMAP_BYTES];
     uint8_t absolute_bits[EDGE_INPUT_BITMAP_BYTES];
+    uint8_t key_state[EDGE_INPUT_BITMAP_BYTES];
+    uint8_t led_state[EDGE_INPUT_BITMAP_BYTES];
+    uint8_t sound_state[EDGE_INPUT_BITMAP_BYTES];
+    uint8_t switch_state[EDGE_INPUT_BITMAP_BYTES];
     input_absinfo_t absolute[EDGE_INPUT_ABS_AXES];
+    uint16_t keycode_map[EDGE_INPUT_KEYCODE_SLOTS];
+    int32_t mt_slots[EDGE_INPUT_MT_SLOTS][EDGE_INPUT_MT_AXES];
+    uint32_t mt_slot_count;
+    uint32_t current_mt_slot;
     uint32_t repeat_delay_ms;
     uint32_t repeat_period_ms;
 } input_registry_entry_t;
@@ -229,6 +243,20 @@ int input_device_register(uint32_t event_index,
            sizeof(entry->absolute));
     entry->repeat_delay_ms = description->repeat_delay_ms;
     entry->repeat_period_ms = description->repeat_period_ms;
+    for (uint32_t scancode = 0; scancode < EDGE_INPUT_KEYCODE_SLOTS;
+         ++scancode) {
+        if (description->key_bits[scancode >> 3] &
+            (uint8_t)(1u << (scancode & 7u)))
+            entry->keycode_map[scancode] = (uint16_t)scancode;
+    }
+    if (description->absolute_bits[LINUX_ABS_MT_SLOT >> 3] &
+        (uint8_t)(1u << (LINUX_ABS_MT_SLOT & 7u))) {
+        int32_t slots = description->absolute[LINUX_ABS_MT_SLOT].maximum + 1;
+        if (slots < 1) slots = 1;
+        if (slots > (int32_t)EDGE_INPUT_MT_SLOTS)
+            slots = (int32_t)EDGE_INPUT_MT_SLOTS;
+        entry->mt_slot_count = (uint32_t)slots;
+    }
     if (!entry->repeat_delay_ms) entry->repeat_delay_ms = 250u;
     if (!entry->repeat_period_ms) entry->repeat_period_ms = 33u;
 
@@ -350,6 +378,26 @@ int input_absinfo(uint32_t device, uint32_t axis,
     return 0;
 }
 
+int input_absinfo_set(uint32_t device, uint32_t axis,
+                      const input_absinfo_t *info) {
+    if (!input_device_present(device) || !info ||
+        axis >= EDGE_INPUT_ABS_AXES ||
+        !(g_input_devices[device].absolute_bits[axis >> 3] &
+          (1u << (axis & 7u))))
+        return -1;
+    g_input_devices[device].absolute[axis] = *info;
+    if (axis == LINUX_ABS_MT_SLOT) {
+        int32_t slots = info->maximum + 1;
+        if (slots < 1) slots = 1;
+        if (slots > (int32_t)EDGE_INPUT_MT_SLOTS)
+            slots = (int32_t)EDGE_INPUT_MT_SLOTS;
+        g_input_devices[device].mt_slot_count = (uint32_t)slots;
+        if (g_input_devices[device].current_mt_slot >= (uint32_t)slots)
+            g_input_devices[device].current_mt_slot = 0;
+    }
+    return 0;
+}
+
 int input_repeat_get(uint32_t device, uint32_t values[2]) {
     if (!input_device_present(device) || !values) return -1;
     values[0] = g_input_devices[device].repeat_delay_ms;
@@ -363,5 +411,91 @@ int input_repeat_set(uint32_t device, const uint32_t values[2]) {
         return -1;
     g_input_devices[device].repeat_delay_ms = values[0];
     g_input_devices[device].repeat_period_ms = values[1];
+    return 0;
+}
+
+uint32_t input_state_bits(uint32_t device, uint32_t type,
+                          uint8_t *out, uint32_t length) {
+    const uint8_t *source = 0;
+    if (!input_device_present(device) || !out || !length) return 0;
+    if (type == LINUX_EV_KEY) source = g_input_devices[device].key_state;
+    else if (type == LINUX_EV_LED) source = g_input_devices[device].led_state;
+    else if (type == LINUX_EV_SND)
+        source = g_input_devices[device].sound_state;
+    else if (type == LINUX_EV_SW)
+        source = g_input_devices[device].switch_state;
+    if (!source) return 0;
+    if (length > EDGE_INPUT_BITMAP_BYTES) length = EDGE_INPUT_BITMAP_BYTES;
+    memcpy(out, source, length);
+    return length;
+}
+
+static void input_state_bit_update(uint8_t *bitmap, uint32_t code,
+                                   int32_t value) {
+    uint8_t mask;
+    if (!bitmap || code >= EDGE_INPUT_BITMAP_BYTES * 8u) return;
+    mask = (uint8_t)(1u << (code & 7u));
+    if (value) bitmap[code >> 3] |= mask;
+    else bitmap[code >> 3] &= (uint8_t)~mask;
+}
+
+void input_device_event_state_update(uint32_t device, uint16_t type,
+                                     uint16_t code, int32_t value) {
+    input_registry_entry_t *entry;
+    if (!input_device_present(device)) return;
+    entry = &g_input_devices[device];
+    if (type == LINUX_EV_KEY)
+        input_state_bit_update(entry->key_state, code, value);
+    else if (type == LINUX_EV_LED)
+        input_state_bit_update(entry->led_state, code, value);
+    else if (type == LINUX_EV_SND)
+        input_state_bit_update(entry->sound_state, code, value);
+    else if (type == LINUX_EV_SW)
+        input_state_bit_update(entry->switch_state, code, value);
+    else if (type == LINUX_EV_ABS && code < EDGE_INPUT_ABS_AXES) {
+        entry->absolute[code].value = value;
+        if (code == LINUX_ABS_MT_SLOT) {
+            if (value >= 0 && (uint32_t)value < entry->mt_slot_count)
+                entry->current_mt_slot = (uint32_t)value;
+        } else if (code >= LINUX_ABS_MT_FIRST &&
+                   code <= LINUX_ABS_MT_LAST && entry->mt_slot_count) {
+            entry->mt_slots[entry->current_mt_slot]
+                           [code - LINUX_ABS_MT_FIRST] = value;
+        }
+    }
+}
+
+int input_keycode_get(uint32_t device, uint32_t scancode,
+                      uint32_t *keycode) {
+    if (!input_device_present(device) || !keycode ||
+        scancode >= EDGE_INPUT_KEYCODE_SLOTS ||
+        !g_input_devices[device].keycode_map[scancode])
+        return -1;
+    *keycode = g_input_devices[device].keycode_map[scancode];
+    return 0;
+}
+
+int input_keycode_set(uint32_t device, uint32_t scancode,
+                      uint32_t keycode) {
+    if (!input_device_present(device) ||
+        scancode >= EDGE_INPUT_KEYCODE_SLOTS || keycode > 0x2ffu)
+        return -1;
+    g_input_devices[device].keycode_map[scancode] = (uint16_t)keycode;
+    return 0;
+}
+
+int input_mt_slots(uint32_t device, uint32_t axis, int32_t *values,
+                   uint32_t capacity, uint32_t *count_out) {
+    input_registry_entry_t *entry;
+    uint32_t count;
+    if (!input_device_present(device) || !values || !count_out ||
+        axis < LINUX_ABS_MT_FIRST || axis > LINUX_ABS_MT_LAST)
+        return -1;
+    entry = &g_input_devices[device];
+    if (!entry->mt_slot_count) return -1;
+    count = entry->mt_slot_count < capacity ? entry->mt_slot_count : capacity;
+    for (uint32_t slot = 0; slot < count; ++slot)
+        values[slot] = entry->mt_slots[slot][axis - LINUX_ABS_MT_FIRST];
+    *count_out = count;
     return 0;
 }

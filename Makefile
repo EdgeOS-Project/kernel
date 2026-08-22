@@ -4429,6 +4429,17 @@ fanotify-runtime-unit: tools/tests/fanotify_runtime_unit.c \
 		-o $(OUT)/tests/fanotify_runtime_unit
 	@$(OUT)/tests/fanotify_runtime_unit
 
+.PHONY: linux-input-unit
+linux-input-unit: tools/tests/linux_input_unit.c \
+		$(SRC)/kernel/linux_input.c $(SRC)/kernel/input_device.c \
+		include/kernel/linux_input.h include/kernel/input_device.h
+	@mkdir -p $(OUT)/tests
+	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fno-builtin \
+		-iquote $(INC) tools/tests/linux_input_unit.c \
+		$(SRC)/kernel/linux_input.c $(SRC)/kernel/input_device.c \
+		-o $(OUT)/tests/linux_input_unit
+	@$(OUT)/tests/linux_input_unit
+
 .PHONY: userfaultfd-runtime-unit
 userfaultfd-runtime-unit: tools/tests/userfaultfd_runtime_unit.c \
 		$(SRC)/kernel/userfaultfd.c include/kernel/userfaultfd.h

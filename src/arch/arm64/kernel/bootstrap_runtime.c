@@ -54,10 +54,12 @@
 #include "kernel/inotify.h"
 #include "kernel/io_buffer.h"
 #include "kernel/inotify_runtime.h"
+#include "kernel/input_device.h"
 #include "kernel/itimer_runtime.h"
 #include "kernel/io_runtime.h"
 #include "kernel/ioctl_runtime.h"
 #include "kernel/linux_mount.h"
+#include "kernel/linux_input.h"
 #include "kernel/linux_fiemap.h"
 #include "kernel/mount_api.h"
 #include "kernel/linux_genetlink.h"
@@ -34705,6 +34707,38 @@ static int64_t arm64_ioctl_execute(
             uint8_t data[128];
             if (!a2 && number != 0x90u) return -LINUX_EFAULT;
             bytes_zero(data, sizeof(data));
+            {
+                uint8_t input[EDGE_LINUX_INPUT_IOCTL_BUFFER_SIZE];
+                edge_linux_input_ioctl_result_t ioctl_result;
+                uint32_t input_length =
+                    edge_linux_input_ioctl_input_size(command);
+                int status;
+
+                bytes_zero(input, sizeof(input));
+                if (input_length > sizeof(input)) return -LINUX_EINVAL;
+                if (input_length &&
+                    arch_copy_from_user(task->ttbr0, input, a2,
+                                        input_length) < 0)
+                    return -LINUX_EFAULT;
+                status = edge_linux_input_ioctl_execute(
+                    fd->event_index, input_device_role(fd->event_index),
+                    command, input, input_length, data, sizeof(data),
+                    &ioctl_result);
+                if (status != -EDGE_LINUX_ENOTTY) {
+                    if (status < 0) return status;
+                    if (ioctl_result.output_length &&
+                        arch_copy_to_user(task->ttbr0, a2, data,
+                                          ioctl_result.output_length) < 0)
+                        return -LINUX_EFAULT;
+                    if (ioctl_result.action ==
+                        EDGE_LINUX_INPUT_ACTION_SET_CLOCK)
+                        return kernel_file_description_input_clock_store(
+                            arm64_description_locator(
+                                fd->open_description_id),
+                            ioctl_result.action_value);
+                    return ioctl_result.return_value;
+                }
+            }
             if (command == 0x80044501u) {
                 uint32_t version = 0x00010001u;
                 return arch_copy_to_user(task->ttbr0, a2, &version,

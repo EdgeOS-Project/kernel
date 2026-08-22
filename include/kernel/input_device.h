@@ -11,6 +11,9 @@
 #define EDGE_INPUT_DEVICE_MAX 16u
 #define EDGE_INPUT_BITMAP_BYTES 128u
 #define EDGE_INPUT_ABS_AXES 64u
+#define EDGE_INPUT_KEYCODE_SLOTS 256u
+#define EDGE_INPUT_MT_SLOTS 32u
+#define EDGE_INPUT_MT_AXES 14u
 
 #define EDGE_INPUT_ROLE_UNKNOWN 0u
 #define EDGE_INPUT_ROLE_KEYBOARD 1u
@@ -80,7 +83,19 @@ uint32_t input_properties(uint32_t device, uint8_t *out,
                           uint32_t length);
 int input_absinfo(uint32_t device, uint32_t axis,
                   input_absinfo_t *out);
+int input_absinfo_set(uint32_t device, uint32_t axis,
+                      const input_absinfo_t *info);
 int input_repeat_get(uint32_t device, uint32_t values[2]);
 int input_repeat_set(uint32_t device, const uint32_t values[2]);
+uint32_t input_state_bits(uint32_t device, uint32_t type,
+                          uint8_t *out, uint32_t length);
+void input_device_event_state_update(uint32_t device, uint16_t type,
+                                     uint16_t code, int32_t value);
+int input_keycode_get(uint32_t device, uint32_t scancode,
+                      uint32_t *keycode);
+int input_keycode_set(uint32_t device, uint32_t scancode,
+                      uint32_t keycode);
+int input_mt_slots(uint32_t device, uint32_t axis, int32_t *values,
+                   uint32_t capacity, uint32_t *count_out);
 
 #endif

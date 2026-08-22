@@ -1,6 +1,7 @@
 #include "block/device_mapper.h"
 #include "block/loop.h"
 #include "kernel/input_device.h"
+#include "kernel/linux_input.h"
 #include "kernel/linux_fiemap.h"
 
 static int x86_alsa_copy_from_user(
@@ -5967,6 +5968,39 @@ static uint64_t x86_ioctl_execute_raw(uint64_t fd_u, uint64_t cmd_u,
             avail = path_is_mouse_input(e->path) ? keyboard_mouse_pending() : keyboard_event_pending(event_id);
             if (copy_to_user(arg_u, &avail, sizeof(avail)) < 0) return (uint64_t)-EFAULT;
             return 0;
+        }
+        {
+            uint8_t input[EDGE_LINUX_INPUT_IOCTL_BUFFER_SIZE];
+            uint8_t output[EDGE_LINUX_INPUT_IOCTL_BUFFER_SIZE];
+            uint32_t input_length =
+                edge_linux_input_ioctl_input_size((uint32_t)cmd);
+            edge_linux_input_ioctl_result_t ioctl_result;
+            int status;
+
+            memset(input, 0, sizeof(input));
+            memset(output, 0, sizeof(output));
+            if (input_length > sizeof(input)) return (uint64_t)-EINVAL;
+            if (input_length &&
+                (!arg_u || copy_from_user(input, arg_u, input_length) < 0))
+                return (uint64_t)-EFAULT;
+            status = edge_linux_input_ioctl_execute(
+                event_id >= 0 ? (uint32_t)event_id : UINT32_MAX,
+                event_pointer ? EDGE_INPUT_ROLE_POINTER :
+                                EDGE_INPUT_ROLE_KEYBOARD,
+                (uint32_t)cmd, input, input_length, output, sizeof(output),
+                &ioctl_result);
+            if (status != -EDGE_LINUX_ENOTTY) {
+                if (status < 0) return (uint64_t)(int64_t)status;
+                if (ioctl_result.output_length &&
+                    (!arg_u || copy_to_user(arg_u, output,
+                              ioctl_result.output_length) < 0))
+                    return (uint64_t)-EFAULT;
+                if (ioctl_result.action ==
+                    EDGE_LINUX_INPUT_ACTION_SET_CLOCK)
+                    fd_description_set_input_clock(
+                        e, ioctl_result.action_value);
+                return (uint64_t)ioctl_result.return_value;
+            }
         }
         if (cmd == LINUX_EVIOCGVERSION) {
             int version = 0x010001;
