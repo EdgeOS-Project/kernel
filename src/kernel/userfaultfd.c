@@ -26,6 +26,7 @@ typedef struct kernel_userfaultfd_context {
     uint32_t flags;
     int32_t owner_pid;
     uint64_t address_space;
+    uint64_t features;
     uint64_t readiness_sequence;
     uint64_t next_ticket;
 } kernel_userfaultfd_context_t;
@@ -50,6 +51,7 @@ typedef struct kernel_userfaultfd_event {
     uint64_t page;
     uint64_t flags;
     uint64_t ticket;
+    uint32_t thread_id;
 } kernel_userfaultfd_event_t;
 
 static kernel_userfaultfd_context_t
@@ -232,19 +234,22 @@ int kernel_userfaultfd_query(int context_id,
 int kernel_userfaultfd_negotiate(int context_id,
                                  kernel_uffdio_api_t *api) {
     kernel_userfaultfd_context_t *context;
+    uint64_t requested_features;
     int result = 0;
     if (!api) return -EDGE_LINUX_EINVAL;
+    requested_features = api->features;
     userfaultfd_lock();
     context = userfaultfd_context_locked(context_id);
     if (!context) {
         result = -EDGE_LINUX_EBADF;
     } else if (context->api_ready || api->api != KERNEL_UFFD_API ||
-               api->features) {
+               (requested_features & ~KERNEL_UFFD_SUPPORTED_FEATURES)) {
         memset(api, 0, sizeof(*api));
         result = -EDGE_LINUX_EINVAL;
     } else {
         context->api_ready = 1;
-        api->features = 0;
+        context->features = requested_features;
+        api->features = KERNEL_UFFD_SUPPORTED_FEATURES;
         api->ioctls = KERNEL_UFFD_API_IOCTLS;
     }
     userfaultfd_unlock();
@@ -476,7 +481,7 @@ int kernel_userfaultfd_resolve(int context_id,
 }
 
 int kernel_userfaultfd_missing_fault(
-    uint64_t address_space, uint64_t address, int write,
+    uint64_t address_space, uint64_t address, int write, uint32_t thread_id,
     int *context_id, uint64_t *ticket) {
     kernel_userfaultfd_context_t *context = 0;
     uint64_t page = address & ~(uint64_t)(KERNEL_UFFD_PAGE_SIZE - 1u);
@@ -524,6 +529,8 @@ int kernel_userfaultfd_missing_fault(
     g_userfaultfd_events[event_index].flags =
         write ? KERNEL_UFFD_PAGEFAULT_FLAG_WRITE : 0u;
     g_userfaultfd_events[event_index].ticket = context->next_ticket++;
+    if (context->features & KERNEL_UFFD_FEATURE_THREAD_ID)
+        g_userfaultfd_events[event_index].thread_id = thread_id;
     if (!context->next_ticket) context->next_ticket = 1u;
     g_userfaultfd_events[event_index].queued = 1;
     if (context->tail == KERNEL_UFFD_INDEX_NONE)
@@ -611,6 +618,7 @@ int64_t kernel_userfaultfd_read(
     message.event = KERNEL_UFFD_EVENT_PAGEFAULT;
     message.flags = g_userfaultfd_events[event_index].flags;
     message.address = g_userfaultfd_events[event_index].page;
+    message.thread_id = g_userfaultfd_events[event_index].thread_id;
     userfaultfd_remove_queued_event_locked(context, event_index);
     userfaultfd_unlock();
     if (copy_record(copy_context, 0, &message, sizeof(message)) < 0) {

@@ -1012,6 +1012,7 @@ void isr_exception_handler(REGISTERS *reg) {
                     arch_mm_current_address_space(), cr2)) {
                 userfault_status = kernel_userfaultfd_missing_fault(
                     arch_mm_current_address_space(), cr2, (int)wr,
+                    (uint32_t)t->pid,
                     &userfault_context, &userfault_ticket);
             }
             if (userfault_status > 0) {

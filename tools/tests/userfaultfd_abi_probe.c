@@ -42,6 +42,7 @@
 #define O_CLOEXEC 0x80000
 #define UFFD_USER_MODE_ONLY 0x1
 #define UFFD_API 0xAAu
+#define UFFD_FEATURE_THREAD_ID (1ULL << 8)
 #define UFFDIO_REGISTER_MODE_MISSING 0x1u
 #define UFFDIO_API 0xc018aa3fu
 #define UFFDIO_REGISTER 0xc020aa00u
@@ -228,7 +229,10 @@ static int expect_result(const char *name, long actual, long expected) {
 }
 
 void _start(void) {
-    struct uffdio_api api = { .api = UFFD_API };
+    struct uffdio_api api = {
+        .api = UFFD_API,
+        .features = UFFD_FEATURE_THREAD_ID,
+    };
     struct uffdio_register registration;
     struct uffdio_copy copy;
     struct uffdio_zeropage zero;
@@ -268,7 +272,8 @@ void _start(void) {
     failures += expect_result(
         "api", raw_syscall6(
             SYS_ioctl, descriptor, UFFDIO_API, (long)&api, 0, 0, 0), 0);
-    if (api.api != UFFD_API || !api.ioctls) {
+    if (api.api != UFFD_API || !api.ioctls ||
+        !(api.features & UFFD_FEATURE_THREAD_ID)) {
         print_text("FAIL api-result\n");
         ++failures;
     }
@@ -344,6 +349,7 @@ void _start(void) {
             if (received == (long)sizeof(message) &&
                 (message.event != UFFD_EVENT_PAGEFAULT ||
                  message.flags != 0 ||
+                 message.thread_id != (uint32_t)child ||
                  message.address !=
                     ((uint64_t)(uintptr_t)g_fault_address &
                      ~(uint64_t)(PAGE_SIZE - 1u)))) {

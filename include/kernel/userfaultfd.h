@@ -18,6 +18,9 @@
 #define KERNEL_UFFD_REGISTER_MODE_MISSING (1ULL << 0)
 #define KERNEL_UFFDIO_MODE_DONTWAKE        (1ULL << 0)
 
+#define KERNEL_UFFD_FEATURE_THREAD_ID (1ULL << 8)
+#define KERNEL_UFFD_SUPPORTED_FEATURES KERNEL_UFFD_FEATURE_THREAD_ID
+
 #define KERNEL_UFFD_PAGEFAULT_FLAG_WRITE (1ULL << 0)
 #define KERNEL_UFFD_EVENT_PAGEFAULT 0x12u
 
@@ -114,7 +117,7 @@ int kernel_userfaultfd_resolve(int context_id,
 int kernel_userfaultfd_cancel_resolution(
     int context_id, const kernel_uffdio_range_t *range);
 int kernel_userfaultfd_missing_fault(
-    uint64_t address_space, uint64_t address, int write,
+    uint64_t address_space, uint64_t address, int write, uint32_t thread_id,
     int *context_id, uint64_t *ticket);
 int kernel_userfaultfd_fault_pending(int context_id, uint64_t ticket);
 int kernel_userfaultfd_resolution_bypasses_fault(
