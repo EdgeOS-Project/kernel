@@ -2199,6 +2199,16 @@ static uint32_t anonymous_fd_ready_events(edge_fd_t *descriptor) {
         poll_state.kind = KERNEL_ANONYMOUS_FD_IO_URING;
         poll_state.pending =
             kernel_io_uring_completion_count(descriptor->pipe_id) != 0;
+    } else if (descriptor->kind == FD_SECCOMP) {
+        edge_seccomp_listener_state_t state;
+        poll_state.kind = KERNEL_ANONYMOUS_FD_SECCOMP;
+        if (edge_seccomp_listener_query(descriptor->pipe_id, &state) < 0)
+            poll_state.valid = 0;
+        else {
+            poll_state.pending = state.queued != 0;
+            poll_state.writable = state.delivered != 0;
+            poll_state.canceled = state.detached;
+        }
     } else {
         poll_state.valid = 0;
     }
@@ -2303,7 +2313,7 @@ static int poll_fd_revents(edge_fd_t *e, int16_t events) {
         e->kind == FD_FANOTIFY || e->kind == FD_USERFAULTFD ||
         e->kind == FD_PERF_EVENT ||
         e->kind == FD_PIDFD || e->kind == FD_MQUEUE ||
-        e->kind == FD_IO_URING) {
+        e->kind == FD_IO_URING || e->kind == FD_SECCOMP) {
         uint32_t anonymous_events = anonymous_fd_ready_events(e);
         rev |= (int16_t)anonymous_events;
     }
@@ -2390,7 +2400,8 @@ static int poll_fd_revents(edge_fd_t *e, int16_t events) {
                    e->kind == FD_USERFAULTFD ||
                    e->kind == FD_PERF_EVENT ||
                    e->kind == FD_PIDFD || e->kind == FD_MQUEUE ||
-                   e->kind == FD_IO_URING) {
+                   e->kind == FD_IO_URING ||
+                   e->kind == FD_SECCOMP) {
             /* Anonymous descriptor readiness was normalized above. */
         } else if (e->kind == FD_EPOLL) {
             if (kernel_epoll_object_exists(e->pipe_id) &&
@@ -6734,7 +6745,7 @@ static int linux_fd_fill_kstat(edge_fd_t *e, int fd,
                e->kind == FD_SIGNALFD || e->kind == FD_EPOLL ||
                e->kind == FD_PIDFD || e->kind == FD_DMA_BUF ||
                e->kind == FD_MOUNT || e->kind == FD_IO_URING ||
-               e->kind == FD_BPF) {
+               e->kind == FD_BPF || e->kind == FD_SECCOMP) {
         /* Linux anon_inode descriptors have permission bits but no file type. */
         fill_kstat_mode_size(0600, 0, st);
         st->st_ino = 0xE0000000u + (uint64_t)(uint32_t)(e->kind << 16) + (uint64_t)(uint32_t)(e->pipe_id & 0xFFFF);

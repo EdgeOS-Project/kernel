@@ -419,6 +419,14 @@ struct edge_linux_seccomp_notif_resp {
     uint32_t flags;
 };
 
+struct edge_linux_seccomp_notif_addfd {
+    uint64_t id;
+    uint32_t flags;
+    uint32_t source_descriptor;
+    uint32_t new_descriptor;
+    uint32_t new_descriptor_flags;
+};
+
 struct edge_linux_seccomp_notif_sizes {
     uint16_t seccomp_notif;
     uint16_t seccomp_notif_resp;
@@ -435,6 +443,8 @@ _Static_assert(offsetof(struct edge_linux_seccomp_notif, data) == 16,
                "Linux seccomp_notif data offset mismatch");
 _Static_assert(sizeof(struct edge_linux_seccomp_notif_resp) == 24,
                "Linux seccomp_notif_resp size mismatch");
+_Static_assert(sizeof(struct edge_linux_seccomp_notif_addfd) == 24,
+               "Linux seccomp_notif_addfd size mismatch");
 _Static_assert(sizeof(struct edge_linux_seccomp_notif_sizes) == 6,
                "Linux seccomp_notif_sizes size mismatch");
 

@@ -30,13 +30,12 @@
      EDGE_LINUX_SECCOMP_FILTER_FLAG_NEW_LISTENER | \
      EDGE_LINUX_SECCOMP_FILTER_FLAG_TSYNC_ESRCH | \
      EDGE_LINUX_SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV)
-#define EDGE_LINUX_SECCOMP_FILTER_FLAG_UNSUPPORTED \
-    (EDGE_LINUX_SECCOMP_FILTER_FLAG_NEW_LISTENER | \
-     EDGE_LINUX_SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV)
+#define EDGE_LINUX_SECCOMP_FILTER_FLAG_UNSUPPORTED 0u
 
 #define EDGE_SECCOMP_RET_KILL_THREAD  0x00000000u
 #define EDGE_SECCOMP_RET_TRAP         0x00030000u
 #define EDGE_SECCOMP_RET_ERRNO        0x00050000u
+#define EDGE_SECCOMP_RET_USER_NOTIF   0x7fc00000u
 #define EDGE_SECCOMP_RET_TRACE        0x7ff00000u
 #define EDGE_SECCOMP_RET_LOG          0x7ffc0000u
 #define EDGE_SECCOMP_RET_ALLOW        0x7fff0000u
@@ -50,6 +49,35 @@ typedef struct {
     uint64_t instruction_pointer;
     uint64_t args[6];
 } edge_seccomp_data_t;
+
+#define EDGE_SECCOMP_USER_NOTIF_FLAG_CONTINUE (1u << 0)
+#define EDGE_SECCOMP_USER_NOTIF_FD_SYNC_WAKE_UP (1u << 0)
+
+typedef struct {
+    uint64_t id;
+    uint32_t pid;
+    uint32_t flags;
+    edge_seccomp_data_t data;
+} edge_seccomp_notification_t;
+
+typedef struct {
+    uint64_t id;
+    int64_t value;
+    int32_t error;
+    uint32_t flags;
+} edge_seccomp_notification_response_t;
+
+typedef struct {
+    int64_t value;
+    int32_t error;
+    uint8_t continue_syscall;
+} edge_seccomp_notification_result_t;
+
+typedef struct {
+    uint32_t queued;
+    uint32_t delivered;
+    uint8_t detached;
+} edge_seccomp_listener_state_t;
 
 typedef struct {
     uint16_t length;
@@ -83,5 +111,30 @@ int edge_linux_seccomp_filter_install_current_flags(
     edge_seccomp_copy_from_user_fn copy_from_user, void *copy_context);
 uint32_t edge_seccomp_evaluate(const edge_seccomp_state_t *state,
                                const edge_seccomp_data_t *data);
+uint32_t edge_seccomp_evaluate_with_listener(
+    const edge_seccomp_state_t *state, const edge_seccomp_data_t *data,
+    int32_t *listener_id);
+int edge_seccomp_listener_retain(int32_t listener_id);
+int edge_seccomp_listener_create(void);
+void edge_seccomp_listener_release(int32_t listener_id);
+int edge_seccomp_listener_receive(
+    int32_t listener_id, edge_seccomp_notification_t *notification);
+int edge_seccomp_listener_receive_abort(
+    int32_t listener_id, uint64_t notification_id);
+int edge_seccomp_listener_respond(
+    int32_t listener_id,
+    const edge_seccomp_notification_response_t *response);
+int edge_seccomp_listener_id_valid(
+    int32_t listener_id, uint64_t notification_id);
+int edge_seccomp_listener_addfd_target(
+    int32_t listener_id, uint64_t notification_id, int32_t *pid);
+int edge_seccomp_listener_set_flags(int32_t listener_id, uint64_t flags);
+int edge_seccomp_listener_query(
+    int32_t listener_id, edge_seccomp_listener_state_t *state);
+int edge_seccomp_notification_submit(
+    int32_t listener_id, int32_t pid, const edge_seccomp_data_t *data,
+    uint64_t *notification_id);
+int edge_seccomp_notification_result(
+    uint64_t notification_id, edge_seccomp_notification_result_t *result);
 
 #endif

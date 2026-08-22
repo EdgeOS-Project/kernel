@@ -3658,6 +3658,7 @@ static int edge_linux_seccomp_action_supported(uint32_t action) {
         case EDGE_SECCOMP_RET_KILL_THREAD:
         case EDGE_SECCOMP_RET_TRAP:
         case EDGE_SECCOMP_RET_ERRNO:
+        case EDGE_SECCOMP_RET_USER_NOTIF:
         case EDGE_SECCOMP_RET_TRACE:
         case EDGE_SECCOMP_RET_LOG:
         case EDGE_SECCOMP_RET_ALLOW:
@@ -3684,8 +3685,14 @@ static int64_t edge_linux_sys_seccomp(
             if ((flags & EDGE_LINUX_SECCOMP_FILTER_FLAG_TSYNC_ESRCH) &&
                 !(flags & EDGE_LINUX_SECCOMP_FILTER_FLAG_TSYNC))
                 return -EDGE_LINUX_EINVAL;
-            if (flags & EDGE_LINUX_SECCOMP_FILTER_FLAG_UNSUPPORTED)
-                return -EDGE_LINUX_EOPNOTSUPP;
+            if ((flags & EDGE_LINUX_SECCOMP_FILTER_FLAG_TSYNC) &&
+                (flags & EDGE_LINUX_SECCOMP_FILTER_FLAG_NEW_LISTENER) &&
+                !(flags & EDGE_LINUX_SECCOMP_FILTER_FLAG_TSYNC_ESRCH))
+                return -EDGE_LINUX_EINVAL;
+            if ((flags &
+                 EDGE_LINUX_SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV) &&
+                !(flags & EDGE_LINUX_SECCOMP_FILTER_FLAG_NEW_LISTENER))
+                return -EDGE_LINUX_EINVAL;
             return edge_linux_seccomp_filter_install_current_flags(
                 user_argument, flags, edge_linux_seccomp_copy_from_user,
                 context);
@@ -3713,6 +3720,136 @@ static int64_t edge_linux_sys_seccomp(
                 -EDGE_LINUX_EFAULT : 0;
         default:
             return -EDGE_LINUX_EINVAL;
+    }
+}
+
+#define EDGE_LINUX_SECCOMP_IOCTL_NOTIF_RECV 0xc0502100u
+#define EDGE_LINUX_SECCOMP_IOCTL_NOTIF_SEND 0xc0182101u
+#define EDGE_LINUX_SECCOMP_IOCTL_NOTIF_ID_VALID 0x40082102u
+#define EDGE_LINUX_SECCOMP_IOCTL_NOTIF_ID_VALID_OLD 0x80082102u
+#define EDGE_LINUX_SECCOMP_IOCTL_NOTIF_ADDFD 0x40182103u
+#define EDGE_LINUX_SECCOMP_IOCTL_NOTIF_SET_FLAGS 0x40082104u
+#define EDGE_LINUX_SECCOMP_ADDFD_FLAG_SETFD (1u << 0)
+#define EDGE_LINUX_SECCOMP_ADDFD_FLAG_SEND (1u << 1)
+
+static int edge_linux_bytes_are_zero(const void *pointer, uint64_t size) {
+    const uint8_t *bytes = (const uint8_t *)pointer;
+    while (size--)
+        if (*bytes++) return 0;
+    return 1;
+}
+
+static int64_t edge_linux_seccomp_listener_ioctl(
+    edge_linux_syscall_context_t *context, int32_t descriptor,
+    uint32_t command, uint64_t argument) {
+    edge_seccomp_notification_t notification;
+    edge_seccomp_notification_response_t response;
+    struct edge_linux_seccomp_notif user_notification;
+    struct edge_linux_seccomp_notif_resp user_response;
+    struct edge_linux_seccomp_notif_addfd addfd;
+    uint64_t notification_id;
+    int listener_id;
+    int status;
+    int32_t target_pid;
+    int32_t installed_descriptor;
+    uint32_t descriptor_flags = 0;
+
+    listener_id = kernel_anonymous_fd_descriptor_object_id(
+        descriptor, KERNEL_ANONYMOUS_FD_SECCOMP);
+    if (listener_id < 0) return -EDGE_LINUX_ENOTTY;
+    switch (command) {
+    case EDGE_LINUX_SECCOMP_IOCTL_NOTIF_RECV:
+        if (!argument) return -EDGE_LINUX_EFAULT;
+        if (edge_linux_copy_from_user(
+                context, &user_notification, argument,
+                sizeof(user_notification)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (!edge_linux_bytes_are_zero(
+                &user_notification, sizeof(user_notification)))
+            return -EDGE_LINUX_EINVAL;
+        for (;;) {
+            status = edge_seccomp_listener_receive(
+                listener_id, &notification);
+            if (status != -EDGE_LINUX_EAGAIN) break;
+            if (kernel_fd_get_status_flags(
+                    descriptor, &descriptor_flags) == 0 &&
+                (descriptor_flags & 0x800u))
+                return status;
+            if (!kernel_runtime_yield()) return status;
+        }
+        if (status < 0) return status;
+        memset(&user_notification, 0, sizeof(user_notification));
+        user_notification.id = notification.id;
+        user_notification.pid = notification.pid;
+        user_notification.flags = notification.flags;
+        user_notification.data.nr = notification.data.nr;
+        user_notification.data.arch = notification.data.arch;
+        user_notification.data.instruction_pointer =
+            notification.data.instruction_pointer;
+        memcpy(user_notification.data.arguments, notification.data.args,
+               sizeof(user_notification.data.arguments));
+        if (edge_linux_copy_to_user(
+                context, argument, &user_notification,
+                sizeof(user_notification)) < 0) {
+            (void)edge_seccomp_listener_receive_abort(
+                listener_id, notification.id);
+            return -EDGE_LINUX_EFAULT;
+        }
+        return 0;
+    case EDGE_LINUX_SECCOMP_IOCTL_NOTIF_SEND:
+        if (!argument || edge_linux_copy_from_user(
+                context, &user_response, argument,
+                sizeof(user_response)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        response.id = user_response.id;
+        response.value = user_response.value;
+        response.error = user_response.error;
+        response.flags = user_response.flags;
+        return edge_seccomp_listener_respond(listener_id, &response);
+    case EDGE_LINUX_SECCOMP_IOCTL_NOTIF_ID_VALID:
+    case EDGE_LINUX_SECCOMP_IOCTL_NOTIF_ID_VALID_OLD:
+        if (!argument || edge_linux_copy_from_user(
+                context, &notification_id, argument,
+                sizeof(notification_id)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        return edge_seccomp_listener_id_valid(
+            listener_id, notification_id);
+    case EDGE_LINUX_SECCOMP_IOCTL_NOTIF_SET_FLAGS:
+        return edge_seccomp_listener_set_flags(listener_id, argument);
+    case EDGE_LINUX_SECCOMP_IOCTL_NOTIF_ADDFD:
+        if (!argument || edge_linux_copy_from_user(
+                context, &addfd, argument, sizeof(addfd)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (addfd.flags &
+                ~(EDGE_LINUX_SECCOMP_ADDFD_FLAG_SETFD |
+                  EDGE_LINUX_SECCOMP_ADDFD_FLAG_SEND) ||
+            (addfd.new_descriptor_flags & ~0x80000u) ||
+            (addfd.new_descriptor &&
+             !(addfd.flags & EDGE_LINUX_SECCOMP_ADDFD_FLAG_SETFD)))
+            return -EDGE_LINUX_EINVAL;
+        status = edge_seccomp_listener_addfd_target(
+            listener_id, addfd.id, &target_pid);
+        if (status < 0) return status;
+        status = kernel_fd_copy_to_pid(
+            (int32_t)addfd.source_descriptor, target_pid,
+            (int32_t)addfd.new_descriptor,
+            (addfd.flags &
+             EDGE_LINUX_SECCOMP_ADDFD_FLAG_SETFD) != 0,
+            addfd.new_descriptor_flags ? KERNEL_FD_CLOEXEC : 0,
+            &installed_descriptor);
+        if (status < 0) return status;
+        if (addfd.flags & EDGE_LINUX_SECCOMP_ADDFD_FLAG_SEND) {
+            response.id = addfd.id;
+            response.value = installed_descriptor;
+            response.error = 0;
+            response.flags = 0;
+            status = edge_seccomp_listener_respond(
+                listener_id, &response);
+            if (status < 0) return status;
+        }
+        return installed_descriptor;
+    default:
+        return -EDGE_LINUX_EINVAL;
     }
 }
 
@@ -11769,6 +11906,9 @@ static int64_t edge_linux_sys_ioctl(
             descriptor, EDGE_LINUX_O_NONBLOCK,
             enabled ? EDGE_LINUX_O_NONBLOCK : 0);
     }
+    status = edge_linux_seccomp_listener_ioctl(
+        context, descriptor, request.command, request.argument);
+    if (status != -EDGE_LINUX_ENOTTY) return status;
     status = kernel_namespace_descriptor_get(
         descriptor, &namespace_descriptor);
     if (status == -EDGE_LINUX_ENOTTY)

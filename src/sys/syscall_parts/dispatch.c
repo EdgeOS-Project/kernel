@@ -105,6 +105,9 @@ static int syscall_apply_seccomp(task_t *task, REGISTERS *r, uint64_t nr,
                                  int64_t *result_out) {
     static uint32_t trace_budget = 0;
     edge_seccomp_data_t data;
+    edge_seccomp_notification_result_t notification_result;
+    int32_t listener_id = 0;
+    int notification_status;
     uint32_t decision;
     uint32_t action;
 
@@ -123,7 +126,8 @@ static int syscall_apply_seccomp(task_t *task, REGISTERS *r, uint64_t nr,
     data.args[4] = a5;
     data.args[5] = a6;
 
-    decision = edge_seccomp_evaluate(&task->seccomp, &data);
+    decision = edge_seccomp_evaluate_with_listener(
+        &task->seccomp, &data, &listener_id);
     action = decision & EDGE_SECCOMP_RET_ACTION_FULL;
     if (action == EDGE_SECCOMP_RET_ALLOW) return 0;
     if (trace_budget) {
@@ -139,6 +143,32 @@ static int syscall_apply_seccomp(task_t *task, REGISTERS *r, uint64_t nr,
     }
     if (action == EDGE_SECCOMP_RET_ERRNO) {
         *result_out = -(int64_t)(decision & EDGE_SECCOMP_RET_DATA);
+        return 1;
+    }
+    if (action == EDGE_SECCOMP_RET_USER_NOTIF) {
+        if (!task->seccomp_notification_id) {
+            notification_status = edge_seccomp_notification_submit(
+                listener_id, task->pid, &data,
+                &task->seccomp_notification_id);
+            if (notification_status < 0) {
+                *result_out = notification_status;
+                return 1;
+            }
+        }
+        for (;;) {
+            notification_status = edge_seccomp_notification_result(
+                task->seccomp_notification_id, &notification_result);
+            if (notification_status != 0) break;
+            scheduler_yield();
+        }
+        task->seccomp_notification_id = 0;
+        if (notification_status < 0) {
+            *result_out = notification_status;
+            return 1;
+        }
+        if (notification_result.continue_syscall) return 0;
+        *result_out = notification_result.error ?
+            notification_result.error : notification_result.value;
         return 1;
     }
     if (action == EDGE_SECCOMP_RET_TRACE) {

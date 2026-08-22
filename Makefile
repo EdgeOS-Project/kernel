@@ -40,6 +40,18 @@ SRC    = src
 OBJ    = obj
 OUT    = out
 INC    = include
+
+.PHONY: seccomp-notify-runtime-unit
+
+seccomp-notify-runtime-unit: tools/tests/seccomp_notify_runtime_unit.c \
+		$(SRC)/kernel/seccomp.c
+	@mkdir -p $(OUT)/tests
+	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror \
+		-DEDGEOS_HOST_TEST -iquote $(INC) \
+		tools/tests/seccomp_notify_runtime_unit.c \
+		$(SRC)/kernel/seccomp.c \
+		-o $(OUT)/tests/seccomp_notify_runtime_unit
+	@$(OUT)/tests/seccomp_notify_runtime_unit
 AUTOCONF_H := $(INC)/generated/autoconf.h
 VDSO_OUT := $(OUT)/vdso
 VDSO_GENERATED := $(OUT)/generated

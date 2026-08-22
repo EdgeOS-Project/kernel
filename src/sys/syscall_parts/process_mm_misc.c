@@ -819,7 +819,7 @@ int arch_vfs_describe_descriptor(int32_t descriptor,
         entry->kind == FD_PERF_EVENT ||
         entry->kind == FD_DMA_BUF || entry->kind == FD_MOUNT ||
         entry->kind == FD_IO_URING || entry->kind == FD_LANDLOCK ||
-        entry->kind == FD_BPF) {
+        entry->kind == FD_BPF || entry->kind == FD_SECCOMP) {
         description->kind = KERNEL_VFS_DESCRIPTOR_ANONYMOUS;
         return 0;
     }
@@ -2078,6 +2078,14 @@ static int x86_fd_transfer_target_capture_for_owner(
     return 0;
 }
 
+static int x86_fd_transfer_target_capture_for_pid(
+        void *context, int32_t pid, void *target_storage) {
+    const task_t *task = process_get_task(pid);
+    if (!task) return -ESRCH;
+    return x86_fd_transfer_target_capture_for_owner(
+        context, task, target_storage);
+}
+
 static int x86_fd_transfer_target_release(
         void *context, void *target_storage) {
     x86_fd_transfer_target_storage_t *target =
@@ -2092,9 +2100,10 @@ static int x86_fd_transfer_target_release(
     return 0;
 }
 
-static int x86_fd_transfer_target_prepare(
+static int x86_fd_transfer_target_prepare_internal(
         void *context, void *target_storage,
         const void *source_storage, uint32_t descriptor_flags,
+        int32_t requested_descriptor, int exact,
         int32_t *descriptor) {
     x86_fd_transfer_target_storage_t *target =
         (x86_fd_transfer_target_storage_t *)target_storage;
@@ -2153,9 +2162,21 @@ static int x86_fd_transfer_target_prepare(
             &target->table->detached, __ATOMIC_ACQUIRE)) {
         result = -EBADF;
     } else {
-        result = kernel_fd_table_reserve_next_below_locked(
-            &target->table->table_runtime, 0,
-            target->allocation_limit, &number);
+        if (exact) {
+            if (requested_descriptor < 0 ||
+                (uint32_t)requested_descriptor >=
+                    target->allocation_limit)
+                result = -EBADF;
+            else {
+                number = (uint32_t)requested_descriptor;
+                result = kernel_fd_table_reserve_exact_locked(
+                    &target->table->table_runtime, number);
+            }
+        } else {
+            result = kernel_fd_table_reserve_next_below_locked(
+                &target->table->table_runtime, 0,
+                target->allocation_limit, &number);
+        }
         if (result == 0)
             target->table->fds[number] = clone;
     }
@@ -2170,6 +2191,24 @@ static int x86_fd_transfer_target_prepare(
     target->last_prepare_pending = 1;
     *descriptor = (int32_t)number;
     return 0;
+}
+
+static int x86_fd_transfer_target_prepare(
+        void *context, void *target_storage,
+        const void *source_storage, uint32_t descriptor_flags,
+        int32_t *descriptor) {
+    return x86_fd_transfer_target_prepare_internal(
+        context, target_storage, source_storage, descriptor_flags,
+        -1, 0, descriptor);
+}
+
+static int x86_fd_transfer_target_prepare_exact(
+        void *context, void *target_storage,
+        const void *source_storage, uint32_t descriptor_flags,
+        int32_t requested_descriptor, int32_t *descriptor) {
+    return x86_fd_transfer_target_prepare_internal(
+        context, target_storage, source_storage, descriptor_flags,
+        requested_descriptor, 1, descriptor);
 }
 
 static int x86_fd_transfer_target_publish_many(
@@ -2597,8 +2636,12 @@ static const kernel_fd_backend_ops_t x86_fd_backend_ops = {
     .transfer_target_capture = x86_fd_transfer_target_capture,
     .transfer_target_capture_for_owner =
         x86_fd_transfer_target_capture_for_owner,
+    .transfer_target_capture_for_pid =
+        x86_fd_transfer_target_capture_for_pid,
     .transfer_target_release = x86_fd_transfer_target_release,
     .transfer_target_prepare = x86_fd_transfer_target_prepare,
+    .transfer_target_prepare_exact =
+        x86_fd_transfer_target_prepare_exact,
     .transfer_target_discard_prepared =
         x86_fd_transfer_target_discard_prepared,
     .transfer_target_publish_many =
@@ -11106,6 +11149,9 @@ static int x86_anonymous_fd_install(
     case KERNEL_ANONYMOUS_FD_BPF:
         local_kind = FD_BPF;
         break;
+    case KERNEL_ANONYMOUS_FD_SECCOMP:
+        local_kind = FD_SECCOMP;
+        break;
     default:
         return -EINVAL;
     }
@@ -11161,6 +11207,9 @@ static int x86_anonymous_fd_object_id(
         break;
     case KERNEL_ANONYMOUS_FD_BPF:
         expected = FD_BPF;
+        break;
+    case KERNEL_ANONYMOUS_FD_SECCOMP:
+        expected = FD_SECCOMP;
         break;
     default:
         return -EINVAL;

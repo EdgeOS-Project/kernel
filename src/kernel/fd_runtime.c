@@ -877,10 +877,47 @@ int kernel_fd_transfer_target_capture_for_owner(
         owner, target);
 }
 
-int kernel_fd_transfer_target_prepare(
+int kernel_fd_transfer_target_capture_for_pid(
+        int32_t pid, kernel_fd_transfer_target_t *target) {
+    fd_transfer_target_internal_t *internal;
+    const kernel_fd_backend_ops_t *ops;
+    void *context;
+    uint32_t expected = KERNEL_FD_TRANSFER_TARGET_INACTIVE;
+    int result;
+
+    if (!target) return -EDGE_LINUX_EINVAL;
+    internal = fd_transfer_target_internal(target);
+    if (!__atomic_compare_exchange_n(
+            &internal->state, &expected,
+            KERNEL_FD_TRANSFER_TARGET_CAPTURING, 0,
+            __ATOMIC_ACQ_REL, __ATOMIC_RELAXED))
+        return -EDGE_LINUX_EBUSY;
+    fd_transfer_target_clear(internal);
+    ops = g_backend_ops;
+    context = g_backend_context;
+    result = ops && ops->transfer_target_capture_for_pid ?
+        ops->transfer_target_capture_for_pid(
+            context, pid, internal->backend_storage.bytes) :
+        -EDGE_LINUX_EOPNOTSUPP;
+    if (result < 0) {
+        fd_transfer_target_clear(internal);
+        __atomic_store_n(
+            &internal->state, KERNEL_FD_TRANSFER_TARGET_INACTIVE,
+            __ATOMIC_RELEASE);
+        return result;
+    }
+    internal->backend_ops = ops;
+    internal->backend_context = context;
+    __atomic_store_n(
+        &internal->state, KERNEL_FD_TRANSFER_TARGET_ACTIVE,
+        __ATOMIC_RELEASE);
+    return 0;
+}
+
+static int fd_transfer_target_prepare_internal(
         kernel_fd_transfer_target_t *target,
         const kernel_fd_operation_lease_t *source,
-        uint32_t descriptor_flags,
+        uint32_t descriptor_flags, int32_t requested_descriptor,
         int32_t *descriptor) {
     fd_transfer_target_internal_t *target_internal;
     const fd_operation_lease_internal_t *source_internal;
@@ -915,12 +952,23 @@ int kernel_fd_transfer_target_prepare(
         goto leave_target;
     }
 
-    result = target_internal->backend_ops->transfer_target_prepare(
-        target_internal->backend_context,
-        target_internal->backend_storage.bytes,
-        source_internal->backend_storage.bytes,
-        descriptor_flags,
-        descriptor);
+    if (requested_descriptor >= 0) {
+        if (!target_internal->backend_ops->transfer_target_prepare_exact) {
+            result = -EDGE_LINUX_EOPNOTSUPP;
+            goto leave_target;
+        }
+        result = target_internal->backend_ops->transfer_target_prepare_exact(
+            target_internal->backend_context,
+            target_internal->backend_storage.bytes,
+            source_internal->backend_storage.bytes,
+            descriptor_flags, requested_descriptor, descriptor);
+    } else {
+        result = target_internal->backend_ops->transfer_target_prepare(
+            target_internal->backend_context,
+            target_internal->backend_storage.bytes,
+            source_internal->backend_storage.bytes,
+            descriptor_flags, descriptor);
+    }
     if (result < 0) {
         *descriptor = -1;
         goto leave_target;
@@ -946,6 +994,25 @@ leave_target:
         KERNEL_FD_TRANSFER_TARGET_ACTIVE,
         __ATOMIC_RELEASE);
     return result;
+}
+
+int kernel_fd_transfer_target_prepare(
+        kernel_fd_transfer_target_t *target,
+        const kernel_fd_operation_lease_t *source,
+        uint32_t descriptor_flags, int32_t *descriptor) {
+    return fd_transfer_target_prepare_internal(
+        target, source, descriptor_flags, -1, descriptor);
+}
+
+int kernel_fd_transfer_target_prepare_exact(
+        kernel_fd_transfer_target_t *target,
+        const kernel_fd_operation_lease_t *source,
+        uint32_t descriptor_flags, int32_t requested_descriptor,
+        int32_t *descriptor) {
+    if (requested_descriptor < 0) return -EDGE_LINUX_EBADF;
+    return fd_transfer_target_prepare_internal(
+        target, source, descriptor_flags, requested_descriptor,
+        descriptor);
 }
 
 int kernel_fd_transfer_target_prepared_descriptor_at(
@@ -1530,6 +1597,62 @@ cleanup:
     }
     if (status < 0) *descriptor = -1;
     return status;
+}
+
+int kernel_fd_copy_to_pid(
+        int32_t source_descriptor, int32_t target_pid,
+        int32_t requested_descriptor, int exact,
+        uint32_t descriptor_flags, int32_t *result) {
+    kernel_fd_operation_lease_t source = {0};
+    kernel_fd_transfer_target_t target = {0};
+    int32_t descriptor = -1;
+    int source_active = 0;
+    int target_active = 0;
+    int prepared = 0;
+    int published = 0;
+    int status;
+    int cleanup_status;
+
+    if (!result) return -EDGE_LINUX_EINVAL;
+    *result = -1;
+    status = kernel_fd_operation_acquire(source_descriptor, &source);
+    if (status < 0) return status;
+    source_active = 1;
+    status = kernel_fd_transfer_target_capture_for_pid(
+        target_pid, &target);
+    if (status < 0) goto cleanup;
+    target_active = 1;
+    status = exact ? kernel_fd_transfer_target_prepare_exact(
+        &target, &source, descriptor_flags, requested_descriptor,
+        &descriptor) : kernel_fd_transfer_target_prepare(
+        &target, &source, descriptor_flags, &descriptor);
+    if (status < 0) goto cleanup;
+    prepared = 1;
+    status = kernel_fd_transfer_target_publish_many(
+        &target, &descriptor, 1u);
+    if (status < 0) goto cleanup;
+    prepared = 0;
+    published = 1;
+
+cleanup:
+    if (prepared) {
+        cleanup_status = kernel_fd_transfer_target_abort_all(&target);
+        if (!published && status >= 0 && cleanup_status < 0)
+            status = cleanup_status;
+    }
+    if (target_active) {
+        cleanup_status = kernel_fd_transfer_target_release(&target);
+        if (!published && status >= 0 && cleanup_status < 0)
+            status = cleanup_status;
+    }
+    if (source_active) {
+        cleanup_status = kernel_fd_operation_release(&source);
+        if (!published && status >= 0 && cleanup_status < 0)
+            status = cleanup_status;
+    }
+    if (status < 0) return status;
+    *result = descriptor;
+    return 0;
 }
 
 int kernel_process_fd_description_id(int32_t pid, int32_t descriptor,

@@ -898,6 +898,7 @@ static uint32_t g_fd_table_reserve_count;
 #define KERNEL_FD_PERF_EVENT 25u
 #define KERNEL_FD_LANDLOCK 26u
 #define KERNEL_FD_BPF 27u
+#define KERNEL_FD_SECCOMP 28u
 
 #define ARM64_EPOLL_SOURCE_FILE_KMSG          0x00000001u
 #define ARM64_EPOLL_SOURCE_FILE_DRM_CARD      0x00000002u
@@ -1048,6 +1049,7 @@ typedef struct {
     uint32_t seccomp_sigsys_arch;
     uint64_t seccomp_sigsys_call_addr;
     uint64_t seccomp_sigsys_arg0;
+    uint64_t seccomp_notification_id;
     uint16_t socket_wait_index;
     uint8_t socket_wait_mode;
     uint32_t socket_wait_flags;
@@ -9247,7 +9249,8 @@ int arch_vfs_describe_descriptor(int32_t descriptor,
         file->kind == KERNEL_FD_MQUEUE ||
         file->kind == KERNEL_FD_IO_URING ||
         file->kind == KERNEL_FD_LANDLOCK ||
-        file->kind == KERNEL_FD_BPF) {
+        file->kind == KERNEL_FD_BPF ||
+        file->kind == KERNEL_FD_SECCOMP) {
         description->kind = KERNEL_VFS_DESCRIPTOR_ANONYMOUS;
         return 0;
     }
@@ -10103,6 +10106,9 @@ static int arm64_anonymous_fd_install(
     case KERNEL_ANONYMOUS_FD_BPF:
         local_kind = KERNEL_FD_BPF;
         break;
+    case KERNEL_ANONYMOUS_FD_SECCOMP:
+        local_kind = KERNEL_FD_SECCOMP;
+        break;
     default:
         return -LINUX_EINVAL;
     }
@@ -10187,6 +10193,9 @@ static int arm64_anonymous_fd_object_id(
         break;
     case KERNEL_ANONYMOUS_FD_BPF:
         expected = KERNEL_FD_BPF;
+        break;
+    case KERNEL_ANONYMOUS_FD_SECCOMP:
+        expected = KERNEL_FD_SECCOMP;
         break;
     default:
         return -LINUX_EINVAL;
@@ -10499,6 +10508,10 @@ static int fd_retain_backing_object(const bootstrap_fd_t *fd) {
     }
     if (fd->kind == KERNEL_FD_BPF) {
         result = kernel_bpf_object_retain(fd->event_index);
+        return result < 0 ? result : 0;
+    }
+    if (fd->kind == KERNEL_FD_SECCOMP) {
+        result = edge_seccomp_listener_retain(fd->event_index);
         return result < 0 ? result : 0;
     }
     if (fd->kind == KERNEL_FD_SOCKET &&
@@ -16118,6 +16131,8 @@ static void fd_drop_backing_object(bootstrap_fd_t *fd) {
         kernel_landlock_ruleset_release((int32_t)fd->mount_id);
     if (fd->kind == KERNEL_FD_BPF)
         kernel_bpf_object_release(fd->event_index);
+    if (fd->kind == KERNEL_FD_SECCOMP)
+        edge_seccomp_listener_release(fd->event_index);
     if ((fd->kind == KERNEL_FD_PIPE_READ ||
          fd->kind == KERNEL_FD_PIPE_WRITE ||
          fd->kind == KERNEL_FD_PIPE_RW) &&
@@ -19503,6 +19518,16 @@ static uint32_t fd_anonymous_ready_mask(
         poll_state.kind = KERNEL_ANONYMOUS_FD_IO_URING;
         poll_state.pending =
             kernel_io_uring_completion_count(fd->event_index) != 0;
+    } else if (fd->kind == KERNEL_FD_SECCOMP) {
+        edge_seccomp_listener_state_t state;
+        poll_state.kind = KERNEL_ANONYMOUS_FD_SECCOMP;
+        if (edge_seccomp_listener_query(fd->event_index, &state) < 0)
+            poll_state.valid = 0;
+        else {
+            poll_state.pending = state.queued != 0;
+            poll_state.writable = state.delivered != 0;
+            poll_state.canceled = state.detached;
+        }
     } else {
         poll_state.valid = 0;
     }
@@ -19556,7 +19581,8 @@ static uint32_t fd_ready_mask(kernel_task_t *task, bootstrap_fd_t *fd) {
                fd->kind == KERNEL_FD_PIDFD ||
                fd->kind == KERNEL_FD_SIGNALFD ||
                fd->kind == KERNEL_FD_MQUEUE ||
-               fd->kind == KERNEL_FD_IO_URING) {
+               fd->kind == KERNEL_FD_IO_URING ||
+               fd->kind == KERNEL_FD_SECCOMP) {
         ready |= fd_anonymous_ready_mask(task, fd);
     } else if (fd->kind == KERNEL_FD_INPUT) {
         uint64_t cursor = 0;
@@ -22825,7 +22851,8 @@ int arch_vfs_metadata_fd(int32_t descriptor,
                file->kind == KERNEL_FD_MQUEUE ||
                file->kind == KERNEL_FD_IO_URING ||
                file->kind == KERNEL_FD_LANDLOCK ||
-               file->kind == KERNEL_FD_BPF) {
+               file->kind == KERNEL_FD_BPF ||
+               file->kind == KERNEL_FD_SECCOMP) {
         arm64_metadata_set_anonymous(file, metadata, 0600u);
     } else if (file->kind == KERNEL_FD_FILE) {
         if (file->sb)
@@ -26007,6 +26034,14 @@ static int arm64_fd_transfer_target_capture_for_owner(
     return 0;
 }
 
+static int arm64_fd_transfer_target_capture_for_pid(
+        void *context, int32_t pid, void *target_storage) {
+    int slot = task_find_pid(pid);
+    if (slot < 0) return -LINUX_ESRCH;
+    return arm64_fd_transfer_target_capture_for_owner(
+        context, &g_tasks[(uint32_t)slot], target_storage);
+}
+
 static int arm64_fd_transfer_target_release(
         void *context, void *target_storage) {
     arm64_fd_transfer_target_storage_t *target =
@@ -26022,9 +26057,10 @@ static int arm64_fd_transfer_target_release(
     return 0;
 }
 
-static int arm64_fd_transfer_target_prepare(
+static int arm64_fd_transfer_target_prepare_internal(
         void *context, void *target_storage,
         const void *source_storage, uint32_t descriptor_flags,
+        int32_t requested_descriptor, int exact,
         int32_t *descriptor) {
     arm64_fd_transfer_target_storage_t *target =
         (arm64_fd_transfer_target_storage_t *)target_storage;
@@ -26076,9 +26112,21 @@ static int arm64_fd_transfer_target_prepare(
             &table->task_references, __ATOMIC_ACQUIRE)) {
         result = -LINUX_EBADF;
     } else {
-        result = kernel_fd_table_reserve_next_below_locked(
-            &table->runtime, 0,
-            target->allocation_limit, &number);
+        if (exact) {
+            if (requested_descriptor < 0 ||
+                (uint32_t)requested_descriptor >=
+                    target->allocation_limit)
+                result = -LINUX_EBADF;
+            else {
+                number = (uint32_t)requested_descriptor;
+                result = kernel_fd_table_reserve_exact_locked(
+                    &table->runtime, number);
+            }
+        } else {
+            result = kernel_fd_table_reserve_next_below_locked(
+                &table->runtime, 0,
+                target->allocation_limit, &number);
+        }
         if (result == 0)
             table->entries[number] = clone;
     }
@@ -26092,6 +26140,24 @@ static int arm64_fd_transfer_target_prepare(
     target->last_prepare_pending = 1;
     *descriptor = (int32_t)number;
     return 0;
+}
+
+static int arm64_fd_transfer_target_prepare(
+        void *context, void *target_storage,
+        const void *source_storage, uint32_t descriptor_flags,
+        int32_t *descriptor) {
+    return arm64_fd_transfer_target_prepare_internal(
+        context, target_storage, source_storage, descriptor_flags,
+        -1, 0, descriptor);
+}
+
+static int arm64_fd_transfer_target_prepare_exact(
+        void *context, void *target_storage,
+        const void *source_storage, uint32_t descriptor_flags,
+        int32_t requested_descriptor, int32_t *descriptor) {
+    return arm64_fd_transfer_target_prepare_internal(
+        context, target_storage, source_storage, descriptor_flags,
+        requested_descriptor, 1, descriptor);
 }
 
 static int arm64_fd_transfer_target_publish_many(
@@ -26609,10 +26675,14 @@ static const kernel_fd_backend_ops_t arm64_fd_backend_ops = {
         arm64_fd_transfer_target_capture,
     .transfer_target_capture_for_owner =
         arm64_fd_transfer_target_capture_for_owner,
+    .transfer_target_capture_for_pid =
+        arm64_fd_transfer_target_capture_for_pid,
     .transfer_target_release =
         arm64_fd_transfer_target_release,
     .transfer_target_prepare =
         arm64_fd_transfer_target_prepare,
+    .transfer_target_prepare_exact =
+        arm64_fd_transfer_target_prepare_exact,
     .transfer_target_discard_prepared =
         arm64_fd_transfer_target_discard_prepared,
     .transfer_target_publish_many =
@@ -32932,19 +33002,42 @@ static int64_t bootstrap_syscall_impl(uint64_t nr, uint64_t a0, uint64_t a1,
      */
     if (task->seccomp.length && nr != LINUX_SYS_rt_sigreturn) {
         edge_seccomp_data_t data;
+        edge_seccomp_notification_result_t notification_result;
+        int32_t listener_id = 0;
+        int notification_status;
         uint32_t decision;
         data.nr = (int32_t)nr;
         data.arch = 0xc00000b7u; /* AUDIT_ARCH_AARCH64 */
         data.instruction_pointer = frame ? frame->elr : 0;
         data.args[0] = a0; data.args[1] = a1; data.args[2] = a2;
         data.args[3] = a3; data.args[4] = a4; data.args[5] = a5;
-        decision = edge_seccomp_evaluate(&task->seccomp, &data);
+        decision = edge_seccomp_evaluate_with_listener(
+            &task->seccomp, &data, &listener_id);
         switch (decision & EDGE_SECCOMP_RET_ACTION_FULL) {
         case EDGE_SECCOMP_RET_ALLOW:
         case EDGE_SECCOMP_RET_LOG:
             break;
         case EDGE_SECCOMP_RET_ERRNO:
             return -(int64_t)(decision & EDGE_SECCOMP_RET_DATA);
+        case EDGE_SECCOMP_RET_USER_NOTIF:
+            if (!task->seccomp_notification_id) {
+                notification_status = edge_seccomp_notification_submit(
+                    listener_id, task->pid, &data,
+                    &task->seccomp_notification_id);
+                if (notification_status < 0)
+                    return notification_status;
+            }
+            notification_status = edge_seccomp_notification_result(
+                task->seccomp_notification_id, &notification_result);
+            if (notification_status == 0) {
+                (void)kernel_runtime_yield();
+                return -LINUX_EAGAIN;
+            }
+            task->seccomp_notification_id = 0;
+            if (notification_status < 0) return notification_status;
+            if (notification_result.continue_syscall) break;
+            return notification_result.error ?
+                notification_result.error : notification_result.value;
         case EDGE_SECCOMP_RET_TRACE:
             return -LINUX_ENOSYS;
         case EDGE_SECCOMP_RET_TRAP:

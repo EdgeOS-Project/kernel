@@ -96,6 +96,7 @@
 #include "kernel/posix_timer_runtime.h"
 #include "kernel/posix_mq_runtime.h"
 #include "kernel/random.h"
+#include "kernel/seccomp.h"
 #include "kernel/signal_queue.h"
 #include "kernel/signal_runtime.h"
 #include "kernel/signalfd.h"
@@ -1505,6 +1506,7 @@ typedef enum {
     FD_IO_URING,
     FD_LANDLOCK,
     FD_BPF,
+    FD_SECCOMP,
 } edge_fd_kind_t;
 
 typedef struct {

@@ -217,6 +217,10 @@ int kernel_fd_operation_release(
 int kernel_fd_operation_materialize(
     const kernel_fd_operation_lease_t *source,
     uint32_t descriptor_flags, int32_t *descriptor);
+int kernel_fd_copy_to_pid(
+    int32_t source_descriptor, int32_t target_pid,
+    int32_t requested_descriptor, int exact,
+    uint32_t descriptor_flags, int32_t *result);
 
 #define KERNEL_FD_TRANSFER_MAX 253u
 #define KERNEL_FD_TRANSFER_TARGET_STORAGE_SIZE 64u
@@ -227,12 +231,18 @@ typedef int (*kernel_fd_transfer_target_capture_fn)(
     void *context, void *target_storage);
 typedef int (*kernel_fd_transfer_target_capture_for_owner_fn)(
     void *context, const void *owner, void *target_storage);
+typedef int (*kernel_fd_transfer_target_capture_for_pid_fn)(
+    void *context, int32_t pid, void *target_storage);
 typedef int (*kernel_fd_transfer_target_release_fn)(
     void *context, void *target_storage);
 typedef int (*kernel_fd_transfer_target_prepare_fn)(
     void *context, void *target_storage,
     const void *source_storage, uint32_t descriptor_flags,
     int32_t *descriptor);
+typedef int (*kernel_fd_transfer_target_prepare_exact_fn)(
+    void *context, void *target_storage,
+    const void *source_storage, uint32_t descriptor_flags,
+    int32_t requested_descriptor, int32_t *descriptor);
 typedef void (*kernel_fd_transfer_target_discard_prepared_fn)(
     void *context, void *target_storage);
 typedef int (*kernel_fd_transfer_target_publish_many_fn)(
@@ -287,10 +297,17 @@ int kernel_fd_transfer_target_capture(
     kernel_fd_transfer_target_t *target);
 int kernel_fd_transfer_target_capture_for_owner(
     const void *owner, kernel_fd_transfer_target_t *target);
+int kernel_fd_transfer_target_capture_for_pid(
+    int32_t pid, kernel_fd_transfer_target_t *target);
 int kernel_fd_transfer_target_prepare(
     kernel_fd_transfer_target_t *target,
     const kernel_fd_operation_lease_t *source,
     uint32_t descriptor_flags,
+    int32_t *descriptor);
+int kernel_fd_transfer_target_prepare_exact(
+    kernel_fd_transfer_target_t *target,
+    const kernel_fd_operation_lease_t *source,
+    uint32_t descriptor_flags, int32_t requested_descriptor,
     int32_t *descriptor);
 int kernel_fd_transfer_target_prepared_descriptor_at(
     const kernel_fd_transfer_target_t *target,
@@ -344,8 +361,12 @@ typedef struct kernel_fd_backend_ops {
     kernel_fd_transfer_target_capture_fn transfer_target_capture;
     kernel_fd_transfer_target_capture_for_owner_fn
         transfer_target_capture_for_owner;
+    kernel_fd_transfer_target_capture_for_pid_fn
+        transfer_target_capture_for_pid;
     kernel_fd_transfer_target_release_fn transfer_target_release;
     kernel_fd_transfer_target_prepare_fn transfer_target_prepare;
+    kernel_fd_transfer_target_prepare_exact_fn
+        transfer_target_prepare_exact;
     kernel_fd_transfer_target_discard_prepared_fn
         transfer_target_discard_prepared;
     kernel_fd_transfer_target_publish_many_fn transfer_target_publish_many;

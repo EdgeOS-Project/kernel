@@ -325,11 +325,13 @@ static void task_sigsys_action_copy(task_t *dst, const task_t *src) {
     (void)src;
     if (!dst || !src) return;
     dst->seccomp_sigsys_valid = 0;
+    dst->seccomp_notification_id = 0;
 }
 
 static void task_sigsys_action_reset(task_t *t) {
     if (!t) return;
     t->seccomp_sigsys_valid = 0;
+    t->seccomp_notification_id = 0;
 }
 
 static int task_seccomp_inherit(task_t *dst, const task_t *src) {
@@ -11414,6 +11416,7 @@ int process_exec_reset_current(
         }
     }
     cur->seccomp_sigsys_valid = 0;
+    cur->seccomp_notification_id = 0;
     cur->sig_stub_installed = 0;
     cur->active_signal_frame = 0;
     cur->active_signal_restorer_rsp = 0;

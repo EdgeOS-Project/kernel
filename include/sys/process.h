@@ -270,6 +270,7 @@ typedef struct task_struct {
     int32_t seccomp_sigsys_nr;
     uint32_t seccomp_sigsys_arch;
     uint64_t seccomp_sigsys_call_addr;
+    uint64_t seccomp_notification_id;
     uint8_t sig_stub_installed;
     uint64_t active_signal_frame;
     uint64_t active_signal_restorer_rsp;
