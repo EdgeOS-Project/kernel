@@ -9,6 +9,7 @@
 
 int main(void) {
     kernel_pty_poll_state_t state;
+    uint8_t input[8];
     uint32_t events;
 
     memset(&state, 0, sizeof(state));
@@ -39,6 +40,29 @@ int main(void) {
     assert(kernel_pty_readable_bytes(&state) == state.capacity);
     state.valid = 0;
     assert(kernel_pty_readable_bytes(&state) == 0);
+
+    memset(input, 0, sizeof(input));
+    input[0] = 'r';
+    input[1] = 'o';
+    input[2] = 'o';
+    input[3] = 't';
+    assert(!kernel_pty_canonical_input_ready(
+        input, 0, 4, sizeof(input), 4));
+    input[4] = '\n';
+    assert(kernel_pty_canonical_input_ready(
+        input, 0, 5, sizeof(input), 4));
+
+    memset(input, 0, sizeof(input));
+    input[7] = 'x';
+    input[0] = 4;
+    assert(kernel_pty_canonical_input_ready(
+        input, 7, 2, sizeof(input), 4));
+    assert(!kernel_pty_canonical_input_ready(
+        input, 7, 1, sizeof(input), 4));
+    assert(!kernel_pty_canonical_input_ready(
+        input, 0, 1, sizeof(input), 0));
+    assert(kernel_pty_canonical_input_ready(
+        input, 0, sizeof(input), sizeof(input), 4));
 
     puts("pty_runtime_unit: PASS");
     return 0;

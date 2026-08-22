@@ -7938,19 +7938,10 @@ static void pty_echo_seq_to_master(edge_pty_t *pty, const char *s, int n) {
 }
 
 static int pty_slave_input_have_canonical_line(const edge_pty_t *pty) {
-    uint32_t cnt, pos;
-    uint8_t eofc;
     if (!pty) return 0;
-    cnt = pty->m2s_count;
-    pos = pty->m2s_rpos;
-    eofc = pty->termios.c_cc[LINUX_VEOF];
-    while (cnt > 0) {
-        uint8_t c = pty->m2s_buf[pos];
-        if (c == '\n' || c == eofc) return 1;
-        pos = (pos + 1) % EDGE_PTY_BUF_SIZE;
-        cnt--;
-    }
-    return 0;
+    return kernel_pty_canonical_input_ready(
+        pty->m2s_buf, pty->m2s_rpos, pty->m2s_count,
+        EDGE_PTY_BUF_SIZE, pty->termios.c_cc[LINUX_VEOF]);
 }
 
 static uint64_t pty_slave_read_limit(const edge_pty_t *pty, uint64_t req, uint64_t avail) {

@@ -13,6 +13,9 @@
 #ifndef VT_GETSTATE
 #define VT_GETSTATE 0x5603
 #endif
+#ifndef VT_OPENQRY
+#define VT_OPENQRY 0x5600
+#endif
 
 struct edge_vt_stat {
     unsigned short active;
@@ -85,6 +88,7 @@ int main(void) {
     struct edge_vt_stat state;
     char expected[32];
     char active[32];
+    int available;
     int tty;
     int attribute;
     ssize_t length;
@@ -98,6 +102,17 @@ int main(void) {
     if (ioctl(tty, VT_GETSTATE, &state) < 0) {
         close(tty);
         return fail("VT_GETSTATE");
+    }
+    available = -1;
+    if (ioctl(tty, VT_OPENQRY, &available) < 0) {
+        close(tty);
+        return fail("VT_OPENQRY after numbered VT probes");
+    }
+    if (available < 1 || available > 63 ||
+        available == (int)state.active) {
+        close(tty);
+        errno = EPROTO;
+        return fail("VT_OPENQRY returned an unavailable VT");
     }
     if (close(tty) < 0) return fail("close /dev/tty0");
     if (state.active == 0) {

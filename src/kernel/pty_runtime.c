@@ -26,3 +26,23 @@ uint32_t kernel_pty_readable_bytes(const kernel_pty_poll_state_t *state) {
     return state->read_count > state->capacity ?
            state->capacity : state->read_count;
 }
+
+int kernel_pty_canonical_input_ready(const uint8_t *buffer,
+                                     uint32_t read_position,
+                                     uint32_t count,
+                                     uint32_t capacity,
+                                     uint8_t eof_character) {
+    if (!buffer || !capacity || read_position >= capacity || !count)
+        return 0;
+
+    if (count >= capacity)
+        return 1;
+    while (count--) {
+        uint8_t byte = buffer[read_position];
+
+        if (byte == '\n' || (eof_character && byte == eof_character))
+            return 1;
+        read_position = (read_position + 1u) % capacity;
+    }
+    return 0;
+}

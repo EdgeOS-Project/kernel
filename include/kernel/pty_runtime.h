@@ -25,5 +25,10 @@ typedef struct kernel_pty_poll_state {
 
 uint32_t kernel_pty_poll_events(const kernel_pty_poll_state_t *state);
 uint32_t kernel_pty_readable_bytes(const kernel_pty_poll_state_t *state);
+int kernel_pty_canonical_input_ready(const uint8_t *buffer,
+                                     uint32_t read_position,
+                                     uint32_t count,
+                                     uint32_t capacity,
+                                     uint8_t eof_character);
 
 #endif

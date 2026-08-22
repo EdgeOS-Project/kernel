@@ -2472,7 +2472,6 @@ static volatile uint64_t g_scheduler_cpu_migrations[EDGE_SMP_MAX_CPUS];
 static uint8_t g_raw_ipv4_packet[65535];
 static char g_pivot_rebased_path[VFS_PATH_MAX];
 static uint8_t g_raw_receive_frame[1600];
-static uint64_t g_allocated_vts = 1ULL << 1;
 static uint32_t g_loopback_address = 0x0100007fu;
 static uint32_t g_loopback_netmask = 0x000000ffu;
 static uint32_t g_loopback_flags =
@@ -9744,9 +9743,6 @@ static int fd_allocate_tty(uint8_t tty_identity, uint32_t flags) {
                     return result;
                 }
             }
-            if (tty_identity > KERNEL_TTY_VT_BASE &&
-                tty_identity < ARM64_TTY_PL011_BASE)
-                g_allocated_vts |= 1ULL << (tty_identity - KERNEL_TTY_VT_BASE);
             return fd;
         }
     }
@@ -23143,6 +23139,11 @@ static int64_t pty_read_now(kernel_task_t *task, uint8_t pty_index,
             return master ? -LINUX_EIO : 0;
         return -LINUX_EAGAIN;
     }
+    if (!master && (pty->tty.termios.lflag & 2u) != 0 &&
+        !kernel_pty_canonical_input_ready(
+            pty->slave_data, pty->slave_read_pos, pty->slave_count,
+            KERNEL_PTY_CAPACITY, pty->tty.termios.cc[4]))
+        return -LINUX_EAGAIN;
     if (master && pty->packet_mode && length) {
         uint8_t status = 0;
         if (arch_copy_to_user(task->ttbr0, buffer, &status, 1u) < 0)
@@ -34722,9 +34723,37 @@ static int64_t arm64_ioctl_execute(
               &g_ptys[fd->pipe_index].tty : task_tty_state(task, fd);
         if (!tty) return -LINUX_ENOTTY;
         if (fd->kind == KERNEL_FD_TTY && a1 == LINUX_VT_OPENQRY) {
+            uint64_t open_mask = 0;
             int available = -1;
+
+            for (uint32_t task_index = 0;
+                 task_index < g_task_high_water; ++task_index) {
+                kernel_task_t *candidate_task = &g_tasks[task_index];
+
+                if (candidate_task->state == KERNEL_TASK_UNUSED ||
+                    !candidate_task->fds)
+                    continue;
+                for (uint32_t descriptor = 0;
+                     descriptor < KERNEL_BOOTSTRAP_FD_MAX; ++descriptor) {
+                    const bootstrap_fd_t *candidate_fd =
+                        &candidate_task->fds[descriptor];
+                    uint32_t candidate_vt;
+
+                    if (!candidate_fd->used ||
+                        candidate_fd->kind != KERNEL_FD_TTY ||
+                        candidate_fd->tty_identity <= KERNEL_TTY_VT_BASE ||
+                        candidate_fd->tty_identity >= ARM64_TTY_PL011_BASE)
+                        continue;
+                    candidate_vt = (uint32_t)candidate_fd->tty_identity -
+                        KERNEL_TTY_VT_BASE;
+                    open_mask |= 1ULL << candidate_vt;
+                }
+            }
+            if (console_get_active_vt() >= 1 &&
+                console_get_active_vt() <= 63)
+                open_mask |= 1ULL << console_get_active_vt();
             for (int candidate = 1; candidate <= 63; ++candidate) {
-                if (!(g_allocated_vts & (1ULL << candidate))) {
+                if (!(open_mask & (1ULL << candidate))) {
                     available = candidate;
                     break;
                 }
@@ -34737,7 +34766,8 @@ static int64_t arm64_ioctl_execute(
             arm64_linux_vt_stat_t state;
             bytes_zero(&state, sizeof(state));
             state.active = (uint16_t)console_get_active_vt();
-            state.state = (uint16_t)(g_allocated_vts & 0xffffu);
+            if (state.active < 16u)
+                state.state = (uint16_t)(1u << state.active);
             return arch_copy_to_user(task->ttbr0, a2, &state,
                     sizeof(state)) < 0 ? -LINUX_EFAULT : 0;
         }
@@ -34756,7 +34786,6 @@ static int64_t arm64_ioctl_execute(
             (a1 == LINUX_VT_ACTIVATE || a1 == LINUX_VT_WAITACTIVE)) {
             if (a2 < 1u || a2 > EDGE_FB_VT_COUNT) return -LINUX_ENXIO;
             if (a1 == LINUX_VT_ACTIVATE) {
-                g_allocated_vts |= 1ULL << a2;
                 console_activate_vt((int)a2);
                 vt_wake_waiters();
             } else if ((uint64_t)console_get_active_vt() != a2) {
@@ -34801,9 +34830,20 @@ static int64_t arm64_ioctl_execute(
         if (a1 == LINUX_TCGETS)
             return arch_copy_to_user(task->ttbr0, a2, &tty->termios,
                                               sizeof(tty->termios)) < 0 ? -LINUX_EFAULT : 0;
-        if (a1 == LINUX_TCSETS || a1 == LINUX_TCSETSW || a1 == LINUX_TCSETSF)
-            return arch_copy_from_user(task->ttbr0, &tty->termios, a2,
-                                                sizeof(tty->termios)) < 0 ? -LINUX_EFAULT : 0;
+        if (a1 == LINUX_TCSETS || a1 == LINUX_TCSETSW || a1 == LINUX_TCSETSF) {
+            if (arch_copy_from_user(task->ttbr0, &tty->termios, a2,
+                                    sizeof(tty->termios)) < 0)
+                return -LINUX_EFAULT;
+            if (a1 == LINUX_TCSETSF &&
+                (fd->kind == KERNEL_FD_PTY_MASTER ||
+                 fd->kind == KERNEL_FD_PTY_SLAVE)) {
+                kernel_pty_t *pty = &g_ptys[fd->pipe_index];
+
+                pty->slave_read_pos = pty->slave_write_pos;
+                pty->slave_count = 0;
+            }
+            return 0;
+        }
         if (a1 == LINUX_TIOCGWINSZ)
             return arch_copy_to_user(task->ttbr0, a2, &tty->winsize,
                                               sizeof(tty->winsize)) < 0 ? -LINUX_EFAULT : 0;

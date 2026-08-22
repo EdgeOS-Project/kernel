@@ -6951,6 +6951,11 @@ static uint64_t x86_ioctl_execute_raw(uint64_t fd_u, uint64_t cmd_u,
         if (e->kind == FD_PTY_MASTER || e->kind == FD_PTY_SLAVE) {
             if (e->pipe_id < 0 || e->pipe_id >= EDGE_MAX_PTYS || !g_ptys[e->pipe_id].used) return (uint64_t)-EINVAL;
             termios_from_linux_abi(&g_ptys[e->pipe_id].termios, &user_t);
+            if (cmd == LINUX_TCSETSF) {
+                g_ptys[e->pipe_id].m2s_rpos =
+                    g_ptys[e->pipe_id].m2s_wpos;
+                g_ptys[e->pipe_id].m2s_count = 0;
+            }
             tty_log_ioctl_once(cur, fd, cmd, e, "ok");
             return 0;
         }
