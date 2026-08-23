@@ -18,6 +18,7 @@
 #define KERNEL_UFFDIO_WAKE       0x8010aa02u
 #define KERNEL_UFFDIO_COPY       0xc028aa03u
 #define KERNEL_UFFDIO_ZEROPAGE   0xc020aa04u
+#define KERNEL_UFFDIO_MOVE       0xc028aa05u
 #define KERNEL_UFFDIO_WRITEPROTECT 0xc018aa06u
 #define KERNEL_UFFDIO_API        0xc018aa3fu
 #define KERNEL_UFFD_PAGE_SIZE 4096u
@@ -262,6 +263,71 @@ int64_t kernel_userfaultfd_ioctl(const kernel_ioctl_request_t *request) {
                 request, request->argument, &zero, sizeof(zero)) < 0)
             return -EDGE_LINUX_EFAULT;
         if (completed == zero.range.length) return 0;
+        return completed ? -EDGE_LINUX_EAGAIN : status;
+    }
+
+    if (request->command == KERNEL_UFFDIO_MOVE) {
+        kernel_uffdio_move_t move;
+        kernel_uffdio_range_t destination_range;
+        uint64_t completed = 0;
+
+        memset(&move, 0, sizeof(move));
+        status = userfaultfd_copy_from_user(
+            request, &move, request->argument,
+            sizeof(move) - sizeof(move.moved));
+        if (status < 0) return status;
+        if (!move.length ||
+            ((move.source | move.destination | move.length) &
+             (KERNEL_UFFD_PAGE_SIZE - 1u)) ||
+            move.source > UINT64_MAX - move.length ||
+            move.destination > UINT64_MAX - move.length ||
+            (move.mode & ~(KERNEL_UFFDIO_MOVE_MODE_DONTWAKE |
+                           KERNEL_UFFDIO_MOVE_MODE_ALLOW_SRC_HOLES)))
+            return -EDGE_LINUX_EINVAL;
+        destination_range.start = move.destination;
+        destination_range.length = move.length;
+        status = arch_mm_address_space_range_mapped(
+            state.address_space, move.source, move.length);
+        if (status < 0) return status;
+        status = arch_mm_address_space_range_mapped(
+            state.address_space, move.destination, move.length);
+        if (status < 0) return status;
+        status = kernel_userfaultfd_validate_resolution(
+            context_id, &destination_range, 0, &state.address_space);
+        if (status < 0) return status;
+        status = arch_mm_address_space_move_validate(
+            state.address_space, move.source, move.destination,
+            move.length);
+        if (status < 0) {
+            (void)kernel_userfaultfd_cancel_resolution(
+                context_id, &destination_range);
+            return status;
+        }
+        while (completed < move.length) {
+            kernel_uffdio_range_t page_range = {
+                .start = move.destination + completed,
+                .length = KERNEL_UFFD_PAGE_SIZE,
+            };
+            status = arch_mm_address_space_move_page(
+                state.address_space, move.source + completed,
+                move.destination + completed,
+                (move.mode &
+                 KERNEL_UFFDIO_MOVE_MODE_ALLOW_SRC_HOLES) != 0u);
+            if (status < 0) break;
+            completed += KERNEL_UFFD_PAGE_SIZE;
+            if (!(move.mode & KERNEL_UFFDIO_MOVE_MODE_DONTWAKE))
+                (void)kernel_userfaultfd_resolve(
+                    context_id, &page_range);
+        }
+        move.moved = completed ? (int64_t)completed : status;
+        if (completed < move.length ||
+            (move.mode & KERNEL_UFFDIO_MOVE_MODE_DONTWAKE))
+            (void)kernel_userfaultfd_cancel_resolution(
+                context_id, &destination_range);
+        if (userfaultfd_copy_to_user(
+                request, request->argument, &move, sizeof(move)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (completed == move.length) return 0;
         return completed ? -EDGE_LINUX_EAGAIN : status;
     }
 

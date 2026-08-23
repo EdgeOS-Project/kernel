@@ -8627,6 +8627,8 @@ int arch_mm_range_mapped(uint64_t address, uint64_t length) {
     return covered ? 0 : -ENOMEM;
 }
 
+static edge_user_vma_t *user_vma_find_at(task_t *t, uint64_t addr);
+
 static task_t *x86_mm_task_for_address_space(uint64_t address_space) {
     if (!address_space) return 0;
     for (int index = 0; index < PROC_MAX_TASKS; ++index) {
@@ -8707,6 +8709,60 @@ int arch_mm_address_space_write_protect(
         return -ENOMEM;
     return process_user_mmap_write_protect(
         memory, address, length, enable) < 0 ? -ENOMEM : 0;
+}
+
+int arch_mm_address_space_move_validate(
+        uint64_t address_space, uint64_t source, uint64_t destination,
+        uint64_t length) {
+    task_t *memory = x86_mm_task_for_address_space(address_space);
+    edge_user_vma_t *source_vma;
+    edge_user_vma_t *destination_vma;
+    uint64_t source_end;
+    uint64_t destination_end;
+    int status = -EINVAL;
+
+    if (!memory || !length || length > UINT64_MAX - source ||
+        length > UINT64_MAX - destination)
+        return -EINVAL;
+    source_end = source + length;
+    destination_end = destination + length;
+    if (source < destination_end && destination < source_end)
+        return -EINVAL;
+    process_user_vma_mutation_lock(memory);
+    source_vma = user_vma_find_at(memory, source);
+    destination_vma = user_vma_find_at(memory, destination);
+    if (source_vma && destination_vma &&
+        source_end <= source_vma->end &&
+        destination_end <= destination_vma->end &&
+        !source_vma->file_backed && !destination_vma->file_backed &&
+        !(source_vma->flags & LINUX_MAP_SHARED) &&
+        !(destination_vma->flags & LINUX_MAP_SHARED) &&
+        (source_vma->prot & LINUX_PROT_WRITE) &&
+        source_vma->prot == destination_vma->prot)
+        status = 0;
+    process_user_vma_mutation_unlock(memory);
+    return status;
+}
+
+int arch_mm_address_space_move_page(
+        uint64_t address_space, uint64_t source, uint64_t destination,
+        int allow_source_hole) {
+    task_t *memory = x86_mm_task_for_address_space(address_space);
+    int source_resident;
+    int destination_resident;
+
+    if (!memory) return -EINVAL;
+    destination_resident = arch_mm_address_space_page_resident(
+        address_space, destination);
+    if (destination_resident < 0) return destination_resident;
+    if (destination_resident) return -EEXIST;
+    source_resident = arch_mm_address_space_page_resident(
+        address_space, source);
+    if (source_resident < 0) return source_resident;
+    if (!source_resident)
+        return allow_source_hole ? 0 : -ENOENT;
+    return process_user_mmap_move_present(
+        memory, source, destination, PAGE_SIZE) < 0 ? -ENOMEM : 0;
 }
 
 int arch_mm_sync_range(uint64_t address, uint64_t length, uint32_t flags) {

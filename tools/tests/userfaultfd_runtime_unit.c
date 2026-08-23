@@ -36,7 +36,8 @@ int main(void) {
     kernel_uffdio_api_t api = {
         .api = KERNEL_UFFD_API,
         .features = KERNEL_UFFD_FEATURE_THREAD_ID |
-                    KERNEL_UFFD_FEATURE_PAGEFAULT_FLAG_WP,
+                    KERNEL_UFFD_FEATURE_PAGEFAULT_FLAG_WP |
+                    KERNEL_UFFD_FEATURE_MOVE,
     };
     kernel_uffdio_register_t registration = {
         .range = { .start = 0x400000u, .length = 0x4000u },

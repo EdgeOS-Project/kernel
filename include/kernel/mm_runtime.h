@@ -368,6 +368,12 @@ int arch_mm_address_space_copy(
     kernel_mm_process_vm_operation_t operation);
 int arch_mm_address_space_write_protect(
     uint64_t address_space, uint64_t address, uint64_t length, int enable);
+int arch_mm_address_space_move_validate(
+    uint64_t address_space, uint64_t source, uint64_t destination,
+    uint64_t length);
+int arch_mm_address_space_move_page(
+    uint64_t address_space, uint64_t source, uint64_t destination,
+    int allow_source_hole);
 int arch_mm_sync_range(uint64_t address, uint64_t length, uint32_t flags);
 int64_t arch_mm_protect_range(uint64_t address, uint64_t length,
                               uint64_t protection);

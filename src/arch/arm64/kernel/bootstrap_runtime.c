@@ -8201,6 +8201,10 @@ int arch_mm_range_mapped(uint64_t address, uint64_t length) {
     return 0;
 }
 
+static int anon_mapping_lookup_range(
+    uint64_t ttbr0, uint64_t start, uint64_t length,
+    kernel_anon_mapping_t *out);
+
 int arch_mm_address_space_range_mapped(
         uint64_t address_space, uint64_t address, uint64_t length) {
     uint64_t end;
@@ -8273,6 +8277,63 @@ int arch_mm_address_space_write_protect(
         if (arch_vm_protect_user_resident_range(
                 address_space, page, PAGE_SIZE, protection) < 0)
             return -LINUX_ENOMEM;
+    }
+    return 0;
+}
+
+int arch_mm_address_space_move_validate(
+        uint64_t address_space, uint64_t source, uint64_t destination,
+        uint64_t length) {
+    kernel_anon_mapping_t source_mapping;
+    kernel_anon_mapping_t destination_mapping;
+    uint64_t source_end;
+    uint64_t destination_end;
+
+    if (!address_space || !length || length > UINT64_MAX - source ||
+        length > UINT64_MAX - destination)
+        return -LINUX_EINVAL;
+    source_end = source + length;
+    destination_end = destination + length;
+    if (source < destination_end && destination < source_end)
+        return -LINUX_EINVAL;
+    if (!anon_mapping_lookup_range(
+            address_space, source, length, &source_mapping) ||
+        !anon_mapping_lookup_range(
+            address_space, destination, length, &destination_mapping) ||
+        source_mapping.shared || destination_mapping.shared ||
+        !(source_mapping.protection & LINUX_PROT_WRITE) ||
+        source_mapping.protection != destination_mapping.protection)
+        return -LINUX_EINVAL;
+    return 0;
+}
+
+int arch_mm_address_space_move_page(
+        uint64_t address_space, uint64_t source, uint64_t destination,
+        int allow_source_hole) {
+    uint64_t physical;
+    uint32_t protection;
+
+    if (!address_space) return -LINUX_EINVAL;
+    if (user_page_resident(address_space, destination))
+        return -LINUX_EEXIST;
+    if (!user_page_resident(address_space, source))
+        return allow_source_hole ? 0 : -LINUX_ENOENT;
+    if (arch_vm_translate(address_space, source, &physical, 0) < 0 ||
+        arch_vm_user_page_protection(
+            address_space, source, &protection) < 0)
+        return -LINUX_EFAULT;
+    if (arch_vm_retain_page((void *)(uintptr_t)physical) < 0)
+        return -LINUX_ENOMEM;
+    if (arch_vm_map_user_page(
+            address_space, destination, physical, protection) < 0) {
+        arch_vm_free_page((void *)(uintptr_t)physical);
+        return -LINUX_ENOMEM;
+    }
+    if (arch_vm_unmap_user_range(
+            address_space, source, PAGE_SIZE) < 0) {
+        (void)arch_vm_unmap_user_range(
+            address_space, destination, PAGE_SIZE);
+        return -LINUX_EIO;
     }
     return 0;
 }

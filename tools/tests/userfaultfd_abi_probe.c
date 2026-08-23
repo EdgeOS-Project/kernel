@@ -44,6 +44,7 @@
 #define UFFD_API 0xAAu
 #define UFFD_FEATURE_PAGEFAULT_FLAG_WP (1ULL << 0)
 #define UFFD_FEATURE_THREAD_ID (1ULL << 8)
+#define UFFD_FEATURE_MOVE (1ULL << 16)
 #define UFFDIO_REGISTER_MODE_MISSING 0x1u
 #define UFFDIO_REGISTER_MODE_WP 0x2u
 #define UFFDIO_COPY_MODE_WP 0x2u
@@ -54,6 +55,7 @@
 #define UFFDIO_UNREGISTER 0x8010aa01u
 #define UFFDIO_COPY 0xc028aa03u
 #define UFFDIO_ZEROPAGE 0xc020aa04u
+#define UFFDIO_MOVE 0xc028aa05u
 #define UFFDIO_WRITEPROTECT 0xc018aa06u
 #define UFFD_EVENT_PAGEFAULT 0x12u
 #define UFFD_PAGEFAULT_FLAG_WRITE (1ULL << 0)
@@ -63,6 +65,7 @@
 #define SIGKILL 9
 #define EAGAIN 11
 #define EINVAL 22
+#define ENOENT 2
 
 struct uffdio_api {
     uint64_t api;
@@ -93,6 +96,14 @@ struct uffdio_zeropage {
     struct uffdio_range range;
     uint64_t mode;
     int64_t zeropage;
+};
+
+struct uffdio_move {
+    uint64_t dst;
+    uint64_t src;
+    uint64_t len;
+    uint64_t mode;
+    int64_t move;
 };
 
 struct uffdio_writeprotect {
@@ -249,15 +260,18 @@ void _start(void) {
     struct uffdio_api api = {
         .api = UFFD_API,
         .features = UFFD_FEATURE_THREAD_ID |
-                    UFFD_FEATURE_PAGEFAULT_FLAG_WP,
+                    UFFD_FEATURE_PAGEFAULT_FLAG_WP |
+                    UFFD_FEATURE_MOVE,
     };
     struct uffdio_register registration;
     struct uffdio_copy copy;
     struct uffdio_zeropage zero;
+    struct uffdio_move move;
     struct uffdio_writeprotect writeprotect;
     struct uffd_msg message;
     unsigned char *source;
     unsigned char *destination;
+    unsigned char *move_area;
     long descriptor;
     int failures = 0;
 
@@ -273,13 +287,18 @@ void _start(void) {
     destination = (unsigned char *)raw_syscall6(
         SYS_mmap, 0, PAGE_SIZE * 3u, PROT_READ | PROT_WRITE,
         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if ((long)source < 0 || (long)destination < 0) {
+    move_area = (unsigned char *)raw_syscall6(
+        SYS_mmap, 0, PAGE_SIZE * 3u, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if ((long)source < 0 || (long)destination < 0 ||
+        (long)move_area < 0) {
         print_text("FAIL mmap\n");
         ++failures;
         goto out;
     }
     for (unsigned long index = 0; index < PAGE_SIZE; ++index)
         source[index] = (unsigned char)(index * 37u + 11u);
+    move_area[0] = 0x6du;
 
     descriptor = raw_syscall6(
         SYS_userfaultfd,
@@ -292,7 +311,8 @@ void _start(void) {
         "api", raw_syscall6(
             SYS_ioctl, descriptor, UFFDIO_API, (long)&api, 0, 0, 0), 0);
     if (api.api != UFFD_API || !api.ioctls ||
-        !(api.features & UFFD_FEATURE_THREAD_ID)) {
+        !(api.features & UFFD_FEATURE_THREAD_ID) ||
+        !(api.features & UFFD_FEATURE_MOVE)) {
         print_text("FAIL api-result\n");
         ++failures;
     }
@@ -415,6 +435,53 @@ void _start(void) {
             SYS_ioctl, descriptor, UFFDIO_UNREGISTER,
             (long)&registration.range, 0, 0, 0), 0);
 
+    registration.range.start =
+        (uint64_t)(uintptr_t)(move_area + PAGE_SIZE);
+    registration.range.len = PAGE_SIZE * 2u;
+    registration.mode = UFFDIO_REGISTER_MODE_MISSING;
+    registration.ioctls = 0;
+    failures += expect_result(
+        "move-register", raw_syscall6(
+            SYS_ioctl, descriptor, UFFDIO_REGISTER,
+            (long)&registration, 0, 0, 0), 0);
+    if (!(registration.ioctls & (1ULL << 5))) {
+        print_text("FAIL move-register-ioctls\n");
+        ++failures;
+    }
+    move.dst = (uint64_t)(uintptr_t)(move_area + PAGE_SIZE);
+    move.src = (uint64_t)(uintptr_t)(move_area + 1u);
+    move.len = PAGE_SIZE;
+    move.mode = 0;
+    move.move = 0;
+    failures += expect_result(
+        "move-unaligned-source", raw_syscall6(
+            SYS_ioctl, descriptor, UFFDIO_MOVE,
+            (long)&move, 0, 0, 0), -EINVAL);
+    move.dst = (uint64_t)(uintptr_t)(move_area + PAGE_SIZE);
+    move.src = (uint64_t)(uintptr_t)move_area;
+    move.len = PAGE_SIZE;
+    move.mode = 0;
+    move.move = 0;
+    failures += expect_result(
+        "move", raw_syscall6(
+            SYS_ioctl, descriptor, UFFDIO_MOVE,
+            (long)&move, 0, 0, 0), 0);
+    failures += expect_result("move-count", move.move, PAGE_SIZE);
+    failures += expect_result(
+        "move-data", move_area[PAGE_SIZE], 0x6d);
+    move.dst = (uint64_t)(uintptr_t)(move_area + PAGE_SIZE * 2u);
+    move.src = (uint64_t)(uintptr_t)move_area;
+    move.move = 0;
+    failures += expect_result(
+        "move-source-hole", raw_syscall6(
+            SYS_ioctl, descriptor, UFFDIO_MOVE,
+            (long)&move, 0, 0, 0), -ENOENT);
+    failures += expect_result("move-source-hole-result", move.move, -ENOENT);
+    failures += expect_result(
+        "move-unregister", raw_syscall6(
+            SYS_ioctl, descriptor, UFFDIO_UNREGISTER,
+            (long)&registration.range, 0, 0, 0), 0);
+
     registration.range.start = (uint64_t)(uintptr_t)destination;
     registration.range.len = PAGE_SIZE;
     registration.mode = UFFDIO_REGISTER_MODE_WP;
@@ -502,6 +569,9 @@ out:
     if ((long)destination > 0)
         (void)raw_syscall6(
             SYS_munmap, (long)destination, PAGE_SIZE * 3u, 0, 0, 0, 0);
+    if ((long)move_area > 0)
+        (void)raw_syscall6(
+            SYS_munmap, (long)move_area, PAGE_SIZE * 3u, 0, 0, 0, 0);
     if (!failures) print_text("USERFAULTFD_ABI_PROBE_PASS\n");
     (void)raw_syscall6(SYS_exit, failures ? 1 : 0, 0, 0, 0, 0, 0);
     for (;;) { }
