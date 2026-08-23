@@ -19,6 +19,7 @@
 
 #define KERNEL_BPF_MAP_TYPE_HASH  1u
 #define KERNEL_BPF_MAP_TYPE_ARRAY 2u
+#define KERNEL_BPF_MAP_TYPE_PROG_ARRAY 3u
 #define KERNEL_BPF_MAP_TYPE_PERCPU_HASH 5u
 #define KERNEL_BPF_MAP_TYPE_PERCPU_ARRAY 6u
 #define KERNEL_BPF_MAP_TYPE_LRU_HASH 9u
@@ -92,6 +93,7 @@ typedef struct kernel_bpf_program_create_request {
     uint32_t expected_attach_type;
     uint32_t created_by_uid;
     uint32_t gpl_compatible;
+    uint8_t map_references_resolved;
     char name[KERNEL_BPF_OBJECT_NAME_LENGTH];
 } kernel_bpf_program_create_request_t;
 

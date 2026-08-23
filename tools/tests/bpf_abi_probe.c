@@ -62,6 +62,7 @@
 
 #define BPF_MAP_TYPE_HASH 1u
 #define BPF_MAP_TYPE_ARRAY 2u
+#define BPF_MAP_TYPE_PROG_ARRAY 3u
 #define BPF_MAP_TYPE_PERCPU_HASH 5u
 #define BPF_MAP_TYPE_PERCPU_ARRAY 6u
 #define BPF_MAP_TYPE_LRU_HASH 9u
@@ -324,6 +325,21 @@ _Static_assert(sizeof(struct bpf_link_info) == 32u,
                "bpf_link_info probe layout mismatch");
 _Static_assert(sizeof(struct bpf_insn) == 8u,
                "bpf_insn probe layout mismatch");
+
+void *memset(void *destination, int value, unsigned long length) {
+    unsigned char *output = (unsigned char *)destination;
+
+    while (length--) *output++ = (unsigned char)value;
+    return destination;
+}
+
+void *memcpy(void *destination, const void *source, unsigned long length) {
+    unsigned char *output = (unsigned char *)destination;
+    const unsigned char *input = (const unsigned char *)source;
+
+    while (length--) *output++ = *input++;
+    return destination;
+}
 
 static long raw_syscall6(long number, long a0, long a1, long a2,
                          long a3, long a4, long a5) {
@@ -1455,6 +1471,119 @@ static int test_batch_and_freeze(void) {
     return failures;
 }
 
+static int test_program_array(void) {
+    static const struct bpf_insn callee_instructions[] = {
+        { .code = 0xb7u, .registers = 0u,
+          .offset = 0, .immediate = 1 },
+        { .code = 0x95u, .registers = 0u,
+          .offset = 0, .immediate = 0 },
+    };
+    static const char license[] = "GPL";
+    union bpf_attr attribute;
+    struct bpf_prog_info info;
+    struct bpf_insn caller_instructions[] = {
+        { .code = 0x18u, .registers = 0x12u,
+          .offset = 0, .immediate = 0 },
+        { .code = 0u, .registers = 0u,
+          .offset = 0, .immediate = 0 },
+        { .code = 0xb7u, .registers = 3u,
+          .offset = 0, .immediate = 0 },
+        { .code = 0x85u, .registers = 0u,
+          .offset = 0, .immediate = 12 },
+        { .code = 0xb7u, .registers = 0u,
+          .offset = 0, .immediate = 1 },
+        { .code = 0x95u, .registers = 0u,
+          .offset = 0, .immediate = 0 },
+    };
+    uint32_t key = 0u;
+    uint32_t value = 0u;
+    uint32_t program_id = 0u;
+    long map_descriptor;
+    long program_descriptor;
+    long caller_descriptor;
+    int failures = 0;
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.map_create.map_type = BPF_MAP_TYPE_PROG_ARRAY;
+    attribute.map_create.key_size = sizeof(uint32_t);
+    attribute.map_create.value_size = sizeof(uint32_t);
+    attribute.map_create.max_entries = 2u;
+    attribute.map_create.map_name[0] = 'j';
+    attribute.map_create.map_name[1] = 'u';
+    attribute.map_create.map_name[2] = 'm';
+    attribute.map_create.map_name[3] = 'p';
+    map_descriptor = bpf_call(BPF_MAP_CREATE, &attribute);
+    failures += expect_true("program array create", map_descriptor >= 0);
+    if (map_descriptor < 0) return failures + 1;
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.prog_load.prog_type = BPF_PROG_TYPE_CGROUP_DEVICE;
+    attribute.prog_load.insn_count = 2u;
+    attribute.prog_load.insns =
+        (uint64_t)(uintptr_t)callee_instructions;
+    attribute.prog_load.license = (uint64_t)(uintptr_t)license;
+    attribute.prog_load.prog_name[0] = 't';
+    attribute.prog_load.prog_name[1] = 'a';
+    attribute.prog_load.prog_name[2] = 'r';
+    attribute.prog_load.prog_name[3] = 'g';
+    attribute.prog_load.prog_name[4] = 'e';
+    attribute.prog_load.prog_name[5] = 't';
+    program_descriptor = bpf_call(BPF_PROG_LOAD, &attribute);
+    failures += expect_true(
+        "program array target load", program_descriptor >= 0);
+    if (program_descriptor < 0) {
+        (void)raw_syscall6(
+            SYS_close, map_descriptor, 0, 0, 0, 0, 0);
+        return failures + 1;
+    }
+    clear_bytes(&info, sizeof(info));
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.info.bpf_fd = (uint32_t)program_descriptor;
+    attribute.info.info_len = sizeof(info);
+    attribute.info.info = (uint64_t)(uintptr_t)&info;
+    failures += expect("program array target info", bpf_call(
+        BPF_OBJ_GET_INFO_BY_FD, &attribute), 0);
+    program_id = info.id;
+    value = (uint32_t)program_descriptor;
+    failures += expect("program array update", map_element_raw(
+        BPF_MAP_UPDATE_ELEM, map_descriptor, &key, &value, BPF_ANY), 0);
+    value = 0u;
+    failures += expect("program array lookup", map_element_raw(
+        BPF_MAP_LOOKUP_ELEM, map_descriptor, &key, &value, 0), 0);
+    failures += expect("program array lookup id", value, program_id);
+
+    caller_instructions[0].immediate = (int32_t)map_descriptor;
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.prog_load.prog_type = BPF_PROG_TYPE_CGROUP_DEVICE;
+    attribute.prog_load.insn_count =
+        sizeof(caller_instructions) / sizeof(caller_instructions[0]);
+    attribute.prog_load.insns =
+        (uint64_t)(uintptr_t)caller_instructions;
+    attribute.prog_load.license = (uint64_t)(uintptr_t)license;
+    attribute.prog_load.prog_name[0] = 'c';
+    attribute.prog_load.prog_name[1] = 'a';
+    attribute.prog_load.prog_name[2] = 'l';
+    attribute.prog_load.prog_name[3] = 'l';
+    attribute.prog_load.prog_name[4] = 'e';
+    attribute.prog_load.prog_name[5] = 'r';
+    caller_descriptor = bpf_call(BPF_PROG_LOAD, &attribute);
+    failures += expect_true(
+        "tail call program load", caller_descriptor >= 0);
+
+    failures += expect("program array delete", map_element_raw(
+        BPF_MAP_DELETE_ELEM, map_descriptor, &key, 0, 0), 0);
+    failures += expect("program array missing", map_element_raw(
+        BPF_MAP_LOOKUP_ELEM, map_descriptor, &key, &value, 0), -ENOENT);
+    (void)raw_syscall6(
+        SYS_close, program_descriptor, 0, 0, 0, 0, 0);
+    (void)raw_syscall6(
+        SYS_close, map_descriptor, 0, 0, 0, 0, 0);
+    if (caller_descriptor >= 0)
+        (void)raw_syscall6(
+            SYS_close, caller_descriptor, 0, 0, 0, 0, 0);
+    return failures;
+}
+
 static int test_program(void) {
     static const struct bpf_insn instructions[] = {
         { .code = 0xb7u, .registers = 0u, .offset = 0, .immediate = 1 },
@@ -1911,6 +2040,7 @@ START_ATTRIBUTES void _start(void) {
     failures += test_no_common_lru();
     failures += test_map_in_map();
     failures += test_batch_and_freeze();
+    failures += test_program_array();
     failures += test_program();
     failures += test_btf_objects();
     failures += test_attribute_tail();

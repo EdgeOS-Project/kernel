@@ -23,10 +23,13 @@
 #define BPF_OP(code)    ((code) & 0xf0u)
 #define BPF_SRC(code)   ((code) & 0x08u)
 
+#define BPF_LD    0x00u
 #define BPF_LDX   0x01u
 #define BPF_ALU64 0x07u
 #define BPF_JMP   0x05u
 #define BPF_W     0x00u
+#define BPF_DW    0x18u
+#define BPF_IMM   0x00u
 #define BPF_MEM   0x60u
 #define BPF_K     0x00u
 #define BPF_X     0x08u
@@ -55,7 +58,11 @@
 #define BPF_JLE   0xb0u
 #define BPF_JSLT  0xc0u
 #define BPF_JSLE  0xd0u
+#define BPF_CALL  0x80u
 #define BPF_EXIT  0x90u
+#define BPF_PSEUDO_MAP_FD 1u
+#define BPF_FUNC_TAIL_CALL 12u
+#define BPF_MAX_TAIL_CALLS 33u
 
 typedef struct kernel_bpf_map {
     uint32_t type;
@@ -95,6 +102,7 @@ typedef struct kernel_bpf_program {
     uint32_t created_by_uid;
     uint32_t gpl_compatible;
     uint32_t storage_pages;
+    uint32_t map_reference_count;
     uint64_t run_time_ns;
     uint64_t run_count;
     uint8_t tag[8];
@@ -203,7 +211,17 @@ static int bpf_map_is_array(const kernel_bpf_map_t *map) {
     return map &&
         (map->type == KERNEL_BPF_MAP_TYPE_ARRAY ||
          map->type == KERNEL_BPF_MAP_TYPE_PERCPU_ARRAY ||
+         map->type == KERNEL_BPF_MAP_TYPE_PROG_ARRAY ||
          map->type == KERNEL_BPF_MAP_TYPE_ARRAY_OF_MAPS);
+}
+
+static int bpf_map_type_is_object_array(uint32_t type) {
+    return type == KERNEL_BPF_MAP_TYPE_PROG_ARRAY ||
+           type == KERNEL_BPF_MAP_TYPE_ARRAY_OF_MAPS;
+}
+
+static int bpf_map_is_object_array(const kernel_bpf_map_t *map) {
+    return map && bpf_map_type_is_object_array(map->type);
 }
 
 static int bpf_map_type_is_map_in_map(uint32_t type) {
@@ -442,6 +460,13 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
             goto invalid_btf;
         stride = request->type == KERNEL_BPF_MAP_TYPE_PERCPU_ARRAY ?
             value_stride * possible_cpu_count : value_stride;
+    } else if (request->type == KERNEL_BPF_MAP_TYPE_PROG_ARRAY) {
+        if (request->key_size != sizeof(uint32_t) ||
+            request->value_size != sizeof(uint32_t) ||
+            validation_flags || request->map_extra ||
+            request->btf_present)
+            goto invalid_btf;
+        stride = sizeof(int32_t);
     } else if (request->type == KERNEL_BPF_MAP_TYPE_HASH ||
                request->type == KERNEL_BPF_MAP_TYPE_PERCPU_HASH) {
         if (validation_flags & ~KERNEL_BPF_MAP_NO_PREALLOC)
@@ -527,7 +552,7 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
         goto fail_btf;
     }
     memset(storage, 0, (uint64_t)pages * BPF_PAGE_SIZE);
-    if (request->type == KERNEL_BPF_MAP_TYPE_ARRAY_OF_MAPS) {
+    if (bpf_map_type_is_object_array(request->type)) {
         for (uint32_t index = 0; index < actual_max_entries; ++index) {
             int32_t empty = -1;
             memcpy(storage + (uint64_t)index * stride,
@@ -726,25 +751,56 @@ static void bpf_sha256_transform(uint32_t state[8],
     state[7] += h;
 }
 
+static void bpf_program_tag_copy(
+        const kernel_bpf_instruction_t *instructions, uint32_t count,
+        uint64_t offset, uint8_t *destination, uint32_t length) {
+    const uint8_t *source = (const uint8_t *)instructions;
+
+    memcpy(destination, source + offset, length);
+    for (uint32_t index = 0; index + 1u < count; ++index) {
+        uint64_t immediate =
+            (uint64_t)index * sizeof(*instructions) + 4u;
+        uint64_t high_immediate = immediate + sizeof(*instructions);
+
+        if (instructions[index].code != (BPF_LD | BPF_DW | BPF_IMM) ||
+            bpf_program_source(&instructions[index]) !=
+                BPF_PSEUDO_MAP_FD)
+            continue;
+        for (uint32_t byte = 0; byte < sizeof(int32_t); ++byte) {
+            uint64_t position = immediate + byte;
+            if (position >= offset && position < offset + length)
+                destination[position - offset] = 0;
+            position = high_immediate + byte;
+            if (position >= offset && position < offset + length)
+                destination[position - offset] = 0;
+        }
+        ++index;
+    }
+}
+
 static void bpf_program_tag(const kernel_bpf_instruction_t *instructions,
                             uint32_t count, uint8_t tag[8]) {
     uint32_t state[8] = {
         0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
         0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u,
     };
-    const uint8_t *bytes = (const uint8_t *)instructions;
     uint64_t length = (uint64_t)count * sizeof(*instructions);
     uint64_t offset = 0;
+    uint8_t block[64];
     uint8_t final_blocks[128];
     uint32_t final_size;
 
     while (length - offset >= 64u) {
-        bpf_sha256_transform(state, bytes + offset);
+        bpf_program_tag_copy(
+            instructions, count, offset, block, sizeof(block));
+        bpf_sha256_transform(state, block);
         offset += 64u;
     }
     final_size = (uint32_t)(length - offset);
     memset(final_blocks, 0, sizeof(final_blocks));
-    if (final_size) memcpy(final_blocks, bytes + offset, final_size);
+    if (final_size)
+        bpf_program_tag_copy(
+            instructions, count, offset, final_blocks, final_size);
     final_blocks[final_size] = 0x80u;
     final_size = final_size < 56u ? 64u : 128u;
     for (uint32_t index = 0; index < 8u; ++index)
@@ -762,6 +818,7 @@ static int bpf_program_validate(
     const kernel_bpf_program_create_request_t *request,
     const kernel_bpf_instruction_t *instructions) {
     uint16_t initialized = 1u << 1;
+    uint16_t map_registers = 0u;
     uint32_t pc;
 
     if (!request || !instructions ||
@@ -783,15 +840,47 @@ static int bpf_program_validate(
 
         if (destination >= 11u || source >= 11u || destination == 10u)
             return -EDGE_LINUX_EINVAL;
+        if (class == BPF_LD && instruction->code ==
+                (BPF_LD | BPF_DW | BPF_IMM)) {
+            kernel_bpf_object_kind_t kind;
+            kernel_bpf_map_info_t info;
+
+            if (source != BPF_PSEUDO_MAP_FD ||
+                !request->map_references_resolved ||
+                pc + 1u >= request->instruction_count ||
+                instructions[pc + 1u].code ||
+                instructions[pc + 1u].registers ||
+                instructions[pc + 1u].offset ||
+                instructions[pc + 1u].immediate ||
+                kernel_bpf_object_kind(
+                    instruction->immediate, &kind) < 0 ||
+                kind != KERNEL_BPF_OBJECT_MAP ||
+                kernel_bpf_map_info(
+                    instruction->immediate, &info) < 0 ||
+                info.type != KERNEL_BPF_MAP_TYPE_PROG_ARRAY)
+                return -EDGE_LINUX_EINVAL;
+            initialized |= (uint16_t)(1u << destination);
+            map_registers |= (uint16_t)(1u << destination);
+            ++pc;
+            continue;
+        }
         if (class == BPF_ALU64) {
             if (operation == BPF_MOV) {
                 if (BPF_SRC(instruction->code) == BPF_X &&
                     !(initialized & (1u << source)))
                     return -EDGE_LINUX_EINVAL;
+                if (BPF_SRC(instruction->code) == BPF_X &&
+                    (map_registers & (1u << source)))
+                    map_registers |= (uint16_t)(1u << destination);
+                else
+                    map_registers &= (uint16_t)~(1u << destination);
             } else {
                 if (!(initialized & (1u << destination)) ||
                     (BPF_SRC(instruction->code) == BPF_X &&
                      !(initialized & (1u << source))) ||
+                    (map_registers & (1u << destination)) ||
+                    (BPF_SRC(instruction->code) == BPF_X &&
+                     (map_registers & (1u << source))) ||
                     (operation != BPF_ADD && operation != BPF_SUB &&
                      operation != BPF_MUL && operation != BPF_DIV &&
                      operation != BPF_OR && operation != BPF_AND &&
@@ -812,6 +901,7 @@ static int bpf_program_validate(
             instruction->offset >= 0 && instruction->offset <= 8 &&
             !(instruction->offset & 3)) {
             initialized |= (uint16_t)(1u << destination);
+            map_registers &= (uint16_t)~(1u << destination);
             continue;
         }
         if (class == BPF_JMP && operation == BPF_EXIT) {
@@ -820,6 +910,19 @@ static int bpf_program_validate(
                 pc + 1u != request->instruction_count)
                 return -EDGE_LINUX_EINVAL;
             return 0;
+        }
+        if (class == BPF_JMP && operation == BPF_CALL) {
+            if (instruction->code != (BPF_JMP | BPF_CALL) ||
+                instruction->offset || instruction->immediate !=
+                    (int32_t)BPF_FUNC_TAIL_CALL ||
+                (initialized & ((1u << 1) | (1u << 2) | (1u << 3))) !=
+                    ((1u << 1) | (1u << 2) | (1u << 3)) ||
+                !(map_registers & (1u << 2)))
+                return -EDGE_LINUX_EINVAL;
+            initialized &= (uint16_t)~0x3eu;
+            initialized |= 1u;
+            map_registers &= (uint16_t)~0x3fu;
+            continue;
         }
         if (class == BPF_JMP) {
             uint32_t target;
@@ -846,22 +949,63 @@ static int bpf_program_validate(
     return -EDGE_LINUX_EINVAL;
 }
 
+static void bpf_program_map_references_release(
+        const kernel_bpf_instruction_t *instructions, uint32_t count,
+        uint32_t reference_count) {
+    for (uint32_t pc = 0;
+         pc + 1u < count && reference_count; ++pc) {
+        const kernel_bpf_instruction_t *instruction = &instructions[pc];
+
+        if (instruction->code != (BPF_LD | BPF_DW | BPF_IMM) ||
+            bpf_program_source(instruction) != BPF_PSEUDO_MAP_FD)
+            continue;
+        kernel_bpf_object_release(instruction->immediate);
+        --reference_count;
+        ++pc;
+    }
+}
+
 int kernel_bpf_program_create(
     const kernel_bpf_program_create_request_t *request,
     const kernel_bpf_instruction_t *instructions) {
     kernel_bpf_object_t *object;
     kernel_bpf_instruction_t *storage;
     uint32_t pages;
+    uint32_t retained_maps = 0u;
     int object_id;
     int status;
 
     status = bpf_program_validate(request, instructions);
     if (status < 0) return status;
+    for (uint32_t pc = 0; pc + 1u < request->instruction_count; ++pc) {
+        const kernel_bpf_instruction_t *instruction = &instructions[pc];
+
+        if (instruction->code != (BPF_LD | BPF_DW | BPF_IMM) ||
+            bpf_program_source(instruction) != BPF_PSEUDO_MAP_FD)
+            continue;
+        status = kernel_bpf_object_retain(instruction->immediate);
+        if (status < 0) {
+            bpf_program_map_references_release(
+                instructions, request->instruction_count,
+                retained_maps);
+            return status;
+        }
+        ++retained_maps;
+        ++pc;
+    }
     status = bpf_allocation_size(
         (uint64_t)request->instruction_count * sizeof(*instructions), &pages);
-    if (status < 0) return status;
+    if (status < 0) {
+        bpf_program_map_references_release(
+            instructions, request->instruction_count, retained_maps);
+        return status;
+    }
     storage = (kernel_bpf_instruction_t *)arch_vm_alloc_pages(pages);
-    if (!storage) return -EDGE_LINUX_ENOMEM;
+    if (!storage) {
+        bpf_program_map_references_release(
+            instructions, request->instruction_count, retained_maps);
+        return -EDGE_LINUX_ENOMEM;
+    }
     memset(storage, 0, (uint64_t)pages * BPF_PAGE_SIZE);
     memcpy(storage, instructions,
            (uint64_t)request->instruction_count * sizeof(*instructions));
@@ -878,6 +1022,7 @@ int kernel_bpf_program_create(
         object->value.program.created_by_uid = request->created_by_uid;
         object->value.program.gpl_compatible = request->gpl_compatible != 0;
         object->value.program.storage_pages = pages;
+        object->value.program.map_reference_count = retained_maps;
         object->value.program.instructions = storage;
         bpf_program_tag(
             storage, request->instruction_count,
@@ -886,7 +1031,11 @@ int kernel_bpf_program_create(
                KERNEL_BPF_OBJECT_NAME_LENGTH);
     }
     bpf_unlock();
-    if (object_id < 0) bpf_free_pages(storage, pages);
+    if (object_id < 0) {
+        bpf_program_map_references_release(
+            instructions, request->instruction_count, retained_maps);
+        bpf_free_pages(storage, pages);
+    }
     return object_id;
 }
 
@@ -912,6 +1061,8 @@ void kernel_bpf_object_release(int object_id) {
     uint32_t map_entries = 0u;
     uint32_t map_stride = 0u;
     uint32_t map_key_size = 0u;
+    uint32_t program_instruction_count = 0u;
+    uint32_t program_map_reference_count = 0u;
     int32_t map_btf_object = -1;
     int32_t released_link_program = -1;
 
@@ -929,6 +1080,10 @@ void kernel_bpf_object_release(int object_id) {
         } else if (object->kind == KERNEL_BPF_OBJECT_PROGRAM) {
             storage = object->value.program.instructions;
             pages = object->value.program.storage_pages;
+            program_instruction_count =
+                object->value.program.instruction_count;
+            program_map_reference_count =
+                object->value.program.map_reference_count;
         } else if (object->kind == KERNEL_BPF_OBJECT_BTF) {
             storage = object->value.btf.data;
             pages = object->value.btf.storage_pages;
@@ -955,7 +1110,9 @@ void kernel_bpf_object_release(int object_id) {
         memset(object, 0, sizeof(*object));
     }
     bpf_unlock();
-    if (storage && bpf_map_type_is_map_in_map(map_type)) {
+    if (storage &&
+        (bpf_map_type_is_map_in_map(map_type) ||
+         map_type == KERNEL_BPF_MAP_TYPE_PROG_ARRAY)) {
         for (uint32_t index = 0; index < map_entries; ++index) {
             uint8_t *entry = (uint8_t *)storage +
                 (uint64_t)index * map_stride;
@@ -974,6 +1131,10 @@ void kernel_bpf_object_release(int object_id) {
         kernel_bpf_object_release(map_btf_object);
     if (released_link_program >= 0)
         kernel_bpf_object_release(released_link_program);
+    if (storage && program_instruction_count)
+        bpf_program_map_references_release(
+            (const kernel_bpf_instruction_t *)storage,
+            program_instruction_count, program_map_reference_count);
     bpf_free_pages(storage, pages);
 }
 
@@ -1760,6 +1921,115 @@ static int bpf_map_inner_user_id_locked(int inner_object_id,
     return 0;
 }
 
+static int bpf_program_reaches_map_locked(int program_object_id,
+                                          int target_map_object_id) {
+    uint8_t visited[BPF_OBJECT_CAPACITY] = {0};
+    int32_t pending[BPF_OBJECT_CAPACITY];
+    uint32_t pending_count = 0u;
+
+    if (program_object_id < 0 ||
+        (uint32_t)program_object_id >= BPF_OBJECT_CAPACITY)
+        return 0;
+    pending[pending_count++] = program_object_id;
+    visited[program_object_id] = 1u;
+    while (pending_count) {
+        int32_t current_id = pending[--pending_count];
+        kernel_bpf_object_t *program;
+
+        if (current_id < 0 || (uint32_t)current_id >= BPF_OBJECT_CAPACITY ||
+            visited[current_id] == 2u)
+            continue;
+        visited[current_id] = 2u;
+        program = bpf_object_locked(current_id);
+        if (!program || program->kind != KERNEL_BPF_OBJECT_PROGRAM)
+            continue;
+        for (uint32_t pc = 0;
+             pc + 1u < program->value.program.instruction_count; ++pc) {
+            const kernel_bpf_instruction_t *instruction =
+                &program->value.program.instructions[pc];
+            kernel_bpf_object_t *referenced_map;
+
+            if (instruction->code != (BPF_LD | BPF_DW | BPF_IMM) ||
+                bpf_program_source(instruction) != BPF_PSEUDO_MAP_FD)
+                continue;
+            if (instruction->immediate == target_map_object_id)
+                return 1;
+            referenced_map = bpf_object_locked(instruction->immediate);
+            if (referenced_map &&
+                referenced_map->kind == KERNEL_BPF_OBJECT_MAP &&
+                referenced_map->value.map.type ==
+                    KERNEL_BPF_MAP_TYPE_PROG_ARRAY) {
+                kernel_bpf_map_t *map = &referenced_map->value.map;
+
+                for (uint32_t index = 0;
+                     index < map->max_entries; ++index) {
+                    int32_t next_program = -1;
+
+                    memcpy(&next_program, bpf_map_value(map, index),
+                           sizeof(next_program));
+                    if (next_program >= 0 &&
+                        (uint32_t)next_program < BPF_OBJECT_CAPACITY &&
+                        !visited[next_program] &&
+                        pending_count < BPF_OBJECT_CAPACITY) {
+                        visited[next_program] = 1u;
+                        pending[pending_count++] = next_program;
+                    }
+                }
+            }
+            ++pc;
+        }
+    }
+    return 0;
+}
+
+static int bpf_map_object_compatible_locked(
+        int map_object_id, const kernel_bpf_map_t *map, int object_id) {
+    kernel_bpf_object_t *object = bpf_object_locked(object_id);
+
+    if (!map || !object) return -EDGE_LINUX_EBADF;
+    if (map->type == KERNEL_BPF_MAP_TYPE_PROG_ARRAY) {
+        if (object->kind != KERNEL_BPF_OBJECT_PROGRAM ||
+            object->value.program.type !=
+                KERNEL_BPF_PROG_TYPE_CGROUP_DEVICE)
+            return -EDGE_LINUX_EINVAL;
+        if (bpf_program_reaches_map_locked(object_id, map_object_id))
+            return -EDGE_LINUX_EINVAL;
+        for (uint32_t index = 0; index < map->max_entries; ++index) {
+            int32_t existing_id = -1;
+            kernel_bpf_object_t *existing;
+
+            memcpy(&existing_id,
+                   map->storage + (uint64_t)index * map->entry_stride,
+                   sizeof(existing_id));
+            if (existing_id < 0 || existing_id == object_id) continue;
+            existing = bpf_object_locked(existing_id);
+            if (!existing || existing->kind != KERNEL_BPF_OBJECT_PROGRAM ||
+                existing->value.program.type != object->value.program.type ||
+                existing->value.program.expected_attach_type !=
+                    object->value.program.expected_attach_type)
+                return -EDGE_LINUX_EINVAL;
+            break;
+        }
+        return 0;
+    }
+    return bpf_map_inner_compatible_locked(map, object_id);
+}
+
+static int bpf_map_object_user_id_locked(
+        const kernel_bpf_map_t *map, int object_id, uint32_t *user_id) {
+    kernel_bpf_object_t *object = bpf_object_locked(object_id);
+
+    if (!map || !user_id || !object) return -EDGE_LINUX_ENOENT;
+    if (map->type == KERNEL_BPF_MAP_TYPE_PROG_ARRAY) {
+        if (object->kind != KERNEL_BPF_OBJECT_PROGRAM)
+            return -EDGE_LINUX_ENOENT;
+    } else if (object->kind != KERNEL_BPF_OBJECT_MAP) {
+        return -EDGE_LINUX_ENOENT;
+    }
+    *user_id = object->user_id;
+    return 0;
+}
+
 int kernel_bpf_map_lookup_flags(int object_id, const void *key, void *value,
                                 uint64_t flags) {
     kernel_bpf_object_t *object;
@@ -1798,15 +2068,15 @@ int kernel_bpf_map_lookup_flags(int object_id, const void *key, void *value,
     } else if (bpf_map_is_array(map)) {
         status = bpf_map_array_index(map, key, &index);
         if (status < 0) goto out;
-        if (bpf_map_is_map_in_map(map)) {
+        if (bpf_map_is_object_array(map)) {
             int32_t inner;
             memcpy(&inner, bpf_map_value(map, index), sizeof(inner));
             if (inner < 0) {
                 status = -EDGE_LINUX_ENOENT;
                 goto out;
             }
-            status = bpf_map_inner_user_id_locked(
-                inner, (uint32_t *)value);
+            status = bpf_map_object_user_id_locked(
+                map, inner, (uint32_t *)value);
         } else {
             bpf_map_copy_value_out(map, index, value, flags);
         }
@@ -1860,9 +2130,11 @@ int kernel_bpf_map_update(int object_id, const void *key, const void *value,
         goto out;
     }
     map = &object->value.map;
-    if (bpf_map_is_map_in_map(map)) {
+    if (bpf_map_is_map_in_map(map) ||
+        map->type == KERNEL_BPF_MAP_TYPE_PROG_ARRAY) {
         memcpy(&new_inner, value, sizeof(new_inner));
-        status = bpf_map_inner_compatible_locked(map, new_inner);
+        status = bpf_map_object_compatible_locked(
+            object_id, map, new_inner);
         if (status < 0) goto out;
         if (g_bpf_objects[new_inner].references == UINT32_MAX) {
             status = -EDGE_LINUX_EOVERFLOW;
@@ -1908,17 +2180,18 @@ int kernel_bpf_map_update(int object_id, const void *key, const void *value,
     } else if (!key) {
         status = -EDGE_LINUX_EFAULT;
     } else if (bpf_map_is_array(map)) {
-        if (bpf_map_is_map_in_map(map) && flags != KERNEL_BPF_ANY) {
+        if (bpf_map_is_object_array(map) && flags != KERNEL_BPF_ANY) {
             status = -EDGE_LINUX_EINVAL;
             goto out;
         }
-        if (!bpf_map_is_map_in_map(map) && flags == KERNEL_BPF_NOEXIST) {
+        if (!bpf_map_is_object_array(map) &&
+            flags == KERNEL_BPF_NOEXIST) {
             status = -EDGE_LINUX_EEXIST;
             goto out;
         }
         status = bpf_map_array_index(map, key, &index);
         if (status < 0) goto out;
-        if (bpf_map_is_map_in_map(map)) {
+        if (bpf_map_is_object_array(map)) {
             memcpy(&released_inner, bpf_map_value(map, index),
                    sizeof(released_inner));
             ++g_bpf_objects[new_inner].references;
@@ -2103,11 +2376,11 @@ int kernel_bpf_map_delete(int object_id, const void *key) {
         status = -EDGE_LINUX_EFAULT;
         goto out;
     }
-    if (bpf_map_is_array(map) && !bpf_map_is_map_in_map(map)) {
+    if (bpf_map_is_array(map) && !bpf_map_is_object_array(map)) {
         status = -EDGE_LINUX_EINVAL;
         goto out;
     }
-    if (map->type == KERNEL_BPF_MAP_TYPE_ARRAY_OF_MAPS) {
+    if (bpf_map_is_object_array(map)) {
         status = bpf_map_array_index(map, key, &index);
         if (status < 0) goto out;
         memcpy(&released_inner, bpf_map_value(map, index),
@@ -2265,7 +2538,7 @@ int kernel_bpf_map_batch_next_flags(int object_id, uint32_t *cursor,
     }
     index = *cursor;
     if (bpf_map_is_array(map)) {
-        if (bpf_map_is_map_in_map(map)) {
+        if (bpf_map_is_object_array(map)) {
             int32_t inner = -1;
 
             while (index < map->max_entries) {
@@ -2279,11 +2552,11 @@ int kernel_bpf_map_batch_next_flags(int object_id, uint32_t *cursor,
             goto out;
         }
         memcpy(key, &index, sizeof(index));
-        if (bpf_map_is_map_in_map(map)) {
+        if (bpf_map_is_object_array(map)) {
             int32_t inner;
             memcpy(&inner, bpf_map_value(map, index), sizeof(inner));
-            status = bpf_map_inner_user_id_locked(
-                inner, (uint32_t *)value);
+            status = bpf_map_object_user_id_locked(
+                map, inner, (uint32_t *)value);
             if (status < 0) goto out;
         } else {
             bpf_map_copy_value_out(map, index, value, flags);
@@ -2333,7 +2606,7 @@ int kernel_bpf_map_batch_next_flags(int object_id, uint32_t *cursor,
     *has_more = 0;
     if (bpf_map_is_array(map)) {
         index = *cursor;
-        if (bpf_map_is_map_in_map(map)) {
+        if (bpf_map_is_object_array(map)) {
             while (index < map->max_entries) {
                 int32_t inner;
                 memcpy(&inner, bpf_map_value(map, index), sizeof(inner));
@@ -2430,6 +2703,7 @@ static int bpf_program_run_cgroup_device_locked(
     kernel_bpf_instruction_t *instructions;
     uint32_t count;
     uint64_t registers[11] = {0};
+    uint32_t tail_call_count = 0u;
     uint32_t pc;
 
     if (!object || object->kind != KERNEL_BPF_OBJECT_PROGRAM ||
@@ -2446,7 +2720,11 @@ static int bpf_program_run_cgroup_device_locked(
         uint64_t operand = BPF_SRC(instruction->code) == BPF_X ?
             registers[source] : (uint64_t)(int64_t)instruction->immediate;
 
-        if (BPF_CLASS(instruction->code) == BPF_ALU64) {
+        if (instruction->code == (BPF_LD | BPF_DW | BPF_IMM)) {
+            registers[destination] =
+                (uint64_t)(uint32_t)instruction->immediate;
+            ++pc;
+        } else if (BPF_CLASS(instruction->code) == BPF_ALU64) {
             registers[destination] = bpf_alu_result(
                 operation, registers[destination], operand);
         } else if (BPF_CLASS(instruction->code) == BPF_LDX) {
@@ -2454,6 +2732,44 @@ static int bpf_program_run_cgroup_device_locked(
             memcpy(&value, (const uint8_t *)context + instruction->offset,
                    sizeof(value));
             registers[destination] = value;
+        } else if (BPF_CLASS(instruction->code) == BPF_JMP &&
+                   operation == BPF_CALL &&
+                   instruction->immediate == (int32_t)BPF_FUNC_TAIL_CALL) {
+            kernel_bpf_object_t *map_object =
+                bpf_object_locked((int32_t)registers[2]);
+            kernel_bpf_object_t *next_program = 0;
+            uint32_t index = (uint32_t)registers[3];
+            int32_t next_program_id = -1;
+
+            if (tail_call_count < BPF_MAX_TAIL_CALLS && map_object &&
+                map_object->kind == KERNEL_BPF_OBJECT_MAP &&
+                map_object->value.map.type ==
+                    KERNEL_BPF_MAP_TYPE_PROG_ARRAY &&
+                index < map_object->value.map.max_entries) {
+                memcpy(&next_program_id,
+                       bpf_map_value(&map_object->value.map, index),
+                       sizeof(next_program_id));
+                next_program = bpf_object_locked(next_program_id);
+                if (!next_program ||
+                    next_program->kind != KERNEL_BPF_OBJECT_PROGRAM ||
+                    next_program->value.program.type !=
+                        object->value.program.type ||
+                    next_program->value.program.expected_attach_type !=
+                        object->value.program.expected_attach_type)
+                    next_program = 0;
+            }
+            if (!next_program) {
+                registers[0] = 0u;
+                continue;
+            }
+            ++object->value.program.run_count;
+            ++tail_call_count;
+            object = next_program;
+            instructions = object->value.program.instructions;
+            count = object->value.program.instruction_count;
+            memset(registers, 0, sizeof(registers));
+            registers[1] = (uint64_t)(uintptr_t)context;
+            pc = UINT32_MAX;
         } else if (operation == BPF_EXIT) {
             *result = (uint32_t)registers[0];
             ++object->value.program.run_count;

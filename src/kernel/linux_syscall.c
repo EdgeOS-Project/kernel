@@ -4734,13 +4734,16 @@ static int64_t edge_linux_bpf_map_element(
             goto out;
         }
         if (info.type == KERNEL_BPF_MAP_TYPE_ARRAY_OF_MAPS ||
-            info.type == KERNEL_BPF_MAP_TYPE_HASH_OF_MAPS) {
+            info.type == KERNEL_BPF_MAP_TYPE_HASH_OF_MAPS ||
+            info.type == KERNEL_BPF_MAP_TYPE_PROG_ARRAY) {
             int32_t inner_descriptor;
             int32_t inner_object;
 
             memcpy(&inner_descriptor, value, sizeof(inner_descriptor));
             inner_object = kernel_bpf_descriptor_object(
-                inner_descriptor, KERNEL_BPF_OBJECT_MAP);
+                inner_descriptor,
+                info.type == KERNEL_BPF_MAP_TYPE_PROG_ARRAY ?
+                    KERNEL_BPF_OBJECT_PROGRAM : KERNEL_BPF_OBJECT_MAP);
             if (inner_object < 0) {
                 status = inner_object;
                 goto out;
@@ -4925,14 +4928,18 @@ static int64_t edge_linux_bpf_map_batch(
                     break;
                 }
                 if (info.type == KERNEL_BPF_MAP_TYPE_ARRAY_OF_MAPS ||
-                    info.type == KERNEL_BPF_MAP_TYPE_HASH_OF_MAPS) {
+                    info.type == KERNEL_BPF_MAP_TYPE_HASH_OF_MAPS ||
+                    info.type == KERNEL_BPF_MAP_TYPE_PROG_ARRAY) {
                     int32_t inner_descriptor;
                     int32_t inner_object;
 
                     memcpy(&inner_descriptor, value,
                            sizeof(inner_descriptor));
                     inner_object = kernel_bpf_descriptor_object(
-                        inner_descriptor, KERNEL_BPF_OBJECT_MAP);
+                        inner_descriptor,
+                        info.type == KERNEL_BPF_MAP_TYPE_PROG_ARRAY ?
+                            KERNEL_BPF_OBJECT_PROGRAM :
+                            KERNEL_BPF_OBJECT_MAP);
                     if (inner_object < 0) {
                         status = inner_object;
                         break;
@@ -5011,6 +5018,22 @@ static int64_t edge_linux_bpf_program_load(
         status = -EDGE_LINUX_EFAULT;
         goto out;
     }
+    for (uint32_t index = 0;
+         index < attribute.instruction_count; ++index) {
+        kernel_bpf_instruction_t *instruction = &instructions[index];
+
+        if (instruction->code == 0x18u &&
+            ((instruction->registers >> 4u) & 0x0fu) == 1u) {
+            int map_object = kernel_bpf_descriptor_object(
+                instruction->immediate, KERNEL_BPF_OBJECT_MAP);
+
+            if (map_object < 0) {
+                status = map_object;
+                goto out;
+            }
+            instruction->immediate = map_object;
+        }
+    }
     memset(&request, 0, sizeof(request));
     request.type = attribute.program_type;
     request.instruction_count = attribute.instruction_count;
@@ -5019,6 +5042,7 @@ static int64_t edge_linux_bpf_program_load(
     request.created_by_uid = identity->uid;
     request.gpl_compatible =
         edge_linux_bpf_license_is_gpl_compatible(license);
+    request.map_references_resolved = 1u;
     memcpy(request.name, attribute.program_name, sizeof(request.name));
     object_id = kernel_bpf_program_create(&request, instructions);
     if (object_id < 0) {

@@ -912,6 +912,122 @@ static void test_program(void) {
     kernel_bpf_object_release(object);
 }
 
+static void test_program_array_tail_call(void) {
+    const kernel_bpf_instruction_t callee_instructions[] = {
+        { .code = 0xb7u, .registers = 0u,
+          .offset = 0, .immediate = 7 },
+        { .code = 0x95u, .registers = 0u,
+          .offset = 0, .immediate = 0 },
+    };
+    kernel_bpf_instruction_t caller_instructions[] = {
+        { .code = 0x18u, .registers = 0x12u,
+          .offset = 0, .immediate = 0 },
+        { .code = 0u, .registers = 0u,
+          .offset = 0, .immediate = 0 },
+        { .code = 0xb7u, .registers = 3u,
+          .offset = 0, .immediate = 0 },
+        { .code = 0x85u, .registers = 0u,
+          .offset = 0, .immediate = 12 },
+        { .code = 0xb7u, .registers = 0u,
+          .offset = 0, .immediate = 1 },
+        { .code = 0x95u, .registers = 0u,
+          .offset = 0, .immediate = 0 },
+    };
+    kernel_bpf_program_create_request_t request = {
+        .type = KERNEL_BPF_PROG_TYPE_CGROUP_DEVICE,
+        .instruction_count = 2u,
+        .expected_attach_type = KERNEL_BPF_CGROUP_DEVICE,
+        .created_by_uid = 1000u,
+        .map_references_resolved = 1u,
+    };
+    kernel_bpf_cgroup_device_context_t context = {
+        .access_type = 1u,
+        .major = 1u,
+        .minor = 3u,
+    };
+    kernel_bpf_map_info_t map_info;
+    kernel_bpf_program_info_t program_info;
+    uint32_t key = 0u;
+    uint32_t user_id = 0u;
+    uint32_t result = 0u;
+    int map;
+    int callee;
+    int caller;
+
+    map = create_map(KERNEL_BPF_MAP_TYPE_PROG_ARRAY,
+                     sizeof(uint32_t), sizeof(uint32_t), 2u,
+                     "jump_table");
+    assert(map >= 0);
+    strcpy(request.name, "tail_target");
+    callee = kernel_bpf_program_create(&request, callee_instructions);
+    assert(callee >= 0);
+    assert(kernel_bpf_object_user_id(callee, &user_id) == 0);
+    assert(kernel_bpf_map_update(
+               map, &key, &callee, KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_lookup(map, &key, &result) == 0);
+    assert(result == user_id);
+
+    request.instruction_count =
+        sizeof(caller_instructions) / sizeof(caller_instructions[0]);
+    strcpy(request.name, "tail_caller");
+    caller_instructions[0].immediate = map;
+    caller = kernel_bpf_program_create(&request, caller_instructions);
+    assert(caller >= 0);
+    assert(kernel_bpf_map_update(
+               map, &key, &caller, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_EINVAL);
+    assert(kernel_bpf_map_update(
+               map, &key, &callee, KERNEL_BPF_ANY) == 0);
+
+    kernel_bpf_object_release(map);
+    kernel_bpf_object_release(callee);
+    assert(kernel_bpf_program_run_cgroup_device(
+               caller, &context, &result) == 0);
+    assert(result == 7u);
+    assert(kernel_bpf_map_delete(map, &key) == 0);
+    result = 0u;
+    assert(kernel_bpf_program_run_cgroup_device(
+               caller, &context, &result) == 0);
+    assert(result == 1u);
+    assert(kernel_bpf_program_info(callee, &program_info) < 0);
+    kernel_bpf_object_release(caller);
+    assert(kernel_bpf_map_info(map, &map_info) < 0);
+
+    {
+        int first_map = create_map(
+            KERNEL_BPF_MAP_TYPE_PROG_ARRAY, sizeof(uint32_t),
+            sizeof(uint32_t), 1u, "cycle_a");
+        int second_map = create_map(
+            KERNEL_BPF_MAP_TYPE_PROG_ARRAY, sizeof(uint32_t),
+            sizeof(uint32_t), 1u, "cycle_b");
+        int first_program;
+        int second_program;
+
+        assert(first_map >= 0 && second_map >= 0);
+        caller_instructions[0].immediate = first_map;
+        strcpy(request.name, "cycle_prog_a");
+        first_program = kernel_bpf_program_create(
+            &request, caller_instructions);
+        assert(first_program >= 0);
+        caller_instructions[0].immediate = second_map;
+        strcpy(request.name, "cycle_prog_b");
+        second_program = kernel_bpf_program_create(
+            &request, caller_instructions);
+        assert(second_program >= 0);
+        assert(kernel_bpf_map_update(
+                   second_map, &key, &first_program,
+                   KERNEL_BPF_ANY) == 0);
+        assert(kernel_bpf_map_update(
+                   first_map, &key, &second_program,
+                   KERNEL_BPF_ANY) == -EDGE_LINUX_EINVAL);
+        assert(kernel_bpf_map_delete(second_map, &key) == 0);
+        kernel_bpf_object_release(first_program);
+        kernel_bpf_object_release(second_program);
+        kernel_bpf_object_release(first_map);
+        kernel_bpf_object_release(second_map);
+    }
+}
+
 static void test_btf_objects(void) {
     struct test_btf_blob {
         uint16_t magic;
@@ -1075,6 +1191,7 @@ int main(void) {
     test_map_in_map();
     test_batch_and_freeze();
     test_program();
+    test_program_array_tail_call();
     test_btf_objects();
     test_ids();
     test_pinned_object_lifetime();
