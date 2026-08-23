@@ -26,9 +26,28 @@ uint32_t edge_smp_nr_cpu_ids(void) {
 }
 
 static uint32_t g_test_current_cpu;
+static uint32_t g_perf_event_references[8];
 
 uint32_t edge_smp_current_cpu(void) {
     return g_test_current_cpu;
+}
+
+int kernel_perf_event_retain(int event_id) {
+    if (event_id < 0 || event_id >=
+            (int)(sizeof(g_perf_event_references) /
+                  sizeof(g_perf_event_references[0])) ||
+        !g_perf_event_references[event_id])
+        return -EDGE_LINUX_EBADF;
+    ++g_perf_event_references[event_id];
+    return 0;
+}
+
+void kernel_perf_event_release(int event_id) {
+    assert(event_id >= 0 && event_id <
+           (int)(sizeof(g_perf_event_references) /
+                 sizeof(g_perf_event_references[0])));
+    assert(g_perf_event_references[event_id] > 0u);
+    --g_perf_event_references[event_id];
 }
 
 static int create_map(uint32_t type, uint32_t key_size,
@@ -1028,6 +1047,77 @@ static void test_program_array_tail_call(void) {
     }
 }
 
+static void test_perf_event_array(void) {
+    kernel_bpf_map_create_request_t request = {
+        .type = KERNEL_BPF_MAP_TYPE_PERF_EVENT_ARRAY,
+        .key_size = sizeof(uint32_t),
+        .value_size = sizeof(uint32_t),
+        .max_entries = 3u,
+        .flags = KERNEL_BPF_MAP_PRESERVE_ELEMS,
+    };
+    kernel_bpf_map_info_t info;
+    uint32_t key = 1u;
+    uint32_t next = UINT32_MAX;
+    uint32_t output = 0u;
+    int object;
+
+    strcpy(request.name, "perf_array");
+    object = kernel_bpf_map_create(&request);
+    assert(object >= 0);
+    assert(kernel_bpf_map_info(object, &info) == 0);
+    assert(info.type == KERNEL_BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+    assert(info.flags == KERNEL_BPF_MAP_PRESERVE_ELEMS);
+    assert(kernel_bpf_map_lookup(object, &key, &output) ==
+           -EDGE_LINUX_ENOTSUPP);
+    assert(kernel_bpf_map_update(
+               object, &key, &output, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_ENOTSUPP);
+    assert(kernel_bpf_map_next_key(object, 0, &next) == 0);
+    assert(next == 0u);
+    assert(kernel_bpf_map_delete(object, &key) ==
+           -EDGE_LINUX_ENOENT);
+
+    g_perf_event_references[1] = 1u;
+    g_perf_event_references[2] = 1u;
+    assert(kernel_bpf_perf_event_array_update(
+               object, &key, 7, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_EBADF);
+    assert(kernel_bpf_perf_event_array_update(
+               object, &key, 1, KERNEL_BPF_NOEXIST) ==
+           -EDGE_LINUX_EINVAL);
+    assert(kernel_bpf_perf_event_array_update(
+               object, &key, 1, KERNEL_BPF_ANY) == 0);
+    assert(g_perf_event_references[1] == 2u);
+    assert(kernel_bpf_perf_event_array_update(
+               object, &key, 2, KERNEL_BPF_ANY) == 0);
+    assert(g_perf_event_references[1] == 1u);
+    assert(g_perf_event_references[2] == 2u);
+    assert(kernel_bpf_map_delete(object, &key) == 0);
+    assert(g_perf_event_references[2] == 1u);
+    assert(kernel_bpf_map_delete(object, &key) ==
+           -EDGE_LINUX_ENOENT);
+
+    assert(kernel_bpf_map_freeze(object) == 0);
+    assert(kernel_bpf_perf_event_array_update(
+               object, &key, 1, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_EPERM);
+    assert(g_perf_event_references[1] == 1u);
+    kernel_bpf_object_release(object);
+
+    request.flags = KERNEL_BPF_MAP_NO_PREALLOC;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+
+    request.flags = 0u;
+    object = kernel_bpf_map_create(&request);
+    assert(object >= 0);
+    g_perf_event_references[3] = 1u;
+    assert(kernel_bpf_perf_event_array_update(
+               object, &key, 3, KERNEL_BPF_ANY) == 0);
+    assert(g_perf_event_references[3] == 2u);
+    kernel_bpf_object_release(object);
+    assert(g_perf_event_references[3] == 1u);
+}
+
 static void test_btf_objects(void) {
     struct test_btf_blob {
         uint16_t magic;
@@ -1192,6 +1282,7 @@ int main(void) {
     test_batch_and_freeze();
     test_program();
     test_program_array_tail_call();
+    test_perf_event_array();
     test_btf_objects();
     test_ids();
     test_pinned_object_lifetime();

@@ -4750,8 +4750,19 @@ static int64_t edge_linux_bpf_map_element(
             }
             memcpy(value, &inner_object, sizeof(inner_object));
         }
-        status = kernel_bpf_map_update(
-            object_id, key, value, attribute.flags);
+        if (info.type == KERNEL_BPF_MAP_TYPE_PERF_EVENT_ARRAY) {
+            int32_t event_descriptor;
+            int32_t event_id;
+
+            memcpy(&event_descriptor, value, sizeof(event_descriptor));
+            event_id = kernel_perf_event_descriptor_id(event_descriptor);
+            status = event_id < 0 ? event_id :
+                kernel_bpf_perf_event_array_update(
+                    object_id, key, event_id, attribute.flags);
+        } else {
+            status = kernel_bpf_map_update(
+                object_id, key, value, attribute.flags);
+        }
     } else if (command == EDGE_LINUX_BPF_MAP_DELETE_ELEM) {
         if (attribute.flags) {
             status = -EDGE_LINUX_EINVAL;
@@ -4852,6 +4863,8 @@ static int64_t edge_linux_bpf_map_batch(
     if (status < 0) return status;
     status = kernel_bpf_map_info(object_id, &info);
     if (status < 0) return status;
+    if (info.type == KERNEL_BPF_MAP_TYPE_PERF_EVENT_ARRAY)
+        return -EDGE_LINUX_ENOTSUPP;
     if (!info.key_size) return -EDGE_LINUX_ENOTSUPP;
     status = kernel_bpf_map_value_buffer_size(
         object_id, attribute.element_flags, &value_size);

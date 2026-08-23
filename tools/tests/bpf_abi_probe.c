@@ -11,6 +11,7 @@
 #define SYS_mkdirat 258
 #define SYS_unlinkat 263
 #define SYS_mount 165
+#define SYS_perf_event_open 298
 #define SYS_exit 60
 #define SYS_bpf 321
 #define START_ATTRIBUTES __attribute__((noreturn, force_align_arg_pointer))
@@ -24,6 +25,7 @@
 #define SYS_mkdirat 34
 #define SYS_unlinkat 35
 #define SYS_mount 40
+#define SYS_perf_event_open 241
 #define START_ATTRIBUTES __attribute__((noreturn))
 #else
 #error "bpf_abi_probe requires a Linux 64-bit architecture"
@@ -63,6 +65,7 @@
 #define BPF_MAP_TYPE_HASH 1u
 #define BPF_MAP_TYPE_ARRAY 2u
 #define BPF_MAP_TYPE_PROG_ARRAY 3u
+#define BPF_MAP_TYPE_PERF_EVENT_ARRAY 4u
 #define BPF_MAP_TYPE_PERCPU_HASH 5u
 #define BPF_MAP_TYPE_PERCPU_ARRAY 6u
 #define BPF_MAP_TYPE_LRU_HASH 9u
@@ -79,6 +82,7 @@
 #define BPF_F_ZERO_SEED (1u << 6)
 #define BPF_F_RDONLY (1u << 3)
 #define BPF_F_WRONLY (1u << 4)
+#define BPF_F_PRESERVE_ELEMS (1u << 11)
 #define BPF_PROG_TYPE_CGROUP_DEVICE 15u
 #define BPF_CGROUP_DEVICE 6u
 #define BPF_ANY 0u
@@ -104,6 +108,36 @@
 #define EPERM 1
 #define ENOTSUPP 524
 #define EOPNOTSUPP 95
+
+#define PERF_TYPE_SOFTWARE 1u
+#define PERF_COUNT_SW_DUMMY 9u
+
+struct perf_event_attr {
+    uint32_t type;
+    uint32_t size;
+    uint64_t config;
+    uint64_t sample_period;
+    uint64_t sample_type;
+    uint64_t read_format;
+    uint64_t flags;
+    uint32_t wakeup_events;
+    uint32_t breakpoint_type;
+    uint64_t config1;
+    uint64_t config2;
+    uint64_t branch_sample_type;
+    uint64_t sample_regs_user;
+    uint32_t sample_stack_user;
+    int32_t clockid;
+    uint64_t sample_regs_intr;
+    uint32_t aux_watermark;
+    uint16_t sample_max_stack;
+    uint16_t reserved2;
+    uint32_t aux_sample_size;
+    uint32_t aux_action;
+    uint64_t sig_data;
+    uint64_t config3;
+    uint64_t config4;
+};
 
 union bpf_attr {
     struct {
@@ -1584,6 +1618,75 @@ static int test_program_array(void) {
     return failures;
 }
 
+static int test_perf_event_array(void) {
+    struct perf_event_attr perf_attribute;
+    union bpf_attr attribute;
+    uint32_t key = 1u;
+    uint32_t next = UINT32_MAX;
+    uint32_t value = 0u;
+    uint32_t count = 1u;
+    uint64_t batch_value = 0u;
+    long event_descriptor;
+    long map_descriptor;
+    int failures = 0;
+
+    clear_bytes(&perf_attribute, sizeof(perf_attribute));
+    perf_attribute.type = PERF_TYPE_SOFTWARE;
+    perf_attribute.size = sizeof(perf_attribute);
+    perf_attribute.config = PERF_COUNT_SW_DUMMY;
+    perf_attribute.flags = 1u;
+    event_descriptor = raw_syscall6(
+        SYS_perf_event_open, (long)(uintptr_t)&perf_attribute,
+        0, -1, -1, 0, 0);
+    if (event_descriptor < 0) return 0;
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.map_create.map_type = BPF_MAP_TYPE_PERF_EVENT_ARRAY;
+    attribute.map_create.key_size = sizeof(uint32_t);
+    attribute.map_create.value_size = sizeof(uint32_t);
+    attribute.map_create.max_entries = 2u;
+    attribute.map_create.map_flags = BPF_F_PRESERVE_ELEMS;
+    attribute.map_create.map_name[0] = 'e';
+    attribute.map_create.map_name[1] = 'v';
+    attribute.map_create.map_name[2] = 'e';
+    attribute.map_create.map_name[3] = 'n';
+    attribute.map_create.map_name[4] = 't';
+    map_descriptor = bpf_call(BPF_MAP_CREATE, &attribute);
+    failures += expect_true(
+        "perf event array create", map_descriptor >= 0);
+    if (map_descriptor < 0) {
+        (void)raw_syscall6(
+            SYS_close, event_descriptor, 0, 0, 0, 0, 0);
+        return failures + 1;
+    }
+
+    value = (uint32_t)event_descriptor;
+    failures += expect("perf event array update", map_element_raw(
+        BPF_MAP_UPDATE_ELEM, map_descriptor, &key, &value, BPF_ANY), 0);
+    failures += expect("perf event array lookup unsupported",
+        map_element_raw(BPF_MAP_LOOKUP_ELEM, map_descriptor,
+                        &key, &value, 0), -ENOTSUPP);
+    failures += expect("perf event array next key", map_element_raw(
+        BPF_MAP_GET_NEXT_KEY, map_descriptor, 0, &next, 0), 0);
+    failures += expect("perf event array first key", next, 0);
+    failures += expect("perf event array update flags", map_element_raw(
+        BPF_MAP_UPDATE_ELEM, map_descriptor, &key, &value,
+        BPF_NOEXIST), -EINVAL);
+    failures += expect("perf event array batch unsupported", map_batch(
+        BPF_MAP_LOOKUP_BATCH, map_descriptor, 0, &next, &key,
+        &batch_value, &count, 0), -ENOTSUPP);
+    failures += expect("perf event array delete", map_element_raw(
+        BPF_MAP_DELETE_ELEM, map_descriptor, &key, 0, 0), 0);
+    failures += expect("perf event array missing delete", map_element_raw(
+        BPF_MAP_DELETE_ELEM, map_descriptor, &key, 0, 0), -ENOENT);
+
+    (void)raw_syscall6(
+        SYS_close, map_descriptor, 0, 0, 0, 0, 0);
+    (void)raw_syscall6(
+        SYS_close, event_descriptor, 0, 0, 0, 0, 0);
+    return failures;
+}
+
 static int test_program(void) {
     static const struct bpf_insn instructions[] = {
         { .code = 0xb7u, .registers = 0u, .offset = 0, .immediate = 1 },
@@ -2041,6 +2144,7 @@ START_ATTRIBUTES void _start(void) {
     failures += test_map_in_map();
     failures += test_batch_and_freeze();
     failures += test_program_array();
+    failures += test_perf_event_array();
     failures += test_program();
     failures += test_btf_objects();
     failures += test_attribute_tail();
