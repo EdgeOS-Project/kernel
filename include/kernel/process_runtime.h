@@ -94,6 +94,7 @@ typedef struct kernel_task_identity_view {
     int32_t pgid;
     int32_t sid;
     uint32_t pid_namespace_id;
+    uint32_t user_namespace_id;
     uint32_t uid;
     uint32_t euid;
     uint32_t suid;
@@ -263,6 +264,7 @@ typedef struct kernel_linux_identity {
     int32_t pgid;
     int32_t sid;
     uint32_t pid_namespace_id;
+    uint32_t user_namespace_id;
     uint32_t uid;
     uint32_t euid;
     uint32_t suid;

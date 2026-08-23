@@ -30,6 +30,7 @@ static int kernel_linux_identity_from_view(
     identity->global_pgid = view->pgid;
     identity->global_sid = view->sid;
     identity->pid_namespace_id = viewer_pid_namespace_id;
+    identity->user_namespace_id = view->user_namespace_id;
     if (kernel_pid_visible(viewer_pid_namespace_id, view->tid,
                            &identity->tid) < 0 ||
         kernel_pid_visible(viewer_pid_namespace_id,
@@ -69,6 +70,7 @@ static void kernel_identity_view_from_proc(
     identity->pgid = task->pgid;
     identity->sid = task->sid;
     identity->pid_namespace_id = task->pid_namespace_id;
+    identity->user_namespace_id = task->user_namespace_id;
     identity->uid = task->uid;
     identity->euid = task->euid;
     identity->suid = task->suid;

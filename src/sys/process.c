@@ -10738,6 +10738,8 @@ static int kernel_identity_view_from_task(
     view->sid = task->sid;
     view->pid_namespace_id = edge_namespace_id(
         &task->namespaces, EDGE_NAMESPACE_PID);
+    view->user_namespace_id = edge_namespace_id(
+        &task->namespaces, EDGE_NAMESPACE_USER);
     view->state = task->state == TASK_ZOMBIE ? KERNEL_PROC_TASK_ZOMBIE :
         task->state == TASK_STOPPED ? KERNEL_PROC_TASK_STOPPED :
         task->state == TASK_BLOCKED ? KERNEL_PROC_TASK_SLEEPING :

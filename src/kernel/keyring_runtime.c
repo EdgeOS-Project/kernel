@@ -39,6 +39,7 @@ typedef struct kernel_key_object {
     int32_t serial;
     uint32_t uid;
     uint32_t gid;
+    uint32_t user_namespace_id;
     uint32_t permissions;
     uint32_t payload_length;
     uint32_t link_count;
@@ -199,7 +200,8 @@ static int key_validate(const kernel_key_object_t *key) {
 
 static kernel_key_object_t *key_allocate_locked(
     enum kernel_key_kind kind, const char *type, const char *description,
-    uint32_t uid, uint32_t gid, uint32_t permissions) {
+    uint32_t uid, uint32_t gid, uint32_t user_namespace_id,
+    uint32_t permissions) {
     uint32_t index;
     kernel_key_object_t *key;
 
@@ -214,6 +216,7 @@ static kernel_key_object_t *key_allocate_locked(
     if (g_next_key_serial <= 0) g_next_key_serial = 1;
     key->uid = uid;
     key->gid = gid;
+    key->user_namespace_id = user_namespace_id;
     key->permissions = permissions & EDGE_LINUX_KEY_PERM_ALL;
     memcpy(key->type, type, strlen(type) + 1u);
     memcpy(key->description, description, strlen(description) + 1u);
@@ -229,12 +232,13 @@ static kernel_key_task_state_t *key_task_find_locked(int32_t tid) {
 }
 
 static kernel_key_object_t *key_named_keyring_locked(
-    uint32_t uid, const char *description) {
+    uint32_t uid, uint32_t user_namespace_id, const char *description) {
     uint32_t index;
     for (index = 0; index < KERNEL_KEY_MAX; ++index) {
         kernel_key_object_t *key = &g_keys[index];
         if (key->used && !key->constructing && !key->invalidated &&
             key->kind == KERNEL_KEY_KIND_KEYRING && key->uid == uid &&
+            key->user_namespace_id == user_namespace_id &&
             !strcmp(key->description, description))
             return key;
     }
@@ -242,10 +246,12 @@ static kernel_key_object_t *key_named_keyring_locked(
 }
 
 static kernel_key_object_t *key_create_keyring_locked(
-    uint32_t uid, uint32_t gid, const char *description,
+    uint32_t uid, uint32_t gid, uint32_t user_namespace_id,
+    const char *description,
     uint32_t permissions) {
     return key_allocate_locked(
         KERNEL_KEY_KIND_KEYRING, "keyring", description, uid, gid,
+        user_namespace_id,
         permissions);
 }
 
@@ -270,10 +276,11 @@ static kernel_key_object_t *key_user_ring_locked(
         while (count) name[length++] = digits[--count];
     }
     name[length] = 0;
-    ring = key_named_keyring_locked(identity->uid, name);
+    ring = key_named_keyring_locked(
+        identity->uid, identity->user_namespace_id, name);
     if (ring) return ring;
     return key_create_keyring_locked(
-        identity->uid, identity->gid, name,
+        identity->uid, identity->gid, identity->user_namespace_id, name,
         EDGE_LINUX_KEY_POS_ALL | EDGE_LINUX_KEY_USR_VIEW |
             EDGE_LINUX_KEY_USR_READ | EDGE_LINUX_KEY_USR_LINK);
 }
@@ -351,7 +358,8 @@ static int64_t keyctl_session_to_parent(
         parent_identity.suid != identity->euid ||
         parent_identity.gid != identity->egid ||
         parent_identity.egid != identity->egid ||
-        parent_identity.sgid != identity->egid)
+        parent_identity.sgid != identity->egid ||
+        parent_identity.user_namespace_id != identity->user_namespace_id)
         return -EDGE_LINUX_EPERM;
 
     key_lock(&g_key_lock);
@@ -393,10 +401,11 @@ static kernel_key_object_t *key_process_ring_locked(
     } while (value && count < sizeof(digits));
     while (count) name[length++] = digits[--count];
     name[length] = 0;
-    ring = key_named_keyring_locked(identity->uid, name);
+    ring = key_named_keyring_locked(
+        identity->uid, identity->user_namespace_id, name);
     if (ring || !create) return ring;
     return key_create_keyring_locked(
-        identity->uid, identity->gid, name,
+        identity->uid, identity->gid, identity->user_namespace_id, name,
         EDGE_LINUX_KEY_POS_ALL | EDGE_LINUX_KEY_USR_VIEW);
 }
 
@@ -424,7 +433,7 @@ static kernel_key_object_t *key_thread_ring_locked(
     while (count) name[length++] = digits[--count];
     name[length] = 0;
     ring = key_create_keyring_locked(
-        identity->uid, identity->gid, name,
+        identity->uid, identity->gid, identity->user_namespace_id, name,
         EDGE_LINUX_KEY_POS_ALL | EDGE_LINUX_KEY_USR_VIEW);
     if (ring) state->thread_keyring = ring->serial;
     return ring;
@@ -751,7 +760,8 @@ int64_t kernel_keyring_add_key(
                     permissions |= EDGE_LINUX_KEY_POS_READ;
                 key = key_allocate_locked(
                 kind, g_key_type_scratch, g_key_description_scratch,
-                identity->fsuid, identity->fsgid, permissions);
+                identity->fsuid, identity->fsgid,
+                identity->user_namespace_id, permissions);
             }
             if (!key) result = -EDGE_LINUX_EDQUOT;
             else {
@@ -898,12 +908,14 @@ int64_t kernel_keyring_keyctl(
         }
         if (g_key_description_scratch[0])
             ring = key_named_keyring_locked(
-                identity->fsuid, g_key_description_scratch);
+                identity->fsuid, identity->user_namespace_id,
+                g_key_description_scratch);
         else
             ring = 0;
         if (!ring)
             ring = key_create_keyring_locked(
                 identity->fsuid, identity->fsgid,
+                identity->user_namespace_id,
                 g_key_description_scratch[0] ?
                     g_key_description_scratch : "_ses.anonymous",
                 EDGE_LINUX_KEY_POS_ALL | EDGE_LINUX_KEY_USR_VIEW |
@@ -921,7 +933,7 @@ int64_t kernel_keyring_keyctl(
     }
     if (command == EDGE_LINUX_KEYCTL_CAPABILITIES) {
         const uint8_t capabilities[2] = {
-            0x01u | 0x10u | 0x20u | 0x40u | 0x80u,
+            0x01u | 0x02u | 0x10u | 0x20u | 0x40u | 0x80u,
             0x01u,
         };
         static const uint8_t zeros[64] = {0};
@@ -974,10 +986,11 @@ int64_t kernel_keyring_keyctl(
         memcpy(name, "_persistent.", 12u);
         offset = key_append_decimal(name, offset, uid);
         name[offset] = 0;
-        key = key_named_keyring_locked(uid, name);
+        key = key_named_keyring_locked(
+            uid, identity->user_namespace_id, name);
         if (!key)
             key = key_create_keyring_locked(
-                uid, identity->fsgid, name,
+                uid, identity->fsgid, identity->user_namespace_id, name,
                 EDGE_LINUX_KEY_POS_ALL | EDGE_LINUX_KEY_USR_VIEW |
                     EDGE_LINUX_KEY_USR_READ);
         ring = key_resolve_locked(

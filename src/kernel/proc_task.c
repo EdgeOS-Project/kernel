@@ -72,6 +72,7 @@ void kernel_proc_task_view_set_identity(
     view->pgid = identity->pgid;
     view->sid = identity->sid;
     view->pid_namespace_id = identity->pid_namespace_id;
+    view->user_namespace_id = identity->user_namespace_id;
     view->uid = identity->uid;
     view->euid = identity->euid;
     view->suid = identity->suid;

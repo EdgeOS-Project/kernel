@@ -25,6 +25,42 @@
   },
   "edgeos_assessments": [
     {
+      "domain": "key retention service",
+      "status": "partial",
+      "kconfig": [
+        "KEYS"
+      ],
+      "architectures": {
+        "x86_64": "runtime-verified-partial",
+        "aarch64": "runtime-verified-partial",
+        "ia32": "unimplemented",
+        "x32": "unimplemented"
+      },
+      "implemented": [
+        "user, logon, big-key and keyring objects with descriptor-independent serial lifetime",
+        "thread, process, session, user, user-session and persistent keyrings",
+        "per-user-namespace named keyring isolation",
+        "add, request, update, revoke, invalidate, search, read, link, unlink and move operations",
+        "ownership, permissions, timeout, restriction and session-to-parent policy",
+        "Linux capability discovery with zero-filled extension bytes"
+      ],
+      "missing": [
+        "request-key construction authorization, instantiate, negate and reject operations",
+        "Diffie-Hellman and asymmetric key operations",
+        "key notification watches and namespace-tagged indexing",
+        "ia32 and x32 compatibility layouts"
+      ],
+      "runtime_tests": [
+        "tools/tests/keyring_abi_probe.c",
+        "tools/tests/keyring_runtime_unit.c"
+      ],
+      "linux_oracle": {
+        "status": "partial",
+        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa",
+        "scope": "capability byte layout, session keyring creation, object add, search, read, update, revoke, links and named keyring user-namespace isolation"
+      }
+    },
+    {
       "domain": "io_uring",
       "status": "partial",
       "kconfig": [

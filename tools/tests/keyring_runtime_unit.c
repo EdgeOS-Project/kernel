@@ -53,6 +53,14 @@ static kernel_linux_identity_t identity(int32_t tid, int32_t tgid,
     return result;
 }
 
+static kernel_linux_identity_t identity_in_user_namespace(
+    int32_t tid, int32_t tgid, int32_t ppid, uint32_t uid,
+    uint32_t user_namespace_id) {
+    kernel_linux_identity_t result = identity(tid, tgid, ppid, uid);
+    result.user_namespace_id = user_namespace_id;
+    return result;
+}
+
 int kernel_process_linux_identity(int32_t pid,
                                   kernel_linux_identity_t *result) {
     if (!result || pid != parent_process_identity.global_tid) return -1;
@@ -165,6 +173,8 @@ int main(void) {
                &parent, &access, EDGE_LINUX_KEYCTL_CAPABILITIES,
                arguments) == 2);
     assert((capabilities[0] & 1u) != 0u);
+    assert((capabilities[0] & 2u) != 0u);
+    assert((capabilities[1] & 1u) != 0u);
     for (uint32_t index = 2; index < sizeof(capabilities); ++index)
         assert(capabilities[index] == 0u);
 
@@ -212,6 +222,27 @@ int main(void) {
                    &stranger_child, &access,
                    EDGE_LINUX_KEYCTL_SESSION_TO_PARENT,
                    arguments) == -EDGE_LINUX_EPERM);
+    }
+
+    {
+        kernel_linux_identity_t namespace_parent =
+            identity_in_user_namespace(300, 300, 1, 1000, 17u);
+        kernel_linux_identity_t namespace_peer =
+            identity_in_user_namespace(301, 301, 1, 1000, 18u);
+        int64_t first;
+        int64_t second;
+
+        memset(arguments, 0, sizeof(arguments));
+        arguments[0] = (uint64_t)(uintptr_t)"namespace-session";
+        first = kernel_keyring_keyctl(
+            &namespace_parent, &access,
+            EDGE_LINUX_KEYCTL_JOIN_SESSION_KEYRING, arguments);
+        second = kernel_keyring_keyctl(
+            &namespace_peer, &access,
+            EDGE_LINUX_KEYCTL_JOIN_SESSION_KEYRING, arguments);
+        assert(first > 0 && second > 0 && first != second);
+        kernel_keyring_task_exit(300, 300, 1);
+        kernel_keyring_task_exit(301, 301, 1);
     }
 
     for (int32_t index = 0; index < 512; ++index) {
