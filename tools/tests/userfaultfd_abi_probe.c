@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MPL-2.0 */
-/* Linux userfaultfd missing-page ABI probe for x86_64 and AArch64. */
+/* Linux userfaultfd missing-page and write-protect ABI probe. */
 
 #include <stdint.h>
 
@@ -42,14 +42,22 @@
 #define O_CLOEXEC 0x80000
 #define UFFD_USER_MODE_ONLY 0x1
 #define UFFD_API 0xAAu
+#define UFFD_FEATURE_PAGEFAULT_FLAG_WP (1ULL << 0)
 #define UFFD_FEATURE_THREAD_ID (1ULL << 8)
 #define UFFDIO_REGISTER_MODE_MISSING 0x1u
+#define UFFDIO_REGISTER_MODE_WP 0x2u
+#define UFFDIO_COPY_MODE_WP 0x2u
+#define UFFDIO_WRITEPROTECT_MODE_WP 0x1u
+#define UFFDIO_WRITEPROTECT_MODE_DONTWAKE 0x2u
 #define UFFDIO_API 0xc018aa3fu
 #define UFFDIO_REGISTER 0xc020aa00u
 #define UFFDIO_UNREGISTER 0x8010aa01u
 #define UFFDIO_COPY 0xc028aa03u
 #define UFFDIO_ZEROPAGE 0xc020aa04u
+#define UFFDIO_WRITEPROTECT 0xc018aa06u
 #define UFFD_EVENT_PAGEFAULT 0x12u
+#define UFFD_PAGEFAULT_FLAG_WRITE (1ULL << 0)
+#define UFFD_PAGEFAULT_FLAG_WP (1ULL << 1)
 #define CLONE_VM 0x00000100u
 #define SIGCHLD 17
 #define SIGKILL 9
@@ -87,6 +95,11 @@ struct uffdio_zeropage {
     int64_t zeropage;
 };
 
+struct uffdio_writeprotect {
+    struct uffdio_range range;
+    uint64_t mode;
+};
+
 struct uffd_msg {
     uint8_t event;
     uint8_t reserved1;
@@ -101,6 +114,7 @@ struct uffd_msg {
 static unsigned char g_fault_stack[16384] __attribute__((aligned(16)));
 static volatile unsigned char *g_fault_address;
 static volatile unsigned char g_fault_value;
+static volatile unsigned char g_fault_write;
 
 static long raw_syscall6(long number, long a0, long a1, long a2,
                          long a3, long a4, long a5) {
@@ -139,7 +153,10 @@ static __attribute__((noreturn)) void exit_now(int status) {
 
 static __attribute__((noreturn, noinline, used))
 void fault_child_entry(void) {
-    g_fault_value = *g_fault_address;
+    if (g_fault_write)
+        *g_fault_address = g_fault_write;
+    else
+        g_fault_value = *g_fault_address;
     __asm__ volatile("" ::: "memory");
     exit_now(0);
 }
@@ -231,11 +248,13 @@ static int expect_result(const char *name, long actual, long expected) {
 void _start(void) {
     struct uffdio_api api = {
         .api = UFFD_API,
-        .features = UFFD_FEATURE_THREAD_ID,
+        .features = UFFD_FEATURE_THREAD_ID |
+                    UFFD_FEATURE_PAGEFAULT_FLAG_WP,
     };
     struct uffdio_register registration;
     struct uffdio_copy copy;
     struct uffdio_zeropage zero;
+    struct uffdio_writeprotect writeprotect;
     struct uffd_msg message;
     unsigned char *source;
     unsigned char *destination;
@@ -294,6 +313,12 @@ void _start(void) {
     copy.dst = (uint64_t)(uintptr_t)destination;
     copy.src = (uint64_t)(uintptr_t)source;
     copy.len = PAGE_SIZE;
+    copy.mode = UFFDIO_COPY_MODE_WP;
+    copy.copy = 0;
+    failures += expect_result(
+        "copy-wp-without-registration", raw_syscall6(
+            SYS_ioctl, descriptor, UFFDIO_COPY, (long)&copy, 0, 0, 0),
+        -EINVAL);
     copy.mode = 0;
     copy.copy = 0;
     failures += expect_result(
@@ -387,6 +412,86 @@ void _start(void) {
             sizeof(message), 0, 0, 0), -EAGAIN);
     failures += expect_result(
         "unregister", raw_syscall6(
+            SYS_ioctl, descriptor, UFFDIO_UNREGISTER,
+            (long)&registration.range, 0, 0, 0), 0);
+
+    registration.range.start = (uint64_t)(uintptr_t)destination;
+    registration.range.len = PAGE_SIZE;
+    registration.mode = UFFDIO_REGISTER_MODE_WP;
+    registration.ioctls = 0;
+    failures += expect_result(
+        "wp-register", raw_syscall6(
+            SYS_ioctl, descriptor, UFFDIO_REGISTER,
+            (long)&registration, 0, 0, 0), 0);
+    if (!(registration.ioctls & (1ULL << 6))) {
+        print_text("FAIL wp-register-ioctls\n");
+        ++failures;
+    }
+    writeprotect.range = registration.range;
+    writeprotect.mode = UFFDIO_WRITEPROTECT_MODE_WP |
+                        UFFDIO_WRITEPROTECT_MODE_DONTWAKE;
+    failures += expect_result(
+        "writeprotect-enable-dontwake", raw_syscall6(
+            SYS_ioctl, descriptor, UFFDIO_WRITEPROTECT,
+            (long)&writeprotect, 0, 0, 0), -EINVAL);
+    writeprotect.mode = UFFDIO_WRITEPROTECT_MODE_WP;
+    failures += expect_result(
+        "writeprotect-enable", raw_syscall6(
+            SYS_ioctl, descriptor, UFFDIO_WRITEPROTECT,
+            (long)&writeprotect, 0, 0, 0), 0);
+    g_fault_address = destination;
+    g_fault_write = 0x5au;
+    {
+        long child = spawn_fault_child(
+            CLONE_VM | SIGCHLD,
+            &g_fault_stack[sizeof(g_fault_stack)]);
+        long received = -EAGAIN;
+        int child_status = -1;
+
+        if (child < 0) {
+            failures += expect_result("wp-child", child, 0);
+        } else {
+            for (unsigned long attempt = 0; attempt < 100000u; ++attempt) {
+                received = raw_syscall6(
+                    SYS_read, descriptor, (long)&message,
+                    sizeof(message), 0, 0, 0);
+                if (received != -EAGAIN) break;
+                (void)raw_syscall6(
+                    SYS_sched_yield, 0, 0, 0, 0, 0, 0);
+            }
+            failures += expect_result(
+                "wp-event-size", received, sizeof(message));
+            if (received == (long)sizeof(message) &&
+                (message.event != UFFD_EVENT_PAGEFAULT ||
+                 message.flags !=
+                    (UFFD_PAGEFAULT_FLAG_WRITE |
+                     UFFD_PAGEFAULT_FLAG_WP) ||
+                 message.thread_id != (uint32_t)child ||
+                 message.address !=
+                    ((uint64_t)(uintptr_t)g_fault_address &
+                     ~(uint64_t)(PAGE_SIZE - 1u)))) {
+                print_text("FAIL wp-event-data\n");
+                ++failures;
+            }
+            writeprotect.mode = 0;
+            failures += expect_result(
+                "writeprotect-disable", raw_syscall6(
+                    SYS_ioctl, descriptor, UFFDIO_WRITEPROTECT,
+                    (long)&writeprotect, 0, 0, 0), 0);
+            if (received != (long)sizeof(message))
+                (void)raw_syscall6(
+                    SYS_kill, child, SIGKILL, 0, 0, 0, 0);
+            failures += expect_result(
+                "wp-wait", raw_syscall6(
+                    SYS_wait4, child, (long)&child_status,
+                    0, 0, 0, 0), child);
+            failures += expect_result("wp-child-status", child_status, 0);
+            failures += expect_result("wp-write", destination[0], 0x5a);
+        }
+    }
+    g_fault_write = 0;
+    failures += expect_result(
+        "wp-unregister", raw_syscall6(
             SYS_ioctl, descriptor, UFFDIO_UNREGISTER,
             (long)&registration.range, 0, 0, 0), 0);
     (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);

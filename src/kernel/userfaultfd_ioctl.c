@@ -18,6 +18,7 @@
 #define KERNEL_UFFDIO_WAKE       0x8010aa02u
 #define KERNEL_UFFDIO_COPY       0xc028aa03u
 #define KERNEL_UFFDIO_ZEROPAGE   0xc020aa04u
+#define KERNEL_UFFDIO_WRITEPROTECT 0xc018aa06u
 #define KERNEL_UFFDIO_API        0xc018aa3fu
 #define KERNEL_UFFD_PAGE_SIZE 4096u
 
@@ -122,8 +123,22 @@ int64_t kernel_userfaultfd_ioctl(const kernel_ioctl_request_t *request) {
         status = arch_mm_address_space_range_mapped(
             state.address_space, range.start, range.length);
         if (status < 0) return status;
-        if (request->command == KERNEL_UFFDIO_UNREGISTER)
+        if (request->command == KERNEL_UFFDIO_UNREGISTER) {
+            uint64_t writeprotect_address_space = 0;
+            status = kernel_userfaultfd_unregister_validate(
+                context_id, &range, &writeprotect_address_space);
+            if (status < 0) return status;
+            status = kernel_userfaultfd_writeprotect_intersects(
+                context_id, &range, &writeprotect_address_space);
+            if (status < 0) return status;
+            if (status > 0) {
+                status = arch_mm_address_space_write_protect(
+                    writeprotect_address_space, range.start,
+                    range.length, 0);
+                if (status < 0) return status;
+            }
             return kernel_userfaultfd_unregister(context_id, &range);
+        }
         status = kernel_userfaultfd_validate_resolution(
             context_id, &range, 0, &state.address_space);
         if (status < 0) return status;
@@ -150,6 +165,18 @@ int64_t kernel_userfaultfd_ioctl(const kernel_ioctl_request_t *request) {
         status = kernel_userfaultfd_validate_resolution(
             context_id, &range, copy.mode, &state.address_space);
         if (status < 0) return status;
+        if (copy.mode & KERNEL_UFFDIO_COPY_MODE_WP) {
+            status = kernel_userfaultfd_writeprotect_validate(
+                context_id, &range,
+                KERNEL_UFFDIO_WRITEPROTECT_MODE_WP,
+                &state.address_space);
+            if (status < 0) {
+                (void)kernel_userfaultfd_cancel_resolution(
+                    context_id, &range);
+                return status == -EDGE_LINUX_ENOENT ?
+                    -EDGE_LINUX_EINVAL : status;
+            }
+        }
         while (completed < copy.length) {
             kernel_uffdio_range_t page_range = {
                 .start = copy.destination + completed,
@@ -159,6 +186,22 @@ int64_t kernel_userfaultfd_ioctl(const kernel_ioctl_request_t *request) {
                 request, state.address_space,
                 page_range.start, copy.source + completed, 0);
             if (status < 0) break;
+            if (copy.mode & KERNEL_UFFDIO_COPY_MODE_WP) {
+                status = arch_mm_address_space_write_protect(
+                    state.address_space, page_range.start,
+                    page_range.length, 1);
+                if (status < 0) break;
+                status = kernel_userfaultfd_writeprotect_commit(
+                    context_id, &page_range,
+                    KERNEL_UFFDIO_WRITEPROTECT_MODE_WP |
+                    KERNEL_UFFDIO_WRITEPROTECT_MODE_DONTWAKE);
+                if (status < 0) {
+                    (void)arch_mm_address_space_write_protect(
+                        state.address_space, page_range.start,
+                        page_range.length, 0);
+                    break;
+                }
+            }
             completed += KERNEL_UFFD_PAGE_SIZE;
             if (!(copy.mode & KERNEL_UFFDIO_MODE_DONTWAKE))
                 (void)kernel_userfaultfd_resolve(
@@ -186,6 +229,8 @@ int64_t kernel_userfaultfd_ioctl(const kernel_ioctl_request_t *request) {
             request, &zero, request->argument,
             sizeof(zero) - sizeof(zero.zeroed));
         if (status < 0) return status;
+        if (zero.mode & ~KERNEL_UFFDIO_MODE_DONTWAKE)
+            return -EDGE_LINUX_EINVAL;
         status = arch_mm_address_space_range_mapped(
             state.address_space, zero.range.start, zero.range.length);
         if (status < 0) return status;
@@ -218,6 +263,37 @@ int64_t kernel_userfaultfd_ioctl(const kernel_ioctl_request_t *request) {
             return -EDGE_LINUX_EFAULT;
         if (completed == zero.range.length) return 0;
         return completed ? -EDGE_LINUX_EAGAIN : status;
+    }
+
+    if (request->command == KERNEL_UFFDIO_WRITEPROTECT) {
+        kernel_uffdio_writeprotect_t writeprotect;
+        int enable;
+
+        status = userfaultfd_copy_from_user(
+            request, &writeprotect, request->argument,
+            sizeof(writeprotect));
+        if (status < 0) return status;
+        status = arch_mm_address_space_range_mapped(
+            state.address_space, writeprotect.range.start,
+            writeprotect.range.length);
+        if (status < 0) return status;
+        status = kernel_userfaultfd_writeprotect_validate(
+            context_id, &writeprotect.range, writeprotect.mode,
+            &state.address_space);
+        if (status < 0) return status;
+        enable = (writeprotect.mode &
+                  KERNEL_UFFDIO_WRITEPROTECT_MODE_WP) != 0;
+        status = arch_mm_address_space_write_protect(
+            state.address_space, writeprotect.range.start,
+            writeprotect.range.length, enable);
+        if (status < 0) return status;
+        status = kernel_userfaultfd_writeprotect_commit(
+            context_id, &writeprotect.range, writeprotect.mode);
+        if (status < 0)
+            (void)arch_mm_address_space_write_protect(
+                state.address_space, writeprotect.range.start,
+                writeprotect.range.length, !enable);
+        return status;
     }
 
     return -EDGE_LINUX_ENOTTY;

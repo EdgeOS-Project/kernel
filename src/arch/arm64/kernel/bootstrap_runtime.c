@@ -1711,6 +1711,8 @@ typedef struct {
 
 static int tmpfs_mapping_page_snapshot(uint64_t ttbr0, uint64_t address,
                                        kernel_tmpfs_mapping_t *out);
+static int anon_mapping_page_snapshot(uint64_t ttbr0, uint64_t address,
+                                      kernel_anon_mapping_t *out);
 
 typedef struct {
     uint8_t used;
@@ -3423,6 +3425,25 @@ int kernel_handle_page_fault(arch_user_frame_t *frame) {
                (frame->esr & (1u << 6));
     access = ec == 0x20u ? KERNEL_MM_PROT_EXEC :
              (is_write ? KERNEL_MM_PROT_WRITE : KERNEL_MM_PROT_READ);
+    if (is_write && fault_status >= 13u && fault_status <= 15u &&
+        !kernel_userfaultfd_resolution_bypasses_fault(
+            task->ttbr0, page)) {
+        int context_id = -1;
+        uint64_t ticket = 0;
+        int status = kernel_userfaultfd_page_fault(
+            task->ttbr0, frame->far, 1, 1,
+            (uint32_t)task->pid, &context_id, &ticket);
+        if (status > 0) {
+            task->userfaultfd_wait_index = (uint16_t)context_id;
+            task->userfaultfd_wait_ticket = ticket;
+            task_state_set(task, KERNEL_TASK_WAITING_USERFAULTFD);
+            return 1;
+        }
+        if (status < 0) {
+            task_finish_memory_oom_if_pending(task);
+            return 0;
+        }
+    }
     if (fault_status >= 4u && fault_status <= 7u &&
         user_page_resident(task->ttbr0, page) &&
         arch_vm_retry_user_page(task->ttbr0, page) > 0) {
@@ -8222,6 +8243,38 @@ int arch_mm_address_space_copy(
             address_space, address, buffer, size) < 0 ?
             -LINUX_EFAULT : 0;
     return -LINUX_EINVAL;
+}
+
+int arch_mm_address_space_write_protect(
+        uint64_t address_space, uint64_t address, uint64_t length,
+        int enable) {
+    uint64_t end;
+
+    if (!address_space || !length || length > UINT64_MAX - address)
+        return -LINUX_ENOMEM;
+    end = address + length;
+    for (uint64_t page = address; page < end; page += PAGE_SIZE) {
+        kernel_tmpfs_mapping_t tmpfs;
+        kernel_anon_mapping_t anonymous;
+        kernel_file_mapping_t file;
+        uint32_t protection;
+
+        if (tmpfs_mapping_page_snapshot(address_space, page, &tmpfs))
+            protection = vm_prot(tmpfs.protection);
+        else if (anon_mapping_page_snapshot(
+                     address_space, page, &anonymous))
+            protection = vm_prot(anonymous.protection);
+        else if (file_mapping_page_snapshot(address_space, page, &file))
+            protection = vm_prot(file.protection);
+        else
+            return -LINUX_ENOMEM;
+        if (enable) protection &= ~ARCH_VM_PROT_WRITE;
+        if (!user_page_resident(address_space, page)) continue;
+        if (arch_vm_protect_user_resident_range(
+                address_space, page, PAGE_SIZE, protection) < 0)
+            return -LINUX_ENOMEM;
+    }
+    return 0;
 }
 
 int arch_mm_sync_range(uint64_t address, uint64_t length, uint32_t flags) {

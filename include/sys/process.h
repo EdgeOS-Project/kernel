@@ -504,6 +504,8 @@ int process_publish_new_task(int pid);
 int process_user_mmap_range_ok(uint64_t start, uint64_t len);
 int process_user_mmap_commit(task_t *t, uint64_t start, uint64_t len);
 int process_user_mmap_protect(task_t *t, uint64_t start, uint64_t len, uint32_t prot);
+int process_user_mmap_write_protect(task_t *t, uint64_t start,
+                                    uint64_t len, int enable);
 int process_user_heap_unmap(task_t *t, uint64_t start, uint64_t len);
 int process_user_mmap_handle_fault(task_t *t, uint64_t addr, int write);
 int process_consume_cgroup_memory_oom(task_t *t);

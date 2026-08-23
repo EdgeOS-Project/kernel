@@ -1007,11 +1007,12 @@ void isr_exception_handler(REGISTERS *reg) {
             uint64_t userfault_ticket = 0;
             int userfault_status = 0;
 
-            if (!p && t &&
+            if (t && (!p || wr) &&
                 !kernel_userfaultfd_resolution_bypasses_fault(
                     arch_mm_current_address_space(), cr2)) {
-                userfault_status = kernel_userfaultfd_missing_fault(
+                userfault_status = kernel_userfaultfd_page_fault(
                     arch_mm_current_address_space(), cr2, (int)wr,
+                    (int)p,
                     (uint32_t)t->pid,
                     &userfault_context, &userfault_ticket);
             }

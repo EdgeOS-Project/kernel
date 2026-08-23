@@ -61,6 +61,42 @@
       }
     },
     {
+      "domain": "userfaultfd",
+      "status": "partial",
+      "kconfig": [
+        "USERFAULTFD"
+      ],
+      "architectures": {
+        "x86_64": "runtime-verified-partial",
+        "aarch64": "runtime-verified-partial",
+        "ia32": "unimplemented",
+        "x32": "unimplemented"
+      },
+      "implemented": [
+        "API negotiation and thread-ID page-fault records",
+        "missing-page registration, copy, zero-page, wake and unregister operations",
+        "write-protect registration, resident-page permission faults and wake behavior",
+        "copy-and-write-protect mode and close-time permission restoration",
+        "architecture-independent range, event and waiter state"
+      ],
+      "missing": [
+        "minor-fault registration and continue operation",
+        "move and poison operations",
+        "hugetlb and shmem minor-fault behavior",
+        "async write-protect and exact Linux fork, remap and remove events",
+        "ia32 and x32 compatibility layouts"
+      ],
+      "runtime_tests": [
+        "tools/tests/userfaultfd_abi_probe.c",
+        "tools/tests/userfaultfd_runtime_unit.c"
+      ],
+      "linux_oracle": {
+        "status": "partial",
+        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa",
+        "scope": "feature bits, range ioctl masks, missing-page copy and zero-page behavior, write-protect event flags and wake behavior"
+      }
+    },
+    {
       "domain": "io_uring",
       "status": "partial",
       "kconfig": [

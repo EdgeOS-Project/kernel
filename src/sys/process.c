@@ -6118,6 +6118,46 @@ int process_user_mmap_protect(task_t *t, uint64_t start, uint64_t len,
     return result;
 }
 
+int process_user_mmap_write_protect(task_t *t, uint64_t start,
+                                    uint64_t len, int enable) {
+    task_t *memory;
+    uint64_t end;
+    uint64_t cursor;
+    int result = 0;
+
+    if (!t || !len || len > UINT64_MAX - start) return -1;
+    memory = task_vm_owner_local(t);
+    if (!memory) return -1;
+    start = page_align_down_local(start);
+    end = page_align_up_local(start + len);
+    if (end < start) return -1;
+
+    process_user_page_table_lock(memory);
+    cursor = start;
+    while (cursor < end) {
+        edge_user_vma_t *vma = process_user_vma_for_addr(memory, cursor);
+        uint64_t run_end;
+        uint32_t protection;
+
+        if (!vma) {
+            result = -1;
+            break;
+        }
+        run_end = vma->end < end ? vma->end : end;
+        protection = vma->prot;
+        if (enable) protection &= ~KERNEL_MM_PROT_WRITE;
+        if (process_user_mmap_protect_locked(
+                memory, cursor, run_end - cursor, protection) < 0) {
+            result = -1;
+            break;
+        }
+        cursor = run_end;
+    }
+    process_user_page_table_unlock(memory);
+    if (result == 0) sparse_mmap_flush_task(memory);
+    return result;
+}
+
 static int process_user_fbdev_handle_fault(task_t *t, uint64_t addr, int write) {
     task_t *mm;
     const edge_user_vma_t *v;

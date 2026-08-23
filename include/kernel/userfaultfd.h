@@ -16,12 +16,20 @@
 #define KERNEL_UFFD_USER_MODE_ONLY 0x00000001u
 
 #define KERNEL_UFFD_REGISTER_MODE_MISSING (1ULL << 0)
-#define KERNEL_UFFDIO_MODE_DONTWAKE        (1ULL << 0)
+#define KERNEL_UFFD_REGISTER_MODE_WP      (1ULL << 1)
+#define KERNEL_UFFDIO_MODE_DONTWAKE       (1ULL << 0)
+#define KERNEL_UFFDIO_COPY_MODE_WP        (1ULL << 1)
+#define KERNEL_UFFDIO_WRITEPROTECT_MODE_WP       (1ULL << 0)
+#define KERNEL_UFFDIO_WRITEPROTECT_MODE_DONTWAKE (1ULL << 1)
 
+#define KERNEL_UFFD_FEATURE_PAGEFAULT_FLAG_WP (1ULL << 0)
 #define KERNEL_UFFD_FEATURE_THREAD_ID (1ULL << 8)
-#define KERNEL_UFFD_SUPPORTED_FEATURES KERNEL_UFFD_FEATURE_THREAD_ID
+#define KERNEL_UFFD_SUPPORTED_FEATURES \
+    (KERNEL_UFFD_FEATURE_PAGEFAULT_FLAG_WP | \
+     KERNEL_UFFD_FEATURE_THREAD_ID)
 
 #define KERNEL_UFFD_PAGEFAULT_FLAG_WRITE (1ULL << 0)
+#define KERNEL_UFFD_PAGEFAULT_FLAG_WP    (1ULL << 1)
 #define KERNEL_UFFD_EVENT_PAGEFAULT 0x12u
 
 #define KERNEL_UFFDIO_REGISTER_NUMBER   0x00u
@@ -29,6 +37,7 @@
 #define KERNEL_UFFDIO_WAKE_NUMBER       0x02u
 #define KERNEL_UFFDIO_COPY_NUMBER       0x03u
 #define KERNEL_UFFDIO_ZEROPAGE_NUMBER   0x04u
+#define KERNEL_UFFDIO_WRITEPROTECT_NUMBER 0x06u
 #define KERNEL_UFFDIO_API_NUMBER        0x3fu
 
 #define KERNEL_UFFD_API_IOCTLS \
@@ -40,6 +49,10 @@
     ((1ULL << KERNEL_UFFDIO_WAKE_NUMBER) | \
      (1ULL << KERNEL_UFFDIO_COPY_NUMBER) | \
      (1ULL << KERNEL_UFFDIO_ZEROPAGE_NUMBER))
+
+#define KERNEL_UFFD_WP_RANGE_IOCTLS \
+    ((1ULL << KERNEL_UFFDIO_WAKE_NUMBER) | \
+     (1ULL << KERNEL_UFFDIO_WRITEPROTECT_NUMBER))
 
 typedef struct kernel_uffdio_api {
     uint64_t api;
@@ -71,6 +84,11 @@ typedef struct kernel_uffdio_zeropage {
     uint64_t mode;
     int64_t zeroed;
 } kernel_uffdio_zeropage_t;
+
+typedef struct kernel_uffdio_writeprotect {
+    kernel_uffdio_range_t range;
+    uint64_t mode;
+} kernel_uffdio_writeprotect_t;
 
 typedef struct kernel_userfaultfd_message {
     uint8_t event;
@@ -109,6 +127,9 @@ int kernel_userfaultfd_register(int context_id,
                                 kernel_uffdio_register_t *registration);
 int kernel_userfaultfd_unregister(int context_id,
                                   const kernel_uffdio_range_t *range);
+int kernel_userfaultfd_unregister_validate(
+    int context_id, const kernel_uffdio_range_t *range,
+    uint64_t *address_space);
 int kernel_userfaultfd_validate_resolution(
     int context_id, const kernel_uffdio_range_t *range, uint64_t mode,
     uint64_t *address_space);
@@ -116,9 +137,20 @@ int kernel_userfaultfd_resolve(int context_id,
                                const kernel_uffdio_range_t *range);
 int kernel_userfaultfd_cancel_resolution(
     int context_id, const kernel_uffdio_range_t *range);
+int kernel_userfaultfd_writeprotect_validate(
+    int context_id, const kernel_uffdio_range_t *range, uint64_t mode,
+    uint64_t *address_space);
+int kernel_userfaultfd_writeprotect_intersects(
+    int context_id, const kernel_uffdio_range_t *range,
+    uint64_t *address_space);
+int kernel_userfaultfd_writeprotect_commit(
+    int context_id, const kernel_uffdio_range_t *range, uint64_t mode);
 int kernel_userfaultfd_missing_fault(
     uint64_t address_space, uint64_t address, int write, uint32_t thread_id,
     int *context_id, uint64_t *ticket);
+int kernel_userfaultfd_page_fault(
+    uint64_t address_space, uint64_t address, int write, int present,
+    uint32_t thread_id, int *context_id, uint64_t *ticket);
 int kernel_userfaultfd_fault_pending(int context_id, uint64_t ticket);
 int kernel_userfaultfd_resolution_bypasses_fault(
     uint64_t address_space, uint64_t address);
