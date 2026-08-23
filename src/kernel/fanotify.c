@@ -39,6 +39,8 @@
 typedef struct kernel_fanotify_group {
     uint8_t used;
     uint8_t overflow_queued;
+    uint8_t read_busy;
+    uint8_t padding8;
     uint16_t head;
     uint16_t tail;
     uint16_t count;
@@ -213,6 +215,15 @@ static void fanotify_wake_groups(uint64_t groups) {
             kernel_fanotify_state_changed(group_id);
 }
 
+static void fanotify_read_finish(int group_id) {
+    kernel_fanotify_group_t *group;
+
+    fanotify_lock();
+    group = fanotify_group_locked(group_id);
+    if (group) group->read_busy = 0u;
+    fanotify_unlock();
+}
+
 int kernel_fanotify_create(uint32_t flags, uint32_t event_flags) {
     kernel_linux_identity_t identity;
     uint32_t groups = 0;
@@ -299,8 +310,12 @@ int kernel_fanotify_query(int group_id, kernel_fanotify_state_t *state) {
         state->queued_bytes = (uint32_t)group->count *
             (KERNEL_FANOTIFY_METADATA_LENGTH +
              ((group->flags & KERNEL_FAN_REPORT_PIDFD) ?
-                KERNEL_FANOTIFY_PIDFD_INFO_LENGTH : 0u));
+                KERNEL_FANOTIFY_PIDFD_INFO_LENGTH : 0u) +
+             ((group->flags & KERNEL_FAN_REPORT_FID) ?
+                KERNEL_FANOTIFY_FID_INFO_PREFIX_LENGTH +
+                    VFS_FILE_HANDLE_MAX : 0u));
         state->readiness_sequence = group->readiness_sequence;
+        state->flags = group->flags;
         for (uint32_t index = 0;
              index < EDGE_RUNTIME_MAX_FANOTIFY_MARKS; ++index)
             if (g_fanotify_marks[index].used &&
@@ -381,6 +396,13 @@ int kernel_fanotify_modify_mark(int group_id, uint32_t flags,
         result = -EDGE_LINUX_EINVAL;
         goto out;
     }
+    if ((group->flags & KERNEL_FAN_REPORT_FID) &&
+        (mask & (KERNEL_FAN_MOVED_FROM | KERNEL_FAN_MOVED_TO |
+                 KERNEL_FAN_DELETE | KERNEL_FAN_DELETE_SELF |
+                 KERNEL_FAN_MOVE_SELF | KERNEL_FAN_RENAME))) {
+        result = -EDGE_LINUX_EOPNOTSUPP;
+        goto out;
+    }
     for (uint32_t index = 0;
          index < EDGE_RUNTIME_MAX_FANOTIFY_MARKS; ++index) {
         kernel_fanotify_mark_t *candidate = &g_fanotify_marks[index];
@@ -433,9 +455,24 @@ int64_t kernel_fanotify_read(int group_id,
                             void *copy_context, uint64_t length) {
     struct fanotify_record {
         kernel_fanotify_event_metadata_t metadata;
-        kernel_fanotify_event_info_pidfd_t pidfd;
+        uint8_t information[160];
     } record;
     uint64_t done = 0;
+
+    fanotify_lock();
+    {
+        kernel_fanotify_group_t *group = fanotify_group_locked(group_id);
+        if (!group) {
+            fanotify_unlock();
+            return -EDGE_LINUX_EBADF;
+        }
+        if (group->read_busy) {
+            fanotify_unlock();
+            return -EDGE_LINUX_EAGAIN;
+        }
+        group->read_busy = 1u;
+    }
+    fanotify_unlock();
 
     while (length - done >= KERNEL_FANOTIFY_METADATA_LENGTH) {
         kernel_fanotify_group_t *group;
@@ -443,30 +480,97 @@ int64_t kernel_fanotify_read(int group_id,
         uint32_t group_flags;
         uint32_t event_flags;
         uint32_t record_length;
+        uint32_t information_offset = 0u;
         uint16_t event_index;
         int descriptor = KERNEL_FANOTIFY_NOFD;
         int pidfd = KERNEL_FANOTIFY_NOFD;
+        int prepare_status = 0;
         int copy_status;
 
         fanotify_lock();
         group = fanotify_group_locked(group_id);
         if (!group) {
             fanotify_unlock();
+            fanotify_read_finish(group_id);
             return done ? (int64_t)done : -EDGE_LINUX_EBADF;
         }
         if (!group->count || group->head == KERNEL_FANOTIFY_EVENT_NONE) {
             fanotify_unlock();
+            fanotify_read_finish(group_id);
             return done ? (int64_t)done : -EDGE_LINUX_EAGAIN;
         }
         event_index = group->head;
         event = &g_fanotify_events[event_index];
         group_flags = group->flags;
         event_flags = group->event_flags;
+        fanotify_unlock();
+
+        memset(&record, 0, sizeof(record));
+        if (event->mask != KERNEL_FAN_Q_OVERFLOW &&
+            (group_flags & KERNEL_FAN_REPORT_FID)) {
+            kernel_fanotify_event_info_fid_prefix_t *fid =
+                (kernel_fanotify_event_info_fid_prefix_t *)(void *)
+                    record.information;
+            kernel_vfs_target_t target;
+            uint64_t filesystem_id = 0u;
+            uint32_t handle_bytes = VFS_FILE_HANDLE_MAX;
+            uint32_t handle_type = 0u;
+
+            prepare_status = kernel_vfs_resolve_path(
+                event->path, 0, &target);
+            if (prepare_status == 0 && target.inode && target.superblock)
+                prepare_status = vfs_mount_id_for_superblock(
+                    target.superblock, &filesystem_id);
+            else if (prepare_status == 0)
+                prepare_status = -1;
+            if (prepare_status == 0)
+                prepare_status = vfs_encode_file_handle(
+                    target.superblock, target.inode, &handle_type,
+                    record.information +
+                        KERNEL_FANOTIFY_FID_INFO_PREFIX_LENGTH,
+                    &handle_bytes);
+            if (prepare_status == 0) {
+                uint32_t fid_length =
+                    KERNEL_FANOTIFY_FID_INFO_PREFIX_LENGTH +
+                        handle_bytes;
+                fid->information_type = KERNEL_FANOTIFY_INFO_TYPE_FID;
+                fid->length = (uint16_t)fid_length;
+                fid->filesystem_id[0] = (int32_t)filesystem_id;
+                fid->filesystem_id[1] =
+                    (int32_t)(filesystem_id >> 32u);
+                fid->handle_bytes = handle_bytes;
+                fid->handle_type = (int32_t)handle_type;
+                information_offset = fid_length;
+            }
+        }
+        if (prepare_status < 0) {
+            fanotify_read_finish(group_id);
+            return done ? (int64_t)done : -EDGE_LINUX_EIO;
+        }
+        if (event->mask != KERNEL_FAN_Q_OVERFLOW &&
+            (group_flags & KERNEL_FAN_REPORT_PIDFD)) {
+            kernel_fanotify_event_info_pidfd_t *pidfd_information =
+                (kernel_fanotify_event_info_pidfd_t *)(void *)
+                    (record.information + information_offset);
+            pidfd_information->information_type =
+                KERNEL_FANOTIFY_INFO_TYPE_PIDFD;
+            pidfd_information->length =
+                KERNEL_FANOTIFY_PIDFD_INFO_LENGTH;
+            information_offset += KERNEL_FANOTIFY_PIDFD_INFO_LENGTH;
+        }
         record_length = KERNEL_FANOTIFY_METADATA_LENGTH +
-            ((group_flags & KERNEL_FAN_REPORT_PIDFD) ?
-                KERNEL_FANOTIFY_PIDFD_INFO_LENGTH : 0u);
+            information_offset;
+
+        fanotify_lock();
+        group = fanotify_group_locked(group_id);
+        if (!group || group->head != event_index) {
+            fanotify_unlock();
+            fanotify_read_finish(group_id);
+            return done ? (int64_t)done : -EDGE_LINUX_EAGAIN;
+        }
         if (length - done < record_length) {
             fanotify_unlock();
+            fanotify_read_finish(group_id);
             return done ? (int64_t)done : -EDGE_LINUX_EINVAL;
         }
         group->head = event->next;
@@ -476,7 +580,8 @@ int64_t kernel_fanotify_read(int group_id,
             group->overflow_queued = 0u;
         fanotify_unlock();
 
-        if (event->path[0]) {
+        if (event->path[0] &&
+            !(group_flags & KERNEL_FAN_REPORT_FID)) {
             kernel_vfs_target_t target;
             int status = kernel_vfs_resolve_path(event->path, 0, &target);
             if (status == 0 && target.inode && target.superblock)
@@ -489,22 +594,23 @@ int64_t kernel_fanotify_read(int group_id,
             else if (group_flags & KERNEL_FAN_REPORT_FD_ERROR)
                 descriptor = status < 0 ? status : -EDGE_LINUX_EIO;
         }
-        memset(&record, 0, sizeof(record));
         record.metadata.event_length = record_length;
         record.metadata.version = KERNEL_FANOTIFY_METADATA_VERSION;
         record.metadata.metadata_length = KERNEL_FANOTIFY_METADATA_LENGTH;
         record.metadata.mask = event->mask;
         record.metadata.descriptor = descriptor;
         record.metadata.pid = event->pid;
-        if (group_flags & KERNEL_FAN_REPORT_PIDFD) {
+        if (event->mask != KERNEL_FAN_Q_OVERFLOW &&
+            (group_flags & KERNEL_FAN_REPORT_PIDFD)) {
+            kernel_fanotify_event_info_pidfd_t *pidfd_information =
+                (kernel_fanotify_event_info_pidfd_t *)(void *)
+                    (record.information + information_offset -
+                     KERNEL_FANOTIFY_PIDFD_INFO_LENGTH);
             pidfd = kernel_pidfd_open(event->pid, 0u);
             if (pidfd < 0)
                 pidfd = pidfd == -EDGE_LINUX_ESRCH ?
                     KERNEL_FANOTIFY_NOFD : KERNEL_FANOTIFY_EPIDFD;
-            record.pidfd.information_type =
-                KERNEL_FANOTIFY_INFO_TYPE_PIDFD;
-            record.pidfd.length = KERNEL_FANOTIFY_PIDFD_INFO_LENGTH;
-            record.pidfd.descriptor = pidfd;
+            pidfd_information->descriptor = pidfd;
         }
         fanotify_lock();
         fanotify_event_free_locked(event_index);
@@ -514,10 +620,12 @@ int64_t kernel_fanotify_read(int group_id,
         if (copy_status < 0) {
             if (descriptor >= 0) (void)kernel_fd_close(descriptor);
             if (pidfd >= 0) (void)kernel_fd_close(pidfd);
+            fanotify_read_finish(group_id);
             return done ? (int64_t)done : -EDGE_LINUX_EFAULT;
         }
         done += record_length;
     }
+    fanotify_read_finish(group_id);
     return done ? (int64_t)done : -EDGE_LINUX_EINVAL;
 }
 

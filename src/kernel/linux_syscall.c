@@ -14307,7 +14307,8 @@ static int64_t edge_linux_sys_fanotify(
             (flags & (report_mask &
                       ~(KERNEL_FAN_REPORT_FD_ERROR |
                         KERNEL_FAN_REPORT_PIDFD |
-                        KERNEL_FAN_REPORT_TID))))
+                        KERNEL_FAN_REPORT_TID |
+                        KERNEL_FAN_REPORT_FID))))
             return -EDGE_LINUX_EOPNOTSUPP;
         return kernel_fanotify_create_descriptor(flags, event_flags);
     }
@@ -14341,6 +14342,15 @@ static int64_t edge_linux_sys_fanotify(
     if (status < 0) return status;
     if (!target.inode || !target.resolved_path)
         return -EDGE_LINUX_EIO;
+    {
+        kernel_fanotify_state_t state;
+        status = kernel_fanotify_query(group_id, &state);
+        if (status < 0) return status;
+        if ((state.flags & KERNEL_FAN_REPORT_FID) &&
+            (!target.superblock || !target.superblock->ops ||
+             !target.superblock->ops->encode_handle))
+            return -EDGE_LINUX_EOPNOTSUPP;
+    }
     return kernel_fanotify_modify_mark(
         group_id, flags, mask, target.resolved_path,
         (target.inode->mode & 0xf000u) == VFS_INODE_DIR);

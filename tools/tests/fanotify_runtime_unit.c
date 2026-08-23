@@ -67,6 +67,33 @@ int kernel_vfs_install_inode_descriptor(vfs_superblock_t *superblock,
     return ++g_installed_descriptor;
 }
 
+int vfs_mount_id_for_superblock(const vfs_superblock_t *superblock,
+                                uint64_t *mount_id_out) {
+    assert(superblock != 0);
+    assert(mount_id_out != 0);
+    *mount_id_out = 0x1122334455667788ULL;
+    return 0;
+}
+
+int vfs_encode_file_handle(vfs_superblock_t *superblock,
+                           const vfs_inode_t *inode,
+                           uint32_t *handle_type, void *handle,
+                           uint32_t *handle_bytes) {
+    static const uint8_t encoded[12] = {
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15,
+        0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
+    };
+    assert(superblock != 0);
+    assert(inode != 0);
+    assert(handle_type != 0);
+    assert(handle_bytes != 0 && *handle_bytes >= sizeof(encoded));
+    assert(handle != 0);
+    *handle_type = 7u;
+    *handle_bytes = sizeof(encoded);
+    memcpy(handle, encoded, sizeof(encoded));
+    return 0;
+}
+
 int kernel_fd_close(int32_t descriptor) {
     (void)descriptor;
     return 0;
@@ -117,6 +144,8 @@ int main(void) {
     int group;
     int pidfd_group;
     int tid_group;
+    int fid_group;
+    int combined_group;
 
     memset(&copy, 0, sizeof(copy));
     group = kernel_fanotify_create(KERNEL_FAN_NONBLOCK, 0u);
@@ -224,6 +253,76 @@ int main(void) {
            KERNEL_FANOTIFY_METADATA_LENGTH);
     assert(copied_event(&copy, 3u)->pid == 123);
     kernel_fanotify_release(tid_group);
+
+    fid_group = kernel_fanotify_create(
+        KERNEL_FAN_NONBLOCK | KERNEL_FAN_REPORT_FID, 0u);
+    assert(fid_group >= 0);
+    assert(kernel_fanotify_modify_mark(
+               fid_group, KERNEL_FAN_MARK_ADD, KERNEL_FAN_OPEN,
+               "/watched/fid", 0) == 0);
+    kernel_fanotify_notify_path("/watched/fid", KERNEL_FAN_OPEN);
+    assert(kernel_fanotify_read(
+               fid_group, copy_record, &copy,
+               KERNEL_FANOTIFY_METADATA_LENGTH) ==
+           -EDGE_LINUX_EINVAL);
+    assert(kernel_fanotify_read(
+               fid_group, copy_record, &copy,
+               sizeof(copy.records[0])) == 56);
+    {
+        const kernel_fanotify_event_metadata_t *event =
+            copied_event(&copy, 4u);
+        const kernel_fanotify_event_info_fid_prefix_t *fid =
+            (const kernel_fanotify_event_info_fid_prefix_t *)(const void *)
+                (copy.records[4] + KERNEL_FANOTIFY_METADATA_LENGTH);
+        const uint8_t *handle = copy.records[4] +
+            KERNEL_FANOTIFY_METADATA_LENGTH +
+            KERNEL_FANOTIFY_FID_INFO_PREFIX_LENGTH;
+
+        assert(event->event_length == 56u);
+        assert(event->descriptor == KERNEL_FANOTIFY_NOFD);
+        assert(fid->information_type == KERNEL_FANOTIFY_INFO_TYPE_FID);
+        assert(fid->length == 32u);
+        assert((uint32_t)fid->filesystem_id[0] == 0x55667788u);
+        assert((uint32_t)fid->filesystem_id[1] == 0x11223344u);
+        assert(fid->handle_bytes == 12u);
+        assert(fid->handle_type == 7);
+        for (uint32_t index = 0; index < fid->handle_bytes; ++index)
+            assert(handle[index] == (uint8_t)(0x10u + index));
+    }
+    kernel_fanotify_release(fid_group);
+
+    combined_group = kernel_fanotify_create(
+        KERNEL_FAN_NONBLOCK | KERNEL_FAN_REPORT_FID |
+            KERNEL_FAN_REPORT_PIDFD,
+        0u);
+    assert(combined_group >= 0);
+    assert(kernel_fanotify_modify_mark(
+               combined_group, KERNEL_FAN_MARK_ADD, KERNEL_FAN_OPEN,
+               "/watched/combined", 0) == 0);
+    kernel_fanotify_notify_path("/watched/combined", KERNEL_FAN_OPEN);
+    assert(kernel_fanotify_read(
+               combined_group, copy_record, &copy,
+               sizeof(copy.records[0])) == 64);
+    {
+        const kernel_fanotify_event_metadata_t *event =
+            copied_event(&copy, 5u);
+        const kernel_fanotify_event_info_fid_prefix_t *fid =
+            (const kernel_fanotify_event_info_fid_prefix_t *)(const void *)
+                (copy.records[5] + KERNEL_FANOTIFY_METADATA_LENGTH);
+        const kernel_fanotify_event_info_pidfd_t *pidfd =
+            (const kernel_fanotify_event_info_pidfd_t *)(const void *)
+                (copy.records[5] + KERNEL_FANOTIFY_METADATA_LENGTH +
+                 fid->length);
+
+        assert(event->event_length == 64u);
+        assert(event->descriptor == KERNEL_FANOTIFY_NOFD);
+        assert(fid->information_type == KERNEL_FANOTIFY_INFO_TYPE_FID);
+        assert(pidfd->information_type ==
+               KERNEL_FANOTIFY_INFO_TYPE_PIDFD);
+        assert(pidfd->length == KERNEL_FANOTIFY_PIDFD_INFO_LENGTH);
+        assert(pidfd->descriptor == 180);
+    }
+    kernel_fanotify_release(combined_group);
 
     assert(kernel_fanotify_modify_mark(
                group, KERNEL_FAN_MARK_FLUSH, 0u, 0, 0) == 0);
