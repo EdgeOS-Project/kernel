@@ -296,8 +296,10 @@ int kernel_fanotify_query(int group_id, kernel_fanotify_state_t *state) {
     } else {
         state->references = group->references;
         state->queued_events = group->count;
-        state->queued_bytes =
-            (uint32_t)group->count * KERNEL_FANOTIFY_METADATA_LENGTH;
+        state->queued_bytes = (uint32_t)group->count *
+            (KERNEL_FANOTIFY_METADATA_LENGTH +
+             ((group->flags & KERNEL_FAN_REPORT_PIDFD) ?
+                KERNEL_FANOTIFY_PIDFD_INFO_LENGTH : 0u));
         state->readiness_sequence = group->readiness_sequence;
         for (uint32_t index = 0;
              index < EDGE_RUNTIME_MAX_FANOTIFY_MARKS; ++index)
@@ -429,16 +431,21 @@ out:
 int64_t kernel_fanotify_read(int group_id,
                             kernel_fanotify_copy_record_fn copy_record,
                             void *copy_context, uint64_t length) {
+    struct fanotify_record {
+        kernel_fanotify_event_metadata_t metadata;
+        kernel_fanotify_event_info_pidfd_t pidfd;
+    } record;
     uint64_t done = 0;
 
     while (length - done >= KERNEL_FANOTIFY_METADATA_LENGTH) {
         kernel_fanotify_group_t *group;
         kernel_fanotify_event_t *event;
-        kernel_fanotify_event_metadata_t metadata;
         uint32_t group_flags;
         uint32_t event_flags;
+        uint32_t record_length;
         uint16_t event_index;
         int descriptor = KERNEL_FANOTIFY_NOFD;
+        int pidfd = KERNEL_FANOTIFY_NOFD;
         int copy_status;
 
         fanotify_lock();
@@ -455,6 +462,13 @@ int64_t kernel_fanotify_read(int group_id,
         event = &g_fanotify_events[event_index];
         group_flags = group->flags;
         event_flags = group->event_flags;
+        record_length = KERNEL_FANOTIFY_METADATA_LENGTH +
+            ((group_flags & KERNEL_FAN_REPORT_PIDFD) ?
+                KERNEL_FANOTIFY_PIDFD_INFO_LENGTH : 0u);
+        if (length - done < record_length) {
+            fanotify_unlock();
+            return done ? (int64_t)done : -EDGE_LINUX_EINVAL;
+        }
         group->head = event->next;
         --group->count;
         if (!group->count) group->tail = KERNEL_FANOTIFY_EVENT_NONE;
@@ -475,29 +489,41 @@ int64_t kernel_fanotify_read(int group_id,
             else if (group_flags & KERNEL_FAN_REPORT_FD_ERROR)
                 descriptor = status < 0 ? status : -EDGE_LINUX_EIO;
         }
-        memset(&metadata, 0, sizeof(metadata));
-        metadata.event_length = KERNEL_FANOTIFY_METADATA_LENGTH;
-        metadata.version = KERNEL_FANOTIFY_METADATA_VERSION;
-        metadata.metadata_length = KERNEL_FANOTIFY_METADATA_LENGTH;
-        metadata.mask = event->mask;
-        metadata.descriptor = descriptor;
-        metadata.pid = event->pid;
+        memset(&record, 0, sizeof(record));
+        record.metadata.event_length = record_length;
+        record.metadata.version = KERNEL_FANOTIFY_METADATA_VERSION;
+        record.metadata.metadata_length = KERNEL_FANOTIFY_METADATA_LENGTH;
+        record.metadata.mask = event->mask;
+        record.metadata.descriptor = descriptor;
+        record.metadata.pid = event->pid;
+        if (group_flags & KERNEL_FAN_REPORT_PIDFD) {
+            pidfd = kernel_pidfd_open(event->pid, 0u);
+            if (pidfd < 0)
+                pidfd = pidfd == -EDGE_LINUX_ESRCH ?
+                    KERNEL_FANOTIFY_NOFD : KERNEL_FANOTIFY_EPIDFD;
+            record.pidfd.information_type =
+                KERNEL_FANOTIFY_INFO_TYPE_PIDFD;
+            record.pidfd.length = KERNEL_FANOTIFY_PIDFD_INFO_LENGTH;
+            record.pidfd.descriptor = pidfd;
+        }
         fanotify_lock();
         fanotify_event_free_locked(event_index);
         fanotify_unlock();
         copy_status = copy_record ? copy_record(
-            copy_context, done, &metadata, sizeof(metadata)) : -1;
+            copy_context, done, &record, record_length) : -1;
         if (copy_status < 0) {
             if (descriptor >= 0) (void)kernel_fd_close(descriptor);
+            if (pidfd >= 0) (void)kernel_fd_close(pidfd);
             return done ? (int64_t)done : -EDGE_LINUX_EFAULT;
         }
-        done += sizeof(metadata);
+        done += record_length;
     }
     return done ? (int64_t)done : -EDGE_LINUX_EINVAL;
 }
 
 static uint64_t fanotify_notify_path_locked(const char *canonical_path,
-                                            uint64_t mask, int32_t pid) {
+                                            uint64_t mask, int32_t tid,
+                                            int32_t tgid) {
     char *parent = g_fanotify_path_scratch[0];
     uint64_t wake_groups = 0;
     int has_parent = fanotify_parent_path(canonical_path, parent) == 0;
@@ -505,11 +531,14 @@ static uint64_t fanotify_notify_path_locked(const char *canonical_path,
     for (uint32_t index = 0;
          index < EDGE_RUNTIME_MAX_FANOTIFY_MARKS; ++index) {
         kernel_fanotify_mark_t *mark = &g_fanotify_marks[index];
+        kernel_fanotify_group_t *group;
         uint64_t event_mask = mask;
         int direct;
         int child;
 
         if (!mark->used) continue;
+        group = fanotify_group_locked(mark->group_id);
+        if (!group) continue;
         direct = fanotify_path_equal(mark->path, canonical_path);
         child = has_parent && fanotify_path_equal(mark->path, parent) &&
                 (mark->mask & KERNEL_FAN_EVENT_ON_CHILD);
@@ -524,39 +553,62 @@ static uint64_t fanotify_notify_path_locked(const char *canonical_path,
         event_mask &= ~(uint64_t)KERNEL_FAN_EVENT_ON_CHILD;
         if (!event_mask) continue;
         wake_groups |= fanotify_queue_locked(
-            mark->group_id, event_mask, canonical_path, pid);
+            mark->group_id, event_mask, canonical_path,
+            (group->flags & KERNEL_FAN_REPORT_TID) ? tid : tgid);
     }
     return wake_groups;
 }
 
 void kernel_fanotify_notify_path(const char *canonical_path, uint32_t mask) {
+    kernel_linux_identity_t identity;
     uint64_t wake_groups;
-    int32_t pid = kernel_current_pid();
+    int32_t tid;
+    int32_t tgid;
     if (!canonical_path || canonical_path[0] != '/') return;
+    if (kernel_current_linux_identity(&identity) == 0) {
+        tid = identity.tid;
+        tgid = identity.tgid;
+    } else {
+        tid = kernel_current_pid();
+        tgid = tid;
+    }
+    if (tid <= 0) tid = 0;
+    if (tgid <= 0) tgid = tid;
     fanotify_lock();
     wake_groups = fanotify_notify_path_locked(
-        canonical_path, (uint64_t)mask, pid > 0 ? pid : 0);
+        canonical_path, (uint64_t)mask, tid, tgid);
     fanotify_unlock();
     fanotify_wake_groups(wake_groups);
 }
 
 void kernel_fanotify_notify_move(const char *old_canonical_path,
                                  const char *new_canonical_path) {
+    kernel_linux_identity_t identity;
     char *updated = g_fanotify_path_scratch[2];
     uint64_t wake_groups;
-    int32_t pid = kernel_current_pid();
+    int32_t tid;
+    int32_t tgid;
 
     if (!old_canonical_path || old_canonical_path[0] != '/' ||
         !new_canonical_path || new_canonical_path[0] != '/')
         return;
+    if (kernel_current_linux_identity(&identity) == 0) {
+        tid = identity.tid;
+        tgid = identity.tgid;
+    } else {
+        tid = kernel_current_pid();
+        tgid = tid;
+    }
+    if (tid <= 0) tid = 0;
+    if (tgid <= 0) tgid = tid;
     fanotify_lock();
     wake_groups = fanotify_notify_path_locked(
         old_canonical_path,
         KERNEL_FAN_MOVED_FROM | KERNEL_FAN_MOVE_SELF,
-        pid > 0 ? pid : 0);
+        tid, tgid);
     wake_groups |= fanotify_notify_path_locked(
         new_canonical_path, KERNEL_FAN_MOVED_TO,
-        pid > 0 ? pid : 0);
+        tid, tgid);
     for (uint32_t index = 0;
          index < EDGE_RUNTIME_MAX_FANOTIFY_MARKS; ++index) {
         kernel_fanotify_mark_t *mark = &g_fanotify_marks[index];

@@ -8,6 +8,7 @@
 #define SYS_write 1
 #define SYS_close 3
 #define SYS_getpid 39
+#define SYS_gettid 186
 #define SYS_exit 60
 #define SYS_openat 257
 #define SYS_mkdirat 258
@@ -19,6 +20,7 @@
 #define SYS_write 64
 #define SYS_close 57
 #define SYS_getpid 172
+#define SYS_gettid 178
 #define SYS_exit 93
 #define SYS_openat 56
 #define SYS_mkdirat 34
@@ -37,11 +39,14 @@
 #define O_CLOEXEC 0x80000
 #define FAN_CLOEXEC 0x1
 #define FAN_NONBLOCK 0x2
+#define FAN_REPORT_PIDFD 0x80
+#define FAN_REPORT_TID 0x100
 #define FAN_MARK_ADD 0x1
 #define FAN_MARK_REMOVE 0x2
 #define FAN_MARK_FLUSH 0x80
 #define FAN_OPEN 0x20
 #define FANOTIFY_METADATA_VERSION 3
+#define FAN_EVENT_INFO_TYPE_PIDFD 4
 #define EAGAIN 11
 #define EBADF 9
 #define EINVAL 22
@@ -56,6 +61,25 @@ struct fanotify_event_metadata {
     int32_t fd;
     int32_t pid;
 };
+
+struct fanotify_event_info_pidfd {
+    uint8_t info_type;
+    uint8_t pad;
+    uint16_t len;
+    int32_t pidfd;
+};
+
+struct fanotify_pidfd_record {
+    struct fanotify_event_metadata metadata;
+    struct fanotify_event_info_pidfd pidfd;
+};
+
+_Static_assert(sizeof(struct fanotify_event_metadata) == 24,
+               "fanotify metadata layout mismatch");
+_Static_assert(sizeof(struct fanotify_event_info_pidfd) == 8,
+               "fanotify pidfd layout mismatch");
+_Static_assert(sizeof(struct fanotify_pidfd_record) == 32,
+               "fanotify pidfd record layout mismatch");
 
 static long raw_syscall6(long number, long a0, long a1, long a2,
                          long a3, long a4, long a5) {
@@ -230,6 +254,127 @@ void _start(void) {
                      0, AT_FDCWD, 0, 0),
         0);
     (void)raw_syscall6(SYS_close, group, 0, 0, 0, 0, 0);
+
+    {
+        struct fanotify_pidfd_record record;
+        struct fanotify_event_metadata short_record;
+
+        failures += expect_result(
+            "pidfd-tid-combination",
+            raw_syscall6(
+                SYS_fanotify_init,
+                FAN_CLOEXEC | FAN_NONBLOCK | FAN_REPORT_PIDFD |
+                    FAN_REPORT_TID,
+                O_CLOEXEC, 0, 0, 0, 0),
+            -EINVAL);
+        group = raw_syscall6(
+            SYS_fanotify_init,
+            FAN_CLOEXEC | FAN_NONBLOCK | FAN_REPORT_PIDFD,
+            O_CLOEXEC, 0, 0, 0, 0);
+        if (group < 0) {
+            failures += expect_result("pidfd-init", group, 0);
+            goto out;
+        }
+        failures += expect_result(
+            "pidfd-add-mark",
+            raw_syscall6(SYS_fanotify_mark, group, FAN_MARK_ADD,
+                         FAN_OPEN, AT_FDCWD, (long)path, 0),
+            0);
+        file = raw_syscall6(
+            SYS_openat, AT_FDCWD, (long)path,
+            O_RDONLY | O_CLOEXEC, 0, 0, 0);
+        if (file < 0) {
+            failures += expect_result("pidfd-open-event-file", file, 0);
+        } else {
+            (void)raw_syscall6(SYS_close, file, 0, 0, 0, 0, 0);
+        }
+        failures += expect_result(
+            "pidfd-short-read",
+            raw_syscall6(SYS_read, group, (long)&short_record,
+                         sizeof(short_record), 0, 0, 0),
+            -EINVAL);
+        result = raw_syscall6(
+            SYS_read, group, (long)&record, sizeof(record), 0, 0, 0);
+        failures += expect_result(
+            "pidfd-event-read", result, sizeof(record));
+        if (result == (long)sizeof(record)) {
+            pid = raw_syscall6(SYS_getpid, 0, 0, 0, 0, 0, 0);
+            if (record.metadata.event_len != sizeof(record) ||
+                record.metadata.metadata_len !=
+                    sizeof(record.metadata) ||
+                record.metadata.vers != FANOTIFY_METADATA_VERSION ||
+                !(record.metadata.mask & FAN_OPEN) ||
+                record.metadata.pid != pid || record.metadata.fd < 0 ||
+                record.pidfd.info_type != FAN_EVENT_INFO_TYPE_PIDFD ||
+                record.pidfd.len != sizeof(record.pidfd) ||
+                record.pidfd.pidfd < 0) {
+                print_text("FAIL pidfd-event-layout\n");
+                ++failures;
+            }
+            if (record.metadata.fd >= 0)
+                (void)raw_syscall6(
+                    SYS_close, record.metadata.fd, 0, 0, 0, 0, 0);
+            if (record.pidfd.pidfd >= 0)
+                (void)raw_syscall6(
+                    SYS_close, record.pidfd.pidfd, 0, 0, 0, 0, 0);
+        }
+        failures += expect_result(
+            "pidfd-remove-mark",
+            raw_syscall6(SYS_fanotify_mark, group, FAN_MARK_REMOVE,
+                         FAN_OPEN, AT_FDCWD, (long)path, 0),
+            0);
+        (void)raw_syscall6(SYS_close, group, 0, 0, 0, 0, 0);
+    }
+
+    {
+        struct fanotify_event_metadata event;
+        long tid;
+
+        group = raw_syscall6(
+            SYS_fanotify_init,
+            FAN_CLOEXEC | FAN_NONBLOCK | FAN_REPORT_TID,
+            O_CLOEXEC, 0, 0, 0, 0);
+        if (group < 0) {
+            failures += expect_result("tid-init", group, 0);
+            goto out;
+        }
+        failures += expect_result(
+            "tid-add-mark",
+            raw_syscall6(SYS_fanotify_mark, group, FAN_MARK_ADD,
+                         FAN_OPEN, AT_FDCWD, (long)path, 0),
+            0);
+        file = raw_syscall6(
+            SYS_openat, AT_FDCWD, (long)path,
+            O_RDONLY | O_CLOEXEC, 0, 0, 0);
+        if (file < 0) {
+            failures += expect_result("tid-open-event-file", file, 0);
+        } else {
+            (void)raw_syscall6(SYS_close, file, 0, 0, 0, 0, 0);
+        }
+        result = raw_syscall6(
+            SYS_read, group, (long)&event, sizeof(event), 0, 0, 0);
+        failures += expect_result("tid-event-read", result, sizeof(event));
+        if (result == (long)sizeof(event)) {
+            tid = raw_syscall6(SYS_gettid, 0, 0, 0, 0, 0, 0);
+            if (event.event_len != sizeof(event) ||
+                event.metadata_len != sizeof(event) ||
+                event.vers != FANOTIFY_METADATA_VERSION ||
+                !(event.mask & FAN_OPEN) || event.pid != tid ||
+                event.fd < 0) {
+                print_text("FAIL tid-event-layout\n");
+                ++failures;
+            }
+            if (event.fd >= 0)
+                (void)raw_syscall6(
+                    SYS_close, event.fd, 0, 0, 0, 0, 0);
+        }
+        failures += expect_result(
+            "tid-remove-mark",
+            raw_syscall6(SYS_fanotify_mark, group, FAN_MARK_REMOVE,
+                         FAN_OPEN, AT_FDCWD, (long)path, 0),
+            0);
+        (void)raw_syscall6(SYS_close, group, 0, 0, 0, 0, 0);
+    }
 
 out:
     (void)raw_syscall6(

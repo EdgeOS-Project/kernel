@@ -63,7 +63,10 @@
 
 #define KERNEL_FANOTIFY_METADATA_VERSION 3u
 #define KERNEL_FANOTIFY_METADATA_LENGTH 24u
+#define KERNEL_FANOTIFY_PIDFD_INFO_LENGTH 8u
+#define KERNEL_FANOTIFY_INFO_TYPE_PIDFD 4u
 #define KERNEL_FANOTIFY_NOFD (-1)
+#define KERNEL_FANOTIFY_EPIDFD (-2)
 
 typedef struct kernel_fanotify_state {
     uint32_t references;
@@ -82,6 +85,17 @@ typedef struct kernel_fanotify_event_metadata {
     int32_t descriptor;
     int32_t pid;
 } kernel_fanotify_event_metadata_t;
+
+typedef struct kernel_fanotify_event_info_pidfd {
+    uint8_t information_type;
+    uint8_t padding;
+    uint16_t length;
+    int32_t descriptor;
+} kernel_fanotify_event_info_pidfd_t;
+
+_Static_assert(sizeof(kernel_fanotify_event_info_pidfd_t) ==
+               KERNEL_FANOTIFY_PIDFD_INFO_LENGTH,
+               "fanotify pidfd information layout must match Linux UAPI");
 
 typedef int (*kernel_fanotify_copy_record_fn)(
     void *context, uint64_t offset, const void *record, uint32_t length);

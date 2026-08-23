@@ -12,7 +12,8 @@
 #include <string.h>
 
 typedef struct fanotify_test_copy {
-    kernel_fanotify_event_metadata_t events[8];
+    uint8_t records[8][64];
+    uint32_t lengths[8];
     uint32_t count;
 } fanotify_test_copy_t;
 
@@ -24,6 +25,10 @@ int kernel_current_linux_identity(kernel_linux_identity_t *identity) {
     memset(identity, 0, sizeof(*identity));
     identity->uid = 1000u;
     identity->euid = 1000u;
+    identity->tid = 123;
+    identity->tgid = 100;
+    identity->global_tid = 123;
+    identity->global_tgid = 100;
     return 0;
 }
 
@@ -67,17 +72,32 @@ int kernel_fd_close(int32_t descriptor) {
     return 0;
 }
 
+int kernel_pidfd_open(int32_t pid, uint32_t flags) {
+    assert(pid == 100);
+    assert(flags == 0u);
+    return 80 + pid;
+}
+
 static int copy_record(void *context, uint64_t offset, const void *record,
                        uint32_t length) {
     fanotify_test_copy_t *copy = context;
     assert(copy != 0);
     assert(record != 0);
-    assert(length == sizeof(kernel_fanotify_event_metadata_t));
-    assert(offset % length == 0u);
+    assert(length >= sizeof(kernel_fanotify_event_metadata_t));
+    assert(length <= sizeof(copy->records[0]));
+    assert(offset < sizeof(copy->records));
     assert(copy->count < 8u);
-    copy->events[copy->count++] =
-        *(const kernel_fanotify_event_metadata_t *)record;
+    memcpy(copy->records[copy->count], record, length);
+    copy->lengths[copy->count] = length;
+    ++copy->count;
     return 0;
+}
+
+static const kernel_fanotify_event_metadata_t *copied_event(
+        const fanotify_test_copy_t *copy, uint32_t index) {
+    assert(copy != 0 && index < copy->count);
+    return (const kernel_fanotify_event_metadata_t *)(const void *)
+        copy->records[index];
 }
 
 static void assert_event(const kernel_fanotify_event_metadata_t *event,
@@ -87,7 +107,7 @@ static void assert_event(const kernel_fanotify_event_metadata_t *event,
     assert(event->metadata_length == KERNEL_FANOTIFY_METADATA_LENGTH);
     assert(event->mask == mask);
     assert(event->descriptor == descriptor);
-    assert(event->pid == 123);
+    assert(event->pid == 100);
 }
 
 int main(void) {
@@ -95,6 +115,8 @@ int main(void) {
     kernel_fanotify_state_t state;
     uint64_t sequence;
     int group;
+    int pidfd_group;
+    int tid_group;
 
     memset(&copy, 0, sizeof(copy));
     group = kernel_fanotify_create(KERNEL_FAN_NONBLOCK, 0u);
@@ -120,10 +142,10 @@ int main(void) {
     assert(g_wake_count == 1);
 
     assert(kernel_fanotify_read(
-               group, copy_record, &copy, sizeof(copy.events)) ==
+               group, copy_record, &copy, sizeof(copy.records)) ==
            KERNEL_FANOTIFY_METADATA_LENGTH);
     assert(copy.count == 1u);
-    assert_event(&copy.events[0], KERNEL_FAN_OPEN, 41);
+    assert_event(copied_event(&copy, 0u), KERNEL_FAN_OPEN, 41);
     assert(kernel_fanotify_query(group, &state) == 0);
     assert(state.queued_events == 0u);
 
@@ -133,9 +155,9 @@ int main(void) {
                "/watched", 1) == 0);
     kernel_fanotify_notify_path("/watched/child", KERNEL_FAN_OPEN);
     assert(kernel_fanotify_read(
-               group, copy_record, &copy, sizeof(copy.events)) ==
+               group, copy_record, &copy, sizeof(copy.records)) ==
            KERNEL_FANOTIFY_METADATA_LENGTH);
-    assert_event(&copy.events[1], KERNEL_FAN_OPEN, 42);
+    assert_event(copied_event(&copy, 1u), KERNEL_FAN_OPEN, 42);
     assert(kernel_fanotify_modify_mark(
                group, KERNEL_FAN_MARK_REMOVE,
                KERNEL_FAN_OPEN | KERNEL_FAN_EVENT_ON_CHILD,
@@ -146,8 +168,62 @@ int main(void) {
                KERNEL_FAN_OPEN, "/watched/file", 0) == 0);
     kernel_fanotify_notify_path("/watched/file", KERNEL_FAN_OPEN);
     assert(kernel_fanotify_read(
-               group, copy_record, &copy, sizeof(copy.events)) ==
+               group, copy_record, &copy, sizeof(copy.records)) ==
            -EDGE_LINUX_EAGAIN);
+
+    pidfd_group = kernel_fanotify_create(
+        KERNEL_FAN_NONBLOCK | KERNEL_FAN_REPORT_PIDFD,
+        0u);
+    assert(pidfd_group >= 0);
+    assert(kernel_fanotify_modify_mark(
+               pidfd_group, KERNEL_FAN_MARK_ADD, KERNEL_FAN_OPEN,
+               "/watched/pidfd", 0) == 0);
+    kernel_fanotify_notify_path("/watched/pidfd", KERNEL_FAN_OPEN);
+    assert(kernel_fanotify_query(pidfd_group, &state) == 0);
+    assert(state.queued_bytes ==
+           KERNEL_FANOTIFY_METADATA_LENGTH +
+               KERNEL_FANOTIFY_PIDFD_INFO_LENGTH);
+    assert(kernel_fanotify_read(
+               pidfd_group, copy_record, &copy,
+               KERNEL_FANOTIFY_METADATA_LENGTH) ==
+           -EDGE_LINUX_EINVAL);
+    assert(kernel_fanotify_query(pidfd_group, &state) == 0);
+    assert(state.queued_events == 1u);
+    assert(kernel_fanotify_read(
+               pidfd_group, copy_record, &copy,
+               sizeof(copy.records)) ==
+           KERNEL_FANOTIFY_METADATA_LENGTH +
+               KERNEL_FANOTIFY_PIDFD_INFO_LENGTH);
+    {
+        const kernel_fanotify_event_metadata_t *event =
+            copied_event(&copy, 2u);
+        const kernel_fanotify_event_info_pidfd_t *pidfd =
+            (const kernel_fanotify_event_info_pidfd_t *)(const void *)
+                (copy.records[2] + KERNEL_FANOTIFY_METADATA_LENGTH);
+
+        assert(event->event_length ==
+               KERNEL_FANOTIFY_METADATA_LENGTH +
+                   KERNEL_FANOTIFY_PIDFD_INFO_LENGTH);
+        assert(event->pid == 100);
+        assert(pidfd->information_type ==
+               KERNEL_FANOTIFY_INFO_TYPE_PIDFD);
+        assert(pidfd->length == KERNEL_FANOTIFY_PIDFD_INFO_LENGTH);
+        assert(pidfd->descriptor == 180);
+    }
+    kernel_fanotify_release(pidfd_group);
+
+    tid_group = kernel_fanotify_create(
+        KERNEL_FAN_NONBLOCK | KERNEL_FAN_REPORT_TID, 0u);
+    assert(tid_group >= 0);
+    assert(kernel_fanotify_modify_mark(
+               tid_group, KERNEL_FAN_MARK_ADD, KERNEL_FAN_OPEN,
+               "/watched/tid", 0) == 0);
+    kernel_fanotify_notify_path("/watched/tid", KERNEL_FAN_OPEN);
+    assert(kernel_fanotify_read(
+               tid_group, copy_record, &copy, sizeof(copy.records)) ==
+           KERNEL_FANOTIFY_METADATA_LENGTH);
+    assert(copied_event(&copy, 3u)->pid == 123);
+    kernel_fanotify_release(tid_group);
 
     assert(kernel_fanotify_modify_mark(
                group, KERNEL_FAN_MARK_FLUSH, 0u, 0, 0) == 0);
