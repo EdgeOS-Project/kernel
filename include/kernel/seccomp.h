@@ -87,6 +87,7 @@ typedef struct {
 
 typedef int (*edge_seccomp_copy_from_user_fn)(void *context, void *destination,
                                                uint64_t source, uint64_t size);
+typedef void (*edge_seccomp_wait_fn)(void *context);
 
 void edge_seccomp_state_init(edge_seccomp_state_t *state);
 int edge_seccomp_state_retain(edge_seccomp_state_t *state);
@@ -136,5 +137,9 @@ int edge_seccomp_notification_submit(
     uint64_t *notification_id);
 int edge_seccomp_notification_result(
     uint64_t notification_id, edge_seccomp_notification_result_t *result);
+int edge_seccomp_notification_wait(
+    int32_t listener_id, int32_t pid, const edge_seccomp_data_t *data,
+    uint64_t *notification_id, edge_seccomp_notification_result_t *result,
+    edge_seccomp_wait_fn wait, void *wait_context);
 
 #endif

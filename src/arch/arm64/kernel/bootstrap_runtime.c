@@ -32971,6 +32971,11 @@ int64_t arch_mm_map(const kernel_mm_map_request_t *request) {
     return (int64_t)address;
 }
 
+static void bootstrap_seccomp_wait(void *context) {
+    (void)context;
+    (void)kernel_runtime_yield();
+}
+
 static int64_t bootstrap_syscall_impl(uint64_t nr, uint64_t a0, uint64_t a1,
                                       uint64_t a2, uint64_t a3, uint64_t a4,
                                       uint64_t a5, arch_user_frame_t *frame) {
@@ -33024,20 +33029,10 @@ static int64_t bootstrap_syscall_impl(uint64_t nr, uint64_t a0, uint64_t a1,
         case EDGE_SECCOMP_RET_ERRNO:
             return -(int64_t)(decision & EDGE_SECCOMP_RET_DATA);
         case EDGE_SECCOMP_RET_USER_NOTIF:
-            if (!task->seccomp_notification_id) {
-                notification_status = edge_seccomp_notification_submit(
-                    listener_id, task->pid, &data,
-                    &task->seccomp_notification_id);
-                if (notification_status < 0)
-                    return notification_status;
-            }
-            notification_status = edge_seccomp_notification_result(
-                task->seccomp_notification_id, &notification_result);
-            if (notification_status == 0) {
-                (void)kernel_runtime_yield();
-                return -LINUX_EAGAIN;
-            }
-            task->seccomp_notification_id = 0;
+            notification_status = edge_seccomp_notification_wait(
+                listener_id, task->pid, &data,
+                &task->seccomp_notification_id, &notification_result,
+                bootstrap_seccomp_wait, 0);
             if (notification_status < 0) return notification_status;
             if (notification_result.continue_syscall) break;
             return notification_result.error ?

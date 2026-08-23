@@ -461,6 +461,28 @@ int edge_seccomp_notification_result(
     return 1;
 }
 
+int edge_seccomp_notification_wait(
+    int32_t listener_id, int32_t pid, const edge_seccomp_data_t *data,
+    uint64_t *notification_id, edge_seccomp_notification_result_t *result,
+    edge_seccomp_wait_fn wait, void *wait_context) {
+    int status;
+
+    if (!data || !notification_id || !result || !wait)
+        return -EDGE_LINUX_EINVAL;
+    if (!*notification_id) {
+        status = edge_seccomp_notification_submit(
+            listener_id, pid, data, notification_id);
+        if (status < 0) return status;
+    }
+    for (;;) {
+        status = edge_seccomp_notification_result(*notification_id, result);
+        if (status != 0) break;
+        wait(wait_context);
+    }
+    *notification_id = 0;
+    return status;
+}
+
 static int filter_validate(const edge_sock_filter_t *program, uint32_t length) {
     uint32_t pc;
     if (!program || !length || length > EDGE_SECCOMP_MAX_INSNS) return -22;

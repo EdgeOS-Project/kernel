@@ -44,6 +44,27 @@ static int check(int condition, const char *label) {
     return 1;
 }
 
+typedef struct {
+    int32_t listener;
+    uint32_t waits;
+} wait_context_t;
+
+static void answer_on_wait(void *opaque) {
+    wait_context_t *context = (wait_context_t *)opaque;
+    edge_seccomp_notification_t notification;
+    edge_seccomp_notification_response_t response;
+
+    ++context->waits;
+    if (context->waits != 1u) return;
+    if (edge_seccomp_listener_receive(
+            context->listener, &notification) != 0)
+        return;
+    memset(&response, 0, sizeof(response));
+    response.id = notification.id;
+    response.value = 123;
+    (void)edge_seccomp_listener_respond(context->listener, &response);
+}
+
 int main(void) {
     edge_seccomp_data_t data;
     edge_seccomp_notification_t notification;
@@ -52,6 +73,8 @@ int main(void) {
     edge_seccomp_listener_state_t state;
     uint64_t first_id = 0;
     uint64_t canceled_id = 0;
+    uint64_t waited_id = 0;
+    wait_context_t wait_context;
     int listener;
     int canceled_listener;
     int failures = 0;
@@ -102,6 +125,15 @@ int main(void) {
         !result.continue_syscall, "consume response");
     failures += check(edge_seccomp_listener_id_valid(
         listener, first_id) < 0, "consumed identifier invalid");
+
+    memset(&wait_context, 0, sizeof(wait_context));
+    wait_context.listener = listener;
+    failures += check(edge_seccomp_notification_wait(
+        listener, 4243, &data, &waited_id, &result,
+        answer_on_wait, &wait_context) == 1 &&
+        result.value == 123 && !result.error &&
+        waited_id == 0 && wait_context.waits == 1u,
+        "shared blocking notification wait");
 
     canceled_listener = edge_seccomp_listener_create();
     failures += check(canceled_listener > 0, "create canceled listener");

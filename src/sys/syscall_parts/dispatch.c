@@ -99,6 +99,11 @@ static int gui_einval_trace_task(const task_t *t) {
            strcmp(t->name, "xfdesktop") == 0;
 }
 
+static void syscall_seccomp_wait(void *context) {
+    (void)context;
+    scheduler_yield();
+}
+
 static int syscall_apply_seccomp(task_t *task, REGISTERS *r, uint64_t nr,
                                  uint64_t a1, uint64_t a2, uint64_t a3,
                                  uint64_t a4, uint64_t a5, uint64_t a6,
@@ -146,22 +151,10 @@ static int syscall_apply_seccomp(task_t *task, REGISTERS *r, uint64_t nr,
         return 1;
     }
     if (action == EDGE_SECCOMP_RET_USER_NOTIF) {
-        if (!task->seccomp_notification_id) {
-            notification_status = edge_seccomp_notification_submit(
-                listener_id, task->pid, &data,
-                &task->seccomp_notification_id);
-            if (notification_status < 0) {
-                *result_out = notification_status;
-                return 1;
-            }
-        }
-        for (;;) {
-            notification_status = edge_seccomp_notification_result(
-                task->seccomp_notification_id, &notification_result);
-            if (notification_status != 0) break;
-            scheduler_yield();
-        }
-        task->seccomp_notification_id = 0;
+        notification_status = edge_seccomp_notification_wait(
+            listener_id, task->pid, &data,
+            &task->seccomp_notification_id, &notification_result,
+            syscall_seccomp_wait, 0);
         if (notification_status < 0) {
             *result_out = notification_status;
             return 1;
