@@ -6,6 +6,7 @@
 #include "dev/devtmpfs.h"
 #include "kernel/device_uevent.h"
 #include "kernel/input_device.h"
+#include "kernel/linux_errno.h"
 #include "string.h"
 
 #define LINUX_EV_SYN 0u
@@ -50,6 +51,7 @@ typedef struct {
     uint32_t current_mt_slot;
     uint32_t repeat_delay_ms;
     uint32_t repeat_period_ms;
+    uint64_t grab_description;
 } input_registry_entry_t;
 
 static input_registry_entry_t g_input_devices[EDGE_INPUT_DEVICE_MAX];
@@ -498,4 +500,40 @@ int input_mt_slots(uint32_t device, uint32_t axis, int32_t *values,
         values[slot] = entry->mt_slots[slot][axis - LINUX_ABS_MT_FIRST];
     *count_out = count;
     return 0;
+}
+
+int input_device_grab(uint32_t device, uint64_t description, int grab) {
+    uint64_t owner;
+
+    if (!input_device_present(device) || !description)
+        return -EDGE_LINUX_EINVAL;
+    owner = __atomic_load_n(
+        &g_input_devices[device].grab_description, __ATOMIC_ACQUIRE);
+    if (grab) {
+        if (owner) return -EDGE_LINUX_EBUSY;
+        return __sync_bool_compare_and_swap(
+            &g_input_devices[device].grab_description, 0u, description) ?
+            0 : -EDGE_LINUX_EBUSY;
+    }
+    if (owner != description) return -EDGE_LINUX_EINVAL;
+    return __sync_bool_compare_and_swap(
+        &g_input_devices[device].grab_description, description, 0u) ?
+        0 : -EDGE_LINUX_EINVAL;
+}
+
+int input_device_description_may_read(uint32_t device,
+                                      uint64_t description) {
+    uint64_t owner;
+
+    if (!input_device_present(device) || !description) return 0;
+    owner = __atomic_load_n(
+        &g_input_devices[device].grab_description, __ATOMIC_ACQUIRE);
+    return !owner || owner == description;
+}
+
+void input_device_release_description(uint64_t description) {
+    if (!description) return;
+    for (uint32_t device = 0; device < EDGE_INPUT_DEVICE_MAX; ++device)
+        (void)__sync_bool_compare_and_swap(
+            &g_input_devices[device].grab_description, description, 0u);
 }

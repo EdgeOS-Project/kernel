@@ -97,5 +97,9 @@ int input_keycode_set(uint32_t device, uint32_t scancode,
                       uint32_t keycode);
 int input_mt_slots(uint32_t device, uint32_t axis, int32_t *values,
                    uint32_t capacity, uint32_t *count_out);
+int input_device_grab(uint32_t device, uint64_t description, int grab);
+int input_device_description_may_read(uint32_t device,
+                                      uint64_t description);
+void input_device_release_description(uint64_t description);
 
 #endif

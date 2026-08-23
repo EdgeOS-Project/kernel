@@ -265,6 +265,8 @@ int edge_linux_input_ioctl_execute(
         if (!input || input_length < sizeof(value))
             return -EDGE_LINUX_EFAULT;
         memcpy(&value, input, sizeof(value));
+        if (command == 0x40044591u && value)
+            return -EDGE_LINUX_EINVAL;
         result->action = command == 0x40044590u ?
                          EDGE_LINUX_INPUT_ACTION_GRAB :
                          EDGE_LINUX_INPUT_ACTION_REVOKE;
@@ -272,4 +274,44 @@ int edge_linux_input_ioctl_execute(
         return 0;
     }
     return -EDGE_LINUX_ENOTTY;
+}
+
+int edge_linux_input_description_check(
+    kernel_file_description_locator_t locator) {
+    int revoked = kernel_file_description_input_revoked(locator);
+    if (revoked < 0) return revoked;
+    return revoked ? -EDGE_LINUX_ENODEV : 0;
+}
+
+int edge_linux_input_description_may_read(
+    uint32_t device, kernel_file_description_locator_t locator) {
+    uint64_t identity;
+    int status = edge_linux_input_description_check(locator);
+
+    if (status < 0) return status;
+    status = kernel_file_description_identity(locator, &identity);
+    if (status < 0) return status;
+    return input_device_description_may_read(device, identity);
+}
+
+int edge_linux_input_description_action(
+    uint32_t device, kernel_file_description_locator_t locator,
+    edge_linux_input_action_t action, int32_t value) {
+    uint64_t identity;
+    int status;
+
+    if (action == EDGE_LINUX_INPUT_ACTION_NONE) return 0;
+    status = edge_linux_input_description_check(locator);
+    if (status < 0) return status;
+    if (action == EDGE_LINUX_INPUT_ACTION_SET_CLOCK)
+        return kernel_file_description_input_clock_store(locator, value);
+    status = kernel_file_description_identity(locator, &identity);
+    if (status < 0) return status;
+    if (action == EDGE_LINUX_INPUT_ACTION_GRAB)
+        return input_device_grab(device, identity, value != 0);
+    if (action == EDGE_LINUX_INPUT_ACTION_REVOKE) {
+        input_device_release_description(identity);
+        return kernel_file_description_input_revoke(locator);
+    }
+    return -EDGE_LINUX_EINVAL;
 }

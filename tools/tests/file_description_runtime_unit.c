@@ -277,6 +277,9 @@ static void test_basic_shared_state(void) {
     assert(kernel_file_description_input_state_load(
                by_handle, &cursor, &clock_id) == 0);
     assert(cursor == 55u && clock_id == 7);
+    assert(kernel_file_description_input_revoked(by_identity) == 0);
+    assert(kernel_file_description_input_revoke(by_handle) == 0);
+    assert(kernel_file_description_input_revoked(by_identity) == 1);
 
     assert(kernel_file_description_mount_snapshot(
                by_handle, &mount_namespace, &mount_generation) ==

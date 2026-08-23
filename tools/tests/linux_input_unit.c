@@ -1,12 +1,39 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 
 #include <assert.h>
+#include <sched.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
+#define SYS_SPINLOCK_H
+typedef struct {
+    atomic_flag value;
+} spinlock_t;
+
+static inline void spinlock_init(spinlock_t *lock) {
+    atomic_flag_clear_explicit(&lock->value, memory_order_relaxed);
+}
+
+static inline uint64_t spin_lock_irqsave(spinlock_t *lock) {
+    while (atomic_flag_test_and_set_explicit(
+               &lock->value, memory_order_acquire))
+        sched_yield();
+    return 0;
+}
+
+static inline void spin_unlock_irqrestore(spinlock_t *lock,
+                                          uint64_t flags) {
+    (void)flags;
+    atomic_flag_clear_explicit(&lock->value, memory_order_release);
+}
+
 #include "kernel/input_device.h"
+#include "kernel/linux_errno.h"
 #include "kernel/linux_input.h"
+
+#include "../../src/kernel/file_description_runtime.c"
 
 #define EV_KEY 1u
 #define EV_ABS 3u
@@ -40,6 +67,11 @@ static void set_bit(uint8_t *bitmap, uint32_t bit) {
     bitmap[bit >> 3] |= (uint8_t)(1u << (bit & 7u));
 }
 
+static void description_detach(void *context, uint64_t identity) {
+    (void)context;
+    input_device_release_description(identity);
+}
+
 static edge_linux_input_ioctl_result_t run_ioctl(
     uint32_t device, uint32_t command, const void *input,
     uint32_t input_length, uint8_t output[EDGE_LINUX_INPUT_IOCTL_BUFFER_SIZE]) {
@@ -60,6 +92,24 @@ int main(void) {
     uint32_t map[2];
     uint32_t axis;
     int32_t clock_id;
+    uint32_t first_handle;
+    uint32_t second_handle;
+    uint64_t first_identity;
+    uint64_t second_identity;
+    kernel_file_description_ops_t description_ops = {
+        .detach_description = description_detach,
+    };
+    kernel_file_description_locator_t first_locator;
+    kernel_file_description_locator_t second_locator;
+    kernel_file_description_release_t release;
+
+    assert(kernel_file_description_runtime_initialize(&description_ops) == 0);
+    assert(kernel_file_description_create(
+               0, 0, 0, &first_handle, &first_identity) == 0);
+    assert(kernel_file_description_create(
+               0, 0, 0, &second_handle, &second_identity) == 0);
+    first_locator = kernel_file_description_handle_locator(first_handle);
+    second_locator = kernel_file_description_handle_locator(second_handle);
 
     input_device_describe_keyboard(
         &description, "Unit keyboard", "unit/input0", "unit", 3u,
@@ -115,6 +165,49 @@ int main(void) {
     result = run_ioctl(0u, 0x400445a0u, &clock_id, sizeof(clock_id), output);
     assert(result.action == EDGE_LINUX_INPUT_ACTION_SET_CLOCK);
     assert(result.action_value == 7);
+    assert(edge_linux_input_description_action(
+               0u, first_locator, result.action,
+               result.action_value) == 0);
+
+    {
+        int32_t value = 1;
+        result = run_ioctl(
+            0u, 0x40044590u, &value, sizeof(value), output);
+        assert(edge_linux_input_description_action(
+                   0u, first_locator, result.action, result.action_value) == 0);
+        assert(edge_linux_input_description_action(
+                   0u, first_locator, result.action, result.action_value) ==
+               -EDGE_LINUX_EBUSY);
+        assert(edge_linux_input_description_action(
+                   0u, second_locator, result.action, result.action_value) ==
+               -EDGE_LINUX_EBUSY);
+        assert(edge_linux_input_description_may_read(0u, first_locator) == 1);
+        assert(edge_linux_input_description_may_read(0u, second_locator) == 0);
+        value = 0;
+        result = run_ioctl(
+            0u, 0x40044590u, &value, sizeof(value), output);
+        assert(edge_linux_input_description_action(
+                   0u, second_locator, result.action, result.action_value) ==
+               -EDGE_LINUX_EINVAL);
+        assert(edge_linux_input_description_action(
+                   0u, first_locator, result.action, result.action_value) == 0);
+        result = run_ioctl(
+            0u, 0x40044591u, &value, sizeof(value), output);
+        assert(edge_linux_input_description_action(
+                   0u, first_locator, result.action, result.action_value) == 0);
+        assert(edge_linux_input_description_check(first_locator) ==
+               -EDGE_LINUX_ENODEV);
+    }
+
+    assert(input_device_grab(0u, second_identity, 1) == 0);
+    assert(kernel_file_description_release_begin(
+               second_locator, &release) == 0 && release.last_reference);
+    assert(kernel_file_description_release_finish(&release) == 0);
+    assert(input_device_grab(0u, first_identity, 1) == 0);
+    assert(input_device_grab(0u, first_identity, 0) == 0);
+    assert(kernel_file_description_release_begin(
+               first_locator, &release) == 0 && release.last_reference);
+    assert(kernel_file_description_release_finish(&release) == 0);
 
     assert(input_device_unregister(1u, &owner_touch) == 0);
     assert(input_device_unregister(0u, &owner_keyboard) == 0);

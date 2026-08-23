@@ -1811,6 +1811,7 @@ static void edge_ip6_to_bytes(const ip6_addr_t *a, uint8_t out[16]) {
 static void x86_file_description_detach(void *context,
                                         uint64_t identity) {
     (void)context;
+    input_device_release_description(identity);
     kernel_epoll_detach_description(identity);
 }
 
@@ -5551,7 +5552,13 @@ static void fd_description_set_input_clock(edge_fd_t *e, int clock_id) {
 
 static int fd_description_read_input(edge_fd_t *e, int event_id,
                                      char *buffer, uint32_t length) {
+    int access;
     if (!e || !buffer || !length) return 0;
+    if (e->file_ref > 0 && event_id >= 0) {
+        access = edge_linux_input_description_may_read(
+            (uint32_t)event_id, file_ref_locator(e->file_ref));
+        if (access <= 0) return access < 0 ? access : 0;
+    }
     if (e->file_ref <= 0)
         return keyboard_event_read_from_clock(
             event_id, &e->input_event_tail, LINUX_CLOCK_REALTIME,

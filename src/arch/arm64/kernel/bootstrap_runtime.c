@@ -2311,6 +2311,7 @@ arm64_description_locator(uint64_t identity) {
 
 static void arm64_description_detach(void *context, uint64_t identity) {
     (void)context;
+    input_device_release_description(identity);
     kernel_epoll_detach_description(identity);
 }
 
@@ -19591,7 +19592,12 @@ static uint32_t fd_ready_mask(kernel_task_t *task, bootstrap_fd_t *fd) {
     } else if (fd->kind == KERNEL_FD_INPUT) {
         uint64_t cursor = 0;
         int32_t clock_id = LINUX_CLOCK_REALTIME;
-        if (kernel_file_description_input_state_load(
+        int access = edge_linux_input_description_may_read(
+            fd->event_index,
+            arm64_description_locator(fd->open_description_id));
+        if (access < 0)
+            ready |= LINUX_POLLERR | LINUX_POLLHUP;
+        else if (access > 0 && kernel_file_description_input_state_load(
                 arm64_description_locator(fd->open_description_id),
                 &cursor, &clock_id) == 0 &&
             input_has_event_from(fd->event_index, cursor))
@@ -23997,6 +24003,11 @@ static int64_t fd_read_user_internal(
     if (fd->kind == KERNEL_FD_INPUT) {
         uint64_t done = 0;
         uint8_t event[24];
+        int access = edge_linux_input_description_may_read(
+            fd->event_index,
+            arm64_description_locator(fd->open_description_id));
+        if (access < 0) return access;
+        if (!access) return -LINUX_EAGAIN;
         if (!buffer || length < sizeof(event)) return -LINUX_EINVAL;
         while (done + sizeof(event) <= length) {
             uint64_t cursor;
@@ -34707,9 +34718,13 @@ static int64_t arm64_ioctl_execute(
                 edge_linux_input_ioctl_result_t ioctl_result;
                 uint32_t input_length =
                     edge_linux_input_ioctl_input_size(command);
+                kernel_file_description_locator_t input_locator =
+                    arm64_description_locator(fd->open_description_id);
                 int status;
 
                 bytes_zero(input, sizeof(input));
+                status = edge_linux_input_description_check(input_locator);
+                if (status < 0) return status;
                 if (input_length > sizeof(input)) return -LINUX_EINVAL;
                 if (input_length &&
                     arch_copy_from_user(task->ttbr0, input, a2,
@@ -34725,12 +34740,10 @@ static int64_t arm64_ioctl_execute(
                         arch_copy_to_user(task->ttbr0, a2, data,
                                           ioctl_result.output_length) < 0)
                         return -LINUX_EFAULT;
-                    if (ioctl_result.action ==
-                        EDGE_LINUX_INPUT_ACTION_SET_CLOCK)
-                        return kernel_file_description_input_clock_store(
-                            arm64_description_locator(
-                                fd->open_description_id),
-                            ioctl_result.action_value);
+                    status = edge_linux_input_description_action(
+                        fd->event_index, input_locator,
+                        ioctl_result.action, ioctl_result.action_value);
+                    if (status < 0) return status;
                     return ioctl_result.return_value;
                 }
             }

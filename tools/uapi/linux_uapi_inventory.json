@@ -257,10 +257,14 @@
         "ia32": "unimplemented",
         "x32": "unimplemented"
       },
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/linux_input_unit.c",
+        "tools/tests/file_description_runtime_unit.c"
+      ],
       "linux_oracle": {
-        "status": "required",
-        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
+        "status": "partial",
+        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa",
+        "scope": "EVIOCGRAB owner, repeat-grab and non-owner release errors, plus EVIOCREVOKE post-revocation behavior"
       }
     },
     {

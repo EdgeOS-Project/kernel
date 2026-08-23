@@ -75,7 +75,8 @@ typedef struct kernel_file_description_snapshot {
     int32_t async_signal;
     uint8_t mount_monitor_configured;
     uint8_t position_busy;
-    uint8_t reserved[2];
+    uint8_t input_revoked;
+    uint8_t reserved;
 } kernel_file_description_snapshot_t;
 
 static inline kernel_file_description_locator_t
@@ -210,6 +211,10 @@ int kernel_file_description_input_cursor_compare_exchange(
 int kernel_file_description_input_clock_store(
     kernel_file_description_locator_t locator,
     int32_t clock_id);
+int kernel_file_description_input_revoked(
+    kernel_file_description_locator_t locator);
+int kernel_file_description_input_revoke(
+    kernel_file_description_locator_t locator);
 
 int kernel_file_description_mount_bind(
     kernel_file_description_locator_t locator,

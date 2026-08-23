@@ -5975,10 +5975,14 @@ static uint64_t x86_ioctl_execute_raw(uint64_t fd_u, uint64_t cmd_u,
             uint32_t input_length =
                 edge_linux_input_ioctl_input_size((uint32_t)cmd);
             edge_linux_input_ioctl_result_t ioctl_result;
+            kernel_file_description_locator_t input_locator =
+                file_ref_locator(e->file_ref);
             int status;
 
             memset(input, 0, sizeof(input));
             memset(output, 0, sizeof(output));
+            status = edge_linux_input_description_check(input_locator);
+            if (status < 0) return (uint64_t)(int64_t)status;
             if (input_length > sizeof(input)) return (uint64_t)-EINVAL;
             if (input_length &&
                 (!arg_u || copy_from_user(input, arg_u, input_length) < 0))
@@ -5995,10 +5999,11 @@ static uint64_t x86_ioctl_execute_raw(uint64_t fd_u, uint64_t cmd_u,
                     (!arg_u || copy_to_user(arg_u, output,
                               ioctl_result.output_length) < 0))
                     return (uint64_t)-EFAULT;
-                if (ioctl_result.action ==
-                    EDGE_LINUX_INPUT_ACTION_SET_CLOCK)
-                    fd_description_set_input_clock(
-                        e, ioctl_result.action_value);
+                status = edge_linux_input_description_action(
+                    event_id >= 0 ? (uint32_t)event_id : UINT32_MAX,
+                    input_locator, ioctl_result.action,
+                    ioctl_result.action_value);
+                if (status < 0) return (uint64_t)(int64_t)status;
                 return (uint64_t)ioctl_result.return_value;
             }
         }

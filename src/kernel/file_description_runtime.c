@@ -10,6 +10,7 @@
 #define FILE_DESCRIPTION_STATE_CLOSING        0x0001u
 #define FILE_DESCRIPTION_STATE_DETACH_ACTIVE  0x0002u
 #define FILE_DESCRIPTION_STATE_DETACH_AGAIN   0x0004u
+#define FILE_DESCRIPTION_STATE_INPUT_REVOKED  0x0008u
 
 #define FILE_DESCRIPTION_SLOT_MASK \
     (KERNEL_FILE_DESCRIPTION_CAPACITY - 1u)
@@ -564,6 +565,9 @@ int kernel_file_description_snapshot(
         snapshot->mount_generation = entry->mount_generation;
         snapshot->status_flags = entry->status_flags;
         snapshot->input_clock = entry->input_clock;
+        snapshot->input_revoked =
+            (entry->lifecycle_flags &
+             FILE_DESCRIPTION_STATE_INPUT_REVOKED) != 0;
         snapshot->async_owner = entry->async_owner;
         snapshot->async_signal = entry->async_signal;
         snapshot->position_busy = entry->position_owner != 0;
@@ -982,6 +986,42 @@ int kernel_file_description_input_clock_store(
         result = -EDGE_LINUX_EBADF;
     else
         entry->input_clock = clock_id;
+    spin_unlock_irqrestore(&g_file_description_lock, irq_flags);
+    return result;
+}
+
+int kernel_file_description_input_revoked(
+    kernel_file_description_locator_t locator) {
+    kernel_file_description_entry_t *entry;
+    uint64_t irq_flags;
+    int result;
+
+    if (!file_description_runtime_ready())
+        return -EDGE_LINUX_ENODEV;
+    irq_flags = spin_lock_irqsave(&g_file_description_lock);
+    entry = file_description_entry_from_locator_locked(locator, 0, 1);
+    result = entry ?
+        (entry->lifecycle_flags &
+         FILE_DESCRIPTION_STATE_INPUT_REVOKED) != 0 :
+        -EDGE_LINUX_EBADF;
+    spin_unlock_irqrestore(&g_file_description_lock, irq_flags);
+    return result;
+}
+
+int kernel_file_description_input_revoke(
+    kernel_file_description_locator_t locator) {
+    kernel_file_description_entry_t *entry;
+    uint64_t irq_flags;
+    int result = 0;
+
+    if (!file_description_runtime_ready())
+        return -EDGE_LINUX_ENODEV;
+    irq_flags = spin_lock_irqsave(&g_file_description_lock);
+    entry = file_description_entry_from_locator_locked(locator, 0, 1);
+    if (!entry)
+        result = -EDGE_LINUX_EBADF;
+    else
+        entry->lifecycle_flags |= FILE_DESCRIPTION_STATE_INPUT_REVOKED;
     spin_unlock_irqrestore(&g_file_description_lock, irq_flags);
     return result;
 }

@@ -2422,8 +2422,10 @@ static int poll_fd_revents(edge_fd_t *e, int16_t events) {
             } else if (e->kind == FD_VFS && path_is_event_input(e->path)) {
                 int event_id = path_input_event_index(e->path);
                 int tail = fd_description_input_tail(e);
-                int pending = keyboard_event_pending_from(
-                    event_id, tail);
+                int access = edge_linux_input_description_may_read(
+                    (uint32_t)event_id, file_ref_locator(e->file_ref));
+                int pending = access > 0 ? keyboard_event_pending_from(
+                    event_id, tail) : 0;
                 /*
                  * evdev readers consume whole struct input_event records.  Linux
                  * only reports the fd readable when a complete record can be
@@ -2432,6 +2434,8 @@ static int poll_fd_revents(edge_fd_t *e, int16_t events) {
                  */
                 if (pending >= (int)EDGE_LINUX_INPUT_EVENT_SIZE)
                     rev |= LINUX_POLLIN;
+                if (access < 0)
+                    rev |= LINUX_POLLERR | LINUX_POLLHUP;
             } else if (e->kind == FD_VFS && path_is_kmsg_device(e->path)) {
                 if (bootlog_kmsg_has_record(fd_description_offset(e)))
                     rev |= LINUX_POLLIN;
@@ -5736,6 +5740,7 @@ static uint64_t do_sys_fd_read_entry(int fd, edge_fd_t *e,
             if (n == 0) break;
             r = fd_description_read_input(
                 e, event_id, echunk, (uint32_t)n);
+            if (r < 0) return (uint64_t)(int64_t)r;
             r -= r % (int)EDGE_LINUX_INPUT_EVENT_SIZE;
             if (r > 0) {
                 if (copy_to_user(buf_u + done, echunk, (uint64_t)r) < 0) return (uint64_t)-EFAULT;
