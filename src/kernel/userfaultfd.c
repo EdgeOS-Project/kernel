@@ -787,6 +787,128 @@ int kernel_userfaultfd_writeprotect_commit(
     return result;
 }
 
+void kernel_userfaultfd_mapping_unmap(
+        uint64_t address_space, const kernel_uffdio_range_t *range) {
+    uint8_t affected[EDGE_RUNTIME_MAX_USERFAULTFDS];
+    uint64_t end;
+
+    if (!address_space || !userfaultfd_range_valid(range)) return;
+    end = range->start + range->length;
+    memset(affected, 0, sizeof(affected));
+    userfaultfd_lock();
+    for (uint16_t index = 0;
+         index < EDGE_RUNTIME_MAX_USERFAULTFD_RANGES; ++index) {
+        kernel_userfaultfd_range_t *entry = &g_userfaultfd_ranges[index];
+        kernel_userfaultfd_context_t *context;
+        uint64_t old_end;
+
+        if (!entry->used || range->start >= entry->end ||
+            end <= entry->start)
+            continue;
+        context = userfaultfd_context_locked(entry->context_id);
+        if (!context || context->address_space != address_space)
+            continue;
+        affected[entry->context_id] = 1u;
+        if (range->start <= entry->start && end >= entry->end) {
+            memset(entry, 0, sizeof(*entry));
+            continue;
+        }
+        if (range->start <= entry->start) {
+            entry->start = end;
+            continue;
+        }
+        if (end >= entry->end) {
+            entry->end = range->start;
+            continue;
+        }
+        old_end = entry->end;
+        entry->end = range->start;
+        for (uint16_t free_index = 0;
+             free_index < EDGE_RUNTIME_MAX_USERFAULTFD_RANGES;
+             ++free_index) {
+            kernel_userfaultfd_range_t *right =
+                &g_userfaultfd_ranges[free_index];
+            if (right->used) continue;
+            right->used = 1u;
+            right->context_id = entry->context_id;
+            right->start = end;
+            right->end = old_end;
+            right->mode = entry->mode;
+            break;
+        }
+    }
+    for (uint16_t index = 0;
+         index < EDGE_RUNTIME_MAX_USERFAULTFD_RANGES; ++index) {
+        kernel_userfaultfd_wp_range_t *entry =
+            &g_userfaultfd_wp_ranges[index];
+        kernel_userfaultfd_context_t *context;
+        uint64_t old_end;
+
+        if (!entry->used || range->start >= entry->end ||
+            end <= entry->start)
+            continue;
+        context = userfaultfd_context_locked(entry->context_id);
+        if (!context || context->address_space != address_space)
+            continue;
+        affected[entry->context_id] = 1u;
+        if (range->start <= entry->start && end >= entry->end) {
+            memset(entry, 0, sizeof(*entry));
+            continue;
+        }
+        if (range->start <= entry->start) {
+            entry->start = end;
+            continue;
+        }
+        if (end >= entry->end) {
+            entry->end = range->start;
+            continue;
+        }
+        old_end = entry->end;
+        entry->end = range->start;
+        for (uint16_t free_index = 0;
+             free_index < EDGE_RUNTIME_MAX_USERFAULTFD_RANGES;
+             ++free_index) {
+            kernel_userfaultfd_wp_range_t *right =
+                &g_userfaultfd_wp_ranges[free_index];
+            if (right->used) continue;
+            right->used = 1u;
+            right->context_id = entry->context_id;
+            right->start = end;
+            right->end = old_end;
+            break;
+        }
+    }
+    for (uint16_t index = 0;
+         index < EDGE_RUNTIME_USERFAULTFD_EVENT_POOL; ++index) {
+        kernel_userfaultfd_event_t *event = &g_userfaultfd_events[index];
+        kernel_userfaultfd_context_t *context;
+
+        if (!event->used || event->page < range->start ||
+            event->page >= end)
+            continue;
+        context = userfaultfd_context_locked(event->context_id);
+        if (!context || context->address_space != address_space)
+            continue;
+        affected[event->context_id] = 1u;
+        if (event->queued)
+            userfaultfd_remove_queued_event_locked(context, index);
+        userfaultfd_event_free_locked(index);
+        if (context->unresolved_faults) --context->unresolved_faults;
+    }
+    for (int context_id = 0;
+         context_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++context_id) {
+        kernel_userfaultfd_context_t *context;
+        if (!affected[context_id]) continue;
+        context = userfaultfd_context_locked(context_id);
+        if (context) userfaultfd_sequence_advance(context);
+    }
+    userfaultfd_unlock();
+    for (int context_id = 0;
+         context_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++context_id)
+        if (affected[context_id])
+            kernel_userfaultfd_state_changed(context_id);
+}
+
 int kernel_userfaultfd_resolve(int context_id,
                                const kernel_uffdio_range_t *range) {
     kernel_userfaultfd_context_t *context;

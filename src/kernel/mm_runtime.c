@@ -8,6 +8,7 @@
 
 #include "kernel/linux_errno.h"
 #include "kernel/mm_runtime.h"
+#include "kernel/userfaultfd.h"
 #include "kernel/vfs_runtime.h"
 #include "fs/cgroupfs.h"
 #include "mm/arch_vm.h"
@@ -2017,6 +2018,13 @@ int64_t kernel_mm_map(const kernel_mm_map_request_t *request) {
         return -EDGE_LINUX_EPERM;
     result = arch_mm_map(&effective_request);
     if (result < 0) return result;
+    if ((effective_request.flags & KERNEL_MM_MAP_FIXED) &&
+        !(effective_request.flags & KERNEL_MM_MAP_FIXED_NOREPLACE))
+        kernel_userfaultfd_mapping_unmap(
+            address_space, &(kernel_uffdio_range_t){
+                .start = (uint64_t)result,
+                .length = rounded_length,
+            });
 
     future_flags = kernel_mm_lock_space_future_flags(address_space);
     if (!(effective_request.flags & KERNEL_MM_MAP_LOCKED) &&
@@ -2055,6 +2063,11 @@ int64_t kernel_mm_unmap_range(uint64_t address, uint64_t length) {
         return -EDGE_LINUX_ENOMEM;
     result = arch_mm_unmap_range(address, length);
     if (result >= 0) {
+        kernel_userfaultfd_mapping_unmap(
+            address_space, &(kernel_uffdio_range_t){
+                .start = address,
+                .length = length,
+            });
         (void)kernel_mm_lock_space_remove(
             address_space, address, length);
         kernel_mm_mempolicy_range_remove(
@@ -2117,6 +2130,29 @@ int64_t kernel_mm_remap_range(uint64_t old_address, uint64_t old_length,
         int64_t result = arch_mm_remap_range(
             old_address, old_length, new_length, (uint32_t)flags,
             new_address);
+        /*
+         * EdgeOS does not advertise UFFD_FEATURE_EVENT_REMAP yet.  Match the
+         * Linux no-event path by dropping the source registration instead of
+         * silently transferring it to the new virtual address.
+         */
+        if (result >= 0 && (uint64_t)result != old_address) {
+            kernel_userfaultfd_mapping_unmap(
+                address_space, &(kernel_uffdio_range_t){
+                    .start = (uint64_t)result,
+                    .length = new_length,
+                });
+            kernel_userfaultfd_mapping_unmap(
+                address_space, &(kernel_uffdio_range_t){
+                    .start = old_address,
+                    .length = old_length,
+                });
+        } else if (result >= 0 && new_length < old_length) {
+            kernel_userfaultfd_mapping_unmap(
+                address_space, &(kernel_uffdio_range_t){
+                    .start = old_address + new_length,
+                    .length = old_length - new_length,
+                });
+        }
         if (result >= 0 && had_locked_ranges) {
             int lock_status = kernel_mm_lock_space_remap(
                 address_space, old_address, old_length,

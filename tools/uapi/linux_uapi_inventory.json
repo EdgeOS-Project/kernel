@@ -80,6 +80,7 @@
         "copy-and-write-protect mode and close-time permission restoration",
         "anonymous private page moves with strict destination and source-hole handling",
         "anonymous poisoned-page markers with persistent SIGBUS fault behavior",
+        "registration cleanup across unmap, replacing fixed mappings and remap without event negotiation",
         "architecture-independent range, event and waiter state"
       ],
       "missing": [
@@ -95,7 +96,7 @@
       "linux_oracle": {
         "status": "partial",
         "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa",
-        "scope": "feature bits, range ioctl masks, missing-page copy and zero-page behavior, anonymous private page moves, poisoned-page markers and SIGBUS faults, write-protect event flags and wake behavior"
+        "scope": "feature bits, range ioctl masks, missing-page copy and zero-page behavior, anonymous private page moves, poisoned-page markers and SIGBUS faults, mapping lifecycle cleanup, write-protect event flags and wake behavior"
       }
     },
     {

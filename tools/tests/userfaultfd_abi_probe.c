@@ -8,6 +8,7 @@
 #define SYS_write 1
 #define SYS_mmap 9
 #define SYS_munmap 11
+#define SYS_mremap 25
 #define SYS_ioctl 16
 #define SYS_close 3
 #define SYS_clone 56
@@ -21,6 +22,7 @@
 #define SYS_write 64
 #define SYS_mmap 222
 #define SYS_munmap 215
+#define SYS_mremap 216
 #define SYS_ioctl 29
 #define SYS_close 57
 #define SYS_clone 220
@@ -39,6 +41,8 @@
 #define MAP_PRIVATE 0x2
 #define MAP_FIXED 0x10
 #define MAP_ANONYMOUS 0x20
+#define MREMAP_MAYMOVE 0x1
+#define MREMAP_FIXED 0x2
 #define O_NONBLOCK 0x800
 #define O_CLOEXEC 0x80000
 #define UFFD_USER_MODE_ONLY 0x1
@@ -764,6 +768,114 @@ START_ATTRIBUTES void _start(void) {
                 "sigbus-empty-read", raw_syscall6(
                     SYS_read, sigbus_descriptor, (long)&message,
                     sizeof(message), 0, 0, 0), -EAGAIN);
+            failures += expect_result(
+                "sigbus-map-fixed", raw_syscall6(
+                    SYS_mmap, (long)sigbus_area, PAGE_SIZE,
+                    PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
+                    -1, 0), (long)sigbus_area);
+            g_fault_address = sigbus_area + 91u;
+            {
+                long child = spawn_fault_child(
+                    CLONE_VM | SIGCHLD,
+                    &g_fault_stack[sizeof(g_fault_stack)]);
+                int child_status = -1;
+                failures += expect_result(
+                    "sigbus-map-fixed-child", child < 0 ? child : 0, 0);
+                if (child >= 0) {
+                    failures += expect_result(
+                        "sigbus-map-fixed-wait", raw_syscall6(
+                            SYS_wait4, child, (long)&child_status,
+                            0, 0, 0, 0), child);
+                    failures += expect_result(
+                        "sigbus-map-fixed-status", child_status, 0);
+                }
+            }
+            registration.range.start =
+                (uint64_t)(uintptr_t)sigbus_area;
+            registration.range.len = PAGE_SIZE;
+            registration.mode = UFFDIO_REGISTER_MODE_MISSING;
+            registration.ioctls = 0;
+            failures += expect_result(
+                "sigbus-reregister", raw_syscall6(
+                    SYS_ioctl, sigbus_descriptor, UFFDIO_REGISTER,
+                    (long)&registration, 0, 0, 0), 0);
+            failures += expect_result(
+                "sigbus-munmap", raw_syscall6(
+                    SYS_munmap, (long)sigbus_area, PAGE_SIZE,
+                    0, 0, 0, 0), 0);
+            failures += expect_result(
+                "sigbus-remap-same", raw_syscall6(
+                    SYS_mmap, (long)sigbus_area, PAGE_SIZE,
+                    PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
+                    -1, 0), (long)sigbus_area);
+            g_fault_address = sigbus_area + 91u;
+            {
+                long child = spawn_fault_child(
+                    CLONE_VM | SIGCHLD,
+                    &g_fault_stack[sizeof(g_fault_stack)]);
+                int child_status = -1;
+                failures += expect_result(
+                    "sigbus-unmap-child", child < 0 ? child : 0, 0);
+                if (child >= 0) {
+                    failures += expect_result(
+                        "sigbus-unmap-wait", raw_syscall6(
+                            SYS_wait4, child, (long)&child_status,
+                            0, 0, 0, 0), child);
+                    failures += expect_result(
+                        "sigbus-unmap-status", child_status, 0);
+                }
+            }
+            {
+                unsigned char *remap_target =
+                    (unsigned char *)raw_syscall6(
+                        SYS_mmap, 0, PAGE_SIZE,
+                        PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                if ((long)remap_target < 0) {
+                    print_text("FAIL sigbus-mremap-target\n");
+                    ++failures;
+                } else {
+                    registration.range.start =
+                        (uint64_t)(uintptr_t)sigbus_area;
+                    registration.range.len = PAGE_SIZE;
+                    registration.mode = UFFDIO_REGISTER_MODE_MISSING;
+                    registration.ioctls = 0;
+                    failures += expect_result(
+                        "sigbus-mremap-register", raw_syscall6(
+                            SYS_ioctl, sigbus_descriptor,
+                            UFFDIO_REGISTER, (long)&registration,
+                            0, 0, 0), 0);
+                    failures += expect_result(
+                        "sigbus-mremap", raw_syscall6(
+                            SYS_mremap, (long)sigbus_area, PAGE_SIZE,
+                            PAGE_SIZE, MREMAP_MAYMOVE | MREMAP_FIXED,
+                            (long)remap_target, 0),
+                        (long)remap_target);
+                    sigbus_area = remap_target;
+                    g_fault_address = sigbus_area + 91u;
+                    {
+                        long child = spawn_fault_child(
+                            CLONE_VM | SIGCHLD,
+                            &g_fault_stack[sizeof(g_fault_stack)]);
+                        int child_status = -1;
+                        failures += expect_result(
+                            "sigbus-mremap-child",
+                            child < 0 ? child : 0, 0);
+                        if (child >= 0) {
+                            failures += expect_result(
+                                "sigbus-mremap-wait", raw_syscall6(
+                                    SYS_wait4, child,
+                                    (long)&child_status,
+                                    0, 0, 0, 0), child);
+                            failures += expect_result(
+                                "sigbus-mremap-status",
+                                child_status, 0);
+                        }
+                    }
+                }
+            }
             (void)raw_syscall6(
                 SYS_close, sigbus_descriptor, 0, 0, 0, 0, 0);
         }

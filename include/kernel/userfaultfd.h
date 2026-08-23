@@ -174,6 +174,8 @@ int kernel_userfaultfd_writeprotect_intersects(
     uint64_t *address_space);
 int kernel_userfaultfd_writeprotect_commit(
     int context_id, const kernel_uffdio_range_t *range, uint64_t mode);
+void kernel_userfaultfd_mapping_unmap(
+    uint64_t address_space, const kernel_uffdio_range_t *range);
 int kernel_userfaultfd_missing_fault(
     uint64_t address_space, uint64_t address, int write, uint32_t thread_id,
     int *context_id, uint64_t *ticket);

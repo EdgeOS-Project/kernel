@@ -167,6 +167,45 @@ int main(void) {
         assert(kernel_userfaultfd_unregister(
             context_id, &protected_range) == 0);
     }
+    {
+        kernel_uffdio_register_t lifecycle_registration = {
+            .range = { .start = 0x700000u, .length = 0x3000u },
+            .mode = KERNEL_UFFD_REGISTER_MODE_MISSING,
+        };
+        kernel_uffdio_range_t middle = {
+            .start = 0x701000u, .length = 0x1000u,
+        };
+        uint64_t lifecycle_ticket = 0;
+
+        assert(kernel_userfaultfd_register(
+            context_id, &lifecycle_registration) == 0);
+        kernel_userfaultfd_mapping_unmap(0x12345000u, &middle);
+        assert(kernel_userfaultfd_missing_fault(
+            0x12345000u, 0x701077u, 0, 100,
+            &fault_context, &lifecycle_ticket) == 0);
+        assert(kernel_userfaultfd_missing_fault(
+            0x12345000u, 0x700077u, 0, 101,
+            &fault_context, &lifecycle_ticket) ==
+            KERNEL_UFFD_FAULT_QUEUED);
+        kernel_userfaultfd_mapping_unmap(
+            0x12345000u, &(kernel_uffdio_range_t){
+                .start = 0x700000u, .length = 0x1000u,
+            });
+        assert(kernel_userfaultfd_fault_pending(
+            context_id, lifecycle_ticket) == 0);
+        assert(kernel_userfaultfd_missing_fault(
+            0x12345000u, 0x702077u, 0, 102,
+            &fault_context, &lifecycle_ticket) ==
+            KERNEL_UFFD_FAULT_QUEUED);
+        assert(kernel_userfaultfd_resolve(
+            context_id, &(kernel_uffdio_range_t){
+                .start = 0x702000u, .length = 0x1000u,
+            }) == 1);
+        assert(kernel_userfaultfd_unregister(
+            context_id, &(kernel_uffdio_range_t){
+                .start = 0x702000u, .length = 0x1000u,
+            }) == 0);
+    }
     kernel_userfaultfd_release(context_id);
     assert(kernel_userfaultfd_query(context_id, &state) ==
            -EDGE_LINUX_EBADF);
