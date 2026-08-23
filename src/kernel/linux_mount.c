@@ -824,6 +824,17 @@ static int64_t edge_linux_mount_locked(
         }
         return status;
     }
+    if (edge_linux_mount_is(filesystem, "bpf")) {
+#ifdef CONFIG_BPF_SYSCALL
+        if (vfs_mount_exists(target, "bpf", 0))
+            return -EDGE_LINUX_EBUSY;
+        status = tmpfs_mount_type_options(
+            source && source[0] ? source : "bpf", target, "bpf", data);
+        return edge_linux_mount_finish(target, vfs_flags, status);
+#else
+        return -EDGE_LINUX_ENODEV;
+#endif
+    }
     if (edge_linux_mount_is(filesystem, "ramfs")) {
         /*
          * EdgeOS has no swap, so ramfs and tmpfs use the same resident-page

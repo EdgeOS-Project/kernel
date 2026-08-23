@@ -250,6 +250,7 @@ _Static_assert(sizeof(edge_linux_timex_t) == 208u,
 #define EDGE_LINUX_SOCKFS_MAGIC 0x534f434bu
 #define EDGE_LINUX_ANON_INODE_FS_MAGIC 0x09041934u
 #define EDGE_LINUX_NSFS_MAGIC 0x6e736673u
+#define EDGE_LINUX_BPF_FS_MAGIC 0xcafe4a11u
 
 #define EDGE_LINUX_ST_RDONLY 0x0001u
 #define EDGE_LINUX_ST_NOSUID 0x0002u

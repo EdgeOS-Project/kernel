@@ -13,6 +13,7 @@
 #include "vfs/vfs.h"
 
 int tmpfs_mount(const char *dev, const char *target);
+int bpffs_mount(const char *dev, const char *target);
 int tmpfs_mount_type(const char *dev, const char *target,
                      const char *fs_name);
 int tmpfs_mount_type_options(const char *dev, const char *target,

@@ -155,9 +155,21 @@ typedef struct kernel_bpf_attachment {
     uint64_t sequence;
 } kernel_bpf_attachment_t;
 
+typedef struct kernel_bpf_pin {
+    uint8_t used;
+    uint8_t padding[3];
+    const void *filesystem_identity;
+    uint32_t inode_number;
+    uint32_t inode_generation;
+    int32_t object_id;
+} kernel_bpf_pin_t;
+
+#define BPF_PIN_CAPACITY (BPF_OBJECT_CAPACITY * 4u)
+
 static kernel_bpf_object_t g_bpf_objects[BPF_OBJECT_CAPACITY];
 static kernel_bpf_attachment_t
     g_bpf_attachments[EDGE_RUNTIME_MAX_BPF_ATTACHMENTS];
+static kernel_bpf_pin_t g_bpf_pins[BPF_PIN_CAPACITY];
 static uint64_t g_bpf_cgroup_revisions[256];
 static volatile uint32_t g_bpf_lock;
 static uint32_t g_bpf_next_user_id = 1u;
@@ -356,6 +368,7 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
     kernel_bpf_object_t *object;
     uint32_t pages;
     uint32_t stride;
+    uint32_t validation_flags;
     uint32_t value_stride;
     uint32_t possible_cpu_count;
     uint32_t actual_max_entries;
@@ -374,6 +387,12 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
         request->value_size > KERNEL_BPF_MAX_VALUE_SIZE ||
         !request->max_entries)
         return -EDGE_LINUX_EINVAL;
+    if ((request->flags &
+         (KERNEL_BPF_MAP_RDONLY | KERNEL_BPF_MAP_WRONLY)) ==
+        (KERNEL_BPF_MAP_RDONLY | KERNEL_BPF_MAP_WRONLY))
+        return -EDGE_LINUX_EINVAL;
+    validation_flags = request->flags &
+        ~(KERNEL_BPF_MAP_RDONLY | KERNEL_BPF_MAP_WRONLY);
     if (!request->btf_present &&
         (request->btf_key_type_id || request->btf_value_type_id))
         return -EDGE_LINUX_EINVAL;
@@ -403,7 +422,7 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
     possible_cpu_count =
         (bpf_map_type_is_percpu(request->type) ||
          (bpf_map_type_is_lru_hash(request->type) &&
-          (request->flags & KERNEL_BPF_MAP_NO_COMMON_LRU))) ?
+          (validation_flags & KERNEL_BPF_MAP_NO_COMMON_LRU))) ?
         kernel_bpf_possible_cpu_count() : 1u;
     if (!possible_cpu_count) possible_cpu_count = 1u;
     actual_max_entries = request->max_entries;
@@ -419,13 +438,13 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
     }
     if (request->type == KERNEL_BPF_MAP_TYPE_ARRAY ||
         request->type == KERNEL_BPF_MAP_TYPE_PERCPU_ARRAY) {
-        if (request->key_size != sizeof(uint32_t) || request->flags)
+        if (request->key_size != sizeof(uint32_t) || validation_flags)
             goto invalid_btf;
         stride = request->type == KERNEL_BPF_MAP_TYPE_PERCPU_ARRAY ?
             value_stride * possible_cpu_count : value_stride;
     } else if (request->type == KERNEL_BPF_MAP_TYPE_HASH ||
                request->type == KERNEL_BPF_MAP_TYPE_PERCPU_HASH) {
-        if (request->flags & ~KERNEL_BPF_MAP_NO_PREALLOC)
+        if (validation_flags & ~KERNEL_BPF_MAP_NO_PREALLOC)
             goto invalid_btf;
         stride = request->type == KERNEL_BPF_MAP_TYPE_PERCPU_HASH ?
             bpf_align8(1u + request->key_size) +
@@ -433,11 +452,11 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
             bpf_align8(1u + request->key_size + request->value_size);
     } else if (request->type == KERNEL_BPF_MAP_TYPE_LRU_HASH ||
                request->type == KERNEL_BPF_MAP_TYPE_LRU_PERCPU_HASH) {
-        if (request->flags & KERNEL_BPF_MAP_NO_PREALLOC)
+        if (validation_flags & KERNEL_BPF_MAP_NO_PREALLOC)
             goto unsupported_btf;
-        if (request->flags & ~KERNEL_BPF_MAP_NO_COMMON_LRU)
+        if (validation_flags & ~KERNEL_BPF_MAP_NO_COMMON_LRU)
             goto invalid_btf;
-        if (request->flags & KERNEL_BPF_MAP_NO_COMMON_LRU) {
+        if (validation_flags & KERNEL_BPF_MAP_NO_COMMON_LRU) {
             uint64_t rounded =
                 ((uint64_t)actual_max_entries + possible_cpu_count - 1u) /
                 possible_cpu_count * possible_cpu_count;
@@ -457,21 +476,21 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
             bpf_align8(1u + request->key_size + request->value_size) +
                 sizeof(uint64_t);
     } else if (request->type == KERNEL_BPF_MAP_TYPE_ARRAY_OF_MAPS) {
-        if (request->key_size != sizeof(uint32_t) || request->flags)
+        if (request->key_size != sizeof(uint32_t) || validation_flags)
             goto invalid_btf;
         stride = sizeof(int32_t);
     } else if (request->type == KERNEL_BPF_MAP_TYPE_HASH_OF_MAPS) {
-        if (request->flags & ~KERNEL_BPF_MAP_NO_PREALLOC)
+        if (validation_flags & ~KERNEL_BPF_MAP_NO_PREALLOC)
             goto invalid_btf;
         stride = bpf_align8(
             1u + request->key_size + sizeof(int32_t));
     } else if (bpf_map_type_is_queue_stack(request->type)) {
-        if (request->flags) goto invalid_btf;
+        if (validation_flags) goto invalid_btf;
         stride = bpf_align8(request->value_size);
     } else if (request->type == KERNEL_BPF_MAP_TYPE_LPM_TRIE) {
         if (request->key_size < sizeof(uint32_t) + 1u ||
             request->key_size > sizeof(uint32_t) + 256u ||
-            request->flags != KERNEL_BPF_MAP_NO_PREALLOC ||
+            validation_flags != KERNEL_BPF_MAP_NO_PREALLOC ||
             request->map_extra)
             goto invalid_btf;
         stride = bpf_align8(
@@ -481,7 +500,7 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
         uint64_t rounded_bits = 64u;
 
         if (request->key_size ||
-            (request->flags & ~KERNEL_BPF_MAP_ZERO_SEED) ||
+            (validation_flags & ~KERNEL_BPF_MAP_ZERO_SEED) ||
             (request->map_extra & ~0xfull))
             goto invalid_btf;
         bloom_hash_count = (uint32_t)(request->map_extra & 0xfull);
@@ -523,7 +542,7 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
         object->value.map.key_size = request->key_size;
         object->value.map.value_size = request->value_size;
         object->value.map.max_entries = actual_max_entries;
-        object->value.map.flags = request->flags;
+        object->value.map.flags = validation_flags;
         object->value.map.entry_stride = stride;
         object->value.map.value_stride = value_stride;
         object->value.map.possible_cpu_count = possible_cpu_count;
@@ -540,7 +559,7 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
             bloom_bit_count - 1u : 0u;
         object->value.map.bloom_hash_count = bloom_hash_count;
         object->value.map.bloom_seed =
-            request->flags & KERNEL_BPF_MAP_ZERO_SEED ?
+            validation_flags & KERNEL_BPF_MAP_ZERO_SEED ?
                 0u : object->user_id * 0x9e3779b9u;
         object->value.map.storage_pages = pages;
         object->value.map.storage = storage;
@@ -1030,6 +1049,129 @@ int kernel_bpf_object_next_user_id(kernel_bpf_object_kind_t kind,
     if (candidate == UINT32_MAX) return -EDGE_LINUX_ENOENT;
     *next_id = candidate;
     return 0;
+}
+
+int kernel_bpf_pin_create(const void *filesystem_identity,
+                          uint32_t inode_number,
+                          uint32_t inode_generation,
+                          int object_id) {
+    kernel_bpf_object_t *object;
+    kernel_bpf_pin_t *free_pin = 0;
+    int result = -EDGE_LINUX_ENOSPC;
+
+    if (!filesystem_identity || !inode_number)
+        return -EDGE_LINUX_EINVAL;
+    bpf_lock();
+    object = bpf_object_locked(object_id);
+    if (!object) {
+        result = -EDGE_LINUX_EBADF;
+        goto out;
+    }
+    if (object->kind == KERNEL_BPF_OBJECT_BTF) {
+        result = -EDGE_LINUX_EINVAL;
+        goto out;
+    }
+    for (uint32_t index = 0; index < BPF_PIN_CAPACITY; ++index) {
+        kernel_bpf_pin_t *pin = &g_bpf_pins[index];
+        if (!pin->used) {
+            if (!free_pin) free_pin = pin;
+            continue;
+        }
+        if (pin->filesystem_identity == filesystem_identity &&
+            pin->inode_number == inode_number &&
+            pin->inode_generation == inode_generation) {
+            result = -EDGE_LINUX_EEXIST;
+            goto out;
+        }
+    }
+    if (!free_pin || object->references == UINT32_MAX) {
+        result = object->references == UINT32_MAX ?
+            -EDGE_LINUX_EOVERFLOW : -EDGE_LINUX_ENOSPC;
+        goto out;
+    }
+    ++object->references;
+    memset(free_pin, 0, sizeof(*free_pin));
+    free_pin->used = 1u;
+    free_pin->filesystem_identity = filesystem_identity;
+    free_pin->inode_number = inode_number;
+    free_pin->inode_generation = inode_generation;
+    free_pin->object_id = object_id;
+    result = 0;
+out:
+    bpf_unlock();
+    return result;
+}
+
+int kernel_bpf_pin_get(const void *filesystem_identity,
+                       uint32_t inode_number,
+                       uint32_t inode_generation,
+                       kernel_bpf_object_kind_t *kind) {
+    int result = -EDGE_LINUX_ENOENT;
+
+    if (!filesystem_identity || !inode_number || !kind)
+        return -EDGE_LINUX_EINVAL;
+    bpf_lock();
+    for (uint32_t index = 0; index < BPF_PIN_CAPACITY; ++index) {
+        kernel_bpf_pin_t *pin = &g_bpf_pins[index];
+        kernel_bpf_object_t *object;
+        if (!pin->used || pin->filesystem_identity != filesystem_identity ||
+            pin->inode_number != inode_number ||
+            pin->inode_generation != inode_generation)
+            continue;
+        object = bpf_object_locked(pin->object_id);
+        if (!object) break;
+        if (object->references == UINT32_MAX) {
+            result = -EDGE_LINUX_EOVERFLOW;
+            break;
+        }
+        ++object->references;
+        *kind = (kernel_bpf_object_kind_t)object->kind;
+        result = pin->object_id;
+        break;
+    }
+    bpf_unlock();
+    return result;
+}
+
+void kernel_bpf_pin_remove(const void *filesystem_identity,
+                           uint32_t inode_number,
+                           uint32_t inode_generation) {
+    int object_id = -1;
+
+    if (!filesystem_identity || !inode_number) return;
+    bpf_lock();
+    for (uint32_t index = 0; index < BPF_PIN_CAPACITY; ++index) {
+        kernel_bpf_pin_t *pin = &g_bpf_pins[index];
+        if (!pin->used || pin->filesystem_identity != filesystem_identity ||
+            pin->inode_number != inode_number ||
+            pin->inode_generation != inode_generation)
+            continue;
+        object_id = pin->object_id;
+        memset(pin, 0, sizeof(*pin));
+        break;
+    }
+    bpf_unlock();
+    if (object_id >= 0) kernel_bpf_object_release(object_id);
+}
+
+void kernel_bpf_pin_filesystem_release(const void *filesystem_identity) {
+    if (!filesystem_identity) return;
+    for (;;) {
+        int object_id = -1;
+        bpf_lock();
+        for (uint32_t index = 0; index < BPF_PIN_CAPACITY; ++index) {
+            kernel_bpf_pin_t *pin = &g_bpf_pins[index];
+            if (!pin->used ||
+                pin->filesystem_identity != filesystem_identity)
+                continue;
+            object_id = pin->object_id;
+            memset(pin, 0, sizeof(*pin));
+            break;
+        }
+        bpf_unlock();
+        if (object_id < 0) break;
+        kernel_bpf_object_release(object_id);
+    }
 }
 
 int kernel_bpf_map_info(int object_id, kernel_bpf_map_info_t *info) {

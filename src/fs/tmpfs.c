@@ -8,6 +8,7 @@
  */
 #include "fs/tmpfs.h"
 #include "fs/swap.h"
+#include "kernel/bpf_runtime.h"
 #include "kernel/linux_errno.h"
 #include "kernel/process_runtime.h"
 #include "mm/arch_vm.h"
@@ -304,6 +305,7 @@ static void tmpfs_retain(void *private_data) {
 
 static void tmpfs_release(void *private_data) {
     tmpfs_state_t *st = (tmpfs_state_t *)private_data;
+    const void *bpf_filesystem_identity = 0;
     uint32_t references;
     if (!st || !st->used) return;
     for (;;) {
@@ -314,6 +316,16 @@ static void tmpfs_release(void *private_data) {
             break;
     }
     if (references == 1u) {
+        for (uint32_t index = 0; index < TMPFS_MAX_MOUNTS; ++index) {
+            if (&g_tmpfs_states[index] != st ||
+                strcmp(g_tmpfs_sbs[index].fs_name, "bpf") != 0)
+                continue;
+            bpf_filesystem_identity =
+                vfs_superblock_identity(&g_tmpfs_sbs[index]);
+            break;
+        }
+        if (bpf_filesystem_identity)
+            kernel_bpf_pin_filesystem_release(bpf_filesystem_identity);
         tmpfs_states_lock();
         if (!st->used || st->references) {
             tmpfs_states_unlock();
@@ -2364,4 +2376,8 @@ int tmpfs_mount_type(const char *dev, const char *target, const char *fs_name) {
 
 int tmpfs_mount(const char *dev, const char *target) {
     return tmpfs_mount_type(dev, target, "tmpfs");
+}
+
+int bpffs_mount(const char *dev, const char *target) {
+    return tmpfs_mount_type(dev && dev[0] ? dev : "bpf", target, "bpf");
 }

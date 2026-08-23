@@ -2155,6 +2155,9 @@ void vfs_init(void) {
     vfs_register("proc", procfs_mount);
     vfs_register("sysfs", sysfs_mount);
     vfs_register("tmpfs", tmpfs_mount);
+#ifdef CONFIG_BPF_SYSCALL
+    vfs_register("bpf", bpffs_mount);
+#endif
     vfs_register("devtmpfs", devtmpfs_mount);
     vfs_register("cgroup2", cgroupfs_mount);
 #ifdef CONFIG_OVERLAY_FS
@@ -3120,6 +3123,45 @@ int vfs_mkdir_mode(const char *path, uint16_t mode) {
 int vfs_mkdir(const char *path) {
     return vfs_mkdir_mode(
         path, (uint16_t)(0755u & (uint16_t)~vfs_current_umask()));
+}
+
+int vfs_create_file(const char *path, uint16_t mode, vfs_inode_t *out_inode,
+                    vfs_superblock_t **out_sb) {
+    vfs_inode_t existing;
+    vfs_inode_t parent;
+    vfs_inode_t created;
+    vfs_superblock_t *sb = 0;
+    char leaf[VFS_NAME_MAX];
+    char parent_path[VFS_PATH_MAX];
+    char absolute[VFS_PATH_MAX];
+    int result;
+
+    if (!path || path[0] != '/') return VFS_PATH_ERR_INVALID;
+    normalize_path(path, absolute);
+    if (vfs_resolve(absolute, &existing, 0, 0, 0) == 0)
+        return VFS_PATH_ERR_EXISTS;
+    if (path_split_last(absolute, parent_path, leaf) < 0)
+        return VFS_PATH_ERR_INVALID;
+    if (vfs_resolve(parent_path, &parent, &sb, 0, 0) < 0)
+        return VFS_PATH_ERR_NOT_FOUND;
+    if ((parent.mode & 0xf000u) != VFS_INODE_DIR)
+        return VFS_PATH_ERR_NOT_DIRECTORY;
+    if (vfs_permission_check(&parent, 3) < 0)
+        return VFS_PATH_ERR_ACCESS;
+    if (vfs_mount_flags_for_path(parent_path) & VFS_MOUNT_READONLY)
+        return VFS_PATH_ERR_READ_ONLY;
+    if (!sb || !sb->ops || !sb->ops->create)
+        return VFS_PATH_ERR_READ_ONLY;
+    result = sb->ops->create(
+        sb, &parent, leaf,
+        (uint16_t)(VFS_INODE_FILE | (mode & 07777u)), &created);
+    if (result < 0) return result;
+    if (vfs_sync_mutation_if_required(sb, 1) < 0)
+        return VFS_PATH_ERR_IO;
+    if (out_inode) *out_inode = created;
+    if (out_sb) *out_sb = sb;
+    vfs_path_cache_invalidate_all();
+    return 0;
 }
 
 int vfs_touch(const char *path) { return vfs_write_file(path, "", 0) >= 0 ? 0 : -1; }

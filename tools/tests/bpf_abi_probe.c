@@ -9,6 +9,7 @@
 #define SYS_fcntl 72
 #define SYS_openat 257
 #define SYS_mkdirat 258
+#define SYS_unlinkat 263
 #define SYS_mount 165
 #define SYS_exit 60
 #define SYS_bpf 321
@@ -21,6 +22,7 @@
 #define SYS_bpf 280
 #define SYS_openat 56
 #define SYS_mkdirat 34
+#define SYS_unlinkat 35
 #define SYS_mount 40
 #define START_ATTRIBUTES __attribute__((noreturn))
 #else
@@ -33,6 +35,8 @@
 #define BPF_MAP_DELETE_ELEM 3u
 #define BPF_MAP_GET_NEXT_KEY 4u
 #define BPF_PROG_LOAD 5u
+#define BPF_OBJ_PIN 6u
+#define BPF_OBJ_GET 7u
 #define BPF_PROG_ATTACH 8u
 #define BPF_PROG_DETACH 9u
 #define BPF_PROG_GET_NEXT_ID 11u
@@ -72,6 +76,8 @@
 #define BPF_F_NO_COMMON_LRU (1u << 1)
 #define BPF_F_REPLACE (1u << 2)
 #define BPF_F_ZERO_SEED (1u << 6)
+#define BPF_F_RDONLY (1u << 3)
+#define BPF_F_WRONLY (1u << 4)
 #define BPF_PROG_TYPE_CGROUP_DEVICE 15u
 #define BPF_CGROUP_DEVICE 6u
 #define BPF_ANY 0u
@@ -136,6 +142,12 @@ union bpf_attr {
         uint32_t prog_ifindex;
         uint32_t expected_attach_type;
     } prog_load;
+    struct {
+        uint64_t pathname;
+        uint32_t bpf_fd;
+        uint32_t file_flags;
+        int32_t path_fd;
+    } object_path;
     struct {
         uint32_t target_fd;
         uint32_t attach_bpf_fd;
@@ -593,6 +605,102 @@ static int test_array_map(void) {
         failures += expect_true("reopened value", output == value);
         (void)raw_syscall6(SYS_close, reopened, 0, 0, 0, 0, 0);
     }
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.id.start_or_object_id = id;
+    attribute.id.open_flags = BPF_F_RDONLY;
+    reopened = bpf_call(BPF_MAP_GET_FD_BY_ID, &attribute);
+    failures += expect_true("map reopen read-only", reopened >= 0);
+    if (reopened >= 0) {
+        output = 0;
+        failures += expect("map reopen read-only lookup", map_element(
+            BPF_MAP_LOOKUP_ELEM, reopened, &key, &output, 0), 0);
+        failures += expect("map reopen read-only update", map_element(
+            BPF_MAP_UPDATE_ELEM, reopened, &key, &value, BPF_ANY), -EPERM);
+        (void)raw_syscall6(SYS_close, reopened, 0, 0, 0, 0, 0);
+    }
+    return failures;
+}
+
+static int test_pinned_map_access(void) {
+    static const char path[] = "/sys/fs/bpf/edgeos-bpf-probe";
+    union bpf_attr attribute;
+    uint32_t key = 0u;
+    uint64_t value = 41u;
+    uint64_t replacement = 42u;
+    uint64_t output = 0u;
+    long descriptor = create_map(BPF_MAP_TYPE_ARRAY, 1u, "pinned_map");
+    long reopened;
+    long status;
+    int failures = 0;
+
+    failures += expect_true("pinned map create", descriptor >= 0);
+    if (descriptor < 0) return failures + 1;
+    failures += expect("pinned map initialize", map_element(
+        BPF_MAP_UPDATE_ELEM, descriptor, &key, &value, BPF_ANY), 0);
+    (void)raw_syscall6(
+        SYS_mkdirat, AT_FDCWD, (long)"/sys/fs", 0755, 0, 0, 0);
+    (void)raw_syscall6(
+        SYS_mkdirat, AT_FDCWD, (long)"/sys/fs/bpf", 0755, 0, 0, 0);
+    status = raw_syscall6(
+        SYS_mount, (long)"bpf", (long)"/sys/fs/bpf",
+        (long)"bpf", 0, 0, 0);
+    failures += expect_true("bpffs mount", status == 0 || status == -EBUSY);
+    (void)raw_syscall6(SYS_unlinkat, AT_FDCWD, (long)path, 0, 0, 0, 0);
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.object_path.pathname = (uint64_t)(uintptr_t)path;
+    attribute.object_path.bpf_fd = (uint32_t)descriptor;
+    failures += expect("object pin", bpf_call(BPF_OBJ_PIN, &attribute), 0);
+    (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.object_path.pathname = (uint64_t)(uintptr_t)path;
+    reopened = bpf_call(BPF_OBJ_GET, &attribute);
+    failures += expect_true("object get read-write", reopened >= 0);
+    if (reopened >= 0) {
+        failures += expect("object get update", map_element(
+            BPF_MAP_UPDATE_ELEM, reopened, &key, &replacement, BPF_ANY), 0);
+        (void)raw_syscall6(SYS_close, reopened, 0, 0, 0, 0, 0);
+    }
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.object_path.pathname = (uint64_t)(uintptr_t)path;
+    attribute.object_path.file_flags = BPF_F_RDONLY;
+    reopened = bpf_call(BPF_OBJ_GET, &attribute);
+    failures += expect_true("object get read-only", reopened >= 0);
+    if (reopened >= 0) {
+        failures += expect("read-only lookup", map_element(
+            BPF_MAP_LOOKUP_ELEM, reopened, &key, &output, 0), 0);
+        failures += expect_true("read-only value", output == replacement);
+        failures += expect("read-only update", map_element(
+            BPF_MAP_UPDATE_ELEM, reopened, &key, &value, BPF_ANY), -EPERM);
+        (void)raw_syscall6(SYS_close, reopened, 0, 0, 0, 0, 0);
+    }
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.object_path.pathname = (uint64_t)(uintptr_t)path;
+    attribute.object_path.file_flags = BPF_F_WRONLY;
+    reopened = bpf_call(BPF_OBJ_GET, &attribute);
+    failures += expect_true("object get write-only", reopened >= 0);
+    if (reopened >= 0) {
+        failures += expect("write-only update", map_element(
+            BPF_MAP_UPDATE_ELEM, reopened, &key, &value, BPF_ANY), 0);
+        failures += expect("write-only lookup", map_element(
+            BPF_MAP_LOOKUP_ELEM, reopened, &key, &output, 0), -EPERM);
+        (void)raw_syscall6(SYS_close, reopened, 0, 0, 0, 0, 0);
+    }
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.object_path.pathname = (uint64_t)(uintptr_t)path;
+    attribute.object_path.file_flags = BPF_F_RDONLY | BPF_F_WRONLY;
+    failures += expect("object get invalid access", bpf_call(
+        BPF_OBJ_GET, &attribute), -EINVAL);
+    failures += expect("object unlink", raw_syscall6(
+        SYS_unlinkat, AT_FDCWD, (long)path, 0, 0, 0, 0), 0);
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.object_path.pathname = (uint64_t)(uintptr_t)path;
+    failures += expect("object get removed", bpf_call(
+        BPF_OBJ_GET, &attribute), -ENOENT);
     return failures;
 }
 
@@ -1793,6 +1901,7 @@ START_ATTRIBUTES void _start(void) {
         (void)raw_syscall6(SYS_exit, 77, 0, 0, 0, 0, 0);
     }
     failures += test_hash_map();
+    failures += test_pinned_map_access();
     failures += test_lru_hash_map();
     failures += test_queue_stack_maps();
     failures += test_lpm_trie_map();

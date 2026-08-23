@@ -193,6 +193,9 @@ void vfs_bootstrap_init(void) {
     vfs_register("proc", procfs_mount);
     vfs_register("sysfs", sysfs_mount);
     vfs_register("tmpfs", tmpfs_mount);
+#ifdef CONFIG_BPF_SYSCALL
+    vfs_register("bpf", bpffs_mount);
+#endif
     vfs_register("devtmpfs", devtmpfs_mount);
     vfs_register("cgroup2", cgroupfs_mount);
 #ifdef CONFIG_OVERLAY_FS
@@ -1093,23 +1096,26 @@ int vfs_create_file(const char *path, uint16_t mode, vfs_inode_t *out_inode,
     vfs_superblock_t *sb = 0;
     char leaf[VFS_NAME_MAX];
     int result;
-    if (!path || path[0] != '/') return -EDGE_LINUX_EINVAL;
+    if (!path || path[0] != '/') return VFS_PATH_ERR_INVALID;
     if (vfs_resolve(path, &existing, 0, 0, 0) == 0)
-        return -EDGE_LINUX_EEXIST;
+        return VFS_PATH_ERR_EXISTS;
     if (vfs_parent_lookup(path, &parent, &sb, leaf) < 0)
-        return -EDGE_LINUX_ENOENT;
-    if (!leaf[0]) return -EDGE_LINUX_EINVAL;
+        return VFS_PATH_ERR_NOT_FOUND;
+    if (!leaf[0]) return VFS_PATH_ERR_INVALID;
     if ((parent.mode & 0xf000u) != VFS_INODE_DIR)
-        return -EDGE_LINUX_ENOTDIR;
+        return VFS_PATH_ERR_NOT_DIRECTORY;
     if (vfs_permission_check(&parent, 3) < 0)
-        return -EDGE_LINUX_EACCES;
+        return VFS_PATH_ERR_ACCESS;
+    if (sb && (sb->mount_flags & VFS_MOUNT_READONLY))
+        return VFS_PATH_ERR_READ_ONLY;
     if (!sb || !sb->ops || !sb->ops->create)
-        return -EDGE_LINUX_EROFS;
-    result = sb->ops->create(sb, &parent, leaf,
-                             (uint16_t)(mode & 07777u), &created);
-    if (result < 0) return kernel_vfs_path_result(result);
+        return VFS_PATH_ERR_READ_ONLY;
+    result = sb->ops->create(
+        sb, &parent, leaf,
+        (uint16_t)(VFS_INODE_FILE | (mode & 07777u)), &created);
+    if (result < 0) return result;
     if (vfs_sync_mutation_if_required(sb, 1) < 0)
-        return -EDGE_LINUX_EIO;
+        return VFS_PATH_ERR_IO;
     if (out_inode) *out_inode = created;
     if (out_sb) *out_sb = sb;
     vfs_path_cache_invalidate_all();

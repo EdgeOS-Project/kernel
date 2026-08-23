@@ -78,6 +78,35 @@ static void test_array_map(void) {
     assert(kernel_bpf_map_info(object, &info) < 0);
 }
 
+static void test_map_access_flags(void) {
+    kernel_bpf_map_create_request_t request = {
+        .type = KERNEL_BPF_MAP_TYPE_ARRAY,
+        .key_size = sizeof(uint32_t),
+        .value_size = sizeof(uint64_t),
+        .max_entries = 1u,
+        .flags = KERNEL_BPF_MAP_RDONLY,
+    };
+    kernel_bpf_map_info_t info;
+    int object;
+
+    strncpy(request.name, "access_map", sizeof(request.name) - 1u);
+    object = kernel_bpf_map_create(&request);
+    assert(object >= 0);
+    assert(kernel_bpf_map_info(object, &info) == 0);
+    assert(info.flags == 0u);
+    kernel_bpf_object_release(object);
+
+    request.flags = KERNEL_BPF_MAP_WRONLY;
+    object = kernel_bpf_map_create(&request);
+    assert(object >= 0);
+    assert(kernel_bpf_map_info(object, &info) == 0);
+    assert(info.flags == 0u);
+    kernel_bpf_object_release(object);
+
+    request.flags = KERNEL_BPF_MAP_RDONLY | KERNEL_BPF_MAP_WRONLY;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+}
+
 static void test_hash_map(void) {
     kernel_bpf_map_info_t info;
     uint32_t key1 = 10u;
@@ -979,8 +1008,62 @@ static void test_ids(void) {
     kernel_bpf_object_release(second);
 }
 
+static void test_pinned_object_lifetime(void) {
+    static const uint32_t first_filesystem;
+    static const uint32_t second_filesystem;
+    kernel_bpf_map_info_t info;
+    kernel_bpf_object_kind_t kind = 0;
+    uint8_t btf_blob[25] = {
+        0x9f, 0xeb, 1u, 0u,
+        24u, 0u, 0u, 0u,
+    };
+    int first = create_map(
+        KERNEL_BPF_MAP_TYPE_ARRAY, 4u, 4u, 1u, "pinned");
+    int second = create_map(
+        KERNEL_BPF_MAP_TYPE_ARRAY, 4u, 4u, 1u, "mounted");
+    int retained;
+    int btf;
+
+    assert(first >= 0 && second >= 0);
+    btf_blob[16] = 0u;
+    btf_blob[20] = 1u;
+    btf = kernel_bpf_btf_create(btf_blob, sizeof(btf_blob));
+    assert(btf >= 0);
+    assert(kernel_bpf_pin_create(
+               &first_filesystem, 11u, 3u, btf) ==
+           -EDGE_LINUX_EINVAL);
+    kernel_bpf_object_release(btf);
+
+    assert(kernel_bpf_pin_create(
+               &first_filesystem, 11u, 3u, first) == 0);
+    assert(kernel_bpf_pin_create(
+               &first_filesystem, 11u, 3u, first) ==
+           -EDGE_LINUX_EEXIST);
+    kernel_bpf_object_release(first);
+    retained = kernel_bpf_pin_get(
+        &first_filesystem, 11u, 3u, &kind);
+    assert(retained == first && kind == KERNEL_BPF_OBJECT_MAP);
+    kernel_bpf_object_release(retained);
+    kernel_bpf_pin_remove(&first_filesystem, 11u, 2u);
+    assert(kernel_bpf_map_info(first, &info) == 0);
+    kernel_bpf_pin_remove(&first_filesystem, 11u, 3u);
+    assert(kernel_bpf_map_info(first, &info) < 0);
+    assert(kernel_bpf_pin_get(
+               &first_filesystem, 11u, 3u, &kind) ==
+           -EDGE_LINUX_ENOENT);
+
+    assert(kernel_bpf_pin_create(
+               &second_filesystem, 8u, 1u, second) == 0);
+    kernel_bpf_object_release(second);
+    kernel_bpf_pin_filesystem_release(&first_filesystem);
+    assert(kernel_bpf_map_info(second, &info) == 0);
+    kernel_bpf_pin_filesystem_release(&second_filesystem);
+    assert(kernel_bpf_map_info(second, &info) < 0);
+}
+
 int main(void) {
     test_array_map();
+    test_map_access_flags();
     test_hash_map();
     test_lru_hash_map();
     test_queue_stack_maps();
@@ -994,6 +1077,7 @@ int main(void) {
     test_program();
     test_btf_objects();
     test_ids();
+    test_pinned_object_lifetime();
     puts("bpf_runtime_unit: PASS");
     return 0;
 }

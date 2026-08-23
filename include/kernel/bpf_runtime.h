@@ -32,6 +32,8 @@
 
 #define KERNEL_BPF_MAP_NO_PREALLOC (1u << 0)
 #define KERNEL_BPF_MAP_NO_COMMON_LRU (1u << 1)
+#define KERNEL_BPF_MAP_RDONLY (1u << 3)
+#define KERNEL_BPF_MAP_WRONLY (1u << 4)
 #define KERNEL_BPF_MAP_ZERO_SEED (1u << 6)
 
 #define KERNEL_BPF_ANY     0u
@@ -157,6 +159,18 @@ int kernel_bpf_object_from_user_id(kernel_bpf_object_kind_t kind,
 int kernel_bpf_object_next_user_id(kernel_bpf_object_kind_t kind,
                                    uint32_t start_id,
                                    uint32_t *next_id);
+int kernel_bpf_pin_create(const void *filesystem_identity,
+                          uint32_t inode_number,
+                          uint32_t inode_generation,
+                          int object_id);
+int kernel_bpf_pin_get(const void *filesystem_identity,
+                       uint32_t inode_number,
+                       uint32_t inode_generation,
+                       kernel_bpf_object_kind_t *kind);
+void kernel_bpf_pin_remove(const void *filesystem_identity,
+                           uint32_t inode_number,
+                           uint32_t inode_generation);
+void kernel_bpf_pin_filesystem_release(const void *filesystem_identity);
 
 int kernel_bpf_map_info(int object_id, kernel_bpf_map_info_t *info);
 int kernel_bpf_map_value_buffer_size(int object_id, uint64_t flags,
@@ -213,7 +227,10 @@ int kernel_bpf_cgroup_device_run(
 void kernel_bpf_cgroup_release(uint32_t cgroup_id);
 
 int kernel_bpf_create_descriptor(int object_id);
+int kernel_bpf_create_descriptor_flags(int object_id, uint32_t status_flags);
 int kernel_bpf_descriptor_object(int32_t descriptor,
                                  kernel_bpf_object_kind_t expected_kind);
+int kernel_bpf_descriptor_object_any(int32_t descriptor,
+                                     kernel_bpf_object_kind_t *kind);
 
 #endif

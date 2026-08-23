@@ -4159,6 +4159,8 @@ static int64_t edge_linux_sys_memfd_secret(
 #define EDGE_LINUX_BPF_MAP_DELETE_ELEM    3u
 #define EDGE_LINUX_BPF_MAP_GET_NEXT_KEY   4u
 #define EDGE_LINUX_BPF_PROG_LOAD          5u
+#define EDGE_LINUX_BPF_OBJ_PIN            6u
+#define EDGE_LINUX_BPF_OBJ_GET            7u
 #define EDGE_LINUX_BPF_PROG_ATTACH        8u
 #define EDGE_LINUX_BPF_PROG_DETACH        9u
 #define EDGE_LINUX_BPF_PROG_GET_NEXT_ID  11u
@@ -4182,6 +4184,12 @@ static int64_t edge_linux_sys_memfd_secret(
 #define EDGE_LINUX_BPF_LINK_GET_NEXT_ID  31u
 #define EDGE_LINUX_BPF_LINK_DETACH       34u
 
+#define EDGE_LINUX_BPF_F_RDONLY (1u << 3)
+#define EDGE_LINUX_BPF_F_WRONLY (1u << 4)
+#define EDGE_LINUX_BPF_F_PATH_FD (1u << 14)
+#define EDGE_LINUX_BPF_FD_READ  (1u << 0)
+#define EDGE_LINUX_BPF_FD_WRITE (1u << 1)
+
 typedef struct edge_linux_bpf_map_create_attribute {
     uint32_t map_type;
     uint32_t key_size;
@@ -4198,6 +4206,21 @@ typedef struct edge_linux_bpf_map_create_attribute {
     uint32_t btf_vmlinux_value_type_id;
     uint64_t map_extra;
 } edge_linux_bpf_map_create_attribute_t;
+
+typedef struct edge_linux_bpf_object_path_attribute {
+    uint64_t pathname;
+    uint32_t bpf_descriptor;
+    uint32_t file_flags;
+    int32_t path_descriptor;
+    uint32_t padding;
+} edge_linux_bpf_object_path_attribute_t;
+
+_Static_assert(sizeof(edge_linux_bpf_object_path_attribute_t) == 24u,
+               "Linux BPF object path attribute layout changed");
+
+static int64_t edge_linux_bpf_object_path(
+    edge_linux_syscall_context_t *context, uint32_t command,
+    uint64_t user_attribute, uint32_t attribute_size);
 
 typedef struct edge_linux_bpf_map_element_attribute {
     uint32_t map_descriptor;
@@ -4491,6 +4514,10 @@ static int64_t edge_linux_bpf_map_create(
         offsetof(edge_linux_bpf_map_create_attribute_t, inner_map_descriptor),
         user_attribute, attribute_size);
     if (status < 0) return status;
+    if ((attribute.map_flags &
+         (EDGE_LINUX_BPF_F_RDONLY | EDGE_LINUX_BPF_F_WRONLY)) ==
+        (EDGE_LINUX_BPF_F_RDONLY | EDGE_LINUX_BPF_F_WRONLY))
+        return -EDGE_LINUX_EINVAL;
     if ((attribute.map_type != KERNEL_BPF_MAP_TYPE_ARRAY_OF_MAPS &&
          attribute.map_type != KERNEL_BPF_MAP_TYPE_HASH_OF_MAPS &&
          attribute.inner_map_descriptor) || attribute.numa_node ||
@@ -4531,7 +4558,10 @@ static int64_t edge_linux_bpf_map_create(
     memcpy(request.name, attribute.map_name, sizeof(request.name));
     object_id = kernel_bpf_map_create(&request);
     if (object_id < 0) return object_id;
-    return kernel_bpf_create_descriptor(object_id);
+    return kernel_bpf_create_descriptor_flags(
+        object_id,
+        attribute.map_flags & EDGE_LINUX_BPF_F_RDONLY ? 0u :
+        attribute.map_flags & EDGE_LINUX_BPF_F_WRONLY ? 1u : 2u);
 }
 
 static int64_t edge_linux_bpf_btf_load(
@@ -4602,6 +4632,21 @@ static void edge_linux_bpf_free_pages(uint8_t *buffer,
         arch_vm_free_page(buffer + (uint64_t)page * 4096u);
 }
 
+static int edge_linux_bpf_require_descriptor_access(
+    int32_t descriptor, uint32_t required_access) {
+    uint32_t flags;
+    uint32_t access;
+    int status = kernel_fd_get_status_flags(descriptor, &flags);
+
+    if (status < 0) return status;
+    access = flags & 3u;
+    if ((required_access & EDGE_LINUX_BPF_FD_READ) && access == 1u)
+        return -EDGE_LINUX_EPERM;
+    if ((required_access & EDGE_LINUX_BPF_FD_WRITE) && access == 0u)
+        return -EDGE_LINUX_EPERM;
+    return 0;
+}
+
 static int64_t edge_linux_bpf_map_element(
     edge_linux_syscall_context_t *context, uint32_t command,
     uint64_t user_attribute, uint32_t attribute_size) {
@@ -4622,6 +4667,15 @@ static int64_t edge_linux_bpf_map_element(
     object_id = kernel_bpf_descriptor_object(
         (int32_t)attribute.map_descriptor, KERNEL_BPF_OBJECT_MAP);
     if (object_id < 0) return object_id;
+    status = edge_linux_bpf_require_descriptor_access(
+        (int32_t)attribute.map_descriptor,
+        command == EDGE_LINUX_BPF_MAP_LOOKUP_ELEM ||
+        command == EDGE_LINUX_BPF_MAP_GET_NEXT_KEY ?
+            EDGE_LINUX_BPF_FD_READ :
+        command == EDGE_LINUX_BPF_MAP_LOOKUP_AND_DELETE_ELEM ?
+            EDGE_LINUX_BPF_FD_READ | EDGE_LINUX_BPF_FD_WRITE :
+            EDGE_LINUX_BPF_FD_WRITE);
+    if (status < 0) return status;
     status = kernel_bpf_map_info(object_id, &info);
     if (status < 0) return status;
     if (!info.key_size &&
@@ -4744,6 +4798,9 @@ static int64_t edge_linux_bpf_map_freeze(
     object_id = kernel_bpf_descriptor_object(
         (int32_t)attribute.map_descriptor, KERNEL_BPF_OBJECT_MAP);
     if (object_id < 0) return object_id;
+    status = edge_linux_bpf_require_descriptor_access(
+        (int32_t)attribute.map_descriptor, EDGE_LINUX_BPF_FD_WRITE);
+    if (status < 0) return status;
     return kernel_bpf_map_freeze(object_id);
 }
 
@@ -4782,6 +4839,14 @@ static int64_t edge_linux_bpf_map_batch(
     object_id = kernel_bpf_descriptor_object(
         (int32_t)attribute.map_descriptor, KERNEL_BPF_OBJECT_MAP);
     if (object_id < 0) return object_id;
+    status = edge_linux_bpf_require_descriptor_access(
+        (int32_t)attribute.map_descriptor,
+        command == EDGE_LINUX_BPF_MAP_LOOKUP_BATCH ?
+            EDGE_LINUX_BPF_FD_READ :
+        command == EDGE_LINUX_BPF_MAP_LOOKUP_AND_DELETE_BATCH ?
+            EDGE_LINUX_BPF_FD_READ | EDGE_LINUX_BPF_FD_WRITE :
+            EDGE_LINUX_BPF_FD_WRITE);
+    if (status < 0) return status;
     status = kernel_bpf_map_info(object_id, &info);
     if (status < 0) return status;
     if (!info.key_size) return -EDGE_LINUX_ENOTSUPP;
@@ -4990,12 +5055,13 @@ static int64_t edge_linux_bpf_object_id_command(
         offsetof(edge_linux_bpf_id_attribute_t, token_descriptor),
         user_attribute, attribute_size);
     if (status < 0) return status;
-    if (attribute.open_flags || attribute.token_descriptor)
+    if (attribute.token_descriptor)
         return -EDGE_LINUX_EINVAL;
     if (command == EDGE_LINUX_BPF_PROG_GET_NEXT_ID ||
         command == EDGE_LINUX_BPF_MAP_GET_NEXT_ID ||
         command == EDGE_LINUX_BPF_LINK_GET_NEXT_ID ||
         command == EDGE_LINUX_BPF_BTF_GET_NEXT_ID) {
+        if (attribute.open_flags) return -EDGE_LINUX_EINVAL;
         status = kernel_bpf_object_next_user_id(
             kind, attribute.start_or_object_id, &attribute.next_id);
         if (status < 0) return status;
@@ -5003,10 +5069,24 @@ static int64_t edge_linux_bpf_object_id_command(
             context, user_attribute, &attribute, sizeof(attribute)) < 0 ?
             -EDGE_LINUX_EFAULT : 0;
     }
+    if (command == EDGE_LINUX_BPF_MAP_GET_FD_BY_ID) {
+        if (attribute.open_flags &
+            ~(EDGE_LINUX_BPF_F_RDONLY | EDGE_LINUX_BPF_F_WRONLY))
+            return -EDGE_LINUX_EINVAL;
+        if ((attribute.open_flags &
+             (EDGE_LINUX_BPF_F_RDONLY | EDGE_LINUX_BPF_F_WRONLY)) ==
+            (EDGE_LINUX_BPF_F_RDONLY | EDGE_LINUX_BPF_F_WRONLY))
+            return -EDGE_LINUX_EINVAL;
+    } else if (attribute.open_flags) {
+        return -EDGE_LINUX_EINVAL;
+    }
     object_id = kernel_bpf_object_from_user_id(
         kind, attribute.start_or_object_id);
     if (object_id < 0) return object_id;
-    return kernel_bpf_create_descriptor(object_id);
+    return kernel_bpf_create_descriptor_flags(
+        object_id,
+        attribute.open_flags & EDGE_LINUX_BPF_F_RDONLY ? 0u :
+        attribute.open_flags & EDGE_LINUX_BPF_F_WRONLY ? 1u : 2u);
 }
 
 static int64_t edge_linux_bpf_object_info(
@@ -5494,6 +5574,10 @@ static int64_t edge_linux_sys_bpf(
         return edge_linux_bpf_program_load(
             context, &identity, user_attribute, attribute_size);
     }
+    if (command == EDGE_LINUX_BPF_OBJ_PIN ||
+        command == EDGE_LINUX_BPF_OBJ_GET)
+        return edge_linux_bpf_object_path(
+            context, command, user_attribute, attribute_size);
     if (command >= EDGE_LINUX_BPF_PROG_GET_NEXT_ID &&
         command <= EDGE_LINUX_BPF_MAP_GET_FD_BY_ID) {
         if (!privileged) return -EDGE_LINUX_EPERM;
@@ -14524,6 +14608,7 @@ static int64_t edge_linux_statfs_magic(const char *filesystem) {
     if (!strcmp(filesystem, "erofs")) return 0xe0f5e1e2u;
     if (!strcmp(filesystem, "overlay"))
         return EDGE_LINUX_OVERLAYFS_SUPER_MAGIC;
+    if (!strcmp(filesystem, "bpf")) return EDGE_LINUX_BPF_FS_MAGIC;
     return 0;
 }
 
@@ -16247,6 +16332,139 @@ static int edge_linux_target_from_resolved(
     return 0;
 }
 
+static int64_t edge_linux_bpf_object_path(
+    edge_linux_syscall_context_t *context, uint32_t command,
+    uint64_t user_attribute, uint32_t attribute_size) {
+    edge_linux_bpf_object_path_attribute_t attribute;
+    kernel_vfs_xattr_scratch_t scratch;
+    edge_linux_path_workspace_t workspace;
+    kernel_vfs_target_t parent;
+    kernel_vfs_target_t target;
+    kernel_bpf_object_kind_t kind;
+    int32_t directory = EDGE_LINUX_AT_FDCWD;
+    uint32_t access_flags;
+    uint32_t descriptor_status = 2u;
+    int object_id;
+    int status;
+
+    status = edge_linux_bpf_copy_attribute(
+        context, &attribute, sizeof(attribute),
+        offsetof(edge_linux_bpf_object_path_attribute_t, padding),
+        user_attribute, attribute_size);
+    if (status < 0) return status;
+    if (attribute.padding) return -EDGE_LINUX_EINVAL;
+    if (!(attribute.file_flags & EDGE_LINUX_BPF_F_PATH_FD) &&
+        attribute.path_descriptor)
+        return -EDGE_LINUX_EINVAL;
+    if (attribute.file_flags & EDGE_LINUX_BPF_F_PATH_FD)
+        directory = attribute.path_descriptor;
+
+    access_flags = attribute.file_flags &
+        (EDGE_LINUX_BPF_F_RDONLY | EDGE_LINUX_BPF_F_WRONLY);
+    if (access_flags == (EDGE_LINUX_BPF_F_RDONLY |
+                         EDGE_LINUX_BPF_F_WRONLY))
+        return -EDGE_LINUX_EINVAL;
+    if (command == EDGE_LINUX_BPF_OBJ_PIN) {
+        if (attribute.file_flags & ~EDGE_LINUX_BPF_F_PATH_FD)
+            return -EDGE_LINUX_EINVAL;
+    } else if (command == EDGE_LINUX_BPF_OBJ_GET) {
+        if (attribute.bpf_descriptor ||
+            (attribute.file_flags &
+             ~(EDGE_LINUX_BPF_F_RDONLY | EDGE_LINUX_BPF_F_WRONLY |
+               EDGE_LINUX_BPF_F_PATH_FD)))
+            return -EDGE_LINUX_EINVAL;
+    } else {
+        return -EDGE_LINUX_EINVAL;
+    }
+
+    status = kernel_vfs_current_xattr_scratch(&scratch);
+    if (status < 0) return status;
+    status = edge_linux_resolve_at_path(
+        context, directory, attribute.pathname, &scratch, &workspace);
+    if (status < 0) return status;
+
+    if (command == EDGE_LINUX_BPF_OBJ_PIN) {
+        vfs_inode_t inode;
+        vfs_superblock_t *superblock = 0;
+        uint16_t mode = (uint16_t)(0600u & ~kernel_current_umask());
+
+        if (edge_linux_path_has_trailing_slash(scratch.path))
+            return -EDGE_LINUX_ENOENT;
+        if (vfs_resolve_nofollow(workspace.resolved, &inode, 0) == 0)
+            return -EDGE_LINUX_EEXIST;
+        status = edge_linux_path_parent_target(
+            workspace.resolved, workspace.normalization, workspace.root,
+            &parent);
+        if (status < 0) return status;
+        if (!parent.superblock ||
+            strcmp(parent.superblock->fs_name, "bpf") != 0)
+            return -EDGE_LINUX_EPERM;
+        status = edge_linux_path_mutation_permission(parent.inode, 0);
+        if (status < 0) return status;
+        status = kernel_landlock_check_path(
+            workspace.resolved,
+            EDGE_LINUX_LANDLOCK_ACCESS_FS_MAKE_REG);
+        if (status < 0) return status;
+        object_id = kernel_bpf_descriptor_object_any(
+            (int32_t)attribute.bpf_descriptor, &kind);
+        if (object_id < 0) return object_id;
+        if (kind == KERNEL_BPF_OBJECT_BTF)
+            return -EDGE_LINUX_EINVAL;
+        status = kernel_vfs_path_result(vfs_create_file(
+            workspace.resolved, mode, &inode, &superblock));
+        if (status < 0) return status;
+        status = kernel_bpf_pin_create(
+            vfs_superblock_identity(superblock), inode.ino,
+            inode.generation, object_id);
+        if (status < 0) {
+            (void)vfs_unlink(workspace.resolved);
+            return status;
+        }
+        kernel_vfs_notify_create(workspace.resolved, 0);
+        return 0;
+    }
+
+    status = edge_linux_target_from_resolved(
+        workspace.resolved, 0, &target);
+    if (status < 0) return status;
+    if (!target.superblock ||
+        strcmp(target.superblock->fs_name, "bpf") != 0 ||
+        !target.inode ||
+        (target.inode->mode & 0xf000u) != VFS_INODE_FILE)
+        return -EDGE_LINUX_EACCES;
+    status = kernel_landlock_check_path(
+        workspace.resolved,
+        access_flags == EDGE_LINUX_BPF_F_RDONLY ?
+            EDGE_LINUX_LANDLOCK_ACCESS_FS_READ_FILE :
+        access_flags == EDGE_LINUX_BPF_F_WRONLY ?
+            EDGE_LINUX_LANDLOCK_ACCESS_FS_WRITE_FILE :
+            EDGE_LINUX_LANDLOCK_ACCESS_FS_READ_FILE |
+                EDGE_LINUX_LANDLOCK_ACCESS_FS_WRITE_FILE);
+    if (status < 0) return status;
+    status = vfs_permission_check(
+        target.inode,
+        access_flags == EDGE_LINUX_BPF_F_RDONLY ? 4 :
+        access_flags == EDGE_LINUX_BPF_F_WRONLY ? 2 : 6);
+    if (status < 0) return -EDGE_LINUX_EACCES;
+    object_id = kernel_bpf_pin_get(
+        vfs_superblock_identity(target.superblock), target.inode->ino,
+        target.inode->generation, &kind);
+    if (object_id == -EDGE_LINUX_ENOENT)
+        return -EDGE_LINUX_EACCES;
+    if (object_id < 0) return object_id;
+    if (kind == KERNEL_BPF_OBJECT_LINK && access_flags) {
+        kernel_bpf_object_release(object_id);
+        return -EDGE_LINUX_EINVAL;
+    }
+    if (kind == KERNEL_BPF_OBJECT_MAP) {
+        descriptor_status =
+            access_flags == EDGE_LINUX_BPF_F_RDONLY ? 0u :
+            access_flags == EDGE_LINUX_BPF_F_WRONLY ? 1u : 2u;
+    }
+    return kernel_bpf_create_descriptor_flags(
+        object_id, descriptor_status);
+}
+
 static int edge_linux_xattr_resolve_at(
     edge_linux_syscall_context_t *context,
     const kernel_linux_identity_t *identity,
@@ -17906,6 +18124,7 @@ static uint64_t edge_linux_filesystem_magic(const char *name) {
     if (!strcmp(name, "iso9660")) return 0x00009660u;
     if (!strcmp(name, "squashfs")) return 0x73717368u;
     if (!strcmp(name, "erofs")) return 0xe0f5e1e2u;
+    if (!strcmp(name, "bpf")) return EDGE_LINUX_BPF_FS_MAGIC;
     return 0;
 }
 
@@ -18866,6 +19085,12 @@ static int64_t edge_linux_sys_unlink(
         status = kernel_vfs_path_result(
             vfs_unlink(workspace.resolved));
     if (status < 0) return status;
+    if (!remove_directory && victim_superblock &&
+        strcmp(victim_superblock->fs_name, "bpf") == 0 &&
+        vfs_inode_link_count(&victim) <= 1u)
+        kernel_bpf_pin_remove(
+            vfs_superblock_identity(victim_superblock), victim.ino,
+            victim.generation);
     kernel_vfs_notify_remove(workspace.resolved, remove_directory);
     return 0;
 }
@@ -19005,6 +19230,12 @@ static int64_t edge_linux_sys_rename(
     status = kernel_vfs_path_result(
         vfs_rename(workspace.saved, workspace.resolved));
     if (status < 0) return status;
+    if (target_exists && target_superblock &&
+        strcmp(target_superblock->fs_name, "bpf") == 0 &&
+        vfs_inode_link_count(&target) <= 1u)
+        kernel_bpf_pin_remove(
+            vfs_superblock_identity(target_superblock), target.ino,
+            target.generation);
     kernel_vfs_notify_rename(workspace.saved, workspace.resolved);
     return 0;
 }
