@@ -63,7 +63,7 @@ typedef struct kernel_fanotify_mark {
 
 typedef struct kernel_fanotify_event {
     uint8_t used;
-    uint8_t padding;
+    uint8_t directory_entry;
     uint16_t next;
     int32_t group_id;
     int32_t pid;
@@ -78,7 +78,9 @@ static kernel_fanotify_mark_t
 static kernel_fanotify_event_t
     g_fanotify_events[EDGE_RUNTIME_FANOTIFY_EVENT_POOL];
 static char g_fanotify_path_scratch[3][VFS_PATH_MAX];
+static char g_fanotify_read_path[VFS_PATH_MAX];
 static volatile uint32_t g_fanotify_lock;
+static volatile uint32_t g_fanotify_read_path_lock;
 
 static void fanotify_lock(void) {
     while (__sync_lock_test_and_set(&g_fanotify_lock, 1u)) { }
@@ -150,7 +152,8 @@ static uint16_t fanotify_event_allocate_locked(void) {
 }
 
 static uint64_t fanotify_queue_locked(int group_id, uint64_t mask,
-                                      const char *path, int32_t pid) {
+                                      const char *path, int32_t pid,
+                                      int directory_entry) {
     kernel_fanotify_group_t *group = fanotify_group_locked(group_id);
     kernel_fanotify_event_t *event;
     uint16_t index;
@@ -159,6 +162,7 @@ static uint64_t fanotify_queue_locked(int group_id, uint64_t mask,
     if (group->tail != KERNEL_FANOTIFY_EVENT_NONE) {
         event = &g_fanotify_events[group->tail];
         if (event->used && event->mask == mask && event->pid == pid &&
+            event->directory_entry == (directory_entry != 0) &&
             fanotify_path_equal(event->path, path ? path : ""))
             return 0;
     }
@@ -192,6 +196,7 @@ static uint64_t fanotify_queue_locked(int group_id, uint64_t mask,
     event->group_id = group_id;
     event->pid = pid;
     event->mask = mask;
+    event->directory_entry = directory_entry != 0;
     if (path) {
         uint32_t length = (uint32_t)strlen(path);
         if (length >= VFS_PATH_MAX) length = VFS_PATH_MAX - 1u;
@@ -222,6 +227,99 @@ static void fanotify_read_finish(int group_id) {
     group = fanotify_group_locked(group_id);
     if (group) group->read_busy = 0u;
     fanotify_unlock();
+}
+
+static int fanotify_prepare_fid_record(
+    const kernel_fanotify_event_t *event, uint32_t group_flags,
+    uint8_t *buffer, uint32_t capacity, uint32_t *length_out) {
+    kernel_fanotify_event_info_fid_prefix_t *fid;
+    kernel_vfs_target_t target;
+    const char *name = 0;
+    uint64_t filesystem_id = 0u;
+    uint32_t handle_bytes = VFS_FILE_HANDLE_MAX;
+    uint32_t handle_type = 0u;
+    uint32_t name_length = 0u;
+    uint32_t raw_length;
+    uint32_t path_length;
+    uint32_t split;
+    int status;
+
+    if (!event || !buffer || !length_out ||
+        capacity < KERNEL_FANOTIFY_FID_INFO_PREFIX_LENGTH +
+                       VFS_FILE_HANDLE_MAX)
+        return -EDGE_LINUX_EINVAL;
+    while (__sync_lock_test_and_set(&g_fanotify_read_path_lock, 1u)) { }
+    if (event->directory_entry &&
+        (group_flags & KERNEL_FAN_REPORT_DIR_FID)) {
+        path_length = (uint32_t)strlen(event->path);
+        split = path_length;
+        while (split && event->path[split - 1u] != '/') --split;
+        if (!split || split == path_length) {
+            status = -EDGE_LINUX_EIO;
+            goto out;
+        }
+        if (split == 1u) {
+            g_fanotify_read_path[0] = '/';
+            g_fanotify_read_path[1] = 0;
+        } else {
+            memcpy(g_fanotify_read_path, event->path, split - 1u);
+            g_fanotify_read_path[split - 1u] = 0;
+        }
+        name = event->path + split;
+    } else if (group_flags & KERNEL_FAN_REPORT_FID) {
+        memcpy(g_fanotify_read_path, event->path,
+               strlen(event->path) + 1u);
+    } else {
+        status = -EDGE_LINUX_EOPNOTSUPP;
+        goto out;
+    }
+    status = kernel_vfs_resolve_path(g_fanotify_read_path, 0, &target);
+    if (status < 0 || !target.inode || !target.superblock) {
+        status = status < 0 ? status : -EDGE_LINUX_EIO;
+        goto out;
+    }
+    status = vfs_mount_id_for_superblock(
+        target.superblock, &filesystem_id);
+    if (status < 0) goto out;
+    fid = (kernel_fanotify_event_info_fid_prefix_t *)(void *)buffer;
+    status = vfs_encode_file_handle(
+        target.superblock, target.inode, &handle_type,
+        buffer + KERNEL_FANOTIFY_FID_INFO_PREFIX_LENGTH,
+        &handle_bytes);
+    if (status < 0) goto out;
+    if (name && (group_flags & KERNEL_FAN_REPORT_NAME))
+        name_length = (uint32_t)strlen(name) + 1u;
+    raw_length = KERNEL_FANOTIFY_FID_INFO_PREFIX_LENGTH +
+        handle_bytes + name_length;
+    if (raw_length > capacity) {
+        status = -EDGE_LINUX_EOVERFLOW;
+        goto out;
+    }
+    if (name_length)
+        memcpy(buffer + KERNEL_FANOTIFY_FID_INFO_PREFIX_LENGTH +
+                   handle_bytes,
+               name, name_length);
+    raw_length = (raw_length + 3u) & ~3u;
+    memset(buffer + KERNEL_FANOTIFY_FID_INFO_PREFIX_LENGTH +
+               handle_bytes + name_length,
+           0, raw_length - (KERNEL_FANOTIFY_FID_INFO_PREFIX_LENGTH +
+                            handle_bytes + name_length));
+    fid->information_type = name_length ?
+        KERNEL_FANOTIFY_INFO_TYPE_DFID_NAME :
+        (event->directory_entry &&
+         (group_flags & KERNEL_FAN_REPORT_DIR_FID)) ?
+            KERNEL_FANOTIFY_INFO_TYPE_DFID :
+            KERNEL_FANOTIFY_INFO_TYPE_FID;
+    fid->length = (uint16_t)raw_length;
+    fid->filesystem_id[0] = (int32_t)filesystem_id;
+    fid->filesystem_id[1] = (int32_t)(filesystem_id >> 32u);
+    fid->handle_bytes = handle_bytes;
+    fid->handle_type = (int32_t)handle_type;
+    *length_out = raw_length;
+    status = 0;
+out:
+    __sync_lock_release(&g_fanotify_read_path_lock);
+    return status;
 }
 
 int kernel_fanotify_create(uint32_t flags, uint32_t event_flags) {
@@ -311,9 +409,11 @@ int kernel_fanotify_query(int group_id, kernel_fanotify_state_t *state) {
             (KERNEL_FANOTIFY_METADATA_LENGTH +
              ((group->flags & KERNEL_FAN_REPORT_PIDFD) ?
                 KERNEL_FANOTIFY_PIDFD_INFO_LENGTH : 0u) +
-             ((group->flags & KERNEL_FAN_REPORT_FID) ?
+             ((group->flags & KERNEL_FANOTIFY_FID_MODE_MASK) ?
                 KERNEL_FANOTIFY_FID_INFO_PREFIX_LENGTH +
-                    VFS_FILE_HANDLE_MAX : 0u));
+                    VFS_FILE_HANDLE_MAX +
+                    ((group->flags & KERNEL_FAN_REPORT_NAME) ?
+                        VFS_NAME_MAX : 0u) : 0u));
         state->readiness_sequence = group->readiness_sequence;
         state->flags = group->flags;
         for (uint32_t index = 0;
@@ -455,7 +555,7 @@ int64_t kernel_fanotify_read(int group_id,
                             void *copy_context, uint64_t length) {
     struct fanotify_record {
         kernel_fanotify_event_metadata_t metadata;
-        uint8_t information[160];
+        uint8_t information[416];
     } record;
     uint64_t done = 0;
 
@@ -507,42 +607,10 @@ int64_t kernel_fanotify_read(int group_id,
 
         memset(&record, 0, sizeof(record));
         if (event->mask != KERNEL_FAN_Q_OVERFLOW &&
-            (group_flags & KERNEL_FAN_REPORT_FID)) {
-            kernel_fanotify_event_info_fid_prefix_t *fid =
-                (kernel_fanotify_event_info_fid_prefix_t *)(void *)
-                    record.information;
-            kernel_vfs_target_t target;
-            uint64_t filesystem_id = 0u;
-            uint32_t handle_bytes = VFS_FILE_HANDLE_MAX;
-            uint32_t handle_type = 0u;
-
-            prepare_status = kernel_vfs_resolve_path(
-                event->path, 0, &target);
-            if (prepare_status == 0 && target.inode && target.superblock)
-                prepare_status = vfs_mount_id_for_superblock(
-                    target.superblock, &filesystem_id);
-            else if (prepare_status == 0)
-                prepare_status = -1;
-            if (prepare_status == 0)
-                prepare_status = vfs_encode_file_handle(
-                    target.superblock, target.inode, &handle_type,
-                    record.information +
-                        KERNEL_FANOTIFY_FID_INFO_PREFIX_LENGTH,
-                    &handle_bytes);
-            if (prepare_status == 0) {
-                uint32_t fid_length =
-                    KERNEL_FANOTIFY_FID_INFO_PREFIX_LENGTH +
-                        handle_bytes;
-                fid->information_type = KERNEL_FANOTIFY_INFO_TYPE_FID;
-                fid->length = (uint16_t)fid_length;
-                fid->filesystem_id[0] = (int32_t)filesystem_id;
-                fid->filesystem_id[1] =
-                    (int32_t)(filesystem_id >> 32u);
-                fid->handle_bytes = handle_bytes;
-                fid->handle_type = (int32_t)handle_type;
-                information_offset = fid_length;
-            }
-        }
+            (group_flags & KERNEL_FANOTIFY_FID_MODE_MASK))
+            prepare_status = fanotify_prepare_fid_record(
+                event, group_flags, record.information,
+                sizeof(record.information), &information_offset);
         if (prepare_status < 0) {
             fanotify_read_finish(group_id);
             return done ? (int64_t)done : -EDGE_LINUX_EIO;
@@ -581,7 +649,7 @@ int64_t kernel_fanotify_read(int group_id,
         fanotify_unlock();
 
         if (event->path[0] &&
-            !(group_flags & KERNEL_FAN_REPORT_FID)) {
+            !(group_flags & KERNEL_FANOTIFY_FID_MODE_MASK)) {
             kernel_vfs_target_t target;
             int status = kernel_vfs_resolve_path(event->path, 0, &target);
             if (status == 0 && target.inode && target.superblock)
@@ -660,9 +728,13 @@ static uint64_t fanotify_notify_path_locked(const char *canonical_path,
         event_mask &= mark->mask;
         event_mask &= ~(uint64_t)KERNEL_FAN_EVENT_ON_CHILD;
         if (!event_mask) continue;
+        if ((group->flags & KERNEL_FAN_REPORT_DIR_FID) && !child &&
+            !(group->flags & KERNEL_FAN_REPORT_FID))
+            continue;
         wake_groups |= fanotify_queue_locked(
             mark->group_id, event_mask, canonical_path,
-            (group->flags & KERNEL_FAN_REPORT_TID) ? tid : tgid);
+            (group->flags & KERNEL_FAN_REPORT_TID) ? tid : tgid,
+            child);
     }
     return wake_groups;
 }

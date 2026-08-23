@@ -42,12 +42,17 @@
 #define FAN_REPORT_PIDFD 0x80
 #define FAN_REPORT_TID 0x100
 #define FAN_REPORT_FID 0x200
+#define FAN_REPORT_DIR_FID 0x400
+#define FAN_REPORT_NAME 0x800
 #define FAN_MARK_ADD 0x1
 #define FAN_MARK_REMOVE 0x2
 #define FAN_MARK_FLUSH 0x80
 #define FAN_OPEN 0x20
+#define FAN_CREATE 0x100
+#define FAN_EVENT_ON_CHILD 0x08000000u
 #define FANOTIFY_METADATA_VERSION 3
 #define FAN_EVENT_INFO_TYPE_FID 1
+#define FAN_EVENT_INFO_TYPE_DFID_NAME 2
 #define FAN_EVENT_INFO_TYPE_PIDFD 4
 #define EAGAIN 11
 #define EBADF 9
@@ -181,6 +186,8 @@ void _start(void) {
     static const char directory[] = "/tmp/edge-fanotify-probe";
     static const char path[] = "/tmp/edge-fanotify-probe/event";
     static const char fid_path[] = "/edgeos-fanotify-fid-probe";
+    static const char dfid_directory[] = "/edgeos-fanotify-dfid-probe";
+    static const char dfid_path[] = "/edgeos-fanotify-dfid-probe/child";
     struct fanotify_event_metadata events[4];
     long group;
     long file;
@@ -544,6 +551,110 @@ void _start(void) {
 fid_out:
         (void)raw_syscall6(
             SYS_unlinkat, AT_FDCWD, (long)fid_path, 0, 0, 0, 0);
+    }
+
+    {
+        uint64_t aligned_record[64];
+        unsigned char *record = (unsigned char *)(void *)aligned_record;
+        int found_create = 0;
+
+        (void)raw_syscall6(
+            SYS_unlinkat, AT_FDCWD, (long)dfid_path, 0, 0, 0, 0);
+        (void)raw_syscall6(
+            SYS_unlinkat, AT_FDCWD, (long)dfid_directory,
+            AT_REMOVEDIR, 0, 0, 0);
+        result = raw_syscall6(
+            SYS_mkdirat, AT_FDCWD, (long)dfid_directory, 0700, 0, 0, 0);
+        failures += expect_result("dfid-mkdir", result, 0);
+        group = raw_syscall6(
+            SYS_fanotify_init,
+            FAN_CLOEXEC | FAN_NONBLOCK | FAN_REPORT_DIR_FID |
+                FAN_REPORT_NAME,
+            O_CLOEXEC, 0, 0, 0, 0);
+        if (group < 0) {
+            failures += expect_result("dfid-init", group, 0);
+            goto dfid_out;
+        }
+        failures += expect_result(
+            "dfid-add-mark",
+            raw_syscall6(
+                SYS_fanotify_mark, group, FAN_MARK_ADD,
+                FAN_CREATE | FAN_OPEN | FAN_EVENT_ON_CHILD,
+                AT_FDCWD, (long)dfid_directory, 0),
+            0);
+        file = raw_syscall6(
+            SYS_openat, AT_FDCWD, (long)dfid_path,
+            O_RDWR | O_CREAT | O_CLOEXEC, 0600, 0, 0);
+        if (file >= 0)
+            (void)raw_syscall6(SYS_close, file, 0, 0, 0, 0, 0);
+        else
+            failures += expect_result("dfid-create-child", file, 0);
+        result = raw_syscall6(
+            SYS_read, group, (long)record, sizeof(aligned_record),
+            0, 0, 0);
+        if (result < 0) {
+            failures += expect_result("dfid-event-read", result, 0);
+        } else {
+            uint32_t event_offset = 0u;
+            while (event_offset + sizeof(struct fanotify_event_metadata) <=
+                   (uint32_t)result) {
+                struct fanotify_event_metadata *event =
+                    (struct fanotify_event_metadata *)(void *)
+                        (record + event_offset);
+                struct fanotify_event_info_fid_prefix *dfid =
+                    (struct fanotify_event_info_fid_prefix *)(void *)
+                        (record + event_offset + sizeof(*event));
+                uint32_t name_offset;
+                const char *name;
+
+                if (event->event_len < sizeof(*event) + sizeof(*dfid) ||
+                    event_offset + event->event_len > (uint32_t)result)
+                    break;
+                name_offset = sizeof(*event) + sizeof(*dfid) +
+                    dfid->handle_bytes;
+                name = (const char *)(const void *)
+                    (record + event_offset + name_offset);
+                if (event->fd != -1 ||
+                    dfid->info_type != FAN_EVENT_INFO_TYPE_DFID_NAME ||
+                    dfid->len > event->event_len - sizeof(*event) ||
+                    name_offset >= event->event_len ||
+                    name[0] != 'c' || name[1] != 'h' ||
+                    name[2] != 'i' || name[3] != 'l' ||
+                    name[4] != 'd' || name[5] != 0) {
+                    print_text("FAIL dfid-event-layout type=");
+                    print_number(dfid->info_type);
+                    print_text(" info_len=");
+                    print_number(dfid->len);
+                    print_text(" event_len=");
+                    print_number(event->event_len);
+                    print_text(" handle_bytes=");
+                    print_number(dfid->handle_bytes);
+                    print_text("\n");
+                    ++failures;
+                }
+                if (event->mask & FAN_CREATE) found_create = 1;
+                if (!event->event_len) break;
+                event_offset += event->event_len;
+            }
+        }
+        if (!found_create) {
+            print_text("FAIL dfid-missing-create\n");
+            ++failures;
+        }
+        failures += expect_result(
+            "dfid-remove-mark",
+            raw_syscall6(
+                SYS_fanotify_mark, group, FAN_MARK_REMOVE,
+                FAN_CREATE | FAN_OPEN | FAN_EVENT_ON_CHILD,
+                AT_FDCWD, (long)dfid_directory, 0),
+            0);
+        (void)raw_syscall6(SYS_close, group, 0, 0, 0, 0, 0);
+dfid_out:
+        (void)raw_syscall6(
+            SYS_unlinkat, AT_FDCWD, (long)dfid_path, 0, 0, 0, 0);
+        (void)raw_syscall6(
+            SYS_unlinkat, AT_FDCWD, (long)dfid_directory,
+            AT_REMOVEDIR, 0, 0, 0);
     }
 
 out:

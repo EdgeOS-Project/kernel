@@ -14308,7 +14308,9 @@ static int64_t edge_linux_sys_fanotify(
                       ~(KERNEL_FAN_REPORT_FD_ERROR |
                         KERNEL_FAN_REPORT_PIDFD |
                         KERNEL_FAN_REPORT_TID |
-                        KERNEL_FAN_REPORT_FID))))
+                        KERNEL_FAN_REPORT_FID |
+                        KERNEL_FAN_REPORT_DIR_FID |
+                        KERNEL_FAN_REPORT_NAME))))
             return -EDGE_LINUX_EOPNOTSUPP;
         return kernel_fanotify_create_descriptor(flags, event_flags);
     }
@@ -14346,7 +14348,9 @@ static int64_t edge_linux_sys_fanotify(
         kernel_fanotify_state_t state;
         status = kernel_fanotify_query(group_id, &state);
         if (status < 0) return status;
-        if ((state.flags & KERNEL_FAN_REPORT_FID) &&
+        if ((state.flags & (KERNEL_FAN_REPORT_FID |
+                            KERNEL_FAN_REPORT_DIR_FID |
+                            KERNEL_FAN_REPORT_NAME)) &&
             (!target.superblock || !target.superblock->ops ||
              !target.superblock->ops->encode_handle))
             return -EDGE_LINUX_EOPNOTSUPP;

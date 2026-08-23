@@ -19,6 +19,7 @@ typedef struct fanotify_test_copy {
 
 static int g_wake_count;
 static int g_installed_descriptor = 40;
+static char g_last_resolved_path[64];
 
 int kernel_current_linux_identity(kernel_linux_identity_t *identity) {
     if (!identity) return -1;
@@ -51,6 +52,8 @@ int kernel_vfs_resolve_path(const char *path, int nofollow,
     target->superblock = (vfs_superblock_t *)&superblock_storage;
     target->inode = (vfs_inode_t *)&inode_storage;
     target->resolved_path = path;
+    assert(strlen(path) < sizeof(g_last_resolved_path));
+    memcpy(g_last_resolved_path, path, strlen(path) + 1u);
     return 0;
 }
 
@@ -146,6 +149,7 @@ int main(void) {
     int tid_group;
     int fid_group;
     int combined_group;
+    int dfid_group;
 
     memset(&copy, 0, sizeof(copy));
     group = kernel_fanotify_create(KERNEL_FAN_NONBLOCK, 0u);
@@ -323,6 +327,40 @@ int main(void) {
         assert(pidfd->descriptor == 180);
     }
     kernel_fanotify_release(combined_group);
+
+    dfid_group = kernel_fanotify_create(
+        KERNEL_FAN_NONBLOCK | KERNEL_FAN_REPORT_DIR_FID |
+            KERNEL_FAN_REPORT_NAME,
+        0u);
+    assert(dfid_group >= 0);
+    assert(kernel_fanotify_modify_mark(
+               dfid_group, KERNEL_FAN_MARK_ADD,
+               KERNEL_FAN_CREATE | KERNEL_FAN_EVENT_ON_CHILD,
+               "/watched", 1) == 0);
+    kernel_fanotify_notify_path("/watched/child", KERNEL_FAN_CREATE);
+    assert(kernel_fanotify_read(
+               dfid_group, copy_record, &copy,
+               sizeof(copy.records[0])) == 64);
+    {
+        const kernel_fanotify_event_metadata_t *event =
+            copied_event(&copy, 6u);
+        const kernel_fanotify_event_info_fid_prefix_t *dfid =
+            (const kernel_fanotify_event_info_fid_prefix_t *)(const void *)
+                (copy.records[6] + KERNEL_FANOTIFY_METADATA_LENGTH);
+        const char *name = (const char *)(const void *)(
+            copy.records[6] + KERNEL_FANOTIFY_METADATA_LENGTH +
+            KERNEL_FANOTIFY_FID_INFO_PREFIX_LENGTH +
+            dfid->handle_bytes);
+
+        assert(event->event_length == 64u);
+        assert(event->descriptor == KERNEL_FANOTIFY_NOFD);
+        assert(dfid->information_type ==
+               KERNEL_FANOTIFY_INFO_TYPE_DFID_NAME);
+        assert(dfid->length == 40u);
+        assert(strcmp(name, "child") == 0);
+        assert(strcmp(g_last_resolved_path, "/watched") == 0);
+    }
+    kernel_fanotify_release(dfid_group);
 
     assert(kernel_fanotify_modify_mark(
                group, KERNEL_FAN_MARK_FLUSH, 0u, 0, 0) == 0);
