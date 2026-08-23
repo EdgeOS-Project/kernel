@@ -37,6 +37,7 @@ int main(void) {
         .api = KERNEL_UFFD_API,
         .features = KERNEL_UFFD_FEATURE_THREAD_ID |
                     KERNEL_UFFD_FEATURE_PAGEFAULT_FLAG_WP |
+                    KERNEL_UFFD_FEATURE_EXACT_ADDRESS |
                     KERNEL_UFFD_FEATURE_POISON |
                     KERNEL_UFFD_FEATURE_MOVE,
     };
@@ -86,7 +87,7 @@ int main(void) {
         (int64_t)sizeof(message));
     assert(message.event == KERNEL_UFFD_EVENT_PAGEFAULT);
     assert(message.flags == KERNEL_UFFD_PAGEFAULT_FLAG_WRITE);
-    assert(message.address == 0x401000u);
+    assert(message.address == 0x401234u);
     assert(message.thread_id == 91);
     assert(kernel_userfaultfd_query(context_id, &state) == 0);
     assert(state.queued_events == 0 && state.unresolved_faults == 1);
@@ -169,6 +170,30 @@ int main(void) {
     kernel_userfaultfd_release(context_id);
     assert(kernel_userfaultfd_query(context_id, &state) ==
            -EDGE_LINUX_EBADF);
+    {
+        kernel_uffdio_api_t sigbus_api = {
+            .api = KERNEL_UFFD_API,
+            .features = KERNEL_UFFD_FEATURE_SIGBUS,
+        };
+        kernel_uffdio_register_t sigbus_registration = {
+            .range = { .start = 0x600000u, .length = 0x1000u },
+            .mode = KERNEL_UFFD_REGISTER_MODE_MISSING,
+        };
+
+        context_id = kernel_userfaultfd_create(
+            0x22345000u, 78, KERNEL_UFFD_NONBLOCK);
+        assert(context_id >= 0);
+        assert(kernel_userfaultfd_negotiate(
+            context_id, &sigbus_api) == 0);
+        assert(kernel_userfaultfd_register(
+            context_id, &sigbus_registration) == 0);
+        assert(kernel_userfaultfd_missing_fault(
+            0x22345000u, 0x600077u, 0, 99,
+            &fault_context, &ticket) == KERNEL_UFFD_FAULT_SIGBUS);
+        assert(kernel_userfaultfd_query(context_id, &state) == 0);
+        assert(state.queued_events == 0 && state.unresolved_faults == 0);
+        kernel_userfaultfd_release(context_id);
+    }
     puts("userfaultfd_runtime_unit: PASS");
     return 0;
 }

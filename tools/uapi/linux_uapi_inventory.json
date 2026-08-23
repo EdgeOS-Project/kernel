@@ -74,6 +74,7 @@
       },
       "implemented": [
         "API negotiation and thread-ID page-fault records",
+        "exact fault addresses and signal-delivery mode without queued events",
         "missing-page registration, copy, zero-page, wake and unregister operations",
         "write-protect registration, resident-page permission faults and wake behavior",
         "copy-and-write-protect mode and close-time permission restoration",

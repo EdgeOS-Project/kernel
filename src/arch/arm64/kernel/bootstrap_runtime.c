@@ -3438,7 +3438,9 @@ int kernel_handle_page_fault(arch_user_frame_t *frame) {
         int status = kernel_userfaultfd_page_fault(
             task->ttbr0, frame->far, 1, 1,
             (uint32_t)task->pid, &context_id, &ticket);
-        if (status > 0) {
+        if (status == KERNEL_UFFD_FAULT_SIGBUS)
+            kernel_fault_current(EDGE_LINUX_SIGBUS);
+        if (status == KERNEL_UFFD_FAULT_QUEUED) {
             task->userfaultfd_wait_index = (uint16_t)context_id;
             task->userfaultfd_wait_ticket = ticket;
             task_state_set(task, KERNEL_TASK_WAITING_USERFAULTFD);
@@ -3471,7 +3473,9 @@ int kernel_handle_page_fault(arch_user_frame_t *frame) {
             task->ttbr0, frame->far, is_write,
             (uint32_t)task->pid,
             &context_id, &ticket);
-        if (status > 0) {
+        if (status == KERNEL_UFFD_FAULT_SIGBUS)
+            kernel_fault_current(EDGE_LINUX_SIGBUS);
+        if (status == KERNEL_UFFD_FAULT_QUEUED) {
             task->userfaultfd_wait_index = (uint16_t)context_id;
             task->userfaultfd_wait_ticket = ticket;
             task_state_set(task, KERNEL_TASK_WAITING_USERFAULTFD);

@@ -1022,7 +1022,12 @@ void isr_exception_handler(REGISTERS *reg) {
                     (uint32_t)t->pid,
                     &userfault_context, &userfault_ticket);
             }
-            if (userfault_status > 0) {
+            if (userfault_status == KERNEL_UFFD_FAULT_SIGBUS) {
+                deliver_user_exception_signal(
+                    reg, EDGE_LINUX_SIGBUS, 2, cr2);
+                return;
+            }
+            if (userfault_status == KERNEL_UFFD_FAULT_QUEUED) {
                 t->userfaultfd_wait_active = 1;
                 t->userfaultfd_wait_context = userfault_context;
                 t->userfaultfd_wait_ticket = userfault_ticket;

@@ -44,7 +44,9 @@
 #define UFFD_USER_MODE_ONLY 0x1
 #define UFFD_API 0xAAu
 #define UFFD_FEATURE_PAGEFAULT_FLAG_WP (1ULL << 0)
+#define UFFD_FEATURE_SIGBUS (1ULL << 7)
 #define UFFD_FEATURE_THREAD_ID (1ULL << 8)
+#define UFFD_FEATURE_EXACT_ADDRESS (1ULL << 11)
 #define UFFD_FEATURE_POISON (1ULL << 14)
 #define UFFD_FEATURE_MOVE (1ULL << 16)
 #define UFFDIO_REGISTER_MODE_MISSING 0x1u
@@ -280,6 +282,7 @@ START_ATTRIBUTES void _start(void) {
         .api = UFFD_API,
         .features = UFFD_FEATURE_THREAD_ID |
                     UFFD_FEATURE_PAGEFAULT_FLAG_WP |
+                    UFFD_FEATURE_EXACT_ADDRESS |
                     UFFD_FEATURE_POISON |
                     UFFD_FEATURE_MOVE,
     };
@@ -337,6 +340,8 @@ START_ATTRIBUTES void _start(void) {
             SYS_ioctl, descriptor, UFFDIO_API, (long)&api, 0, 0, 0), 0);
     if (api.api != UFFD_API || !api.ioctls ||
         !(api.features & UFFD_FEATURE_THREAD_ID) ||
+        !(api.features & UFFD_FEATURE_SIGBUS) ||
+        !(api.features & UFFD_FEATURE_EXACT_ADDRESS) ||
         !(api.features & UFFD_FEATURE_POISON) ||
         !(api.features & UFFD_FEATURE_MOVE)) {
         print_text("FAIL api-result\n");
@@ -396,7 +401,7 @@ START_ATTRIBUTES void _start(void) {
         }
     }
 
-    g_fault_address = destination + PAGE_SIZE * 2u;
+    g_fault_address = destination + PAGE_SIZE * 2u + 37u;
     g_fault_value = 0;
     {
         long child = spawn_fault_child(
@@ -422,13 +427,13 @@ START_ATTRIBUTES void _start(void) {
                  message.flags != 0 ||
                  message.thread_id != (uint32_t)child ||
                  message.address !=
-                    ((uint64_t)(uintptr_t)g_fault_address &
-                     ~(uint64_t)(PAGE_SIZE - 1u)))) {
+                    (uint64_t)(uintptr_t)g_fault_address)) {
                 print_text("FAIL fault-event-data\n");
                 ++failures;
             }
             if (received == (long)sizeof(message)) {
-                copy.dst = (uint64_t)(uintptr_t)g_fault_address;
+                copy.dst = (uint64_t)(uintptr_t)g_fault_address &
+                           ~(uint64_t)(PAGE_SIZE - 1u);
                 copy.src = (uint64_t)(uintptr_t)source;
                 copy.len = PAGE_SIZE;
                 copy.mode = 0;
@@ -449,7 +454,7 @@ START_ATTRIBUTES void _start(void) {
                     0, 0, 0, 0), child);
             failures += expect_result("fault-child-status", child_status, 0);
             failures += expect_result(
-                "fault-child-value", g_fault_value, source[0]);
+                "fault-child-value", g_fault_value, source[37]);
         }
     }
     failures += expect_result(
@@ -695,6 +700,78 @@ START_ATTRIBUTES void _start(void) {
             SYS_ioctl, descriptor, UFFDIO_UNREGISTER,
             (long)&registration.range, 0, 0, 0), 0);
     (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+
+    {
+        unsigned char *sigbus_area = (unsigned char *)raw_syscall6(
+            SYS_mmap, 0, PAGE_SIZE, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        long sigbus_descriptor = raw_syscall6(
+            SYS_userfaultfd,
+            O_NONBLOCK | O_CLOEXEC | UFFD_USER_MODE_ONLY,
+            0, 0, 0, 0, 0);
+        struct uffdio_api sigbus_api = {
+            .api = UFFD_API,
+            .features = UFFD_FEATURE_SIGBUS,
+        };
+
+        if ((long)sigbus_area < 0 || sigbus_descriptor < 0) {
+            print_text("FAIL sigbus-setup\n");
+            ++failures;
+            if (sigbus_descriptor >= 0)
+                (void)raw_syscall6(
+                    SYS_close, sigbus_descriptor, 0, 0, 0, 0, 0);
+        } else {
+            failures += expect_result(
+                "sigbus-api", raw_syscall6(
+                    SYS_ioctl, sigbus_descriptor, UFFDIO_API,
+                    (long)&sigbus_api, 0, 0, 0), 0);
+            registration.range.start =
+                (uint64_t)(uintptr_t)sigbus_area;
+            registration.range.len = PAGE_SIZE;
+            registration.mode = UFFDIO_REGISTER_MODE_MISSING;
+            registration.ioctls = 0;
+            failures += expect_result(
+                "sigbus-register", raw_syscall6(
+                    SYS_ioctl, sigbus_descriptor, UFFDIO_REGISTER,
+                    (long)&registration, 0, 0, 0), 0);
+            g_fault_address = sigbus_area + 91u;
+            g_fault_write = 0;
+            {
+                long child = spawn_fault_child(
+                    CLONE_VM | SIGCHLD,
+                    &g_fault_stack[sizeof(g_fault_stack)]);
+                int child_status = -1;
+
+                if (child < 0) {
+                    failures += expect_result(
+                        "sigbus-child", child, 0);
+                } else {
+                    failures += expect_result(
+                        "sigbus-wait", raw_syscall6(
+                            SYS_wait4, child, (long)&child_status,
+                            0, 0, 0, 0), child);
+                    if ((child_status & 0x7f) != SIGBUS) {
+                        print_text("FAIL sigbus-child-signal expected=");
+                        print_number(SIGBUS);
+                        print_text(" actual=");
+                        print_number(child_status & 0x7f);
+                        print_text("\n");
+                        ++failures;
+                    }
+                }
+            }
+            failures += expect_result(
+                "sigbus-empty-read", raw_syscall6(
+                    SYS_read, sigbus_descriptor, (long)&message,
+                    sizeof(message), 0, 0, 0), -EAGAIN);
+            (void)raw_syscall6(
+                SYS_close, sigbus_descriptor, 0, 0, 0, 0, 0);
+        }
+        if ((long)sigbus_area > 0)
+            (void)raw_syscall6(
+                SYS_munmap, (long)sigbus_area, PAGE_SIZE,
+                0, 0, 0, 0);
+    }
 
 out:
     if ((long)source > 0)

@@ -60,6 +60,7 @@ typedef struct kernel_userfaultfd_event {
     uint16_t reserved;
     int32_t context_id;
     uint64_t page;
+    uint64_t address;
     uint64_t flags;
     uint64_t ticket;
     uint32_t thread_id;
@@ -851,6 +852,10 @@ int kernel_userfaultfd_page_fault(
         userfaultfd_unlock();
         return 0;
     }
+    if (context->features & KERNEL_UFFD_FEATURE_SIGBUS) {
+        userfaultfd_unlock();
+        return KERNEL_UFFD_FAULT_SIGBUS;
+    }
     for (uint16_t index = 0;
          index < EDGE_RUNTIME_USERFAULTFD_EVENT_POOL; ++index) {
         kernel_userfaultfd_event_t *event = &g_userfaultfd_events[index];
@@ -871,6 +876,9 @@ int kernel_userfaultfd_page_fault(
     }
     g_userfaultfd_events[event_index].context_id = found_context;
     g_userfaultfd_events[event_index].page = page;
+    g_userfaultfd_events[event_index].address =
+        (context->features & KERNEL_UFFD_FEATURE_EXACT_ADDRESS) ?
+            address : page;
     g_userfaultfd_events[event_index].flags =
         write ? KERNEL_UFFD_PAGEFAULT_FLAG_WRITE : 0u;
     if (present)
@@ -893,7 +901,7 @@ int kernel_userfaultfd_page_fault(
     *ticket = g_userfaultfd_events[event_index].ticket;
     userfaultfd_unlock();
     kernel_userfaultfd_state_changed(found_context);
-    return 1;
+    return KERNEL_UFFD_FAULT_QUEUED;
 }
 
 int kernel_userfaultfd_missing_fault(
@@ -973,7 +981,7 @@ int64_t kernel_userfaultfd_read(
     memset(&message, 0, sizeof(message));
     message.event = KERNEL_UFFD_EVENT_PAGEFAULT;
     message.flags = g_userfaultfd_events[event_index].flags;
-    message.address = g_userfaultfd_events[event_index].page;
+    message.address = g_userfaultfd_events[event_index].address;
     message.thread_id = g_userfaultfd_events[event_index].thread_id;
     userfaultfd_remove_queued_event_locked(context, event_index);
     userfaultfd_unlock();
