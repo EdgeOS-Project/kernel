@@ -526,6 +526,8 @@ void process_user_mmap_unmap_fast(task_t *t, uint64_t start, uint64_t len);
 int process_user_mmap_unmap_page_if_backing(task_t *t, uint64_t address,
                                             int backing_index);
 int process_user_mmap_move_present(task_t *t, uint64_t old_start, uint64_t new_start, uint64_t len);
+int process_user_mmap_poison_page(task_t *t, uint64_t address);
+int process_user_mmap_page_poisoned(task_t *t, uint64_t address);
 void process_user_mmap_reset(task_t *t);
 int process_user_mmap_clone(task_t *dst, const task_t *src);
 int process_user_mmap_alloc_backing_page(void);

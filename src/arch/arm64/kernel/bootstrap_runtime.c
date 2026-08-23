@@ -3425,6 +3425,11 @@ int kernel_handle_page_fault(arch_user_frame_t *frame) {
                (frame->esr & (1u << 6));
     access = ec == 0x20u ? KERNEL_MM_PROT_EXEC :
              (is_write ? KERNEL_MM_PROT_WRITE : KERNEL_MM_PROT_READ);
+    if (fault_status >= 4u && fault_status <= 7u &&
+        edgeos_arm64_address_space_user_page_poisoned(
+            task->ttbr0, page) > 0) {
+        kernel_fault_current(EDGE_LINUX_SIGBUS);
+    }
     if (is_write && fault_status >= 13u && fault_status <= 15u &&
         !kernel_userfaultfd_resolution_bypasses_fault(
             task->ttbr0, page)) {
@@ -8336,6 +8341,25 @@ int arch_mm_address_space_move_page(
         return -LINUX_EIO;
     }
     return 0;
+}
+
+int arch_mm_address_space_poison_page(
+        uint64_t address_space, uint64_t address) {
+    int result;
+
+    if (!address_space) return -LINUX_EINVAL;
+    result = edgeos_arm64_address_space_poison_user_page(
+        address_space, address);
+    if (result == -2) return -LINUX_EEXIST;
+    if (result < 0) return -LINUX_ENOMEM;
+    return 0;
+}
+
+int arch_mm_address_space_page_poisoned(
+        uint64_t address_space, uint64_t address) {
+    if (!address_space) return -LINUX_EINVAL;
+    return edgeos_arm64_address_space_user_page_poisoned(
+        address_space, address);
 }
 
 int arch_mm_sync_range(uint64_t address, uint64_t length, uint32_t flags) {

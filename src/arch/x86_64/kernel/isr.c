@@ -1007,6 +1007,12 @@ void isr_exception_handler(REGISTERS *reg) {
             uint64_t userfault_ticket = 0;
             int userfault_status = 0;
 
+            if (t && !p &&
+                process_user_mmap_page_poisoned(t, cr2) > 0) {
+                deliver_user_exception_signal(
+                    reg, EDGE_LINUX_SIGBUS, 4, cr2);
+                return;
+            }
             if (t && (!p || wr) &&
                 !kernel_userfaultfd_resolution_bypasses_fault(
                     arch_mm_current_address_space(), cr2)) {

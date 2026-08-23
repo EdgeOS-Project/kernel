@@ -374,6 +374,10 @@ int arch_mm_address_space_move_validate(
 int arch_mm_address_space_move_page(
     uint64_t address_space, uint64_t source, uint64_t destination,
     int allow_source_hole);
+int arch_mm_address_space_poison_page(
+    uint64_t address_space, uint64_t address);
+int arch_mm_address_space_page_poisoned(
+    uint64_t address_space, uint64_t address);
 int arch_mm_sync_range(uint64_t address, uint64_t length, uint32_t flags);
 int64_t arch_mm_protect_range(uint64_t address, uint64_t length,
                               uint64_t protection);

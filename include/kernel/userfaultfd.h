@@ -23,13 +23,16 @@
 #define KERNEL_UFFDIO_MOVE_MODE_ALLOW_SRC_HOLES  (1ULL << 1)
 #define KERNEL_UFFDIO_WRITEPROTECT_MODE_WP       (1ULL << 0)
 #define KERNEL_UFFDIO_WRITEPROTECT_MODE_DONTWAKE (1ULL << 1)
+#define KERNEL_UFFDIO_POISON_MODE_DONTWAKE        (1ULL << 0)
 
 #define KERNEL_UFFD_FEATURE_PAGEFAULT_FLAG_WP (1ULL << 0)
 #define KERNEL_UFFD_FEATURE_THREAD_ID (1ULL << 8)
+#define KERNEL_UFFD_FEATURE_POISON    (1ULL << 14)
 #define KERNEL_UFFD_FEATURE_MOVE      (1ULL << 16)
 #define KERNEL_UFFD_SUPPORTED_FEATURES \
     (KERNEL_UFFD_FEATURE_PAGEFAULT_FLAG_WP | \
-     KERNEL_UFFD_FEATURE_THREAD_ID | KERNEL_UFFD_FEATURE_MOVE)
+     KERNEL_UFFD_FEATURE_THREAD_ID | KERNEL_UFFD_FEATURE_POISON | \
+     KERNEL_UFFD_FEATURE_MOVE)
 
 #define KERNEL_UFFD_PAGEFAULT_FLAG_WRITE (1ULL << 0)
 #define KERNEL_UFFD_PAGEFAULT_FLAG_WP    (1ULL << 1)
@@ -42,6 +45,7 @@
 #define KERNEL_UFFDIO_ZEROPAGE_NUMBER   0x04u
 #define KERNEL_UFFDIO_MOVE_NUMBER       0x05u
 #define KERNEL_UFFDIO_WRITEPROTECT_NUMBER 0x06u
+#define KERNEL_UFFDIO_POISON_NUMBER     0x08u
 #define KERNEL_UFFDIO_API_NUMBER        0x3fu
 
 #define KERNEL_UFFD_API_IOCTLS \
@@ -53,7 +57,8 @@
     ((1ULL << KERNEL_UFFDIO_WAKE_NUMBER) | \
      (1ULL << KERNEL_UFFDIO_COPY_NUMBER) | \
      (1ULL << KERNEL_UFFDIO_ZEROPAGE_NUMBER) | \
-     (1ULL << KERNEL_UFFDIO_MOVE_NUMBER))
+     (1ULL << KERNEL_UFFDIO_MOVE_NUMBER) | \
+     (1ULL << KERNEL_UFFDIO_POISON_NUMBER))
 
 #define KERNEL_UFFD_WP_RANGE_IOCTLS \
     ((1ULL << KERNEL_UFFDIO_WAKE_NUMBER) | \
@@ -102,6 +107,12 @@ typedef struct kernel_uffdio_writeprotect {
     kernel_uffdio_range_t range;
     uint64_t mode;
 } kernel_uffdio_writeprotect_t;
+
+typedef struct kernel_uffdio_poison {
+    kernel_uffdio_range_t range;
+    uint64_t mode;
+    int64_t updated;
+} kernel_uffdio_poison_t;
 
 typedef struct kernel_userfaultfd_message {
     uint8_t event;

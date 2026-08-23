@@ -8765,6 +8765,26 @@ int arch_mm_address_space_move_page(
         memory, source, destination, PAGE_SIZE) < 0 ? -ENOMEM : 0;
 }
 
+int arch_mm_address_space_poison_page(
+        uint64_t address_space, uint64_t address) {
+    task_t *memory = x86_mm_task_for_address_space(address_space);
+    int result;
+
+    if (!memory) return -EINVAL;
+    result = process_user_mmap_poison_page(memory, address);
+    if (result > 0) return -EEXIST;
+    if (result < 0) return -ENOMEM;
+    return 0;
+}
+
+int arch_mm_address_space_page_poisoned(
+        uint64_t address_space, uint64_t address) {
+    task_t *memory = x86_mm_task_for_address_space(address_space);
+
+    if (!memory) return -EINVAL;
+    return process_user_mmap_page_poisoned(memory, address);
+}
+
 int arch_mm_sync_range(uint64_t address, uint64_t length, uint32_t flags) {
     task_t *current = process_current_task();
     task_t *memory = current ? process_vm_task(current) : 0;

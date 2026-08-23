@@ -643,6 +643,7 @@ int kernel_userfaultfd_validate_resolution(
          index < EDGE_RUNTIME_MAX_USERFAULTFD_RANGES; ++index) {
         kernel_userfaultfd_range_t *entry = &g_userfaultfd_ranges[index];
         if (entry->used && entry->context_id == context_id &&
+            (entry->mode & KERNEL_UFFD_REGISTER_MODE_MISSING) &&
             range->start >= entry->start && end <= entry->end) {
             covered = 1;
             break;

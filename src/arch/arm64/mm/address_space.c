@@ -59,6 +59,7 @@
 #define DESC_UXN (1ULL << 54)
 #define DESC_PXN (1ULL << 53)
 #define DESC_EDGEOS_COW (1ULL << 55)
+#define DESC_EDGEOS_POISON (1ULL << 56)
 
 typedef struct {
     uint32_t type;
@@ -335,7 +336,7 @@ static int address_space_own_table(arm64_address_space_record_t *space,
 static int address_space_table_empty(const uint64_t *table) {
     if (!table) return 0;
     for (uint32_t index = 0; index < TABLE_ENTRIES; ++index)
-        if (table[index] & DESC_VALID) return 0;
+        if (table[index] != 0) return 0;
     return 1;
 }
 
@@ -1800,6 +1801,14 @@ static int address_space_map_user_page_internal(uint64_t ttbr0, uint64_t va,
         descriptor_replace_global(ttbr0, &l2[l2i],
             (uint64_t)(uintptr_t)l3 | DESC_VALID | DESC_TABLE);
 
+    if (prot & EDGEOS_ARM64_VM_PROT_POISON) {
+        if (l3[l3i] != 0) return -2;
+        l3[l3i] = DESC_EDGEOS_POISON;
+        if (!defer_publish)
+            __asm__ __volatile__("dsb ishst" ::: "memory");
+        return 0;
+    }
+
     replacing = (l3[l3i] & (DESC_VALID | DESC_TABLE)) ==
                 (DESC_VALID | DESC_TABLE);
     desc = pa | DESC_VALID | DESC_TABLE | DESC_AF | DESC_NG | DESC_PXN;
@@ -1856,6 +1865,45 @@ static int address_space_map_user_page_internal(uint64_t ttbr0, uint64_t va,
 int edgeos_arm64_address_space_map_user_page(uint64_t ttbr0, uint64_t va,
                                              uint64_t pa, uint32_t prot) {
     return address_space_map_user_page_internal(ttbr0, va, pa, prot, 0, 0);
+}
+
+int edgeos_arm64_address_space_poison_user_page(uint64_t ttbr0, uint64_t va) {
+    return address_space_map_user_page_internal(
+        ttbr0, va, 0, EDGEOS_ARM64_VM_PROT_POISON, 0, 0);
+}
+
+int edgeos_arm64_address_space_user_page_poisoned(uint64_t ttbr0,
+                                                   uint64_t va) {
+    uint64_t *root;
+    uint64_t *l1;
+    uint64_t *l2;
+    uint64_t *l3;
+    uint32_t l0i;
+    uint32_t l1i;
+    uint32_t l2i;
+    uint32_t l3i;
+
+    if (!edgeos_arm64_address_space_is_live(ttbr0) ||
+        va >= (1ULL << 48))
+        return -1;
+    root = (uint64_t *)(uintptr_t)ttbr0;
+    l0i = (uint32_t)((va >> 39) & 0x1ffu);
+    l1i = (uint32_t)((va >> 30) & 0x1ffu);
+    l2i = (uint32_t)((va >> 21) & 0x1ffu);
+    l3i = (uint32_t)((va >> 12) & 0x1ffu);
+    if ((root[l0i] & (DESC_VALID | DESC_TABLE)) !=
+        (DESC_VALID | DESC_TABLE))
+        return 0;
+    l1 = (uint64_t *)(uintptr_t)(root[l0i] & ARM64_PA_MASK);
+    if ((l1[l1i] & (DESC_VALID | DESC_TABLE)) !=
+        (DESC_VALID | DESC_TABLE))
+        return 0;
+    l2 = (uint64_t *)(uintptr_t)(l1[l1i] & ARM64_PA_MASK);
+    if ((l2[l2i] & (DESC_VALID | DESC_TABLE)) !=
+        (DESC_VALID | DESC_TABLE))
+        return 0;
+    l3 = (uint64_t *)(uintptr_t)(l2[l2i] & ARM64_PA_MASK);
+    return l3[l3i] == DESC_EDGEOS_POISON ? 1 : 0;
 }
 
 int edgeos_arm64_address_space_map_user_pages(uint64_t ttbr0, uint64_t va,
@@ -2204,6 +2252,56 @@ static int address_space_detach_mapping(
     return 0;
 }
 
+static int address_space_clear_poison_level(
+    arm64_address_space_record_t *space, uint64_t *table,
+    uint32_t level, uint64_t table_base, uint64_t start, uint64_t end) {
+    static const uint32_t level_shift[4] = { 39u, 30u, 21u, 12u };
+    uint32_t shift;
+    uint32_t first;
+    uint32_t last;
+    int changed = 0;
+
+    if (!space || !table || level >= 4u || end <= start ||
+        start < table_base)
+        return 0;
+    shift = level_shift[level];
+    first = (uint32_t)((start - table_base) >> shift);
+    last = (uint32_t)(((end - 1u) - table_base) >> shift);
+    if (first >= TABLE_ENTRIES) return 0;
+    if (last >= TABLE_ENTRIES) last = TABLE_ENTRIES - 1u;
+
+    for (uint32_t index = first; index <= last; ++index) {
+        uint64_t entry_base = table_base + ((uint64_t)index << shift);
+        uint64_t entry_end = entry_base + (1ULL << shift);
+        uint64_t overlap_start = start > entry_base ? start : entry_base;
+        uint64_t overlap_end = end < entry_end ? end : entry_end;
+
+        if (level == 3u) {
+            if (table[index] == DESC_EDGEOS_POISON) {
+                table[index] = 0;
+                changed = 1;
+            }
+            continue;
+        }
+        if ((table[index] & (DESC_VALID | DESC_TABLE)) !=
+            (DESC_VALID | DESC_TABLE))
+            continue;
+        {
+            uint64_t *child = (uint64_t *)(uintptr_t)
+                (table[index] & ARM64_PA_MASK);
+            int child_changed = address_space_clear_poison_level(
+                space, child, level + 1u, entry_base,
+                overlap_start, overlap_end);
+            if (!child_changed) continue;
+            changed = 1;
+            if (address_space_table_empty(child) &&
+                address_space_mark_table_reclaim(space, child))
+                table[index] = 0;
+        }
+    }
+    return changed;
+}
+
 int edgeos_arm64_address_space_unmap_user_range(uint64_t ttbr0, uint64_t va,
                                                  uint64_t length) {
     arm64_address_space_record_t *space;
@@ -2214,6 +2312,8 @@ int edgeos_arm64_address_space_unmap_user_range(uint64_t ttbr0, uint64_t va,
     if (end <= va || end > (1ULL << 48)) return -1;
     space = address_space_record(ttbr0, 0);
     if (!space) return 0;
+    (void)address_space_clear_poison_level(
+        space, (uint64_t *)(uintptr_t)ttbr0, 0, 0, va, end);
 
     /*
      * Dynamic loaders reserve large sparse ranges but normally unmap only a

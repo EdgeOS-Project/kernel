@@ -56,6 +56,7 @@
 #define PAGE_COW     0x200ULL /* software bit: sparse private page is copy-on-write */
 #define PAGE_FILE_CACHE 0x400ULL /* software bit: PTE references global file-page cache */
 #define PAGE_DEVICE  0x800ULL /* software bit: externally owned device page */
+#define PAGE_POISONED 0x800ULL /* software bit: non-present poisoned page */
 
 #define DEVICE_MEMORY_UNCACHEABLE 0
 #define DEVICE_MEMORY_WRITE_COMBINING 1
@@ -2304,7 +2305,7 @@ static int fixed_user_clone_pt_cow(task_t *dst, const task_t *src,
         uint64_t phys;
         int backing_idx;
         if ((entry & PAGE_PRESENT) == 0) {
-            dst_pt[i] = 0;
+            dst_pt[i] = entry == PAGE_POISONED ? PAGE_POISONED : 0;
             continue;
         }
         if ((entry & PAGE_DEVICE) != 0) {
@@ -4387,7 +4388,13 @@ static int process_user_heap_unmap_range(task_t *t, uint64_t start, uint64_t len
         pt = g_user_heap_pt[idx][slot];
         if (!pt) continue;
         entry = pt[pte_idx];
-        if ((entry & PAGE_PRESENT) == 0) continue;
+        if ((entry & PAGE_PRESENT) == 0) {
+            if (entry == PAGE_POISONED) {
+                pt[pte_idx] = 0;
+                touched = 1;
+            }
+            continue;
+        }
         backing_idx = sparse_mmap_backing_index_from_phys(entry & ~0xFFFULL);
         pt[pte_idx] = 0;
         invlpg_local(va);
@@ -4443,10 +4450,17 @@ static int process_user_heap_clone(task_t *dst, const task_t *src) {
             int src_backing_idx;
             uint64_t va;
             uint64_t shared;
-            if ((src_entry & PAGE_PRESENT) == 0) continue;
+            if ((src_entry & PAGE_PRESENT) == 0 &&
+                src_entry != PAGE_POISONED)
+                continue;
             va = base + ((uint64_t)pte << 12);
             if (process_user_heap_ensure_pt(dst, va, &dst_pt) < 0)
                 goto fail;
+            if ((src_entry & PAGE_PRESENT) == 0) {
+                if (src_entry == PAGE_POISONED)
+                    dst_pt[pte] = PAGE_POISONED;
+                continue;
+            }
             src_backing_idx = sparse_mmap_backing_index_from_phys(src_entry & ~0xFFFULL);
             if (!sparse_mmap_backing_ptr(src_backing_idx))
                 goto fail;
@@ -5060,7 +5074,7 @@ out:
 static int sparse_mmap_pt_empty(const uint64_t *pt) {
     if (!pt) return 1;
     for (int i = 0; i < 512; ++i) {
-        if ((pt[i] & PAGE_PRESENT) != 0) return 0;
+        if (pt[i] != 0) return 0;
     }
     return 1;
 }
@@ -5264,7 +5278,13 @@ static void process_user_mmap_unmap_resident(task_t *t, uint64_t start,
             uint64_t pte = span.pt[pte_idx];
             int backing_idx;
 
-            if ((pte & PAGE_PRESENT) == 0) continue;
+            if ((pte & PAGE_PRESENT) == 0) {
+                if (pte == PAGE_POISONED) {
+                    span.pt[pte_idx] = 0;
+                    leaves_changed = 1;
+                }
+                continue;
+            }
             backing_idx =
                 sparse_mmap_backing_index_from_phys(pte & ~0xFFFULL);
             span.pt[pte_idx] = 0;
@@ -6156,6 +6176,100 @@ int process_user_mmap_write_protect(task_t *t, uint64_t start,
     process_user_page_table_unlock(memory);
     if (result == 0) sparse_mmap_flush_task(memory);
     return result;
+}
+
+static uint64_t *process_user_poison_pte_locked(task_t *memory,
+                                                uint64_t page,
+                                                int create) {
+    int index;
+    uint64_t *table = 0;
+
+    if (!memory) return 0;
+    memory = task_vm_owner_local(memory);
+    index = task_index(memory);
+    if (!memory || index < 0 || index >= USER_AS_MAX_TASKS) return 0;
+
+    if (page >= USER_HEAP_BASE &&
+        page < USER_HEAP_BASE + USER_HEAP_TOTAL_SIZE) {
+        uint32_t slot;
+        uint32_t pte;
+        if (user_heap_slot_for_addr(page, &slot, &pte) < 0) return 0;
+        if (create) {
+            if (process_user_heap_ensure_pt(memory, page, &table) < 0)
+                return 0;
+        } else {
+            table = g_user_heap_pt[index][slot];
+        }
+        return table ? &table[pte] : 0;
+    }
+
+    if (fixed_user_addr(page)) {
+        if (create && !fixed_user_pte_for_addr_idx(index, page)) {
+            if (page < USER_LOW_LIMIT) {
+                uint32_t low_page =
+                    (uint32_t)((page - USER_LOW_BASE) >> 21);
+                if (!fixed_user_low_pt_ensure(index, low_page)) return 0;
+            } else if (page >= USER_BIGPIE_BASE &&
+                       page < USER_BIGPIE_BASE + USER_BIGPIE_SIZE) {
+                uint32_t bigpie_page =
+                    (uint32_t)((page - USER_BIGPIE_BASE) >> 21);
+                if (!fixed_user_bigpie_pt_ensure(index, bigpie_page))
+                    return 0;
+            } else if (fixed_user_pt_ensure_for_idx(index) < 0) {
+                return 0;
+            }
+        }
+        return fixed_user_pte_for_addr_idx(index, page);
+    }
+
+    if (!sparse_mmap_range_ok_local(page, USER_PAGE_SIZE)) return 0;
+    if (create) {
+        if (sparse_mmap_ensure_pt(memory, page, &table) < 0) return 0;
+    } else {
+        table = sparse_mmap_lookup_pt(memory, page, 0);
+    }
+    return table ? &table[(page >> 12) & 0x1ffu] : 0;
+}
+
+int process_user_mmap_poison_page(task_t *t, uint64_t address) {
+    task_t *memory;
+    uint64_t page;
+    uint64_t *entry;
+    int result;
+
+    if (!t || (address & (USER_PAGE_SIZE - 1u))) return -1;
+    memory = task_vm_owner_local(t);
+    if (!memory) return -1;
+    page = page_align_down_local(address);
+    process_user_page_table_lock(memory);
+    entry = process_user_poison_pte_locked(memory, page, 1);
+    if (!entry) {
+        result = -1;
+    } else if (__atomic_load_n(entry, __ATOMIC_ACQUIRE) != 0) {
+        result = 1;
+    } else {
+        __atomic_store_n(entry, PAGE_POISONED, __ATOMIC_RELEASE);
+        result = 0;
+    }
+    process_user_page_table_unlock(memory);
+    if (result == 0) sparse_mmap_flush_task(memory);
+    return result;
+}
+
+int process_user_mmap_page_poisoned(task_t *t, uint64_t address) {
+    task_t *memory;
+    uint64_t *entry;
+    uint64_t value = 0;
+
+    if (!t) return -1;
+    memory = task_vm_owner_local(t);
+    if (!memory) return -1;
+    process_user_page_table_lock(memory);
+    entry = process_user_poison_pte_locked(
+        memory, page_align_down_local(address), 0);
+    if (entry) value = __atomic_load_n(entry, __ATOMIC_ACQUIRE);
+    process_user_page_table_unlock(memory);
+    return value == PAGE_POISONED ? 1 : 0;
 }
 
 static int process_user_fbdev_handle_fault(task_t *t, uint64_t addr, int write) {
@@ -7554,12 +7668,16 @@ int process_user_mmap_clone(task_t *dst, const task_t *src) {
                     int src_backing_idx;
                     edge_user_vma_t *v;
                     uint64_t shared_pte;
-                    if ((src_pte & PAGE_PRESENT) == 0) continue;
                     v = process_user_vma_for_addr_sorted(
                         (task_t *)src, src_vma_live, va);
                     if (v &&
                         (v->fork_policy & KERNEL_MM_VMA_FORK_WIPE) != 0)
                         continue;
+                    if ((src_pte & PAGE_PRESENT) == 0) {
+                        if (src_pte == PAGE_POISONED)
+                            dst_pt[pte_idx] = PAGE_POISONED;
+                        continue;
+                    }
                     if ((src_pte & PAGE_DEVICE) != 0) {
                         dst_pt[pte_idx] =
                             src_pte & ~(PAGE_COW | PAGE_FILE_CACHE);

@@ -20,6 +20,7 @@
 #define KERNEL_UFFDIO_ZEROPAGE   0xc020aa04u
 #define KERNEL_UFFDIO_MOVE       0xc028aa05u
 #define KERNEL_UFFDIO_WRITEPROTECT 0xc018aa06u
+#define KERNEL_UFFDIO_POISON     0xc020aa08u
 #define KERNEL_UFFDIO_API        0xc018aa3fu
 #define KERNEL_UFFD_PAGE_SIZE 4096u
 
@@ -49,9 +50,14 @@ static int userfaultfd_fill_page(
     kernel_task_scratch_t *scratch = arch_task_scratch_current();
     uint8_t *page;
     int resident;
+    int poisoned;
 
     if (!scratch) return -EDGE_LINUX_ENOMEM;
     page = scratch->xattr_scratch;
+    poisoned = arch_mm_address_space_page_poisoned(
+        address_space, destination);
+    if (poisoned < 0) return poisoned;
+    if (poisoned) return -EDGE_LINUX_EEXIST;
     resident = arch_mm_address_space_page_resident(
         address_space, destination);
     if (resident < 0) return resident;
@@ -328,6 +334,55 @@ int64_t kernel_userfaultfd_ioctl(const kernel_ioctl_request_t *request) {
                 request, request->argument, &move, sizeof(move)) < 0)
             return -EDGE_LINUX_EFAULT;
         if (completed == move.length) return 0;
+        return completed ? -EDGE_LINUX_EAGAIN : status;
+    }
+
+    if (request->command == KERNEL_UFFDIO_POISON) {
+        kernel_uffdio_poison_t poison;
+        uint64_t completed = 0;
+
+        memset(&poison, 0, sizeof(poison));
+        status = userfaultfd_copy_from_user(
+            request, &poison, request->argument,
+            sizeof(poison) - sizeof(poison.updated));
+        if (status < 0) return status;
+        if (!poison.range.length ||
+            ((poison.range.start | poison.range.length) &
+             (KERNEL_UFFD_PAGE_SIZE - 1u)) ||
+            poison.range.start > UINT64_MAX - poison.range.length ||
+            (poison.mode & ~KERNEL_UFFDIO_POISON_MODE_DONTWAKE))
+            return -EDGE_LINUX_EINVAL;
+        status = arch_mm_address_space_range_mapped(
+            state.address_space, poison.range.start,
+            poison.range.length);
+        if (status < 0) return status;
+        status = kernel_userfaultfd_validate_resolution(
+            context_id, &poison.range, poison.mode,
+            &state.address_space);
+        if (status < 0) return status;
+        while (completed < poison.range.length) {
+            kernel_uffdio_range_t page_range = {
+                .start = poison.range.start + completed,
+                .length = KERNEL_UFFD_PAGE_SIZE,
+            };
+            status = arch_mm_address_space_poison_page(
+                state.address_space, page_range.start);
+            if (status < 0) break;
+            completed += KERNEL_UFFD_PAGE_SIZE;
+            if (!(poison.mode & KERNEL_UFFDIO_POISON_MODE_DONTWAKE))
+                (void)kernel_userfaultfd_resolve(
+                    context_id, &page_range);
+        }
+        poison.updated = completed ? (int64_t)completed : status;
+        if (completed < poison.range.length ||
+            (poison.mode & KERNEL_UFFDIO_POISON_MODE_DONTWAKE))
+            (void)kernel_userfaultfd_cancel_resolution(
+                context_id, &poison.range);
+        if (userfaultfd_copy_to_user(
+                request, request->argument, &poison,
+                sizeof(poison)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (completed == poison.range.length) return 0;
         return completed ? -EDGE_LINUX_EAGAIN : status;
     }
 

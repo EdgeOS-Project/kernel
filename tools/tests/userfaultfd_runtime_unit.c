@@ -37,6 +37,7 @@ int main(void) {
         .api = KERNEL_UFFD_API,
         .features = KERNEL_UFFD_FEATURE_THREAD_ID |
                     KERNEL_UFFD_FEATURE_PAGEFAULT_FLAG_WP |
+                    KERNEL_UFFD_FEATURE_POISON |
                     KERNEL_UFFD_FEATURE_MOVE,
     };
     kernel_uffdio_register_t registration = {
@@ -125,6 +126,9 @@ int main(void) {
             context_id, &writeprotect_registration) == 0);
         assert(writeprotect_registration.ioctls ==
                KERNEL_UFFD_WP_RANGE_IOCTLS);
+        assert(kernel_userfaultfd_validate_resolution(
+            context_id, &protected_range, 0,
+            &address_space) == -EDGE_LINUX_ENOENT);
         assert(kernel_userfaultfd_writeprotect_validate(
             context_id, &protected_range,
             KERNEL_UFFDIO_WRITEPROTECT_MODE_WP |

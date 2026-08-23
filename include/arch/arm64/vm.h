@@ -16,6 +16,7 @@
 #define EDGEOS_ARM64_VM_PROT_COW (1u << 6)
 #define EDGEOS_ARM64_VM_PROT_WRITE_NOTIFY (1u << 7)
 #define EDGEOS_ARM64_VM_PROT_EXTERNAL (1u << 8)
+#define EDGEOS_ARM64_VM_PROT_POISON (1u << 9)
 #define EDGEOS_ARM64_TTBR0_BASE_MASK 0x0000FFFFFFFFF000ULL
 
 int edgeos_arm64_vm_init(const edgeos_arm64_bootinfo_t *bootinfo);
@@ -51,6 +52,9 @@ int edgeos_arm64_address_space_map_user_pages(uint64_t ttbr0, uint64_t va,
                                               uint32_t page_count,
                                               uint32_t prot,
                                               uint32_t *mapped_count);
+int edgeos_arm64_address_space_poison_user_page(uint64_t ttbr0, uint64_t va);
+int edgeos_arm64_address_space_user_page_poisoned(uint64_t ttbr0,
+                                                   uint64_t va);
 int edgeos_arm64_address_space_protect_user_range(uint64_t ttbr0, uint64_t va,
                                                    uint64_t length, uint32_t prot);
 int edgeos_arm64_address_space_protect_user_resident_range(

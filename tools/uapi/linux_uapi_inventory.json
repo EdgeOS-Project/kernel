@@ -78,11 +78,11 @@
         "write-protect registration, resident-page permission faults and wake behavior",
         "copy-and-write-protect mode and close-time permission restoration",
         "anonymous private page moves with strict destination and source-hole handling",
+        "anonymous poisoned-page markers with persistent SIGBUS fault behavior",
         "architecture-independent range, event and waiter state"
       ],
       "missing": [
         "minor-fault registration and continue operation",
-        "poison operation",
         "hugetlb and shmem minor-fault behavior",
         "async write-protect and exact Linux fork, remap and remove events",
         "ia32 and x32 compatibility layouts"
@@ -94,7 +94,7 @@
       "linux_oracle": {
         "status": "partial",
         "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa",
-        "scope": "feature bits, range ioctl masks, missing-page copy and zero-page behavior, anonymous private page moves, write-protect event flags and wake behavior"
+        "scope": "feature bits, range ioctl masks, missing-page copy and zero-page behavior, anonymous private page moves, poisoned-page markers and SIGBUS faults, write-protect event flags and wake behavior"
       }
     },
     {

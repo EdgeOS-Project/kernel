@@ -37,6 +37,7 @@
 #define PROT_READ 0x1
 #define PROT_WRITE 0x2
 #define MAP_PRIVATE 0x2
+#define MAP_FIXED 0x10
 #define MAP_ANONYMOUS 0x20
 #define O_NONBLOCK 0x800
 #define O_CLOEXEC 0x80000
@@ -44,12 +45,14 @@
 #define UFFD_API 0xAAu
 #define UFFD_FEATURE_PAGEFAULT_FLAG_WP (1ULL << 0)
 #define UFFD_FEATURE_THREAD_ID (1ULL << 8)
+#define UFFD_FEATURE_POISON (1ULL << 14)
 #define UFFD_FEATURE_MOVE (1ULL << 16)
 #define UFFDIO_REGISTER_MODE_MISSING 0x1u
 #define UFFDIO_REGISTER_MODE_WP 0x2u
 #define UFFDIO_COPY_MODE_WP 0x2u
 #define UFFDIO_WRITEPROTECT_MODE_WP 0x1u
 #define UFFDIO_WRITEPROTECT_MODE_DONTWAKE 0x2u
+#define UFFDIO_POISON_MODE_DONTWAKE 0x1u
 #define UFFDIO_API 0xc018aa3fu
 #define UFFDIO_REGISTER 0xc020aa00u
 #define UFFDIO_UNREGISTER 0x8010aa01u
@@ -57,13 +60,16 @@
 #define UFFDIO_ZEROPAGE 0xc020aa04u
 #define UFFDIO_MOVE 0xc028aa05u
 #define UFFDIO_WRITEPROTECT 0xc018aa06u
+#define UFFDIO_POISON 0xc020aa08u
 #define UFFD_EVENT_PAGEFAULT 0x12u
 #define UFFD_PAGEFAULT_FLAG_WRITE (1ULL << 0)
 #define UFFD_PAGEFAULT_FLAG_WP (1ULL << 1)
 #define CLONE_VM 0x00000100u
 #define SIGCHLD 17
 #define SIGKILL 9
+#define SIGBUS 7
 #define EAGAIN 11
+#define EEXIST 17
 #define EINVAL 22
 #define ENOENT 2
 
@@ -109,6 +115,12 @@ struct uffdio_move {
 struct uffdio_writeprotect {
     struct uffdio_range range;
     uint64_t mode;
+};
+
+struct uffdio_poison {
+    struct uffdio_range range;
+    uint64_t mode;
+    int64_t updated;
 };
 
 struct uffd_msg {
@@ -256,11 +268,19 @@ static int expect_result(const char *name, long actual, long expected) {
     return 1;
 }
 
-void _start(void) {
+#if defined(__x86_64__)
+#define START_ATTRIBUTES \
+    __attribute__((noreturn, force_align_arg_pointer))
+#else
+#define START_ATTRIBUTES __attribute__((noreturn))
+#endif
+
+START_ATTRIBUTES void _start(void) {
     struct uffdio_api api = {
         .api = UFFD_API,
         .features = UFFD_FEATURE_THREAD_ID |
                     UFFD_FEATURE_PAGEFAULT_FLAG_WP |
+                    UFFD_FEATURE_POISON |
                     UFFD_FEATURE_MOVE,
     };
     struct uffdio_register registration;
@@ -268,10 +288,12 @@ void _start(void) {
     struct uffdio_zeropage zero;
     struct uffdio_move move;
     struct uffdio_writeprotect writeprotect;
+    struct uffdio_poison poison;
     struct uffd_msg message;
     unsigned char *source;
     unsigned char *destination;
     unsigned char *move_area;
+    unsigned char *poison_area;
     long descriptor;
     int failures = 0;
 
@@ -290,8 +312,11 @@ void _start(void) {
     move_area = (unsigned char *)raw_syscall6(
         SYS_mmap, 0, PAGE_SIZE * 3u, PROT_READ | PROT_WRITE,
         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    poison_area = (unsigned char *)raw_syscall6(
+        SYS_mmap, 0, PAGE_SIZE * 2u, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if ((long)source < 0 || (long)destination < 0 ||
-        (long)move_area < 0) {
+        (long)move_area < 0 || (long)poison_area < 0) {
         print_text("FAIL mmap\n");
         ++failures;
         goto out;
@@ -312,6 +337,7 @@ void _start(void) {
             SYS_ioctl, descriptor, UFFDIO_API, (long)&api, 0, 0, 0), 0);
     if (api.api != UFFD_API || !api.ioctls ||
         !(api.features & UFFD_FEATURE_THREAD_ID) ||
+        !(api.features & UFFD_FEATURE_POISON) ||
         !(api.features & UFFD_FEATURE_MOVE)) {
         print_text("FAIL api-result\n");
         ++failures;
@@ -482,6 +508,113 @@ void _start(void) {
             SYS_ioctl, descriptor, UFFDIO_UNREGISTER,
             (long)&registration.range, 0, 0, 0), 0);
 
+    registration.range.start = (uint64_t)(uintptr_t)poison_area;
+    registration.range.len = PAGE_SIZE * 2u;
+    registration.mode = UFFDIO_REGISTER_MODE_MISSING;
+    registration.ioctls = 0;
+    failures += expect_result(
+        "poison-register", raw_syscall6(
+            SYS_ioctl, descriptor, UFFDIO_REGISTER,
+            (long)&registration, 0, 0, 0), 0);
+    if (!(registration.ioctls & (1ULL << 8))) {
+        print_text("FAIL poison-register-ioctls\n");
+        ++failures;
+    }
+    poison.range.start = (uint64_t)(uintptr_t)poison_area;
+    poison.range.len = PAGE_SIZE;
+    poison.mode = 2u;
+    poison.updated = 123;
+    failures += expect_result(
+        "poison-invalid-mode", raw_syscall6(
+            SYS_ioctl, descriptor, UFFDIO_POISON,
+            (long)&poison, 0, 0, 0), -EINVAL);
+    poison.mode = UFFDIO_POISON_MODE_DONTWAKE;
+    poison.updated = 0;
+    failures += expect_result(
+        "poison", raw_syscall6(
+            SYS_ioctl, descriptor, UFFDIO_POISON,
+            (long)&poison, 0, 0, 0), 0);
+    failures += expect_result("poison-count", poison.updated, PAGE_SIZE);
+    poison.updated = 0;
+    failures += expect_result(
+        "poison-existing", raw_syscall6(
+            SYS_ioctl, descriptor, UFFDIO_POISON,
+            (long)&poison, 0, 0, 0), -EEXIST);
+    failures += expect_result(
+        "poison-existing-result", poison.updated, -EEXIST);
+    failures += expect_result(
+        "poison-unregister", raw_syscall6(
+            SYS_ioctl, descriptor, UFFDIO_UNREGISTER,
+            (long)&registration.range, 0, 0, 0), 0);
+    g_fault_address = poison_area;
+    g_fault_write = 0;
+    {
+        long child = spawn_fault_child(
+            CLONE_VM | SIGCHLD,
+            &g_fault_stack[sizeof(g_fault_stack)]);
+        int child_status = -1;
+
+        if (child < 0) {
+            failures += expect_result("poison-child", child, 0);
+        } else {
+            failures += expect_result(
+                "poison-wait", raw_syscall6(
+                    SYS_wait4, child, (long)&child_status,
+                    0, 0, 0, 0), child);
+            if ((child_status & 0x7f) != SIGBUS) {
+                print_text("FAIL poison-child-signal expected=");
+                print_number(SIGBUS);
+                print_text(" actual=");
+                print_number(child_status & 0x7f);
+                print_text("\n");
+                ++failures;
+            }
+        }
+    }
+    {
+        long child = spawn_fault_child(
+            SIGCHLD, &g_fault_stack[sizeof(g_fault_stack)]);
+        int child_status = -1;
+
+        if (child < 0) {
+            failures += expect_result("poison-fork-child", child, 0);
+        } else {
+            failures += expect_result(
+                "poison-fork-wait", raw_syscall6(
+                    SYS_wait4, child, (long)&child_status,
+                    0, 0, 0, 0), child);
+            if ((child_status & 0x7f) != SIGBUS) {
+                print_text("FAIL poison-fork-signal expected=");
+                print_number(SIGBUS);
+                print_text(" actual=");
+                print_number(child_status & 0x7f);
+                print_text("\n");
+                ++failures;
+            }
+        }
+    }
+    failures += expect_result(
+        "poison-empty-read", raw_syscall6(
+            SYS_read, descriptor, (long)&message,
+            sizeof(message), 0, 0, 0), -EAGAIN);
+    failures += expect_result(
+        "poison-munmap", raw_syscall6(
+            SYS_munmap, (long)poison_area, PAGE_SIZE * 2u,
+            0, 0, 0, 0), 0);
+    {
+        long remapped = raw_syscall6(
+            SYS_mmap, (long)poison_area, PAGE_SIZE * 2u,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+        failures += expect_result(
+            "poison-remap", remapped, (long)poison_area);
+        if (remapped == (long)poison_area) {
+            poison_area[0] = 0x39u;
+            failures += expect_result(
+                "poison-remap-data", poison_area[0], 0x39u);
+        }
+    }
+
     registration.range.start = (uint64_t)(uintptr_t)destination;
     registration.range.len = PAGE_SIZE;
     registration.mode = UFFDIO_REGISTER_MODE_WP;
@@ -572,6 +705,9 @@ out:
     if ((long)move_area > 0)
         (void)raw_syscall6(
             SYS_munmap, (long)move_area, PAGE_SIZE * 3u, 0, 0, 0, 0);
+    if ((long)poison_area > 0)
+        (void)raw_syscall6(
+            SYS_munmap, (long)poison_area, PAGE_SIZE * 2u, 0, 0, 0, 0);
     if (!failures) print_text("USERFAULTFD_ABI_PROBE_PASS\n");
     (void)raw_syscall6(SYS_exit, failures ? 1 : 0, 0, 0, 0, 0, 0);
     for (;;) { }
