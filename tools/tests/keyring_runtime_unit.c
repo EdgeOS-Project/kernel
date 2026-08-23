@@ -9,6 +9,8 @@
 #include "kernel/linux_errno.h"
 
 static uint64_t test_time_us = 1000000u;
+static uint32_t parent_thread_count = 1u;
+static kernel_linux_identity_t parent_process_identity;
 
 uint64_t boottime_monotonic_us(void) {
     return test_time_us;
@@ -51,6 +53,18 @@ static kernel_linux_identity_t identity(int32_t tid, int32_t tgid,
     return result;
 }
 
+int kernel_process_linux_identity(int32_t pid,
+                                  kernel_linux_identity_t *result) {
+    if (!result || pid != parent_process_identity.global_tid) return -1;
+    *result = parent_process_identity;
+    return 0;
+}
+
+uint32_t kernel_arch_proc_thread_group_count(int32_t tgid) {
+    return tgid == parent_process_identity.global_tgid ?
+        parent_thread_count : 0u;
+}
+
 int main(void) {
     kernel_linux_identity_t parent = identity(100, 100, 1, 1000);
     kernel_linux_identity_t child = identity(101, 101, 100, 1000);
@@ -68,12 +82,14 @@ int main(void) {
     int64_t session;
     int64_t key;
     int64_t ring;
+    int64_t child_session;
 
     arguments[0] = (uint64_t)(int64_t)EDGE_LINUX_KEY_SPEC_SESSION_KEYRING;
     arguments[1] = 1;
     session = kernel_keyring_keyctl(
         &parent, &access, EDGE_LINUX_KEYCTL_GET_KEYRING_ID, arguments);
     assert(session > 0);
+    parent_process_identity = parent;
 
     key = kernel_keyring_add_key(
         &parent, &access, (uint64_t)(uintptr_t)"user",
@@ -162,6 +178,41 @@ int main(void) {
     assert(kernel_keyring_keyctl(
                &parent, &access, EDGE_LINUX_KEYCTL_READ, arguments) ==
            -EDGE_LINUX_EKEYEXPIRED);
+
+    memset(arguments, 0, sizeof(arguments));
+    arguments[0] = (uint64_t)(uintptr_t)"child-session";
+    child_session = kernel_keyring_keyctl(
+        &child, &access, EDGE_LINUX_KEYCTL_JOIN_SESSION_KEYRING,
+        arguments);
+    assert(child_session > 0 && child_session != session);
+    memset(arguments, 0, sizeof(arguments));
+    assert(kernel_keyring_keyctl(
+               &child, &access, EDGE_LINUX_KEYCTL_SESSION_TO_PARENT,
+               arguments) == 0);
+    arguments[0] =
+        (uint64_t)(int64_t)EDGE_LINUX_KEY_SPEC_SESSION_KEYRING;
+    assert(kernel_keyring_keyctl(
+               &parent, &access, EDGE_LINUX_KEYCTL_GET_KEYRING_ID,
+               arguments) == child_session);
+
+    arguments[0] = (uint64_t)(uintptr_t)"blocked-session";
+    assert(kernel_keyring_keyctl(
+               &child, &access, EDGE_LINUX_KEYCTL_JOIN_SESSION_KEYRING,
+               arguments) > 0);
+    parent_thread_count = 2u;
+    memset(arguments, 0, sizeof(arguments));
+    assert(kernel_keyring_keyctl(
+               &child, &access, EDGE_LINUX_KEYCTL_SESSION_TO_PARENT,
+               arguments) == -EDGE_LINUX_EPERM);
+    parent_thread_count = 1u;
+    {
+        kernel_linux_identity_t stranger_child =
+            identity(201, 201, 100, 2000);
+        assert(kernel_keyring_keyctl(
+                   &stranger_child, &access,
+                   EDGE_LINUX_KEYCTL_SESSION_TO_PARENT,
+                   arguments) == -EDGE_LINUX_EPERM);
+    }
 
     for (int32_t index = 0; index < 512; ++index) {
         kernel_linux_identity_t transient = identity(

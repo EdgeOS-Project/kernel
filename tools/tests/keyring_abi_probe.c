@@ -4,23 +4,36 @@
 #include <stdint.h>
 
 #if defined(__x86_64__)
+#define START_ATTRIBUTES __attribute__((noreturn, force_align_arg_pointer))
+#define SYS_read 0
 #define SYS_write 1
+#define SYS_close 3
+#define SYS_clone 56
 #define SYS_exit 60
+#define SYS_wait4 61
 #define SYS_add_key 248
 #define SYS_request_key 249
 #define SYS_keyctl 250
+#define SYS_pipe2 293
 #elif defined(__aarch64__)
+#define START_ATTRIBUTES __attribute__((noreturn))
+#define SYS_read 63
 #define SYS_write 64
+#define SYS_close 57
+#define SYS_clone 220
 #define SYS_exit 93
+#define SYS_wait4 260
 #define SYS_add_key 217
 #define SYS_request_key 218
 #define SYS_keyctl 219
+#define SYS_pipe2 59
 #else
 #error "keyring_abi_probe requires a Linux 64-bit architecture"
 #endif
 
 #define KEY_SPEC_SESSION_KEYRING (-3)
 #define KEYCTL_GET_KEYRING_ID 0
+#define KEYCTL_JOIN_SESSION_KEYRING 1
 #define KEYCTL_UPDATE 2
 #define KEYCTL_REVOKE 3
 #define KEYCTL_DESCRIBE 6
@@ -29,11 +42,13 @@
 #define KEYCTL_SEARCH 10
 #define KEYCTL_READ 11
 #define KEYCTL_GET_SECURITY 17
+#define KEYCTL_SESSION_TO_PARENT 18
 #define KEYCTL_CAPABILITIES 31
 
 #define EKEYREVOKED 128
 #define ENOKEY 126
 #define ENODEV 19
+#define SIGCHLD 17
 
 static long raw_syscall6(long number, long a0, long a1, long a2,
                          long a3, long a4, long a5) {
@@ -121,7 +136,7 @@ static int bytes_equal(const void *left, const void *right,
     return 1;
 }
 
-void _start(void) {
+START_ATTRIBUTES void _start(void) {
     static const char payload[] = "edge-key-payload";
     static const char replacement[] = "updated";
     char output[128] = {0};
@@ -234,6 +249,72 @@ void _start(void) {
             raw_syscall6(SYS_keyctl, KEYCTL_READ, key,
                          (long)output, sizeof(output), 0, 0),
             -EKEYREVOKED);
+    }
+
+    {
+        static const char child_name[] = "edge-probe-child-session";
+        static long child_result[2];
+        static int descriptors[2];
+        long child;
+
+        child_result[0] = -1;
+        child_result[1] = -1;
+        descriptors[0] = -1;
+        descriptors[1] = -1;
+
+        failures += expect_result(
+            "session-parent-pipe",
+            raw_syscall6(
+                SYS_pipe2, (long)descriptors, 0, 0, 0, 0, 0),
+            0);
+        child = raw_syscall6(
+            SYS_clone, SIGCHLD, 0, 0, 0, 0, 0);
+        if (child == 0) {
+            (void)raw_syscall6(
+                SYS_close, descriptors[0], 0, 0, 0, 0, 0);
+            child_result[0] = raw_syscall6(
+                SYS_keyctl, KEYCTL_JOIN_SESSION_KEYRING,
+                (long)child_name, 0, 0, 0, 0);
+            child_result[1] = raw_syscall6(
+                SYS_keyctl, KEYCTL_SESSION_TO_PARENT,
+                0, 0, 0, 0, 0);
+            (void)raw_syscall6(
+                SYS_write, descriptors[1], (long)child_result,
+                sizeof(child_result), 0, 0, 0);
+            (void)raw_syscall6(SYS_exit, 0, 0, 0, 0, 0, 0);
+            for (;;) { }
+        }
+        if (child < 0) {
+            failures += expect_result("session-parent-clone", child, 0);
+        } else {
+            long parent_session;
+            (void)raw_syscall6(
+                SYS_close, descriptors[1], 0, 0, 0, 0, 0);
+            failures += expect_result(
+                "session-parent-result-read",
+                raw_syscall6(
+                    SYS_read, descriptors[0], (long)child_result,
+                    sizeof(child_result), 0, 0, 0),
+                sizeof(child_result));
+            (void)raw_syscall6(
+                SYS_wait4, child, 0, 0, 0, 0, 0);
+            parent_session = raw_syscall6(
+                SYS_keyctl, KEYCTL_GET_KEYRING_ID,
+                KEY_SPEC_SESSION_KEYRING, 0, 0, 0, 0);
+            if (child_result[0] <= 0 || child_result[1] != 0 ||
+                parent_session != child_result[0]) {
+                print_text("FAIL session-to-parent child_session=");
+                print_number(child_result[0]);
+                print_text(" child_result=");
+                print_number(child_result[1]);
+                print_text(" parent_session=");
+                print_number(parent_session);
+                print_text("\n");
+                ++failures;
+            }
+            (void)raw_syscall6(
+                SYS_close, descriptors[0], 0, 0, 0, 0, 0);
+        }
     }
 
     if (!failures) print_text("KEYRING_ABI_PROBE_PASS\n");

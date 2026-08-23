@@ -59,6 +59,12 @@ typedef struct kernel_key_task_state {
     int32_t thread_keyring;
     int32_t session_keyring;
     int32_t request_key_default;
+    uint32_t uid;
+    uint32_t euid;
+    uint32_t suid;
+    uint32_t gid;
+    uint32_t egid;
+    uint32_t sgid;
 } kernel_key_task_state_t;
 
 static kernel_key_object_t g_keys[KERNEL_KEY_MAX];
@@ -70,6 +76,11 @@ static uint8_t g_key_payload_scratch[KERNEL_KEY_PAYLOAD_MAX];
 static volatile uint32_t g_key_lock;
 static volatile uint32_t g_key_copy_lock;
 static int32_t g_next_key_serial = 1;
+
+static int key_permission_locked(
+    const kernel_linux_identity_t *identity,
+    kernel_key_task_state_t *state, const kernel_key_object_t *key,
+    uint32_t need);
 
 static void key_lock(volatile uint32_t *lock) {
     while (__sync_lock_test_and_set(lock, 1u)) { }
@@ -274,7 +285,17 @@ static kernel_key_task_state_t *key_task_get_locked(
     uint32_t index;
 
     state = key_task_find_locked(identity->global_tid);
-    if (state) return state;
+    if (state) {
+        state->tgid = identity->global_tgid;
+        state->ppid = identity->global_ppid;
+        state->uid = identity->uid;
+        state->euid = identity->euid;
+        state->suid = identity->suid;
+        state->gid = identity->gid;
+        state->egid = identity->egid;
+        state->sgid = identity->sgid;
+        return state;
+    }
     for (index = 0; index < KERNEL_KEY_TASK_MAX; ++index)
         if (!g_key_tasks[index].used) break;
     if (index == KERNEL_KEY_TASK_MAX) return 0;
@@ -285,6 +306,12 @@ static kernel_key_task_state_t *key_task_get_locked(
     state->tgid = identity->global_tgid;
     state->ppid = identity->global_ppid;
     state->request_key_default = EDGE_LINUX_KEY_REQKEY_DEFL_DEFAULT;
+    state->uid = identity->uid;
+    state->euid = identity->euid;
+    state->suid = identity->suid;
+    state->gid = identity->gid;
+    state->egid = identity->egid;
+    state->sgid = identity->sgid;
 
     for (index = 0; index < KERNEL_KEY_TASK_MAX; ++index) {
         kernel_key_task_state_t *parent = &g_key_tasks[index];
@@ -301,6 +328,53 @@ static kernel_key_task_state_t *key_task_get_locked(
     }
     state->session_keyring = user_session->serial;
     return state;
+}
+
+static int64_t keyctl_session_to_parent(
+    const kernel_linux_identity_t *identity) {
+    kernel_linux_identity_t parent_identity;
+    kernel_key_task_state_t *state;
+    kernel_key_task_state_t *parent_state;
+    kernel_key_object_t *session;
+    kernel_key_object_t *parent_session;
+    int32_t previous_session;
+    int64_t result = -EDGE_LINUX_EPERM;
+
+    if (!identity || identity->global_ppid <= 1 ||
+        kernel_process_linux_identity(
+            identity->global_ppid, &parent_identity) < 0)
+        return -EDGE_LINUX_EPERM;
+    if (kernel_arch_proc_thread_group_count(parent_identity.global_tgid) !=
+            1u ||
+        parent_identity.uid != identity->euid ||
+        parent_identity.euid != identity->euid ||
+        parent_identity.suid != identity->euid ||
+        parent_identity.gid != identity->egid ||
+        parent_identity.egid != identity->egid ||
+        parent_identity.sgid != identity->egid)
+        return -EDGE_LINUX_EPERM;
+
+    key_lock(&g_key_lock);
+    state = key_task_get_locked(identity);
+    parent_state = key_task_get_locked(&parent_identity);
+    if (!state || !parent_state) {
+        result = -EDGE_LINUX_ENFILE;
+        goto out;
+    }
+    session = key_find_locked(state->session_keyring);
+    parent_session = key_find_locked(parent_state->session_keyring);
+    if (!session || session->kind != KERNEL_KEY_KIND_KEYRING ||
+        session->uid != identity->euid ||
+        (parent_session && parent_session->uid != identity->euid) ||
+        key_permission_locked(identity, state, session, 16u) < 0)
+        goto out;
+    previous_session = parent_state->session_keyring;
+    parent_state->session_keyring = session->serial;
+    key_release_unreferenced_locked(previous_session, 0u);
+    result = 0;
+out:
+    key_unlock(&g_key_lock);
+    return result;
 }
 
 static kernel_key_object_t *key_process_ring_locked(
@@ -793,6 +867,8 @@ int64_t kernel_keyring_keyctl(
     int64_t result = -EDGE_LINUX_EOPNOTSUPP;
 
     if (!identity || !access || !arguments) return -EDGE_LINUX_EINVAL;
+    if (command == EDGE_LINUX_KEYCTL_SESSION_TO_PARENT)
+        return keyctl_session_to_parent(identity);
     key_lock(&g_key_lock);
     state = key_task_get_locked(identity);
     if (!state) {
