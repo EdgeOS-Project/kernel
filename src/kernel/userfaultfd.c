@@ -462,6 +462,8 @@ int kernel_userfaultfd_negotiate(int context_id,
         memset(api, 0, sizeof(*api));
         result = -EDGE_LINUX_EINVAL;
     } else {
+        if (requested_features & KERNEL_UFFD_FEATURE_WP_ASYNC)
+            requested_features |= KERNEL_UFFD_FEATURE_WP_UNPOPULATED;
         context->api_ready = 1;
         context->features = requested_features;
         api->features = KERNEL_UFFD_SUPPORTED_FEATURES;
@@ -948,6 +950,7 @@ int kernel_userfaultfd_page_fault(
     uint64_t page = address & ~(uint64_t)(KERNEL_UFFD_PAGE_SIZE - 1u);
     uint16_t event_index;
     int found_context = -1;
+    int writeprotect_fault = 0;
 
     if (!address_space || !context_id || !ticket)
         return -EDGE_LINUX_EINVAL;
@@ -955,24 +958,50 @@ int kernel_userfaultfd_page_fault(
     for (uint16_t index = 0;
          index < EDGE_RUNTIME_MAX_USERFAULTFD_RANGES; ++index) {
         kernel_userfaultfd_range_t *range = &g_userfaultfd_ranges[index];
-        if (!range->used || page < range->start || page >= range->end ||
-            (!present &&
-             !(range->mode & KERNEL_UFFD_REGISTER_MODE_MISSING)) ||
-            (present &&
-             (!write || !(range->mode & KERNEL_UFFD_REGISTER_MODE_WP) ||
-              !userfaultfd_wp_page_active_locked(
-                  range->context_id, page))))
+        int missing_fault;
+        int protected_write;
+
+        if (!range->used || page < range->start || page >= range->end)
             continue;
+        missing_fault = !present &&
+            (range->mode & KERNEL_UFFD_REGISTER_MODE_MISSING);
+        protected_write = write &&
+            (range->mode & KERNEL_UFFD_REGISTER_MODE_WP) &&
+            userfaultfd_wp_page_active_locked(range->context_id, page);
+        if (!missing_fault && !protected_write) continue;
         context = userfaultfd_context_locked(range->context_id);
         if (context && context->api_ready &&
             context->address_space == address_space) {
             found_context = range->context_id;
+            writeprotect_fault = protected_write;
             break;
         }
     }
     if (!context) {
         userfaultfd_unlock();
         return 0;
+    }
+    if (writeprotect_fault &&
+        (context->features & KERNEL_UFFD_FEATURE_WP_ASYNC)) {
+        int result = userfaultfd_wp_remove_locked(
+            found_context, page, page + KERNEL_UFFD_PAGE_SIZE);
+        if (result == 0) userfaultfd_sequence_advance(context);
+        userfaultfd_unlock();
+        if (result == 0)
+            result = arch_mm_address_space_write_protect(
+                address_space, page, KERNEL_UFFD_PAGE_SIZE, 0);
+        if (result < 0) {
+            userfaultfd_lock();
+            context = userfaultfd_context_locked(found_context);
+            if (context)
+                (void)userfaultfd_wp_add_locked(
+                    found_context, page,
+                    page + KERNEL_UFFD_PAGE_SIZE);
+            userfaultfd_unlock();
+        } else {
+            kernel_userfaultfd_state_changed(found_context);
+        }
+        return result;
     }
     if (context->features & KERNEL_UFFD_FEATURE_SIGBUS) {
         userfaultfd_unlock();
@@ -985,7 +1014,8 @@ int kernel_userfaultfd_page_fault(
             event->page != page)
             continue;
         if (write) event->flags |= KERNEL_UFFD_PAGEFAULT_FLAG_WRITE;
-        if (present) event->flags |= KERNEL_UFFD_PAGEFAULT_FLAG_WP;
+        if (writeprotect_fault)
+            event->flags |= KERNEL_UFFD_PAGEFAULT_FLAG_WP;
         *context_id = found_context;
         *ticket = event->ticket;
         userfaultfd_unlock();
@@ -1003,7 +1033,7 @@ int kernel_userfaultfd_page_fault(
             address : page;
     g_userfaultfd_events[event_index].flags =
         write ? KERNEL_UFFD_PAGEFAULT_FLAG_WRITE : 0u;
-    if (present)
+    if (writeprotect_fault)
         g_userfaultfd_events[event_index].flags |=
             KERNEL_UFFD_PAGEFAULT_FLAG_WP;
     g_userfaultfd_events[event_index].ticket = context->next_ticket++;
@@ -1024,6 +1054,36 @@ int kernel_userfaultfd_page_fault(
     userfaultfd_unlock();
     kernel_userfaultfd_state_changed(found_context);
     return KERNEL_UFFD_FAULT_QUEUED;
+}
+
+int kernel_userfaultfd_apply_writeprotect(
+        uint64_t address_space, uint64_t address) {
+    uint64_t page = address & ~(uint64_t)(KERNEL_UFFD_PAGE_SIZE - 1u);
+    int active = 0;
+
+    if (!address_space) return -EDGE_LINUX_EINVAL;
+    userfaultfd_lock();
+    for (uint16_t index = 0;
+         index < EDGE_RUNTIME_MAX_USERFAULTFD_RANGES; ++index) {
+        kernel_userfaultfd_range_t *range = &g_userfaultfd_ranges[index];
+        kernel_userfaultfd_context_t *context;
+
+        if (!range->used || page < range->start || page >= range->end ||
+            !(range->mode & KERNEL_UFFD_REGISTER_MODE_WP) ||
+            !userfaultfd_wp_page_active_locked(range->context_id, page))
+            continue;
+        context = userfaultfd_context_locked(range->context_id);
+        if (context && context->api_ready &&
+            context->address_space == address_space &&
+            (context->features & KERNEL_UFFD_FEATURE_WP_UNPOPULATED)) {
+            active = 1;
+            break;
+        }
+    }
+    userfaultfd_unlock();
+    if (!active) return 0;
+    return arch_mm_address_space_write_protect(
+        address_space, page, KERNEL_UFFD_PAGE_SIZE, 1);
 }
 
 int kernel_userfaultfd_missing_fault(

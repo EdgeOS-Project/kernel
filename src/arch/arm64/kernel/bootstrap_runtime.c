@@ -3492,18 +3492,27 @@ int kernel_handle_page_fault(arch_user_frame_t *frame) {
             task->ttbr0, page, access);
         if (resolved != 0) {
             if (resolved < 0) task_finish_memory_oom_if_pending(task);
+            else if (kernel_userfaultfd_apply_writeprotect(
+                         task->ttbr0, page) < 0)
+                return 0;
             else task_note_page_fault(task, 0);
             return resolved > 0;
         }
         resolved = file_mapping_resolve_page(task->ttbr0, page, access);
         if (resolved != 0) {
             if (resolved < 0) task_finish_memory_oom_if_pending(task);
+            else if (kernel_userfaultfd_apply_writeprotect(
+                         task->ttbr0, page) < 0)
+                return 0;
             else task_note_page_fault(task, resolved > 1);
             return resolved > 0;
         }
         resolved = anon_mapping_resolve_page(task->ttbr0, page, access);
         if (resolved != 0) {
             if (resolved < 0) task_finish_memory_oom_if_pending(task);
+            else if (kernel_userfaultfd_apply_writeprotect(
+                         task->ttbr0, page) < 0)
+                return 0;
             else task_note_page_fault(task, resolved > 1);
             return resolved > 0;
         }

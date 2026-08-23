@@ -9,6 +9,9 @@
 #include "kernel/userfaultfd.h"
 
 static int changed_context = -1;
+static int writeprotect_calls;
+static uint64_t writeprotect_address;
+static int writeprotect_enable;
 
 void kernel_userfaultfd_state_changed(int context_id) {
     changed_context = context_id;
@@ -17,10 +20,11 @@ void kernel_userfaultfd_state_changed(int context_id) {
 int arch_mm_address_space_write_protect(
         uint64_t address_space, uint64_t address, uint64_t length,
         int enable) {
-    (void)address_space;
-    (void)address;
+    assert(address_space != 0);
+    writeprotect_address = address;
+    writeprotect_enable = enable;
+    ++writeprotect_calls;
     (void)length;
-    (void)enable;
     return 0;
 }
 
@@ -38,6 +42,7 @@ int main(void) {
         .features = KERNEL_UFFD_FEATURE_THREAD_ID |
                     KERNEL_UFFD_FEATURE_PAGEFAULT_FLAG_WP |
                     KERNEL_UFFD_FEATURE_EXACT_ADDRESS |
+                    KERNEL_UFFD_FEATURE_WP_UNPOPULATED |
                     KERNEL_UFFD_FEATURE_POISON |
                     KERNEL_UFFD_FEATURE_MOVE,
     };
@@ -143,6 +148,11 @@ int main(void) {
         assert(kernel_userfaultfd_writeprotect_commit(
             context_id, &protected_range,
             KERNEL_UFFDIO_WRITEPROTECT_MODE_WP) == 0);
+        assert(kernel_userfaultfd_apply_writeprotect(
+            address_space, 0x501234u) == 0);
+        assert(writeprotect_calls == 1 &&
+               writeprotect_address == 0x501000u &&
+               writeprotect_enable == 1);
         assert(kernel_userfaultfd_page_fault(
             address_space, 0x501234u, 0, 1, 96,
             &fault_context, &ticket) == 0);
@@ -231,6 +241,69 @@ int main(void) {
             &fault_context, &ticket) == KERNEL_UFFD_FAULT_SIGBUS);
         assert(kernel_userfaultfd_query(context_id, &state) == 0);
         assert(state.queued_events == 0 && state.unresolved_faults == 0);
+        kernel_userfaultfd_release(context_id);
+    }
+    {
+        kernel_uffdio_api_t async_api = {
+            .api = KERNEL_UFFD_API,
+            .features = KERNEL_UFFD_FEATURE_WP_ASYNC,
+        };
+        kernel_uffdio_register_t async_registration = {
+            .range = { .start = 0x800000u, .length = 0x2000u },
+            .mode = KERNEL_UFFD_REGISTER_MODE_WP,
+        };
+        kernel_uffdio_range_t first_page = {
+            .start = 0x800000u, .length = 0x1000u,
+        };
+        kernel_uffdio_range_t second_page = {
+            .start = 0x801000u, .length = 0x1000u,
+        };
+        int calls_before;
+
+        context_id = kernel_userfaultfd_create(
+            0x32345000u, 79, KERNEL_UFFD_NONBLOCK);
+        assert(context_id >= 0);
+        assert(kernel_userfaultfd_negotiate(
+            context_id, &async_api) == 0);
+        assert((async_api.features &
+                (KERNEL_UFFD_FEATURE_WP_ASYNC |
+                 KERNEL_UFFD_FEATURE_WP_UNPOPULATED)) ==
+               (KERNEL_UFFD_FEATURE_WP_ASYNC |
+                KERNEL_UFFD_FEATURE_WP_UNPOPULATED));
+        assert(kernel_userfaultfd_register(
+            context_id, &async_registration) == 0);
+        assert(kernel_userfaultfd_writeprotect_commit(
+            context_id, &async_registration.range,
+            KERNEL_UFFDIO_WRITEPROTECT_MODE_WP) == 0);
+        assert(kernel_userfaultfd_page_fault(
+            0x32345000u, 0x800044u, 1, 0, 103,
+            &fault_context, &ticket) == 0);
+        assert(kernel_userfaultfd_query(context_id, &state) == 0);
+        assert(state.queued_events == 0 && state.unresolved_faults == 0);
+        calls_before = writeprotect_calls;
+        assert(kernel_userfaultfd_apply_writeprotect(
+            0x32345000u, 0x800044u) == 0);
+        assert(writeprotect_calls == calls_before);
+        assert(kernel_userfaultfd_page_fault(
+            0x32345000u, 0x801044u, 0, 0, 104,
+            &fault_context, &ticket) == 0);
+        assert(kernel_userfaultfd_apply_writeprotect(
+            0x32345000u, 0x801044u) == 0);
+        assert(writeprotect_calls == calls_before + 1 &&
+               writeprotect_address == second_page.start);
+        assert(kernel_userfaultfd_page_fault(
+            0x32345000u, 0x801044u, 1, 1, 105,
+            &fault_context, &ticket) == 0);
+        assert(writeprotect_calls == calls_before + 2 &&
+               writeprotect_address == second_page.start &&
+               writeprotect_enable == 0);
+        assert(kernel_userfaultfd_apply_writeprotect(
+            0x32345000u, 0x801044u) == 0);
+        assert(writeprotect_calls == calls_before + 2);
+        assert(kernel_userfaultfd_unregister(
+            context_id, &first_page) == 0);
+        assert(kernel_userfaultfd_unregister(
+            context_id, &second_page) == 0);
         kernel_userfaultfd_release(context_id);
     }
     puts("userfaultfd_runtime_unit: PASS");

@@ -51,7 +51,9 @@
 #define UFFD_FEATURE_SIGBUS (1ULL << 7)
 #define UFFD_FEATURE_THREAD_ID (1ULL << 8)
 #define UFFD_FEATURE_EXACT_ADDRESS (1ULL << 11)
+#define UFFD_FEATURE_WP_UNPOPULATED (1ULL << 13)
 #define UFFD_FEATURE_POISON (1ULL << 14)
+#define UFFD_FEATURE_WP_ASYNC (1ULL << 15)
 #define UFFD_FEATURE_MOVE (1ULL << 16)
 #define UFFDIO_REGISTER_MODE_MISSING 0x1u
 #define UFFDIO_REGISTER_MODE_WP 0x2u
@@ -346,7 +348,9 @@ START_ATTRIBUTES void _start(void) {
         !(api.features & UFFD_FEATURE_THREAD_ID) ||
         !(api.features & UFFD_FEATURE_SIGBUS) ||
         !(api.features & UFFD_FEATURE_EXACT_ADDRESS) ||
+        !(api.features & UFFD_FEATURE_WP_UNPOPULATED) ||
         !(api.features & UFFD_FEATURE_POISON) ||
+        !(api.features & UFFD_FEATURE_WP_ASYNC) ||
         !(api.features & UFFD_FEATURE_MOVE)) {
         print_text("FAIL api-result\n");
         ++failures;
@@ -704,6 +708,112 @@ START_ATTRIBUTES void _start(void) {
             SYS_ioctl, descriptor, UFFDIO_UNREGISTER,
             (long)&registration.range, 0, 0, 0), 0);
     (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+
+    {
+        unsigned char *async_area = (unsigned char *)raw_syscall6(
+            SYS_mmap, 0, PAGE_SIZE * 2u, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        long async_descriptor = raw_syscall6(
+            SYS_userfaultfd,
+            O_NONBLOCK | O_CLOEXEC | UFFD_USER_MODE_ONLY,
+            0, 0, 0, 0, 0);
+        struct uffdio_api async_api = {
+            .api = UFFD_API,
+            .features = UFFD_FEATURE_WP_ASYNC,
+        };
+
+        if ((long)async_area < 0 || async_descriptor < 0) {
+            print_text("FAIL wp-async-setup\n");
+            ++failures;
+        } else {
+            async_area[0] = 0x11u;
+            failures += expect_result(
+                "wp-async-api", raw_syscall6(
+                    SYS_ioctl, async_descriptor, UFFDIO_API,
+                    (long)&async_api, 0, 0, 0), 0);
+            if ((async_api.features &
+                 (UFFD_FEATURE_WP_ASYNC |
+                  UFFD_FEATURE_WP_UNPOPULATED)) !=
+                (UFFD_FEATURE_WP_ASYNC |
+                 UFFD_FEATURE_WP_UNPOPULATED)) {
+                print_text("FAIL wp-async-features\n");
+                ++failures;
+            }
+            registration.range.start =
+                (uint64_t)(uintptr_t)async_area;
+            registration.range.len = PAGE_SIZE * 2u;
+            registration.mode = UFFDIO_REGISTER_MODE_WP;
+            registration.ioctls = 0;
+            failures += expect_result(
+                "wp-async-register", raw_syscall6(
+                    SYS_ioctl, async_descriptor, UFFDIO_REGISTER,
+                    (long)&registration, 0, 0, 0), 0);
+            writeprotect.range = registration.range;
+            writeprotect.mode = UFFDIO_WRITEPROTECT_MODE_WP;
+            failures += expect_result(
+                "wp-async-enable", raw_syscall6(
+                    SYS_ioctl, async_descriptor, UFFDIO_WRITEPROTECT,
+                    (long)&writeprotect, 0, 0, 0), 0);
+            g_fault_address = async_area;
+            g_fault_write = 0x62u;
+            {
+                long child = spawn_fault_child(
+                    CLONE_VM | SIGCHLD,
+                    &g_fault_stack[sizeof(g_fault_stack)]);
+                int child_status = -1;
+                failures += expect_result(
+                    "wp-async-resident-child", child < 0 ? child : 0, 0);
+                if (child >= 0) {
+                    failures += expect_result(
+                        "wp-async-resident-wait", raw_syscall6(
+                            SYS_wait4, child, (long)&child_status,
+                            0, 0, 0, 0), child);
+                    failures += expect_result(
+                        "wp-async-resident-status", child_status, 0);
+                    failures += expect_result(
+                        "wp-async-resident-value", async_area[0], 0x62);
+                }
+            }
+            failures += expect_result(
+                "wp-async-resident-event", raw_syscall6(
+                    SYS_read, async_descriptor, (long)&message,
+                    sizeof(message), 0, 0, 0), -EAGAIN);
+            g_fault_address = async_area + PAGE_SIZE + 17u;
+            g_fault_write = 0x73u;
+            {
+                long child = spawn_fault_child(
+                    CLONE_VM | SIGCHLD,
+                    &g_fault_stack[sizeof(g_fault_stack)]);
+                int child_status = -1;
+                failures += expect_result(
+                    "wp-async-unpopulated-child",
+                    child < 0 ? child : 0, 0);
+                if (child >= 0) {
+                    failures += expect_result(
+                        "wp-async-unpopulated-wait", raw_syscall6(
+                            SYS_wait4, child, (long)&child_status,
+                            0, 0, 0, 0), child);
+                    failures += expect_result(
+                        "wp-async-unpopulated-status", child_status, 0);
+                    failures += expect_result(
+                        "wp-async-unpopulated-value",
+                        async_area[PAGE_SIZE + 17u], 0x73);
+                }
+            }
+            failures += expect_result(
+                "wp-async-unpopulated-event", raw_syscall6(
+                    SYS_read, async_descriptor, (long)&message,
+                    sizeof(message), 0, 0, 0), -EAGAIN);
+            g_fault_write = 0;
+        }
+        if (async_descriptor >= 0)
+            (void)raw_syscall6(
+                SYS_close, async_descriptor, 0, 0, 0, 0, 0);
+        if ((long)async_area > 0)
+            (void)raw_syscall6(
+                SYS_munmap, (long)async_area, PAGE_SIZE * 2u,
+                0, 0, 0, 0);
+    }
 
     {
         unsigned char *sigbus_area = (unsigned char *)raw_syscall6(

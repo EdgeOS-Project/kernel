@@ -78,6 +78,7 @@
         "missing-page registration, copy, zero-page, wake and unregister operations",
         "write-protect registration, resident-page permission faults and wake behavior",
         "copy-and-write-protect mode and close-time permission restoration",
+        "write-protecting unpopulated anonymous pages and asynchronous per-page write-fault resolution",
         "anonymous private page moves with strict destination and source-hole handling",
         "anonymous poisoned-page markers with persistent SIGBUS fault behavior",
         "registration cleanup across unmap, replacing fixed mappings and remap without event negotiation",
@@ -86,7 +87,7 @@
       "missing": [
         "minor-fault registration and continue operation",
         "hugetlb and shmem minor-fault behavior",
-        "async write-protect and exact Linux fork, remap and remove events",
+        "exact Linux fork, remap and remove events",
         "ia32 and x32 compatibility layouts"
       ],
       "runtime_tests": [
@@ -96,7 +97,7 @@
       "linux_oracle": {
         "status": "partial",
         "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa",
-        "scope": "feature bits, range ioctl masks, missing-page copy and zero-page behavior, anonymous private page moves, poisoned-page markers and SIGBUS faults, mapping lifecycle cleanup, write-protect event flags and wake behavior"
+        "scope": "feature bits, range ioctl masks, missing-page copy and zero-page behavior, anonymous private page moves, poisoned-page markers and SIGBUS faults, mapping lifecycle cleanup, resident and unpopulated asynchronous write protection, write-protect event flags and wake behavior"
       }
     },
     {

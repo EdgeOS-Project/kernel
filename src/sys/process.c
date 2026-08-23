@@ -34,6 +34,7 @@
 #include "kernel/smp.h"
 #include "kernel/sysv_shm_runtime.h"
 #include "kernel/sysv_sem_runtime.h"
+#include "kernel/userfaultfd.h"
 #include "kernel/vfs_runtime.h"
 #include "fs/cgroupfs.h"
 #include "fs/swap.h"
@@ -6764,6 +6765,9 @@ int process_user_mmap_handle_fault(task_t *t, uint64_t addr, int write) {
             populate_result = user_mmap_populate_file_page(
                 mm, &fault_vma, page, write);
             if (populate_result == 0) {
+                if (kernel_userfaultfd_apply_writeprotect(
+                        mm->cr3, page) < 0)
+                    return 0;
                 return 1;
             }
             proc_emerg_puts("[mmap-fault-emerg] file-populate-fail pid=");
@@ -6864,6 +6868,8 @@ int process_user_mmap_handle_fault(task_t *t, uint64_t addr, int write) {
         }
         return 0;
     }
+    if (kernel_userfaultfd_apply_writeprotect(mm->cr3, page) < 0)
+        return 0;
     return 1;
 }
 

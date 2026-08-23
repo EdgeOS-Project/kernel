@@ -29,13 +29,16 @@
 #define KERNEL_UFFD_FEATURE_SIGBUS      (1ULL << 7)
 #define KERNEL_UFFD_FEATURE_THREAD_ID (1ULL << 8)
 #define KERNEL_UFFD_FEATURE_EXACT_ADDRESS (1ULL << 11)
+#define KERNEL_UFFD_FEATURE_WP_UNPOPULATED (1ULL << 13)
 #define KERNEL_UFFD_FEATURE_POISON    (1ULL << 14)
+#define KERNEL_UFFD_FEATURE_WP_ASYNC  (1ULL << 15)
 #define KERNEL_UFFD_FEATURE_MOVE      (1ULL << 16)
 #define KERNEL_UFFD_SUPPORTED_FEATURES \
     (KERNEL_UFFD_FEATURE_PAGEFAULT_FLAG_WP | \
      KERNEL_UFFD_FEATURE_SIGBUS | KERNEL_UFFD_FEATURE_THREAD_ID | \
-     KERNEL_UFFD_FEATURE_EXACT_ADDRESS | KERNEL_UFFD_FEATURE_POISON | \
-     KERNEL_UFFD_FEATURE_MOVE)
+     KERNEL_UFFD_FEATURE_EXACT_ADDRESS | \
+     KERNEL_UFFD_FEATURE_WP_UNPOPULATED | KERNEL_UFFD_FEATURE_POISON | \
+     KERNEL_UFFD_FEATURE_WP_ASYNC | KERNEL_UFFD_FEATURE_MOVE)
 
 #define KERNEL_UFFD_PAGEFAULT_FLAG_WRITE (1ULL << 0)
 #define KERNEL_UFFD_PAGEFAULT_FLAG_WP    (1ULL << 1)
@@ -182,6 +185,8 @@ int kernel_userfaultfd_missing_fault(
 int kernel_userfaultfd_page_fault(
     uint64_t address_space, uint64_t address, int write, int present,
     uint32_t thread_id, int *context_id, uint64_t *ticket);
+int kernel_userfaultfd_apply_writeprotect(
+    uint64_t address_space, uint64_t address);
 int kernel_userfaultfd_fault_pending(int context_id, uint64_t ticket);
 int kernel_userfaultfd_resolution_bypasses_fault(
     uint64_t address_space, uint64_t address);
