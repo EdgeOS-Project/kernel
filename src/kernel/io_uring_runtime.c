@@ -102,6 +102,9 @@ typedef struct kernel_io_uring_pending {
     uint8_t event_size;
     uint8_t event_data_offset;
     uint16_t reserved3;
+    int32_t wait_owner_tid;
+    kernel_process_wait_request_t process_wait_request;
+    kernel_io_uring_waitid_copy_t waitid_copy;
     kernel_fd_operation_lease_t descriptor_lease;
 } kernel_io_uring_pending_t;
 
@@ -232,6 +235,7 @@ static int32_t io_uring_event_retain_locked(
 #define IO_URING_PENDING_EPOLL   3u
 #define IO_URING_PENDING_LINK_TIMEOUT 4u
 #define IO_URING_PENDING_FUTEX 5u
+#define IO_URING_PENDING_WAITID 6u
 
 static kernel_io_uring_t g_io_urings[KERNEL_IO_URING_MAX_RINGS];
 static kernel_io_uring_task_registry_t
@@ -2616,6 +2620,53 @@ int kernel_io_uring_futex_wait_add(
     return result;
 }
 
+int kernel_io_uring_waitid_add(
+        int32_t ring_id, uint64_t user_data,
+        const kernel_process_wait_request_t *request,
+        int32_t waiter_tid, uint64_t user_information,
+        uint64_t address_space,
+        kernel_io_uring_waitid_copy_t copy_information) {
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    uint32_t slot;
+    int result;
+
+    if (!request || waiter_tid <= 0 ||
+        !(request->flags & KERNEL_PROCESS_WAIT_NOHANG) ||
+        (user_information && (!address_space || !copy_information)))
+        return -EDGE_LINUX_EINVAL;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+    } else {
+        for (slot = 0; slot < KERNEL_IO_URING_MAX_PENDING; ++slot)
+            if (!ring->pending[slot].used) break;
+        if (slot == KERNEL_IO_URING_MAX_PENDING) {
+            result = -EDGE_LINUX_EAGAIN;
+        } else {
+            kernel_io_uring_pending_t *pending = &ring->pending[slot];
+
+            memset(pending, 0, sizeof(*pending));
+            pending->used = 1u;
+            pending->kind = IO_URING_PENDING_WAITID;
+            pending->user_data = user_data;
+            pending->user_address = user_information;
+            pending->address_space = address_space;
+            pending->wait_owner_tid = waiter_tid;
+            pending->process_wait_request = *request;
+            pending->waitid_copy = copy_information;
+            ++ring->next_pending_sequence;
+            if (!ring->next_pending_sequence)
+                ++ring->next_pending_sequence;
+            pending->sequence = ring->next_pending_sequence;
+            result = 0;
+        }
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
 int kernel_io_uring_poll_update(int32_t ring_id, uint64_t old_user_data,
                                 int update_events, uint32_t events,
                                 int update_user_data,
@@ -2690,9 +2741,13 @@ int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data) {
                        IO_URING_PENDING_FUTEX) {
                 futex_wait_id = ring->pending[slot].futex_wait_id;
             }
+            if (ring->pending[slot].kind == IO_URING_PENDING_FUTEX ||
+                ring->pending[slot].kind == IO_URING_PENDING_WAITID)
+                result = 1;
+            else
+                result = 0;
             canceled_sequence = ring->pending[slot].sequence;
             memset(&ring->pending[slot], 0, sizeof(ring->pending[slot]));
-            result = 0;
             break;
         }
         if (canceled_sequence) {
@@ -2747,6 +2802,9 @@ typedef struct io_uring_pending_snapshot {
     uint32_t maximum_events;
     uint8_t event_size;
     uint8_t event_data_offset;
+    int32_t wait_owner_tid;
+    kernel_process_wait_request_t process_wait_request;
+    kernel_io_uring_waitid_copy_t waitid_copy;
 } io_uring_pending_snapshot_t;
 
 static void io_uring_pending_snapshot(
@@ -2774,6 +2832,9 @@ static void io_uring_pending_snapshot(
     destination->maximum_events = source->maximum_events;
     destination->event_size = source->event_size;
     destination->event_data_offset = source->event_data_offset;
+    destination->wait_owner_tid = source->wait_owner_tid;
+    destination->process_wait_request = source->process_wait_request;
+    destination->waitid_copy = source->waitid_copy;
 }
 
 typedef struct io_uring_epoll_copy_context {
@@ -3101,6 +3162,34 @@ uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us) {
             ring = io_uring_lookup_locked(ring_id);
             if (ring && ring->pending[slot].used &&
                 ring->pending[slot].kind == IO_URING_PENDING_FUTEX &&
+                ring->pending[slot].sequence == pending.sequence) {
+                completion_user_data = ring->pending[slot].user_data;
+                memset(&ring->pending[slot], 0,
+                       sizeof(ring->pending[slot]));
+                remove = 1;
+                request_final = 1;
+            }
+            spin_unlock_irqrestore(&g_io_uring_lock, flags);
+        } else if (pending.kind == IO_URING_PENDING_WAITID) {
+            kernel_process_wait_result_t wait_result;
+            int64_t wait_status;
+
+            spin_unlock_irqrestore(&g_io_uring_lock, flags);
+            memset(&wait_result, 0, sizeof(wait_result));
+            wait_status = kernel_process_wait_for_tid(
+                &pending.process_wait_request, &wait_result,
+                pending.wait_owner_tid);
+            if (!wait_status) continue;
+            result = wait_status < 0 ? (int32_t)wait_status : 0;
+            if (wait_status > 0 && pending.user_address &&
+                (!pending.waitid_copy || pending.waitid_copy(
+                    pending.address_space, pending.user_address,
+                    &wait_result, 1) < 0))
+                result = -EDGE_LINUX_EFAULT;
+            flags = spin_lock_irqsave(&g_io_uring_lock);
+            ring = io_uring_lookup_locked(ring_id);
+            if (ring && ring->pending[slot].used &&
+                ring->pending[slot].kind == IO_URING_PENDING_WAITID &&
                 ring->pending[slot].sequence == pending.sequence) {
                 completion_user_data = ring->pending[slot].user_data;
                 memset(&ring->pending[slot], 0,

@@ -32,6 +32,36 @@ static uint64_t g_next_futex_wait_id;
 static int32_t g_futex_result;
 static uint32_t g_futex_cancel_count;
 static int g_futex_ready;
+static kernel_process_wait_request_t g_process_wait_request;
+static kernel_process_wait_result_t g_process_wait_result;
+static int32_t g_process_waiter_tid;
+static int64_t g_process_wait_status;
+static uint32_t g_waitid_copy_count;
+
+int64_t kernel_process_wait_for_tid(
+        const kernel_process_wait_request_t *request,
+        kernel_process_wait_result_t *result, int32_t waiter_tid) {
+    assert(request);
+    assert(result);
+    g_process_wait_request = *request;
+    g_process_waiter_tid = waiter_tid;
+    if (g_process_wait_status > 0)
+        *result = g_process_wait_result;
+    return g_process_wait_status;
+}
+
+static int test_waitid_copy(
+        uint64_t address_space, uint64_t user_address,
+        const kernel_process_wait_result_t *result,
+        int event_present) {
+    assert(address_space == 0xabc000u);
+    assert(user_address == 0x123000u);
+    assert(result);
+    assert(event_present == 1);
+    assert(result->pid == g_process_wait_result.pid);
+    ++g_waitid_copy_count;
+    return 0;
+}
 
 int kernel_futex_async_wait_add(const kernel_futex_request_t *request,
                                 uint64_t *wait_id) {
@@ -1220,7 +1250,7 @@ int main(void) {
                    &futex_request) == 0);
         cancel_count = g_futex_cancel_count;
         assert(kernel_io_uring_pending_cancel(
-                   second_ring_id, 0x46555443u) == 0);
+                   second_ring_id, 0x46555443u) == 1);
         assert(g_futex_cancel_count == cancel_count + 1u);
 
         assert(kernel_io_uring_futex_wait_add(
@@ -1230,6 +1260,49 @@ int main(void) {
         test_page_release(0, &futex_cq);
         kernel_io_uring_release(second_ring_id);
         assert(g_futex_cancel_count == cancel_count + 1u);
+    }
+    {
+        struct edge_linux_io_uring_params wait_parameters = {0};
+        kernel_io_uring_page_t wait_cq;
+        struct edge_linux_io_uring_cqe *wait_completion;
+        kernel_process_wait_request_t wait_request = {0};
+
+        wait_request.selector = 17;
+        wait_request.flags = KERNEL_PROCESS_WAIT_EXITED |
+                             KERNEL_PROCESS_WAIT_NOHANG;
+        wait_request.pid_namespace_id = 3u;
+        g_process_wait_status = 0;
+        g_waitid_copy_count = 0u;
+        assert(kernel_io_uring_create(
+                   4u, &wait_parameters, &second_ring_id) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_CQ_RING,
+                   0u, &wait_cq) == 0);
+        wait_completion = (struct edge_linux_io_uring_cqe *)(
+            (uint8_t *)wait_cq.address + wait_parameters.cq_off.cqes);
+        assert(kernel_io_uring_waitid_add(
+                   second_ring_id, 0x57414954u, &wait_request, 41,
+                   0x123000u, 0xabc000u, test_waitid_copy) == 0);
+        assert(kernel_io_uring_collect(second_ring_id, 0u) == 0);
+        assert(g_process_waiter_tid == 41);
+        assert(g_process_wait_request.selector == 17);
+        g_process_wait_result.pid = 17;
+        g_process_wait_result.uid = 1000u;
+        g_process_wait_result.status = 0x2a00u;
+        g_process_wait_status = 1;
+        assert(kernel_io_uring_collect(second_ring_id, 0u) == 1);
+        assert(g_waitid_copy_count == 1u);
+        assert(wait_completion[0].user_data == 0x57414954u);
+        assert(wait_completion[0].result == 0);
+
+        g_process_wait_status = 0;
+        assert(kernel_io_uring_waitid_add(
+                   second_ring_id, 0x57414943u, &wait_request, 41,
+                   0u, 0u, 0) == 0);
+        assert(kernel_io_uring_pending_cancel(
+                   second_ring_id, 0x57414943u) == 1);
+        test_page_release(0, &wait_cq);
+        kernel_io_uring_release(second_ring_id);
     }
     {
         struct edge_linux_io_uring_params buffer_parameters = {0};

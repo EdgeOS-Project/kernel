@@ -96,3 +96,23 @@ int64_t kernel_process_wait(const kernel_process_wait_request_t *request,
     if (error < 0) return error;
     return arch_process_wait(&query, result, user_registers);
 }
+
+int64_t kernel_process_wait_for_tid(
+        const kernel_process_wait_request_t *request,
+        kernel_process_wait_result_t *result, int32_t waiter_tid) {
+    kernel_process_wait_query_t query;
+    int32_t caller_pgid = 0;
+    int error;
+
+    if (!request || !result || waiter_tid <= 0)
+        return -EDGE_LINUX_EINVAL;
+    process_wait_clear(result, sizeof(*result));
+    if (!(request->flags & KERNEL_PROCESS_WAIT_NOHANG))
+        return -EDGE_LINUX_EINVAL;
+    if (request->selector == 0 &&
+        kernel_process_group_id(waiter_tid, &caller_pgid) < 0)
+        return -EDGE_LINUX_ECHILD;
+    error = kernel_process_wait_query_build(request, caller_pgid, &query);
+    if (error < 0) return error;
+    return arch_process_wait_for_tid(&query, result, waiter_tid);
+}

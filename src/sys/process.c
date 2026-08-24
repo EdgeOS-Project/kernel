@@ -9984,10 +9984,10 @@ static task_t *process_wait_find_event(
     return selected;
 }
 
-static int process_wait_pid_rusage_uid_query(
-    const kernel_process_wait_query_t *query, int *status, int options,
-    process_rusage_snapshot_t *usage, uint32_t *uid) {
-    task_t *waiter = process_current_task();
+static int process_wait_pid_rusage_uid_query_for_task(
+    task_t *waiter, const kernel_process_wait_query_t *query,
+    int *status, int options, process_rusage_snapshot_t *usage,
+    uint32_t *uid) {
     task_t *account;
     if (!waiter || !query) return -1;
     account = process_wait_group_leader(waiter);
@@ -10118,6 +10118,13 @@ static int process_wait_pid_rusage_uid_query(
     }
 }
 
+static int process_wait_pid_rusage_uid_query(
+    const kernel_process_wait_query_t *query, int *status, int options,
+    process_rusage_snapshot_t *usage, uint32_t *uid) {
+    return process_wait_pid_rusage_uid_query_for_task(
+        process_current_task(), query, status, options, usage, uid);
+}
+
 static int process_wait_pid_rusage_uid(int pid, int *status, int options,
                                        process_rusage_snapshot_t *usage,
                                        uint32_t *uid) {
@@ -10173,6 +10180,31 @@ int64_t arch_process_wait(const kernel_process_wait_query_t *query,
     pid = process_wait_pid_rusage_uid_query(
         query, &status, options, &result->usage, &uid);
     /* Preserve interruptible wait errors; only -1 means no waitable child. */
+    if (pid < -1) return pid;
+    if (pid < 0) return -EDGE_LINUX_ECHILD;
+    if (!pid) return 0;
+    result->pid = pid;
+    result->uid = uid;
+    result->status = (uint32_t)status;
+    return 1;
+}
+
+int64_t arch_process_wait_for_tid(
+        const kernel_process_wait_query_t *query,
+        kernel_process_wait_result_t *result, int32_t waiter_tid) {
+    task_t *waiter;
+    int status = 0;
+    int pid;
+    uint32_t uid = 0;
+
+    if (!query || !result || waiter_tid <= 0 ||
+        !(query->flags & KERNEL_PROCESS_WAIT_NOHANG))
+        return -EDGE_LINUX_EINVAL;
+    waiter = task_find_by_pid(waiter_tid);
+    if (!waiter) return -EDGE_LINUX_ESRCH;
+    pid = process_wait_pid_rusage_uid_query_for_task(
+        waiter, query, &status, (int)query->flags,
+        &result->usage, &uid);
     if (pid < -1) return pid;
     if (pid < 0) return -EDGE_LINUX_ECHILD;
     if (!pid) return 0;

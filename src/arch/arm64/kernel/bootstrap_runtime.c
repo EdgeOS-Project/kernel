@@ -5655,11 +5655,11 @@ static void task_wait_result_usage(const kernel_task_t *child,
         &usage->sys_time_us, child->rusage_children_system_time_us);
 }
 
-int64_t arch_process_wait(const kernel_process_wait_query_t *query,
-                          kernel_process_wait_result_t *result,
-                          void *user_registers) {
-    kernel_task_t *waiter = current_task();
-    arch_user_frame_t *frame = (arch_user_frame_t *)user_registers;
+static int64_t task_process_wait(
+        kernel_task_t *waiter,
+        const kernel_process_wait_query_t *query,
+        kernel_process_wait_result_t *result,
+        arch_user_frame_t *frame) {
     int have_child = 0;
 
     if (!waiter || !query || !result) return -LINUX_EINVAL;
@@ -5754,6 +5754,27 @@ int64_t arch_process_wait(const kernel_process_wait_query_t *query,
     waiter->wait_idtype = query->id_type;
     task_state_set(waiter, KERNEL_TASK_WAITING);
     task_resume_next();
+}
+
+int64_t arch_process_wait(const kernel_process_wait_query_t *query,
+                          kernel_process_wait_result_t *result,
+                          void *user_registers) {
+    return task_process_wait(
+        current_task(), query, result,
+        (arch_user_frame_t *)user_registers);
+}
+
+int64_t arch_process_wait_for_tid(
+        const kernel_process_wait_query_t *query,
+        kernel_process_wait_result_t *result, int32_t waiter_tid) {
+    int slot;
+
+    if (!query || !result || waiter_tid <= 0 ||
+        !(query->flags & KERNEL_PROCESS_WAIT_NOHANG))
+        return -LINUX_EINVAL;
+    slot = task_find_pid(waiter_tid);
+    if (slot < 0) return -LINUX_ESRCH;
+    return task_process_wait(&g_tasks[slot], query, result, 0);
 }
 
 static void task_wake_natural_parent_zombie(kernel_task_t *child) {

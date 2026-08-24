@@ -9,6 +9,7 @@
 #include "kernel/fd_runtime.h"
 #include "kernel/futex_runtime.h"
 #include "kernel/linux_abi.h"
+#include "kernel/process_runtime.h"
 
 #define KERNEL_IO_URING_MAX_RINGS 64u
 #define KERNEL_IO_URING_MAX_SQ_ENTRIES 256u
@@ -76,6 +77,10 @@ typedef struct kernel_io_uring_pbuf_ring {
     uint8_t incremental;
     uint8_t reserved[6];
 } kernel_io_uring_pbuf_ring_t;
+
+typedef int (*kernel_io_uring_waitid_copy_t)(
+    uint64_t address_space, uint64_t user_address,
+    const kernel_process_wait_result_t *result, int event_present);
 
 int kernel_io_uring_page_allocator_register(
     const kernel_io_uring_page_allocator_t *allocator);
@@ -224,6 +229,11 @@ int kernel_io_uring_epoll_wait_add(int32_t ring_id, uint64_t user_data,
 int kernel_io_uring_futex_wait_add(
     int32_t ring_id, uint64_t user_data,
     const kernel_futex_request_t *request);
+int kernel_io_uring_waitid_add(
+    int32_t ring_id, uint64_t user_data,
+    const kernel_process_wait_request_t *request, int32_t waiter_tid,
+    uint64_t user_information, uint64_t address_space,
+    kernel_io_uring_waitid_copy_t copy_information);
 int kernel_io_uring_poll_update(int32_t ring_id, uint64_t old_user_data,
                                 int update_events, uint32_t events,
                                 int update_user_data,

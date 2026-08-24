@@ -162,6 +162,7 @@ EDGEOS_ASSESSMENTS = [
             "EPOLL_WAIT with retained epoll objects, asynchronous completion and native x86_64 and AArch64 event layouts",
             "LINK_TIMEOUT cancellation races, target lifetime and paired completion results",
             "FUTEX_WAIT and FUTEX_WAITV asynchronous completion through the shared futex2 wait registry",
+            "WAITID immediate and asynchronous child-state completion with retained submitter identity",
             "scheduler-native enter suspension without an initial busy-poll window",
         ],
         "missing": [
@@ -188,6 +189,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/io_uring_epoll_wait_abi_probe.c",
             "tools/tests/io_uring_link_timeout_abi_probe.c",
             "tools/tests/io_uring_futex_wait_abi_probe.c",
+            "tools/tests/io_uring_waitid_abi_probe.c",
             "tools/tests/io_uring_runtime_unit.c",
         ],
         "linux_oracle": {

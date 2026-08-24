@@ -464,9 +464,15 @@ int kernel_process_usage(int who, kernel_process_usage_t *usage);
 int64_t kernel_process_wait(const kernel_process_wait_request_t *request,
                             kernel_process_wait_result_t *result,
                             void *user_registers);
+int64_t kernel_process_wait_for_tid(
+    const kernel_process_wait_request_t *request,
+    kernel_process_wait_result_t *result, int32_t waiter_tid);
 int64_t arch_process_wait(const kernel_process_wait_query_t *query,
                           kernel_process_wait_result_t *result,
                           void *user_registers);
+int64_t arch_process_wait_for_tid(
+    const kernel_process_wait_query_t *query,
+    kernel_process_wait_result_t *result, int32_t waiter_tid);
 int kernel_process_times(kernel_process_times_t *times);
 int kernel_process_resource_limit_get(int32_t pid, uint32_t resource,
                                       kernel_resource_limit_t *limit);

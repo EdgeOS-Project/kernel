@@ -6880,6 +6880,125 @@ static int edge_linux_wait_status_code(uint32_t status,
     return EDGE_LINUX_CLD_EXITED;
 }
 
+static void edge_linux_wait_information_build(
+        const kernel_process_wait_result_t *result,
+        struct edge_linux_siginfo_child *information) {
+    memset(information, 0, sizeof(*information));
+    if (!result) return;
+    information->signal_number = EDGE_LINUX_SIGCHLD;
+    information->code = edge_linux_wait_status_code(
+        result->status, &information->status);
+    information->pid = result->pid;
+    information->uid = result->uid;
+    information->user_time =
+        (int64_t)(result->usage.user_time_us / 10000u);
+    information->system_time =
+        (int64_t)(result->usage.sys_time_us / 10000u);
+}
+
+static int edge_linux_io_uring_waitid_copy(
+        uint64_t address_space, uint64_t user_address,
+        const kernel_process_wait_result_t *result,
+        int event_present) {
+    struct edge_linux_siginfo_child information;
+
+    if (!address_space || !user_address) return -EDGE_LINUX_EFAULT;
+    edge_linux_wait_information_build(
+        event_present ? result : 0, &information);
+    return kernel_mm_address_space_copy(
+        address_space, user_address, &information,
+        sizeof(information), KERNEL_MM_PROCESS_VM_WRITE) < 0 ?
+        -EDGE_LINUX_EFAULT : 0;
+}
+
+static int edge_linux_waitid_request_prepare(
+        uint32_t id_type, uint64_t id, uint32_t options,
+        kernel_process_wait_request_t *request,
+        int *pidfd_nonblocking, int32_t *waiter_tid) {
+    const uint32_t common_options =
+        EDGE_LINUX_WNOHANG | EDGE_LINUX_WUNTRACED |
+        EDGE_LINUX_WCONTINUED | EDGE_LINUX___WNOTHREAD |
+        EDGE_LINUX___WALL | EDGE_LINUX___WCLONE;
+    kernel_linux_identity_t caller;
+    int selector_is_global = 0;
+
+    if (!request || !pidfd_nonblocking || !waiter_tid)
+        return -EDGE_LINUX_EINVAL;
+    if (options & ~(common_options | EDGE_LINUX_WEXITED |
+                    EDGE_LINUX_WNOWAIT))
+        return -EDGE_LINUX_EINVAL;
+    if (!(options & (EDGE_LINUX_WEXITED | EDGE_LINUX_WUNTRACED |
+                     EDGE_LINUX_WCONTINUED)))
+        return -EDGE_LINUX_EINVAL;
+    if (kernel_current_linux_identity(&caller) < 0)
+        return -EDGE_LINUX_ESRCH;
+    memset(request, 0, sizeof(*request));
+    request->pid_namespace_id = caller.pid_namespace_id;
+    *pidfd_nonblocking = 0;
+    *waiter_tid = caller.global_tid;
+
+    if (id_type == EDGE_LINUX_WAIT_P_ALL) {
+        request->selector = -1;
+    } else if (id_type == EDGE_LINUX_WAIT_P_PID) {
+        if (!id || id > INT32_MAX) return -EDGE_LINUX_EINVAL;
+        request->selector = (int32_t)id;
+    } else if (id_type == EDGE_LINUX_WAIT_P_PGID) {
+        if (id > INT32_MAX) return -EDGE_LINUX_EINVAL;
+        request->selector = id ? -(int32_t)id : 0;
+    } else if (id_type == EDGE_LINUX_WAIT_P_PIDFD) {
+        uint32_t pidfd_flags = 0;
+        int32_t pidfd_pid;
+        int status;
+
+        if (id > INT32_MAX) return -EDGE_LINUX_EBADF;
+        status = kernel_pidfd_target(
+            (int32_t)id, &pidfd_pid, &pidfd_flags);
+        if (status < 0) return status;
+        request->selector = pidfd_pid;
+        selector_is_global = 1;
+        *pidfd_nonblocking =
+            (pidfd_flags & EDGE_LINUX_PIDFD_NONBLOCK) != 0;
+    } else {
+        return -EDGE_LINUX_EINVAL;
+    }
+    if (options & EDGE_LINUX_WEXITED)
+        request->flags |= KERNEL_PROCESS_WAIT_EXITED;
+    if (options & EDGE_LINUX_WNOWAIT)
+        request->flags |= KERNEL_PROCESS_WAIT_NOREAP;
+    if (options & EDGE_LINUX_WNOHANG)
+        request->flags |= KERNEL_PROCESS_WAIT_NOHANG;
+    if (options & EDGE_LINUX_WUNTRACED)
+        request->flags |= KERNEL_PROCESS_WAIT_STOPPED;
+    if (options & EDGE_LINUX_WCONTINUED)
+        request->flags |= KERNEL_PROCESS_WAIT_CONTINUED;
+    if (options & EDGE_LINUX___WNOTHREAD)
+        request->flags |= KERNEL_PROCESS_WAIT_NOTHREAD;
+    if (options & EDGE_LINUX___WALL)
+        request->flags |= KERNEL_PROCESS_WAIT_WALL;
+    if (options & EDGE_LINUX___WCLONE)
+        request->flags |= KERNEL_PROCESS_WAIT_WCLONE;
+    if (*pidfd_nonblocking)
+        request->flags |= KERNEL_PROCESS_WAIT_NOHANG;
+
+    if (!selector_is_global && request->selector > 0) {
+        if (edge_linux_pid_to_global(
+                &caller, request->selector, &request->selector) < 0)
+            return -EDGE_LINUX_ECHILD;
+    } else if (!selector_is_global && request->selector < -1) {
+        int32_t visible_group;
+        int32_t global_group;
+
+        if (request->selector == INT32_MIN)
+            return -EDGE_LINUX_ESRCH;
+        visible_group = -request->selector;
+        if (edge_linux_pid_to_global(
+                &caller, visible_group, &global_group) < 0)
+            return -EDGE_LINUX_ECHILD;
+        request->selector = -global_group;
+    }
+    return 0;
+}
+
 static int64_t edge_linux_sys_wait(
     edge_linux_syscall_context_t *context) {
     const uint32_t common_options =
@@ -6894,7 +7013,7 @@ static int64_t edge_linux_sys_wait(
     uint64_t usage_user;
     uint32_t options;
     int pidfd_nonblocking = 0;
-    int selector_is_global = 0;
+    int32_t waiter_tid = 0;
     int64_t wait_status;
 
     if (kernel_current_linux_identity(&caller) < 0)
@@ -6913,77 +7032,46 @@ static int64_t edge_linux_sys_wait(
     } else if (context->id == EDGE_LINUX_SYS_waitid) {
         uint32_t id_type = (uint32_t)context->arguments[0];
         uint64_t id = context->arguments[1];
-        uint32_t pidfd_flags = 0;
-        int32_t pidfd_pid;
+        int status = edge_linux_waitid_request_prepare(
+            id_type, id, options, &request,
+            &pidfd_nonblocking, &waiter_tid);
 
-        if (options & ~(common_options | EDGE_LINUX_WEXITED |
-                        EDGE_LINUX_WNOWAIT))
-            return -EDGE_LINUX_EINVAL;
-        if (!(options & (EDGE_LINUX_WEXITED | EDGE_LINUX_WUNTRACED |
-                         EDGE_LINUX_WCONTINUED)))
-            return -EDGE_LINUX_EINVAL;
-        if (id_type == EDGE_LINUX_WAIT_P_ALL) {
-            request.selector = -1;
-        } else if (id_type == EDGE_LINUX_WAIT_P_PID) {
-            if (!id || id > INT32_MAX) return -EDGE_LINUX_EINVAL;
-            request.selector = (int32_t)id;
-        } else if (id_type == EDGE_LINUX_WAIT_P_PGID) {
-            if (id > INT32_MAX) return -EDGE_LINUX_EINVAL;
-            if (!id) {
-                request.selector = 0;
-            } else {
-                request.selector = -(int32_t)id;
-            }
-        } else if (id_type == EDGE_LINUX_WAIT_P_PIDFD) {
-            if (id > INT32_MAX) return -EDGE_LINUX_EBADF;
-            wait_status = kernel_pidfd_target(
-                (int32_t)id, &pidfd_pid, &pidfd_flags);
-            if (wait_status < 0) return wait_status;
-            request.selector = pidfd_pid;
-            selector_is_global = 1;
-            pidfd_nonblocking =
-                (pidfd_flags & EDGE_LINUX_PIDFD_NONBLOCK) != 0;
-        } else {
-            return -EDGE_LINUX_EINVAL;
-        }
-        if (options & EDGE_LINUX_WEXITED)
-            request.flags |= KERNEL_PROCESS_WAIT_EXITED;
-        if (options & EDGE_LINUX_WNOWAIT)
-            request.flags |= KERNEL_PROCESS_WAIT_NOREAP;
+        if (status < 0) return status;
         information_user = context->arguments[2];
         usage_user = context->arguments[4];
     } else {
         return -EDGE_LINUX_ENOSYS;
     }
 
-    if (options & EDGE_LINUX_WNOHANG)
-        request.flags |= KERNEL_PROCESS_WAIT_NOHANG;
-    if (options & EDGE_LINUX_WUNTRACED)
-        request.flags |= KERNEL_PROCESS_WAIT_STOPPED;
-    if (options & EDGE_LINUX_WCONTINUED)
-        request.flags |= KERNEL_PROCESS_WAIT_CONTINUED;
-    if (options & EDGE_LINUX___WNOTHREAD)
-        request.flags |= KERNEL_PROCESS_WAIT_NOTHREAD;
-    if (options & EDGE_LINUX___WALL)
-        request.flags |= KERNEL_PROCESS_WAIT_WALL;
-    if (options & EDGE_LINUX___WCLONE)
-        request.flags |= KERNEL_PROCESS_WAIT_WCLONE;
-    if (pidfd_nonblocking)
-        request.flags |= KERNEL_PROCESS_WAIT_NOHANG;
+    if (context->id == EDGE_LINUX_SYS_wait4) {
+        if (options & EDGE_LINUX_WNOHANG)
+            request.flags |= KERNEL_PROCESS_WAIT_NOHANG;
+        if (options & EDGE_LINUX_WUNTRACED)
+            request.flags |= KERNEL_PROCESS_WAIT_STOPPED;
+        if (options & EDGE_LINUX_WCONTINUED)
+            request.flags |= KERNEL_PROCESS_WAIT_CONTINUED;
+        if (options & EDGE_LINUX___WNOTHREAD)
+            request.flags |= KERNEL_PROCESS_WAIT_NOTHREAD;
+        if (options & EDGE_LINUX___WALL)
+            request.flags |= KERNEL_PROCESS_WAIT_WALL;
+        if (options & EDGE_LINUX___WCLONE)
+            request.flags |= KERNEL_PROCESS_WAIT_WCLONE;
+        if (request.selector > 0) {
+            if (edge_linux_pid_to_global(
+                    &caller, request.selector, &request.selector) < 0)
+                return -EDGE_LINUX_ECHILD;
+        } else if (request.selector < -1) {
+            int32_t visible_group;
+            int32_t global_group;
 
-    if (!selector_is_global && request.selector > 0) {
-        if (edge_linux_pid_to_global(
-                &caller, request.selector, &request.selector) < 0)
-            return -EDGE_LINUX_ECHILD;
-    } else if (!selector_is_global && request.selector < -1) {
-        if (request.selector == INT32_MIN)
-            return -EDGE_LINUX_ESRCH;
-        int32_t visible_group = -request.selector;
-        int32_t global_group;
-        if (edge_linux_pid_to_global(
-                &caller, visible_group, &global_group) < 0)
-            return -EDGE_LINUX_ECHILD;
-        request.selector = -global_group;
+            if (request.selector == INT32_MIN)
+                return -EDGE_LINUX_ESRCH;
+            visible_group = -request.selector;
+            if (edge_linux_pid_to_global(
+                    &caller, visible_group, &global_group) < 0)
+                return -EDGE_LINUX_ECHILD;
+            request.selector = -global_group;
+        }
     }
 
     wait_status = kernel_process_wait(
@@ -7009,16 +7097,7 @@ static int64_t edge_linux_sys_wait(
             return -EDGE_LINUX_EFAULT;
     } else if (information_user) {
         struct edge_linux_siginfo_child information;
-        memset(&information, 0, sizeof(information));
-        information.signal_number = EDGE_LINUX_SIGCHLD;
-        information.code = edge_linux_wait_status_code(
-            result.status, &information.status);
-        information.pid = result.pid;
-        information.uid = result.uid;
-        information.user_time =
-            (int64_t)(result.usage.user_time_us / 10000u);
-        information.system_time =
-            (int64_t)(result.usage.sys_time_us / 10000u);
+        edge_linux_wait_information_build(&result, &information);
         if (edge_linux_copy_to_user(
                 context, information_user, &information,
                 sizeof(information)) < 0)
@@ -8930,6 +9009,7 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_OP_SOCKET    45u
 #define EDGE_LINUX_IORING_OP_SEND_ZC   47u
 #define EDGE_LINUX_IORING_OP_SENDMSG_ZC 48u
+#define EDGE_LINUX_IORING_OP_WAITID    50u
 #define EDGE_LINUX_IORING_OP_FUTEX_WAIT 51u
 #define EDGE_LINUX_IORING_OP_FUTEX_WAKE 52u
 #define EDGE_LINUX_IORING_OP_FUTEX_WAITV 53u
@@ -9953,6 +10033,52 @@ static int64_t edge_linux_io_uring_execute_send_zc(
     return kernel_socket_message_execute(&message_request);
 }
 
+static int32_t edge_linux_io_uring_waitid(
+        int32_t ring_id, const struct edge_linux_io_uring_sqe *submission) {
+    kernel_process_wait_request_t request;
+    kernel_process_wait_result_t wait_result;
+    uint32_t options = (uint32_t)submission->splice_descriptor;
+    int pidfd_nonblocking;
+    int32_t waiter_tid;
+    int64_t status;
+
+    if (submission->address || submission->buffer_index ||
+        submission->address3 || submission->operation_flags)
+        return -EDGE_LINUX_EINVAL;
+    status = edge_linux_waitid_request_prepare(
+        submission->length,
+        (uint64_t)(uint32_t)submission->descriptor,
+        options, &request, &pidfd_nonblocking, &waiter_tid);
+    if (status < 0) return (int32_t)status;
+    request.flags |= KERNEL_PROCESS_WAIT_NOHANG;
+    memset(&wait_result, 0, sizeof(wait_result));
+    status = kernel_process_wait_for_tid(
+        &request, &wait_result, waiter_tid);
+    if (status < 0) return (int32_t)status;
+    if (status > 0) {
+        if (submission->offset && edge_linux_io_uring_waitid_copy(
+                arch_mm_current_address_space(), submission->offset,
+                &wait_result, 1) < 0)
+            return -EDGE_LINUX_EFAULT;
+        return 0;
+    }
+    if (pidfd_nonblocking && !(options & EDGE_LINUX_WNOHANG))
+        return -EDGE_LINUX_EAGAIN;
+    if (options & EDGE_LINUX_WNOHANG) {
+        if (submission->offset && edge_linux_io_uring_waitid_copy(
+                arch_mm_current_address_space(), submission->offset,
+                0, 0) < 0)
+            return -EDGE_LINUX_EFAULT;
+        return 0;
+    }
+    status = kernel_io_uring_waitid_add(
+        ring_id, submission->user_data, &request, waiter_tid,
+        submission->offset, arch_mm_current_address_space(),
+        edge_linux_io_uring_waitid_copy);
+    return status < 0 ? (int32_t)status :
+                        EDGE_LINUX_IORING_PENDING_RESULT;
+}
+
 static int32_t edge_linux_io_uring_execute_descriptor(
         edge_linux_syscall_context_t *context,
         int32_t ring_id,
@@ -10219,6 +10345,9 @@ static int32_t edge_linux_io_uring_execute_descriptor(
         }
         break;
     }
+    case EDGE_LINUX_IORING_OP_WAITID:
+        result = edge_linux_io_uring_waitid(ring_id, submission);
+        break;
     case EDGE_LINUX_IORING_OP_MSG_RING:
         result = edge_linux_io_uring_msg_ring(ring_id, submission);
         break;
@@ -10998,7 +11127,7 @@ static int64_t edge_linux_sys_io_uring_enter(
             (void)kernel_io_uring_completion_add(
                 ring_id, notification.user_data, notification.result,
                 EDGE_LINUX_IORING_CQE_F_NOTIF);
-        if (operation_result == 0 &&
+        if (operation_result >= 0 &&
             ((submission.opcode == EDGE_LINUX_IORING_OP_POLL_REMOVE &&
               submission.length == 0u) ||
              (submission.opcode == EDGE_LINUX_IORING_OP_TIMEOUT_REMOVE &&
@@ -11128,6 +11257,7 @@ static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
            opcode == EDGE_LINUX_IORING_OP_SETXATTR ||
            opcode == EDGE_LINUX_IORING_OP_FGETXATTR ||
            opcode == EDGE_LINUX_IORING_OP_GETXATTR ||
+           opcode == EDGE_LINUX_IORING_OP_WAITID ||
            opcode == EDGE_LINUX_IORING_OP_FUTEX_WAIT ||
            opcode == EDGE_LINUX_IORING_OP_FUTEX_WAKE ||
            opcode == EDGE_LINUX_IORING_OP_FUTEX_WAITV ||
