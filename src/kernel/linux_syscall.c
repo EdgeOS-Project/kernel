@@ -11019,8 +11019,9 @@ static int64_t edge_linux_sys_io_uring_setup(
         return -EDGE_LINUX_EFAULT;
     for (uint32_t index = 0; index < 3; ++index)
         if (parameters.reserved[index]) return -EDGE_LINUX_EINVAL;
-    result = kernel_io_uring_create(
-        (uint32_t)entries, &parameters, &ring_id);
+    result = kernel_io_uring_create_for_task(
+        (uint32_t)entries, &parameters, &ring_id,
+        kernel_current_pid());
     if (result < 0) return result;
     descriptor = kernel_anonymous_fd_install_descriptor(
         KERNEL_ANONYMOUS_FD_IO_URING, ring_id, 2u, 1u);
@@ -12009,15 +12010,27 @@ static int64_t edge_linux_io_uring_sync_cancel(
         cancellation.flags, cancellation.opcode, 0);
 }
 
-static int64_t edge_linux_io_uring_restrictions_register(
-        edge_linux_syscall_context_t *context, int32_t ring_id,
-        uint64_t argument, uint32_t operation_count) {
-    uint64_t register_operations = 0u;
-    uint64_t submission_operations[2] = {0u, 0u};
-    uint8_t submission_flags_allowed = 0u;
-    uint8_t submission_flags_required = 0u;
-    int restrict_register_operations = operation_count == 0u;
-    int restrict_submission_operations = operation_count == 0u;
+static int edge_linux_io_uring_restrictions_parse(
+        edge_linux_syscall_context_t *context, uint64_t argument,
+        uint32_t operation_count, uint64_t *register_operations,
+        uint64_t submission_operations[2],
+        uint8_t *submission_flags_allowed,
+        uint8_t *submission_flags_required,
+        int *restrict_register_operations,
+        int *restrict_submission_operations) {
+    if (!register_operations || !submission_operations ||
+        !submission_flags_allowed || !submission_flags_required ||
+        !restrict_register_operations ||
+        !restrict_submission_operations)
+        return -EDGE_LINUX_EINVAL;
+
+    *register_operations = 0u;
+    submission_operations[0] = 0u;
+    submission_operations[1] = 0u;
+    *submission_flags_allowed = 0u;
+    *submission_flags_required = 0u;
+    *restrict_register_operations = operation_count == 0u;
+    *restrict_submission_operations = operation_count == 0u;
 
     if (!argument || operation_count > EDGE_LINUX_IORING_MAX_RESTRICTIONS)
         return -EDGE_LINUX_EINVAL;
@@ -12036,30 +12049,94 @@ static int64_t edge_linux_io_uring_restrictions_register(
         case EDGE_LINUX_IORING_RESTRICTION_REGISTER_OP:
             if (restriction.operation >= EDGE_LINUX_IORING_REGISTER_LAST)
                 return -EDGE_LINUX_EINVAL;
-            register_operations |= 1ull << restriction.operation;
-            restrict_register_operations = 1;
+            *register_operations |= 1ull << restriction.operation;
+            *restrict_register_operations = 1;
             break;
         case EDGE_LINUX_IORING_RESTRICTION_SQE_OP:
             if (restriction.operation >= EDGE_LINUX_IORING_OP_LAST)
                 return -EDGE_LINUX_EINVAL;
             submission_operations[restriction.operation >> 6u] |=
                 1ull << (restriction.operation & 63u);
-            restrict_submission_operations = 1;
+            *restrict_submission_operations = 1;
             break;
         case EDGE_LINUX_IORING_RESTRICTION_SQE_FLAGS_ALLOWED:
-            submission_flags_allowed = restriction.operation;
-            restrict_submission_operations = 1;
+            *submission_flags_allowed = restriction.operation;
+            *restrict_submission_operations = 1;
             break;
         case EDGE_LINUX_IORING_RESTRICTION_SQE_FLAGS_REQUIRED:
-            submission_flags_required = restriction.operation;
-            restrict_submission_operations = 1;
+            *submission_flags_required = restriction.operation;
+            *restrict_submission_operations = 1;
             break;
         default:
             return -EDGE_LINUX_EINVAL;
         }
     }
+    return 0;
+}
+
+static int64_t edge_linux_io_uring_restrictions_register(
+        edge_linux_syscall_context_t *context, int32_t ring_id,
+        uint64_t argument, uint32_t operation_count) {
+    uint64_t register_operations;
+    uint64_t submission_operations[2];
+    uint8_t submission_flags_allowed;
+    uint8_t submission_flags_required;
+    int restrict_register_operations;
+    int restrict_submission_operations;
+    int result = edge_linux_io_uring_restrictions_parse(
+        context, argument, operation_count, &register_operations,
+        submission_operations, &submission_flags_allowed,
+        &submission_flags_required, &restrict_register_operations,
+        &restrict_submission_operations);
+
+    if (result < 0) return result;
     return kernel_io_uring_restrictions_register(
         ring_id, register_operations, submission_operations,
+        submission_flags_allowed, submission_flags_required,
+        restrict_register_operations, restrict_submission_operations);
+}
+
+static int64_t edge_linux_io_uring_task_restrictions_register(
+        edge_linux_syscall_context_t *context, uint64_t argument,
+        uint32_t operation_count) {
+    struct edge_linux_io_uring_task_restriction task_restriction;
+    kernel_linux_identity_t identity;
+    uint64_t register_operations;
+    uint64_t submission_operations[2];
+    uint8_t submission_flags_allowed;
+    uint8_t submission_flags_required;
+    int restrict_register_operations;
+    int restrict_submission_operations;
+    int32_t task_id = kernel_current_pid();
+    int result;
+
+    if (kernel_io_uring_task_restrictions_present(task_id))
+        return -EDGE_LINUX_EPERM;
+    if (kernel_current_linux_identity(&identity) < 0)
+        return -EDGE_LINUX_ESRCH;
+    if (!kernel_current_no_new_privileges() &&
+        !(identity.effective_capabilities &
+          (1ull << EDGE_LINUX_CAP_SYS_ADMIN)))
+        return -EDGE_LINUX_EACCES;
+    if (operation_count != 1u) return -EDGE_LINUX_EINVAL;
+    if (!argument || edge_linux_copy_from_user(
+            context, &task_restriction, argument,
+            sizeof(task_restriction)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    if (task_restriction.flags || task_restriction.reserved[0] ||
+        task_restriction.reserved[1] || task_restriction.reserved[2])
+        return -EDGE_LINUX_EINVAL;
+    if (argument > UINT64_MAX - sizeof(task_restriction))
+        return -EDGE_LINUX_EFAULT;
+    result = edge_linux_io_uring_restrictions_parse(
+        context, argument + sizeof(task_restriction),
+        task_restriction.restriction_count, &register_operations,
+        submission_operations, &submission_flags_allowed,
+        &submission_flags_required, &restrict_register_operations,
+        &restrict_submission_operations);
+    if (result < 0) return result;
+    return kernel_io_uring_task_restrictions_register(
+        task_id, register_operations, submission_operations,
         submission_flags_allowed, submission_flags_required,
         restrict_register_operations, restrict_submission_operations);
 }
@@ -12138,6 +12215,10 @@ static int64_t edge_linux_sys_io_uring_register(
             context, argument, operation_count);
     if (descriptor == -1 && opcode == EDGE_LINUX_IORING_REGISTER_QUERY)
         return edge_linux_io_uring_query(
+            context, argument, operation_count);
+    if (descriptor == -1 &&
+        opcode == EDGE_LINUX_IORING_REGISTER_RESTRICTIONS)
+        return edge_linux_io_uring_task_restrictions_register(
             context, argument, operation_count);
     result = edge_linux_io_uring_resolve_ring_descriptor(
         descriptor, registered, &ring_id);

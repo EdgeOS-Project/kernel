@@ -6,12 +6,14 @@
 #if defined(__x86_64__)
 #define SYS_close 3
 #define SYS_mmap 9
+#define SYS_prctl 157
 #define SYS_write 1
 #define SYS_exit 60
 #elif defined(__aarch64__)
 #define SYS_close 57
 #define SYS_write 64
 #define SYS_exit 93
+#define SYS_prctl 167
 #define SYS_mmap 222
 #else
 #error "io_uring_restrictions_abi_probe requires a Linux 64-bit architecture"
@@ -26,6 +28,7 @@
 #define MAP_SHARED 1u
 #define PAGE_SIZE 4096u
 #define EACCES 13
+#define EPERM 1
 #define EINVAL 22
 #define EBUSY 16
 #define EBADFD 77
@@ -44,6 +47,7 @@
 #define IORING_OFF_SQ_RING 0x00000000ull
 #define IORING_OFF_CQ_RING 0x08000000ull
 #define IORING_OFF_SQES 0x10000000ull
+#define PR_SET_NO_NEW_PRIVS 38u
 
 struct io_sqring_offsets {
     uint32_t head;
@@ -110,6 +114,17 @@ struct io_uring_restriction {
     uint8_t operation;
     uint8_t reserved;
     uint32_t reserved2[3];
+};
+
+struct io_uring_task_restriction {
+    uint16_t flags;
+    uint16_t restriction_count;
+    uint32_t reserved[3];
+};
+
+struct task_restriction_packet {
+    struct io_uring_task_restriction header;
+    struct io_uring_restriction restrictions[3];
 };
 
 struct io_uring_probe {
@@ -232,6 +247,8 @@ static int run_probe(void) {
     struct io_uring_params parameters;
     struct io_uring_restriction restrictions[4];
     struct io_uring_probe probe;
+    struct task_restriction_packet task_packet;
+    struct io_uring_params task_parameters;
     long normal_ring;
     long ring;
 
@@ -293,9 +310,57 @@ static int run_probe(void) {
         SYS_io_uring_register, ring, IORING_REGISTER_RESTRICTIONS,
         0, 0, 0, 0) == -EACCES);
     (void)raw_syscall6(SYS_close, ring, 0, 0, 0, 0, 0);
+
+    check("set no new privileges", raw_syscall6(
+        SYS_prctl, PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0, 0) == 0);
+    bytes_zero(&task_packet, sizeof(task_packet));
+    task_packet.header.restriction_count = 3u;
+    task_packet.restrictions[0].opcode =
+        IORING_RESTRICTION_REGISTER_OP;
+    task_packet.restrictions[0].operation = IORING_REGISTER_PROBE;
+    task_packet.restrictions[1].opcode = IORING_RESTRICTION_SQE_OP;
+    task_packet.restrictions[1].operation = IORING_OP_NOP;
+    task_packet.restrictions[2].opcode =
+        IORING_RESTRICTION_SQE_FLAGS_ALLOWED;
+    check("task restriction count", raw_syscall6(
+        SYS_io_uring_register, -1, IORING_REGISTER_RESTRICTIONS,
+        (long)&task_packet, 0, 0, 0) == -EINVAL);
+    task_packet.header.flags = 1u;
+    check("task restriction flags", raw_syscall6(
+        SYS_io_uring_register, -1, IORING_REGISTER_RESTRICTIONS,
+        (long)&task_packet, 1, 0, 0) == -EINVAL);
+    task_packet.header.flags = 0u;
+    check("task restrictions", raw_syscall6(
+        SYS_io_uring_register, -1, IORING_REGISTER_RESTRICTIONS,
+        (long)&task_packet, 1, 0, 0) == 0);
+    check("task restrictions single registration", raw_syscall6(
+        SYS_io_uring_register, -1, IORING_REGISTER_RESTRICTIONS,
+        0, 0, 0, 0) == -EPERM);
+
+    bytes_zero(&task_parameters, sizeof(task_parameters));
+    ring = raw_syscall6(
+        SYS_io_uring_setup, 4, (long)&task_parameters, 0, 0, 0, 0);
+    check("task-restricted setup", ring >= 0);
+    if (ring >= 0) {
+        bytes_zero(&probe, sizeof(probe));
+        check("task allowed register", raw_syscall6(
+            SYS_io_uring_register, ring, IORING_REGISTER_PROBE,
+            (long)&probe, 1, 0, 0) == 0);
+        check("task denied register", raw_syscall6(
+            SYS_io_uring_register, ring, IORING_UNREGISTER_EVENTFD,
+            0, 0, 0, 0) == -EACCES);
+        submit_one(ring, &task_parameters, IORING_OP_NOP, 0u,
+                   0x2001u, 0);
+        submit_one(ring, &task_parameters, IORING_OP_READ, 0u,
+                   0x2002u, -EACCES);
+        (void)raw_syscall6(SYS_close, ring, 0, 0, 0, 0, 0);
+    }
     return failures;
 }
 
+#if defined(__x86_64__)
+__attribute__((force_align_arg_pointer))
+#endif
 void _start(void) {
     int result = run_probe();
     if (!result) print_text("IO_URING_RESTRICTIONS_ABI_PROBE_PASS\n");

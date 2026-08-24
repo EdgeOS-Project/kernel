@@ -219,7 +219,15 @@ typedef struct kernel_io_uring {
 
 typedef struct kernel_io_uring_task_registry {
     uint8_t used;
+    uint8_t restrictions_set;
+    uint8_t register_restricted;
+    uint8_t submission_restricted;
     int32_t task_id;
+    uint64_t allowed_register_operations;
+    uint64_t allowed_submission_operations[2];
+    uint8_t submission_flags_allowed;
+    uint8_t submission_flags_required;
+    uint8_t reserved[6];
     int32_t ring_ids[KERNEL_IO_URING_REGISTERED_RINGS];
 } kernel_io_uring_task_registry_t;
 
@@ -288,6 +296,7 @@ static kernel_io_uring_task_registry_t *io_uring_task_registry_locked(
 
 static int io_uring_task_registry_empty(
         const kernel_io_uring_task_registry_t *registry) {
+    if (registry->restrictions_set) return 0;
     for (uint32_t index = 0;
          index < KERNEL_IO_URING_REGISTERED_RINGS; ++index)
         if (registry->ring_ids[index] >= 0) return 0;
@@ -449,10 +458,11 @@ int kernel_io_uring_page_allocator_register(
     return 0;
 }
 
-int kernel_io_uring_create(uint32_t entries,
-                           struct edge_linux_io_uring_params *parameters,
-                           int32_t *ring_id) {
+int kernel_io_uring_create_for_task(
+        uint32_t entries, struct edge_linux_io_uring_params *parameters,
+        int32_t *ring_id, int32_t task_id) {
     kernel_io_uring_t *ring;
+    kernel_io_uring_task_registry_t *task_registry;
     uint32_t cq_entries;
     uint32_t slot;
     uint64_t flags;
@@ -525,6 +535,22 @@ int kernel_io_uring_create(uint32_t entries,
         (parameters->flags & IORING_SETUP_R_DISABLED) != 0;
     ring->setup_flags = parameters->flags;
     ring->owner_address_space = arch_mm_current_address_space();
+    task_registry = task_id > 0 ?
+        io_uring_task_registry_locked(task_id, 0) : 0;
+    if (task_registry && task_registry->restrictions_set) {
+        ring->allowed_register_operations =
+            task_registry->allowed_register_operations;
+        ring->allowed_submission_operations[0] =
+            task_registry->allowed_submission_operations[0];
+        ring->allowed_submission_operations[1] =
+            task_registry->allowed_submission_operations[1];
+        ring->submission_flags_allowed =
+            task_registry->submission_flags_allowed;
+        ring->submission_flags_required =
+            task_registry->submission_flags_required;
+        ring->register_restricted = task_registry->register_restricted;
+        ring->submission_restricted = task_registry->submission_restricted;
+    }
     ring->sq_entries = entries;
     ring->cq_entries = cq_entries;
     ring->sq_ring_pages = io_uring_page_count(
@@ -585,6 +611,13 @@ int kernel_io_uring_create(uint32_t entries,
     *ring_id = (int32_t)slot;
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     return 0;
+}
+
+int kernel_io_uring_create(uint32_t entries,
+                           struct edge_linux_io_uring_params *parameters,
+                           int32_t *ring_id) {
+    return kernel_io_uring_create_for_task(
+        entries, parameters, ring_id, -1);
 }
 
 int kernel_io_uring_retain(int32_t ring_id) {
@@ -719,6 +752,92 @@ void kernel_io_uring_task_release(int32_t task_id) {
          index < KERNEL_IO_URING_REGISTERED_RINGS; ++index)
         if (ring_ids[index] >= 0)
             kernel_io_uring_release(ring_ids[index]);
+}
+
+int kernel_io_uring_task_restrictions_present(int32_t task_id) {
+    kernel_io_uring_task_registry_t *registry;
+    uint64_t flags;
+    int result;
+
+    if (task_id <= 0) return 0;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    registry = io_uring_task_registry_locked(task_id, 0);
+    result = registry && registry->restrictions_set;
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_task_restrictions_register(
+        int32_t task_id, uint64_t register_operations,
+        const uint64_t submission_operations[2],
+        uint8_t submission_flags_allowed,
+        uint8_t submission_flags_required,
+        int restrict_register_operations,
+        int restrict_submission_operations) {
+    kernel_io_uring_task_registry_t *registry;
+    uint64_t flags;
+    int result = 0;
+
+    if (task_id <= 0 || !submission_operations)
+        return -EDGE_LINUX_EINVAL;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    registry = io_uring_task_registry_locked(task_id, 1);
+    if (!registry) result = -EDGE_LINUX_ENOMEM;
+    else if (registry->restrictions_set) result = -EDGE_LINUX_EPERM;
+    else {
+        registry->allowed_register_operations = register_operations;
+        registry->allowed_submission_operations[0] =
+            submission_operations[0];
+        registry->allowed_submission_operations[1] =
+            submission_operations[1];
+        registry->submission_flags_allowed = submission_flags_allowed;
+        registry->submission_flags_required = submission_flags_required;
+        registry->register_restricted =
+            restrict_register_operations != 0;
+        registry->submission_restricted =
+            restrict_submission_operations != 0;
+        registry->restrictions_set = 1u;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_task_restrictions_clone(
+        int32_t parent_task_id, int32_t child_task_id) {
+    kernel_io_uring_task_registry_t *parent;
+    kernel_io_uring_task_registry_t *child;
+    uint64_t flags;
+    int result = 0;
+
+    if (parent_task_id <= 0 || child_task_id <= 0)
+        return -EDGE_LINUX_EINVAL;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    parent = io_uring_task_registry_locked(parent_task_id, 0);
+    if (!parent || !parent->restrictions_set)
+        goto unlock;
+    child = io_uring_task_registry_locked(child_task_id, 1);
+    if (!child) {
+        result = -EDGE_LINUX_ENOMEM;
+        goto unlock;
+    }
+    if (child->restrictions_set) {
+        result = -EDGE_LINUX_EPERM;
+        goto unlock;
+    }
+    child->allowed_register_operations =
+        parent->allowed_register_operations;
+    child->allowed_submission_operations[0] =
+        parent->allowed_submission_operations[0];
+    child->allowed_submission_operations[1] =
+        parent->allowed_submission_operations[1];
+    child->submission_flags_allowed = parent->submission_flags_allowed;
+    child->submission_flags_required = parent->submission_flags_required;
+    child->register_restricted = parent->register_restricted;
+    child->submission_restricted = parent->submission_restricted;
+    child->restrictions_set = 1u;
+unlock:
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
 }
 
 int kernel_io_uring_enable(int32_t ring_id) {

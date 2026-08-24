@@ -103,6 +103,9 @@ int kernel_io_uring_page_allocator_register(
 int kernel_io_uring_create(uint32_t entries,
                            struct edge_linux_io_uring_params *parameters,
                            int32_t *ring_id);
+int kernel_io_uring_create_for_task(
+    uint32_t entries, struct edge_linux_io_uring_params *parameters,
+    int32_t *ring_id, int32_t task_id);
 int kernel_io_uring_retain(int32_t ring_id);
 void kernel_io_uring_release(int32_t ring_id);
 int kernel_io_uring_task_ring_register(int32_t task_id, int32_t ring_id,
@@ -112,6 +115,16 @@ int kernel_io_uring_task_ring_unregister(int32_t task_id, uint32_t index);
 int kernel_io_uring_task_ring_lookup(int32_t task_id, uint32_t index,
                                      int32_t *ring_id);
 void kernel_io_uring_task_release(int32_t task_id);
+int kernel_io_uring_task_restrictions_present(int32_t task_id);
+int kernel_io_uring_task_restrictions_register(
+    int32_t task_id, uint64_t register_operations,
+    const uint64_t submission_operations[2],
+    uint8_t submission_flags_allowed,
+    uint8_t submission_flags_required,
+    int restrict_register_operations,
+    int restrict_submission_operations);
+int kernel_io_uring_task_restrictions_clone(
+    int32_t parent_task_id, int32_t child_task_id);
 int kernel_io_uring_enable(int32_t ring_id);
 int kernel_io_uring_disabled(int32_t ring_id);
 int kernel_io_uring_setup_flags(int32_t ring_id, uint32_t *setup_flags);

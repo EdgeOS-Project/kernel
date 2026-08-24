@@ -708,6 +708,12 @@ struct edge_linux_io_uring_restriction {
     uint32_t reserved2[3];
 };
 
+struct edge_linux_io_uring_task_restriction {
+    uint16_t flags;
+    uint16_t restriction_count;
+    uint32_t reserved[3];
+};
+
 struct edge_linux_io_uring_clone_buffers {
     uint32_t source_descriptor;
     uint32_t flags;
@@ -876,6 +882,8 @@ _Static_assert(sizeof(struct edge_linux_io_uring_sync_cancel_reg) == 64,
                "Linux io_uring synchronous cancel size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_restriction) == 16,
                "Linux io_uring restriction size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_uring_task_restriction) == 16,
+               "Linux io_uring task restriction size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_clone_buffers) == 32,
                "Linux io_uring clone buffers size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_getevents_arg) == 24,

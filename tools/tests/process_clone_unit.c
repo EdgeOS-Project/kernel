@@ -72,6 +72,16 @@ int kernel_user_namespace_capabilities_grant(int32_t global_pid) {
     return global_pid > 0 ? 0 : -1;
 }
 
+int kernel_io_uring_task_restrictions_clone(
+        int32_t parent_task_id, int32_t child_task_id) {
+    return parent_task_id == 1 && child_task_id == 101 ? 0 :
+           -EDGE_LINUX_EINVAL;
+}
+
+void kernel_io_uring_task_release(int32_t task_id) {
+    (void)task_id;
+}
+
 static void expect_true(const char *name, int condition) {
     if (condition) return;
     fprintf(stderr, "FAIL: %s\n", name);

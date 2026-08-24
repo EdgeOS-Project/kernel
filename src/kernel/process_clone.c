@@ -9,6 +9,7 @@
 #include "kernel/linux_abi.h"
 #include "kernel/linux_errno.h"
 #include "kernel/linux_ptrace.h"
+#include "kernel/io_uring_runtime.h"
 #include "kernel/landlock_runtime.h"
 #include "kernel/namespace_runtime.h"
 #include "kernel/perf_event.h"
@@ -189,8 +190,24 @@ int64_t kernel_process_clone(const kernel_clone_request_t *request) {
     kernel_perf_event_task_fork(
         parent_identity.global_tid, state.child_global_pid);
 #endif
+    status = kernel_io_uring_task_restrictions_clone(
+        parent_identity.global_tid, state.child_global_pid);
+    if (status < 0) {
+#ifdef CONFIG_PERF_EVENTS
+        kernel_perf_event_task_exit(state.child_global_pid);
+#endif
+#ifdef CONFIG_LANDLOCK
+        kernel_landlock_task_exit(
+            state.child_global_pid,
+            prepare.is_thread ? parent_identity.global_tgid :
+                                state.child_global_pid,
+            0);
+#endif
+        return clone_fail(&state, status);
+    }
     status = process_clone_arch_publish(&state, ptrace_event);
     if (status < 0) {
+        kernel_io_uring_task_release(state.child_global_pid);
 #ifdef CONFIG_PERF_EVENTS
         kernel_perf_event_task_exit(state.child_global_pid);
 #endif

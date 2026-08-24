@@ -630,6 +630,38 @@ int main(void) {
         kernel_io_uring_release(second_ring_id);
     }
     {
+        struct edge_linux_io_uring_params task_parameters = {0};
+        struct edge_linux_io_uring_params child_parameters = {0};
+        uint64_t submission_operations[2] = {1u, 0u};
+        int32_t task_ring_id;
+        int32_t child_ring_id;
+
+        assert(kernel_io_uring_task_restrictions_present(7001) == 0);
+        assert(kernel_io_uring_task_restrictions_register(
+                   7001, 1ull << 8u, submission_operations,
+                   0u, 0u, 1, 1) == 0);
+        assert(kernel_io_uring_task_restrictions_present(7001) == 1);
+        assert(kernel_io_uring_task_restrictions_register(
+                   7001, 1ull << 8u, submission_operations,
+                   0u, 0u, 1, 1) == -EDGE_LINUX_EPERM);
+        assert(kernel_io_uring_create_for_task(
+                   4u, &task_parameters, &task_ring_id, 7001) == 0);
+        assert(kernel_io_uring_register_allowed(task_ring_id, 8u) == 1);
+        assert(kernel_io_uring_register_allowed(task_ring_id, 5u) == 0);
+        assert(kernel_io_uring_task_restrictions_clone(7001, 7002) == 0);
+        assert(kernel_io_uring_task_restrictions_present(7002) == 1);
+        assert(kernel_io_uring_create_for_task(
+                   4u, &child_parameters, &child_ring_id, 7002) == 0);
+        assert(kernel_io_uring_register_allowed(child_ring_id, 8u) == 1);
+        assert(kernel_io_uring_register_allowed(child_ring_id, 5u) == 0);
+        kernel_io_uring_release(task_ring_id);
+        kernel_io_uring_release(child_ring_id);
+        kernel_io_uring_task_release(7001);
+        kernel_io_uring_task_release(7002);
+        assert(kernel_io_uring_task_restrictions_present(7001) == 0);
+        assert(kernel_io_uring_task_restrictions_present(7002) == 0);
+    }
+    {
         struct edge_linux_io_uring_params invalid_mixed_parameters = {
             .flags = (1u << 10) | (1u << 19),
         };

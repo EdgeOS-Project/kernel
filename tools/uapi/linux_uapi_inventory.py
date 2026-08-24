@@ -167,6 +167,7 @@ EDGEOS_ASSESSMENTS = [
             "blind linked capability queries for supported request, registration, setup, enter, SQE and feature flags",
             "synchronous and asynchronous cancellation by user data, file description, opcode or any request, including all-match counts",
             "disabled-ring restrictions for register operations, SQE opcodes and allowed or required SQE flags",
+            "one-shot task restrictions inherited by newly created rings and forked tasks",
             "registered credential personalities with scoped SQE execution and submitter credential restoration",
             "fixed-buffer cloning from ordinary or registered source rings with ranges and destination replacement",
             "synchronous blind MSG_RING data delivery without a source ring",
@@ -261,6 +262,8 @@ EDGEOS_ASSESSMENTS = [
                 "cancel matching, all-match counts, target completions and "
                 "reserved-field validation, plus disabled-ring restriction "
                 "registration and register, opcode and SQE-flag enforcement, "
+                "plus one-shot task restrictions, new-ring inheritance, fork "
+                "inheritance and task-exit cleanup, "
                 "plus credential-personality registration, use, restoration "
                 "and invalidation, plus fixed-buffer cloning, range validation "
                 "and destination replacement, plus synchronous blind MSG_RING "
