@@ -7,10 +7,26 @@
 
 #include "kernel/keyring_runtime.h"
 #include "kernel/linux_errno.h"
+#include "kernel/pipe_runtime.h"
+#include "kernel/vfs_runtime.h"
 
 static uint64_t test_time_us = 1000000u;
 static uint32_t parent_thread_count = 1u;
 static kernel_linux_identity_t parent_process_identity;
+static kernel_pipe_runtime_t watch_pipe;
+
+typedef struct test_key_notification {
+    uint32_t type_subtype;
+    uint32_t info;
+    uint32_t key_id;
+    uint32_t auxiliary;
+} test_key_notification_t;
+
+typedef struct test_removal_notification {
+    uint32_t type_subtype;
+    uint32_t info;
+    uint64_t key_id;
+} test_removal_notification_t;
 
 uint64_t boottime_monotonic_us(void) {
     return test_time_us;
@@ -73,6 +89,16 @@ uint32_t kernel_arch_proc_thread_group_count(int32_t tgid) {
         parent_thread_count : 0u;
 }
 
+int kernel_vfs_describe_descriptor(
+        int32_t descriptor, kernel_vfs_descriptor_t *description) {
+    if (!description || descriptor != 77) return -EDGE_LINUX_EBADF;
+    memset(description, 0, sizeof(*description));
+    description->kind = KERNEL_VFS_DESCRIPTOR_PIPE;
+    description->pipe = &watch_pipe;
+    description->readable = 1;
+    return 0;
+}
+
 int main(void) {
     kernel_linux_identity_t parent = identity(100, 100, 1, 1000);
     kernel_linux_identity_t child = identity(101, 101, 100, 1000);
@@ -92,6 +118,10 @@ int main(void) {
     int64_t ring;
     int64_t child_session;
 
+    kernel_pipe_object_initialize(&watch_pipe);
+    assert(kernel_pipe_notification_mode_set(&watch_pipe, 1) == 0);
+    assert(kernel_pipe_watch_size_set(&watch_pipe, 1u) == 0);
+
     arguments[0] = (uint64_t)(int64_t)EDGE_LINUX_KEY_SPEC_SESSION_KEYRING;
     arguments[1] = 1;
     session = kernel_keyring_keyctl(
@@ -105,6 +135,21 @@ int main(void) {
         (uint64_t)(uintptr_t)payload, sizeof(payload) - 1u,
         EDGE_LINUX_KEY_SPEC_SESSION_KEYRING);
     assert(key > 0);
+
+    memset(arguments, 0, sizeof(arguments));
+    arguments[0] = (uint64_t)key;
+    arguments[1] = 77u;
+    arguments[2] = 42u;
+    assert(kernel_keyring_keyctl(
+               &parent, &access, EDGE_LINUX_KEYCTL_WATCH_KEY,
+               arguments) == 0);
+    assert(kernel_keyring_keyctl(
+               &parent, &access, EDGE_LINUX_KEYCTL_WATCH_KEY,
+               arguments) == -EDGE_LINUX_EBUSY);
+    arguments[1] = 78u;
+    assert(kernel_keyring_keyctl(
+               &parent, &access, EDGE_LINUX_KEYCTL_WATCH_KEY,
+               arguments) == -EDGE_LINUX_EINVAL);
 
     memset(arguments, 0, sizeof(arguments));
     arguments[0] = (uint64_t)key;
@@ -151,6 +196,41 @@ int main(void) {
     arguments[2] = sizeof(replacement) - 1u;
     assert(kernel_keyring_keyctl(
                &parent, &access, EDGE_LINUX_KEYCTL_UPDATE, arguments) == 0);
+    {
+        test_key_notification_t notification;
+
+        assert(kernel_pipe_read_kernel(
+                   &watch_pipe, &notification,
+                   sizeof(notification)) == sizeof(notification));
+        assert((notification.type_subtype & 0x00ffffffu) == 1u);
+        assert((notification.type_subtype >> 24u) == 1u);
+        assert((notification.info & 0x7fu) == sizeof(notification));
+        assert(((notification.info >> 8u) & 0xffu) == 42u);
+        assert(notification.key_id == (uint32_t)key);
+        assert(notification.auxiliary == 0u);
+    }
+
+    memset(arguments, 0, sizeof(arguments));
+    arguments[0] = (uint64_t)key;
+    arguments[1] = 77u;
+    arguments[2] = (uint64_t)(int64_t)-1;
+    assert(kernel_keyring_keyctl(
+               &parent, &access, EDGE_LINUX_KEYCTL_WATCH_KEY,
+               arguments) == 0);
+    {
+        test_removal_notification_t notification;
+
+        assert(kernel_pipe_read_kernel(
+                   &watch_pipe, &notification,
+                   sizeof(notification)) == sizeof(notification));
+        assert(notification.type_subtype == 0u);
+        assert((notification.info & 0x7fu) == sizeof(notification));
+        assert(((notification.info >> 8u) & 0xffu) == 42u);
+        assert(notification.key_id == (uint64_t)(uint32_t)key);
+    }
+    assert(kernel_keyring_keyctl(
+               &parent, &access, EDGE_LINUX_KEYCTL_WATCH_KEY,
+               arguments) == -EDGE_LINUX_EBADSLT);
 
     ring = kernel_keyring_add_key(
         &parent, &access, (uint64_t)(uintptr_t)"keyring",
@@ -175,6 +255,7 @@ int main(void) {
     assert((capabilities[0] & 1u) != 0u);
     assert((capabilities[0] & 2u) != 0u);
     assert((capabilities[1] & 1u) != 0u);
+    assert((capabilities[1] & 4u) != 0u);
     for (uint32_t index = 2; index < sizeof(capabilities); ++index)
         assert(capabilities[index] == 0u);
 
@@ -222,6 +303,38 @@ int main(void) {
                    &stranger_child, &access,
                    EDGE_LINUX_KEYCTL_SESSION_TO_PARENT,
                    arguments) == -EDGE_LINUX_EPERM);
+    }
+
+    {
+        kernel_linux_identity_t init = identity(1, 1, 0, 3000);
+        kernel_linux_identity_t init_child = identity(401, 401, 1, 3000);
+        int64_t init_child_session;
+
+        memset(arguments, 0, sizeof(arguments));
+        arguments[0] =
+            (uint64_t)(int64_t)EDGE_LINUX_KEY_SPEC_SESSION_KEYRING;
+        arguments[1] = 1u;
+        assert(kernel_keyring_keyctl(
+                   &init, &access, EDGE_LINUX_KEYCTL_GET_KEYRING_ID,
+                   arguments) > 0);
+        arguments[0] = (uint64_t)(uintptr_t)"init-child-session";
+        init_child_session = kernel_keyring_keyctl(
+            &init_child, &access,
+            EDGE_LINUX_KEYCTL_JOIN_SESSION_KEYRING, arguments);
+        assert(init_child_session > 0);
+        parent_process_identity = init;
+        parent_thread_count = 1u;
+        memset(arguments, 0, sizeof(arguments));
+        assert(kernel_keyring_keyctl(
+                   &init_child, &access,
+                   EDGE_LINUX_KEYCTL_SESSION_TO_PARENT,
+                   arguments) == 0);
+        arguments[0] =
+            (uint64_t)(int64_t)EDGE_LINUX_KEY_SPEC_SESSION_KEYRING;
+        assert(kernel_keyring_keyctl(
+                   &init, &access, EDGE_LINUX_KEYCTL_GET_KEYRING_ID,
+                   arguments) == init_child_session);
+        parent_process_identity = parent;
     }
 
     {

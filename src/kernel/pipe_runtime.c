@@ -5,6 +5,17 @@
 #include "kernel/linux_errno.h"
 #include <stddef.h>
 
+#define KERNEL_PIPE_WATCH_INFO_LENGTH 0x0000007fu
+#define KERNEL_PIPE_WATCH_INFO_ID     0x0000ff00u
+#define KERNEL_PIPE_WATCH_META_LOSS   (1u << 24u)
+
+typedef struct kernel_pipe_watch_header {
+    uint32_t type_subtype;
+    uint32_t info;
+} kernel_pipe_watch_header_t;
+
+static volatile uint64_t g_pipe_generation;
+
 static void pipe_bytes_zero(void *destination, uint64_t size) {
     uint8_t *bytes = destination;
     while (size--) *bytes++ = 0;
@@ -35,12 +46,19 @@ static void kernel_pipe_metadata_unlock(kernel_pipe_runtime_t *pipe) {
 }
 
 void kernel_pipe_object_initialize(kernel_pipe_runtime_t *pipe) {
+    uint64_t generation;
     if (!pipe) return;
+    generation = __atomic_add_fetch(
+        &g_pipe_generation, 1u, __ATOMIC_RELAXED);
+    if (!generation)
+        generation = __atomic_add_fetch(
+            &g_pipe_generation, 1u, __ATOMIC_RELAXED);
     pipe_bytes_zero(pipe, sizeof(*pipe));
     pipe->used = 1;
     pipe->mode = 0600u;
     pipe->read_ready_sequence = 1u;
     pipe->write_ready_sequence = 1u;
+    pipe->generation = generation;
 }
 
 void kernel_pipe_metadata_initialize(kernel_pipe_runtime_t *pipe,
@@ -82,7 +100,127 @@ int kernel_pipe_packet_mode_set(kernel_pipe_runtime_t *pipe, int enabled) {
     pipe->packet_head = 0u;
     pipe->packet_count = 0u;
     pipe_bytes_zero(pipe->packet_lengths, sizeof(pipe->packet_lengths));
+    pipe_bytes_zero(pipe->packet_loss, sizeof(pipe->packet_loss));
+    pipe->watch_loss_pending = 0u;
     return 0;
+}
+
+int kernel_pipe_notification_mode_set(kernel_pipe_runtime_t *pipe,
+                                      int enabled) {
+    int result;
+
+    if (!pipe || !pipe->used) return -EDGE_LINUX_EBADF;
+    if (pipe->count || pipe->packet_count) return -EDGE_LINUX_EBUSY;
+    result = kernel_pipe_packet_mode_set(pipe, enabled != 0);
+    if (result < 0) return result;
+    pipe->notification_mode = enabled != 0;
+    pipe->watch_filter_count = 0u;
+    pipe->watch_size_set = 0u;
+    pipe->watch_note_capacity = 0u;
+    pipe_bytes_zero(pipe->watch_filters, sizeof(pipe->watch_filters));
+    return 0;
+}
+
+int kernel_pipe_notification_mode(const kernel_pipe_runtime_t *pipe) {
+    return pipe && pipe->used && pipe->notification_mode;
+}
+
+uint64_t kernel_pipe_generation(const kernel_pipe_runtime_t *pipe) {
+    if (!pipe || !pipe->used) return 0u;
+    return pipe->generation;
+}
+
+int kernel_pipe_watch_size_set(kernel_pipe_runtime_t *pipe,
+                               uint32_t note_count) {
+    if (!pipe || !pipe->used || !pipe->notification_mode)
+        return -EDGE_LINUX_ENODEV;
+    if (pipe->watch_size_set) return -EDGE_LINUX_EBUSY;
+    if (!note_count || note_count > 512u) return -EDGE_LINUX_EINVAL;
+    pipe->watch_note_capacity =
+        ((note_count + 31u) / 32u) * 32u;
+    pipe->watch_size_set = 1u;
+    return 0;
+}
+
+int kernel_pipe_watch_filter_set(
+        kernel_pipe_runtime_t *pipe,
+        const kernel_pipe_watch_filter_t *filters, uint32_t count) {
+    if (!pipe || !pipe->used || !pipe->notification_mode)
+        return -EDGE_LINUX_ENODEV;
+    if (count > KERNEL_PIPE_WATCH_FILTER_MAX || (count && !filters))
+        return -EDGE_LINUX_EINVAL;
+    if (count)
+        pipe_bytes_copy(
+            pipe->watch_filters, filters,
+            count * sizeof(pipe->watch_filters[0]));
+    if (count < KERNEL_PIPE_WATCH_FILTER_MAX)
+        pipe_bytes_zero(
+            &pipe->watch_filters[count],
+            (KERNEL_PIPE_WATCH_FILTER_MAX - count) *
+                sizeof(pipe->watch_filters[0]));
+    pipe->watch_filter_count = (uint8_t)count;
+    return 0;
+}
+
+static int kernel_pipe_watch_filter_matches(
+        const kernel_pipe_runtime_t *pipe,
+        const kernel_pipe_watch_header_t *notification) {
+    uint32_t type = notification->type_subtype & 0x00ffffffu;
+    uint32_t subtype = notification->type_subtype >> 24u;
+    uint32_t subtype_index = subtype / 32u;
+    uint32_t subtype_bit = 1u << (subtype % 32u);
+
+    if (!pipe->watch_filter_count) return 1;
+    if (subtype_index >= 8u) return 0;
+    for (uint32_t index = 0; index < pipe->watch_filter_count; ++index) {
+        const kernel_pipe_watch_filter_t *filter =
+            &pipe->watch_filters[index];
+        if (filter->type == type &&
+            (filter->subtype_filter[subtype_index] & subtype_bit) &&
+            (notification->info & filter->info_mask) ==
+                filter->info_filter)
+            return 1;
+    }
+    return 0;
+}
+
+static void kernel_pipe_watch_mark_loss(kernel_pipe_runtime_t *pipe) {
+    uint32_t index;
+
+    if (!pipe || !pipe->notification_mode) return;
+    if (!pipe->packet_count) {
+        pipe->watch_loss_pending = 1u;
+        return;
+    }
+    index = (pipe->packet_head + pipe->packet_count - 1u) %
+        KERNEL_PIPE_RUNTIME_PACKET_SLOTS;
+    pipe->packet_loss[index] = 1u;
+}
+
+int kernel_pipe_watch_notification_post(
+        kernel_pipe_runtime_t *pipe, uint64_t generation,
+        void *record, uint32_t length) {
+    kernel_pipe_watch_header_t *notification = record;
+    uint32_t encoded_length;
+
+    if (!pipe || !record || length < sizeof(*notification) ||
+        length > KERNEL_PIPE_WATCH_INFO_LENGTH || (length & 7u) ||
+        !pipe->used ||
+        !pipe->notification_mode || pipe->generation != generation)
+        return -EDGE_LINUX_EINVAL;
+    encoded_length = notification->info & KERNEL_PIPE_WATCH_INFO_LENGTH;
+    if (!encoded_length || encoded_length != length)
+        return -EDGE_LINUX_EINVAL;
+    if (!pipe->watch_size_set) return -EDGE_LINUX_ENOSPC;
+    if (!kernel_pipe_watch_filter_matches(pipe, notification)) return 0;
+    if (pipe->packet_count >= pipe->watch_note_capacity) {
+        kernel_pipe_watch_mark_loss(pipe);
+        return -EDGE_LINUX_ENOSPC;
+    }
+    if (kernel_pipe_write_kernel(pipe, record, length) == length)
+        return 1;
+    kernel_pipe_watch_mark_loss(pipe);
+    return -EDGE_LINUX_ENOSPC;
 }
 
 static uint32_t kernel_pipe_packet_front(
@@ -106,8 +244,11 @@ static void kernel_pipe_packet_push(kernel_pipe_runtime_t *pipe,
 
 static void kernel_pipe_packet_pop(kernel_pipe_runtime_t *pipe) {
     if (!pipe || !pipe->packet_count) return;
+    if (pipe->notification_mode && pipe->packet_loss[pipe->packet_head])
+        pipe->watch_loss_pending = 1u;
     pipe->packet_lengths[pipe->packet_head] = 0u;
-    pipe->packet_head = (uint8_t)((pipe->packet_head + 1u) %
+    pipe->packet_loss[pipe->packet_head] = 0u;
+    pipe->packet_head = (uint16_t)((pipe->packet_head + 1u) %
         KERNEL_PIPE_RUNTIME_PACKET_SLOTS);
     --pipe->packet_count;
 }
@@ -220,7 +361,8 @@ kernel_pipe_io_decision_t kernel_pipe_read_decide(
     const kernel_pipe_runtime_t *pipe, int nonblocking) {
     uint32_t writers;
     if (!pipe || !pipe->used) return KERNEL_PIPE_IO_INVALID;
-    if (pipe->count) return KERNEL_PIPE_IO_READY;
+    if (pipe->count || pipe->watch_loss_pending)
+        return KERNEL_PIPE_IO_READY;
     writers = __atomic_load_n(&pipe->writers, __ATOMIC_ACQUIRE);
     if (!writers) return KERNEL_PIPE_IO_COMPLETE;
     return nonblocking ?
@@ -256,7 +398,8 @@ uint32_t kernel_pipe_poll_events(
         if (!read_pipe || !read_pipe->used) {
             events |= KERNEL_PIPE_POLL_NVAL;
         } else {
-            if (read_pipe->count) events |= KERNEL_PIPE_POLL_IN;
+            if (read_pipe->count || read_pipe->watch_loss_pending)
+                events |= KERNEL_PIPE_POLL_IN;
             if (!__atomic_load_n(
                     &read_pipe->writers, __ATOMIC_ACQUIRE))
                 events |= KERNEL_PIPE_POLL_HUP;
@@ -280,13 +423,14 @@ uint32_t kernel_pipe_poll_events(
 
 uint32_t kernel_pipe_readable_bytes(const kernel_pipe_runtime_t *pipe) {
     if (!pipe || !pipe->used) return 0;
-    return __atomic_load_n(&pipe->count, __ATOMIC_ACQUIRE);
+    return __atomic_load_n(&pipe->count, __ATOMIC_ACQUIRE) +
+        (pipe->watch_loss_pending ? sizeof(kernel_pipe_watch_header_t) : 0u);
 }
 
 int kernel_pipe_read_wake_ready(const kernel_pipe_runtime_t *pipe,
                                 int fifo_open_wait) {
     if (!pipe || !pipe->used) return 1;
-    return pipe->count ||
+    return pipe->count || pipe->watch_loss_pending ||
         !__atomic_load_n(&pipe->writers, __ATOMIC_ACQUIRE) ||
         (fifo_open_wait && __atomic_load_n(
             &pipe->pending_writers, __ATOMIC_ACQUIRE));
@@ -308,6 +452,18 @@ int64_t kernel_pipe_read_user(kernel_pipe_runtime_t *pipe,
     if (!pipe || !pipe->used) return -EDGE_LINUX_EBADF;
     if (!copy_to_user) return -EDGE_LINUX_EINVAL;
     if (!destination && length) return -EDGE_LINUX_EFAULT;
+    if (pipe->notification_mode && pipe->watch_loss_pending && length) {
+        kernel_pipe_watch_header_t loss = {
+            .type_subtype = KERNEL_PIPE_WATCH_META_LOSS,
+            .info = sizeof(loss),
+        };
+
+        if (length < sizeof(loss)) return -EDGE_LINUX_ENOBUFS;
+        if (copy_to_user(copy_context, destination, &loss, sizeof(loss)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        pipe->watch_loss_pending = 0u;
+        return (int64_t)sizeof(loss);
+    }
     if (pipe->packet_mode && length && pipe->count) {
         uint32_t packet_length = kernel_pipe_packet_front(pipe);
         uint32_t copied = length < packet_length ?
@@ -318,6 +474,8 @@ int64_t kernel_pipe_read_user(kernel_pipe_runtime_t *pipe,
 
         if (!packet_length || packet_length > pipe->count)
             return -EDGE_LINUX_EIO;
+        if (pipe->notification_mode && length < packet_length)
+            return -EDGE_LINUX_ENOBUFS;
         if (first > contiguous) first = contiguous;
         if (first && copy_to_user(
                 copy_context, destination,
@@ -364,6 +522,7 @@ int64_t kernel_pipe_write_user(kernel_pipe_runtime_t *pipe,
                                void *copy_context) {
     uint64_t done = 0;
     if (!pipe || !pipe->used) return -EDGE_LINUX_EBADF;
+    if (pipe->notification_mode) return -EDGE_LINUX_EXDEV;
     if (!copy_from_user) return -EDGE_LINUX_EINVAL;
     if (!source && length) return -EDGE_LINUX_EFAULT;
     if (pipe->packet_mode && length) {
@@ -455,6 +614,20 @@ uint32_t kernel_pipe_peek_kernel(const kernel_pipe_runtime_t *pipe,
 
 uint32_t kernel_pipe_read_kernel(kernel_pipe_runtime_t *pipe,
                                  void *destination, uint32_t length) {
+    if (pipe && pipe->notification_mode && pipe->watch_loss_pending) {
+        kernel_pipe_watch_header_t loss = {
+            .type_subtype = KERNEL_PIPE_WATCH_META_LOSS,
+            .info = sizeof(loss),
+        };
+
+        if (!destination || length < sizeof(loss)) return 0u;
+        pipe_bytes_copy(destination, &loss, sizeof(loss));
+        pipe->watch_loss_pending = 0u;
+        return sizeof(loss);
+    }
+    if (pipe && pipe->notification_mode && pipe->packet_count &&
+        length < kernel_pipe_packet_front(pipe))
+        return 0u;
     uint32_t consumed;
     uint32_t done = kernel_pipe_peek_kernel(pipe, destination, length, 0);
     if (!pipe || !done) return done;

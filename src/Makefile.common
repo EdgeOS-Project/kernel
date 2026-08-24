@@ -106,6 +106,7 @@ EDGE_SHARED_SRCS := \
 	$(SRC)/kernel/namespaces.c \
 	$(SRC)/kernel/pid_index.c \
 	$(SRC)/kernel/pipe_runtime.c \
+	$(SRC)/kernel/watch_queue_runtime.c \
 	$(SRC)/kernel/posix_timer_runtime.c \
 	$(SRC)/kernel/posix_mq_runtime.c \
 	$(SRC)/kernel/proc_maps.c \

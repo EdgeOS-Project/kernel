@@ -153,6 +153,21 @@ config KEYS
       Enable Linux add_key, request_key, and keyctl over the shared keyring,
       permission, payload, search, timeout, and persistent-keyring runtime.
 
+config WATCH_QUEUE
+    bool "Linux notification pipes"
+    default y
+    help
+      Enable notification pipes, watch queue sizing and notification filters
+      for kernel event sources.
+
+config KEY_NOTIFICATIONS
+    bool "Key retention service notifications"
+    depends on KEYS && WATCH_QUEUE
+    default y
+    help
+      Allow key and keyring changes to be delivered through Linux notification
+      pipes with KEYCTL_WATCH_KEY.
+
 config FANOTIFY
     bool "Linux fanotify notification service"
     default y

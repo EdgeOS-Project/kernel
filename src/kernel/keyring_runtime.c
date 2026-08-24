@@ -9,6 +9,8 @@
 
 #include "kernel/keyring_runtime.h"
 #include "kernel/linux_errno.h"
+#include "kernel/pipe_runtime.h"
+#include "kernel/vfs_runtime.h"
 #include "string.h"
 #include "sys/boottime.h"
 
@@ -19,6 +21,39 @@
 #define KERNEL_KEY_DESCRIPTION_MAX 4096u
 #define KERNEL_KEY_PAYLOAD_MAX 65536u
 #define KERNEL_KEY_SEARCH_DEPTH_MAX 8u
+#define KERNEL_KEY_WATCH_MAX 16u
+
+enum kernel_key_notification_subtype {
+    KERNEL_KEY_NOTIFY_INSTANTIATED = 0,
+    KERNEL_KEY_NOTIFY_UPDATED = 1,
+    KERNEL_KEY_NOTIFY_LINKED = 2,
+    KERNEL_KEY_NOTIFY_UNLINKED = 3,
+    KERNEL_KEY_NOTIFY_CLEARED = 4,
+    KERNEL_KEY_NOTIFY_REVOKED = 5,
+    KERNEL_KEY_NOTIFY_INVALIDATED = 6,
+    KERNEL_KEY_NOTIFY_SETATTR = 7,
+};
+
+typedef struct kernel_key_watch {
+    uint8_t used;
+    uint8_t watch_id;
+    uint16_t reserved;
+    kernel_pipe_runtime_t *pipe;
+    uint64_t pipe_generation;
+} kernel_key_watch_t;
+
+typedef struct kernel_key_notification {
+    uint32_t type_subtype;
+    uint32_t info;
+    uint32_t key_id;
+    uint32_t auxiliary;
+} kernel_key_notification_t;
+
+typedef struct kernel_key_removal_notification {
+    uint32_t type_subtype;
+    uint32_t info;
+    uint64_t key_id;
+} kernel_key_removal_notification_t;
 
 enum kernel_key_kind {
     KERNEL_KEY_KIND_KEYRING = 1,
@@ -49,6 +84,7 @@ typedef struct kernel_key_object {
     char restriction_type[KERNEL_KEY_TYPE_MAX];
     char description[KERNEL_KEY_DESCRIPTION_MAX];
     uint8_t payload[KERNEL_KEY_PAYLOAD_MAX];
+    kernel_key_watch_t watches[KERNEL_KEY_WATCH_MAX];
 } kernel_key_object_t;
 
 typedef struct kernel_key_task_state {
@@ -82,6 +118,59 @@ static int key_permission_locked(
     const kernel_linux_identity_t *identity,
     kernel_key_task_state_t *state, const kernel_key_object_t *key,
     uint32_t need);
+
+static void key_notify_locked(kernel_key_object_t *key,
+                              uint32_t subtype, uint32_t auxiliary) {
+#ifdef CONFIG_KEY_NOTIFICATIONS
+    uint32_t index;
+
+    if (!key) return;
+    for (index = 0; index < KERNEL_KEY_WATCH_MAX; ++index) {
+        kernel_key_watch_t *watch = &key->watches[index];
+        kernel_key_notification_t notification;
+
+        if (!watch->used) continue;
+        if (!watch->pipe ||
+            kernel_pipe_generation(watch->pipe) !=
+                watch->pipe_generation ||
+            !kernel_pipe_notification_mode(watch->pipe)) {
+            memset(watch, 0, sizeof(*watch));
+            continue;
+        }
+        notification.type_subtype = 1u | (subtype << 24u);
+        notification.info = sizeof(notification) |
+            ((uint32_t)watch->watch_id << 8u);
+        notification.key_id = (uint32_t)key->serial;
+        notification.auxiliary = auxiliary;
+        (void)kernel_pipe_watch_notification_post(
+            watch->pipe, watch->pipe_generation, &notification,
+            sizeof(notification));
+    }
+#else
+    (void)key;
+    (void)subtype;
+    (void)auxiliary;
+#endif
+}
+
+#ifdef CONFIG_KEY_NOTIFICATIONS
+static void key_notify_removal_locked(kernel_key_object_t *key,
+                                      kernel_key_watch_t *watch) {
+    kernel_key_removal_notification_t notification;
+
+    if (!key || !watch || !watch->used || !watch->pipe ||
+        kernel_pipe_generation(watch->pipe) != watch->pipe_generation ||
+        !kernel_pipe_notification_mode(watch->pipe))
+        return;
+    notification.type_subtype = 0u;
+    notification.info = sizeof(notification) |
+        ((uint32_t)watch->watch_id << 8u);
+    notification.key_id = (uint64_t)(uint32_t)key->serial;
+    (void)kernel_pipe_watch_notification_post(
+        watch->pipe, watch->pipe_generation, &notification,
+        sizeof(notification));
+}
+#endif
 
 static void key_lock(volatile uint32_t *lock) {
     while (__sync_lock_test_and_set(lock, 1u)) { }
@@ -181,6 +270,11 @@ static void key_release_unreferenced_locked(int32_t serial,
     if (child_count)
         memcpy(children, key->links,
                child_count * sizeof(children[0]));
+#ifdef CONFIG_KEY_NOTIFICATIONS
+    for (index = 0; index < KERNEL_KEY_WATCH_MAX; ++index)
+        if (key->watches[index].used)
+            key_notify_removal_locked(key, &key->watches[index]);
+#endif
     memset(key, 0, sizeof(*key));
     for (index = 0; index < child_count; ++index)
         key_release_unreferenced_locked(children[index], depth + 1u);
@@ -347,7 +441,7 @@ static int64_t keyctl_session_to_parent(
     int32_t previous_session;
     int64_t result = -EDGE_LINUX_EPERM;
 
-    if (!identity || identity->global_ppid <= 1 ||
+    if (!identity || identity->global_ppid <= 0 ||
         kernel_process_linux_identity(
             identity->global_ppid, &parent_identity) < 0)
         return -EDGE_LINUX_EPERM;
@@ -549,6 +643,8 @@ static int key_link_locked(
     if (ring->link_count >= KERNEL_KEY_LINK_MAX)
         return -EDGE_LINUX_ENFILE;
     ring->links[ring->link_count++] = key->serial;
+    key_notify_locked(
+        ring, KERNEL_KEY_NOTIFY_LINKED, (uint32_t)key->serial);
     return 0;
 }
 
@@ -563,6 +659,8 @@ static int key_link_created_locked(kernel_key_object_t *key,
     if (ring->link_count >= KERNEL_KEY_LINK_MAX)
         return -EDGE_LINUX_ENFILE;
     ring->links[ring->link_count++] = key->serial;
+    key_notify_locked(
+        ring, KERNEL_KEY_NOTIFY_LINKED, (uint32_t)key->serial);
     return 0;
 }
 
@@ -576,6 +674,8 @@ static int key_unlink_locked(kernel_key_object_t *key,
         --ring->link_count;
         memmove(&ring->links[index], &ring->links[index + 1u],
                 (ring->link_count - index) * sizeof(ring->links[0]));
+        key_notify_locked(
+            ring, KERNEL_KEY_NOTIFY_UNLINKED, (uint32_t)key->serial);
         return 0;
     }
     return -EDGE_LINUX_ENOENT;
@@ -774,6 +874,7 @@ int64_t kernel_keyring_add_key(
             if (payload_length)
                 memcpy(key->payload, g_key_payload_scratch,
                        (uint32_t)payload_length);
+            key_notify_locked(key, KERNEL_KEY_NOTIFY_UPDATED, 0u);
             result = key->serial;
         }
     }
@@ -863,6 +964,70 @@ static int64_t keyctl_get_keyring_id_locked(
     return ring->serial;
 }
 
+static int64_t keyctl_watch_key_locked(
+        const kernel_linux_identity_t *identity,
+        kernel_key_task_state_t *state, kernel_key_object_t *key,
+        int32_t descriptor, int32_t watch_id) {
+#ifndef CONFIG_KEY_NOTIFICATIONS
+    (void)identity;
+    (void)state;
+    (void)key;
+    (void)descriptor;
+    (void)watch_id;
+    return -EDGE_LINUX_EOPNOTSUPP;
+#else
+    kernel_vfs_descriptor_t description;
+    uint64_t generation;
+    uint32_t index;
+    int result;
+
+    if (watch_id < -1 || watch_id > 255)
+        return -EDGE_LINUX_EINVAL;
+    if (!key) return -EDGE_LINUX_ENOKEY;
+    result = key_permission_locked(identity, state, key, 1u);
+    if (result < 0) return result;
+    result = kernel_vfs_describe_descriptor(descriptor, &description);
+    if (result < 0 || description.kind != KERNEL_VFS_DESCRIPTOR_PIPE ||
+        !description.pipe ||
+        !kernel_pipe_notification_mode(description.pipe))
+        return -EDGE_LINUX_EINVAL;
+    generation = kernel_pipe_generation(description.pipe);
+    if (!generation) return -EDGE_LINUX_EINVAL;
+
+    for (index = 0; index < KERNEL_KEY_WATCH_MAX; ++index) {
+        kernel_key_watch_t *watch = &key->watches[index];
+
+        if (!watch->used) continue;
+        if (!watch->pipe ||
+            kernel_pipe_generation(watch->pipe) !=
+                watch->pipe_generation ||
+            !kernel_pipe_notification_mode(watch->pipe)) {
+            memset(watch, 0, sizeof(*watch));
+            continue;
+        }
+        if (watch->pipe != description.pipe ||
+            watch->pipe_generation != generation)
+            continue;
+        if (watch_id >= 0) return -EDGE_LINUX_EBUSY;
+        key_notify_removal_locked(key, watch);
+        memset(watch, 0, sizeof(*watch));
+        return 0;
+    }
+    if (watch_id < 0) return -EDGE_LINUX_EBADSLT;
+    for (index = 0; index < KERNEL_KEY_WATCH_MAX; ++index) {
+        kernel_key_watch_t *watch = &key->watches[index];
+
+        if (watch->used) continue;
+        watch->used = 1u;
+        watch->watch_id = (uint8_t)watch_id;
+        watch->pipe = description.pipe;
+        watch->pipe_generation = generation;
+        return 0;
+    }
+    return -EDGE_LINUX_ENOMEM;
+#endif
+}
+
 int64_t kernel_keyring_keyctl(
     const kernel_linux_identity_t *identity,
     const kernel_keyring_user_access_t *access,
@@ -934,7 +1099,11 @@ int64_t kernel_keyring_keyctl(
     if (command == EDGE_LINUX_KEYCTL_CAPABILITIES) {
         const uint8_t capabilities[2] = {
             0x01u | 0x02u | 0x10u | 0x20u | 0x40u | 0x80u,
+#ifdef CONFIG_KEY_NOTIFICATIONS
+            0x01u | 0x04u,
+#else
             0x01u,
+#endif
         };
         static const uint8_t zeros[64] = {0};
         uint64_t remaining = arguments[1] > sizeof(capabilities) ?
@@ -1004,6 +1173,20 @@ int64_t kernel_keyring_keyctl(
         goto out;
     }
 
+    if (command == EDGE_LINUX_KEYCTL_WATCH_KEY) {
+        int32_t watch_id = (int32_t)arguments[2];
+
+        if (watch_id < -1 || watch_id > 255) {
+            result = -EDGE_LINUX_EINVAL;
+            goto out;
+        }
+        key = key_resolve_locked(
+            identity, state, (int32_t)arguments[0], 1);
+        result = keyctl_watch_key_locked(
+            identity, state, key, (int32_t)arguments[1], watch_id);
+        goto out;
+    }
+
     key = key_resolve_locked(
         identity, state, (int32_t)arguments[0], 0);
     if (!key) {
@@ -1048,6 +1231,7 @@ int64_t kernel_keyring_keyctl(
             if (arguments[2])
                 memcpy(key->payload, g_key_payload_scratch,
                        (uint32_t)arguments[2]);
+            key_notify_locked(key, KERNEL_KEY_NOTIFY_UPDATED, 0u);
         }
         key_unlock(&g_key_copy_lock);
         break;
@@ -1058,6 +1242,7 @@ int64_t kernel_keyring_keyctl(
             key->revoked = 1u;
             memset(key->payload, 0, key->payload_length);
             key->payload_length = 0u;
+            key_notify_locked(key, KERNEL_KEY_NOTIFY_REVOKED, 0u);
             result = 0;
         }
         break;
@@ -1066,6 +1251,7 @@ int64_t kernel_keyring_keyctl(
             result = -EDGE_LINUX_EACCES;
         else {
             key->invalidated = 1u;
+            key_notify_locked(key, KERNEL_KEY_NOTIFY_INVALIDATED, 0u);
             result = 0;
         }
         break;
@@ -1081,6 +1267,7 @@ int64_t kernel_keyring_keyctl(
                 key->uid = (uint32_t)arguments[1];
             if ((uint32_t)arguments[2] != UINT32_MAX)
                 key->gid = (uint32_t)arguments[2];
+            key_notify_locked(key, KERNEL_KEY_NOTIFY_SETATTR, 0u);
             result = 0;
         }
         break;
@@ -1091,6 +1278,7 @@ int64_t kernel_keyring_keyctl(
             result = -EDGE_LINUX_EACCES;
         else {
             key->permissions = (uint32_t)arguments[1];
+            key_notify_locked(key, KERNEL_KEY_NOTIFY_SETATTR, 0u);
             result = 0;
         }
         break;
@@ -1121,6 +1309,7 @@ int64_t kernel_keyring_keyctl(
         else {
             memset(key->links, 0, sizeof(key->links));
             key->link_count = 0;
+            key_notify_locked(key, KERNEL_KEY_NOTIFY_CLEARED, 0u);
             result = 0;
         }
         break;
@@ -1176,6 +1365,7 @@ int64_t kernel_keyring_keyctl(
         else {
             key->expires_us = arguments[1] ?
                 boottime_monotonic_us() + arguments[1] * 1000000u : 0u;
+            key_notify_locked(key, KERNEL_KEY_NOTIFY_SETATTR, 0u);
             result = 0;
         }
         break;
@@ -1217,6 +1407,7 @@ int64_t kernel_keyring_keyctl(
             if (arguments[1])
                 memcpy(key->restriction_type, g_key_type_scratch,
                        strlen(g_key_type_scratch) + 1u);
+            key_notify_locked(key, KERNEL_KEY_NOTIFY_SETATTR, 0u);
         }
         key_unlock(&g_key_copy_lock);
         break;
@@ -1232,7 +1423,23 @@ int64_t kernel_keyring_keyctl(
         if (!ring || !other) result = -EDGE_LINUX_ENOKEY;
         else if (key_permission_locked(identity, state, ring, 4u) < 0)
             result = -EDGE_LINUX_EACCES;
+        else if (ring == other)
+            result = 0;
         else {
+            uint32_t link_index;
+            int linked = 0;
+
+            for (link_index = 0; link_index < ring->link_count;
+                 ++link_index) {
+                if (ring->links[link_index] == key->serial) {
+                    linked = 1;
+                    break;
+                }
+            }
+            if (!linked) {
+                result = -EDGE_LINUX_ENOENT;
+                break;
+            }
             result = key_link_locked(
                 identity, state, key, other,
                 (arguments[3] & EDGE_LINUX_KEYCTL_MOVE_EXCL) != 0u);

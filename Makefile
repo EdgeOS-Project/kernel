@@ -4310,15 +4310,29 @@ rseq-slice-runtime-unit: tools/tests/rseq_slice_runtime_unit.c \
 		-o $(OUT)/tests/rseq_slice_runtime_unit
 	@$(OUT)/tests/rseq_slice_runtime_unit
 
-.PHONY: keyring-runtime-unit
+.PHONY: keyring-runtime-unit watch-queue-runtime-unit
 keyring-runtime-unit: tools/tests/keyring_runtime_unit.c \
-		$(SRC)/kernel/keyring_runtime.c include/kernel/keyring_runtime.h
+		$(SRC)/kernel/keyring_runtime.c $(SRC)/kernel/pipe_runtime.c \
+		include/kernel/keyring_runtime.h include/kernel/pipe_runtime.h
 	@mkdir -p $(OUT)/tests
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fno-builtin \
+		-DCONFIG_WATCH_QUEUE -DCONFIG_KEY_NOTIFICATIONS \
 		-iquote $(INC) tools/tests/keyring_runtime_unit.c \
-		$(SRC)/kernel/keyring_runtime.c \
+		$(SRC)/kernel/keyring_runtime.c $(SRC)/kernel/pipe_runtime.c \
 		-o $(OUT)/tests/keyring_runtime_unit
 	@$(OUT)/tests/keyring_runtime_unit
+
+watch-queue-runtime-unit: tools/tests/watch_queue_runtime_unit.c \
+		$(SRC)/kernel/watch_queue_runtime.c \
+		$(SRC)/kernel/pipe_runtime.c include/kernel/watch_queue_runtime.h
+	@mkdir -p $(OUT)/tests
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fno-builtin \
+		-DCONFIG_WATCH_QUEUE -iquote $(INC) \
+		tools/tests/watch_queue_runtime_unit.c \
+		$(SRC)/kernel/watch_queue_runtime.c \
+		$(SRC)/kernel/pipe_runtime.c \
+		-o $(OUT)/tests/watch_queue_runtime_unit
+	@$(OUT)/tests/watch_queue_runtime_unit
 
 boottime-discipline-unit: tools/tests/boottime_discipline_unit.c \
 		$(SRC)/kernel/boottime.c include/sys/boottime.h
@@ -4910,7 +4924,8 @@ fd-table-runtime-unit: tools/tests/fd_table_runtime_unit.c $(SRC)/kernel/fd_tabl
 
 descriptor-factory-runtime-unit: tools/tests/descriptor_factory_runtime_unit.c $(SRC)/kernel/descriptor_factory_runtime.c $(SRC)/kernel/socket_factory_runtime.c
 	@mkdir -p $(OUT)/tests
-	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -iquote $(INC) \
+	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror \
+		-DCONFIG_WATCH_QUEUE -iquote $(INC) \
 		tools/tests/descriptor_factory_runtime_unit.c \
 		$(SRC)/kernel/descriptor_factory_runtime.c \
 		$(SRC)/kernel/socket_factory_runtime.c \

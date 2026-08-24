@@ -8,6 +8,7 @@
 #define SYS_read 0
 #define SYS_write 1
 #define SYS_close 3
+#define SYS_ioctl 16
 #define SYS_clone 56
 #define SYS_exit 60
 #define SYS_wait4 61
@@ -20,6 +21,7 @@
 #define SYS_read 63
 #define SYS_write 64
 #define SYS_close 57
+#define SYS_ioctl 29
 #define SYS_clone 220
 #define SYS_exit 93
 #define SYS_wait4 260
@@ -44,10 +46,17 @@
 #define KEYCTL_GET_SECURITY 17
 #define KEYCTL_SESSION_TO_PARENT 18
 #define KEYCTL_CAPABILITIES 31
+#define KEYCTL_WATCH_KEY 32
+
+#define O_NOTIFICATION_PIPE 0x80
+#define IOC_WATCH_QUEUE_SET_SIZE 0x5760
 
 #define EKEYREVOKED 128
 #define ENOKEY 126
 #define ENODEV 19
+#define EBUSY 16
+#define EINVAL 22
+#define EXDEV 18
 #define SIGCHLD 17
 
 static long raw_syscall6(long number, long a0, long a1, long a2,
@@ -136,6 +145,19 @@ static int bytes_equal(const void *left, const void *right,
     return 1;
 }
 
+struct key_notification {
+    uint32_t type_subtype;
+    uint32_t info;
+    uint32_t key_id;
+    uint32_t auxiliary;
+};
+
+struct removal_notification {
+    uint32_t type_subtype;
+    uint32_t info;
+    uint64_t key_id;
+};
+
 START_ATTRIBUTES void _start(void) {
     static const char payload[] = "edge-key-payload";
     static const char replacement[] = "updated";
@@ -145,6 +167,7 @@ START_ATTRIBUTES void _start(void) {
     long key;
     long ring;
     long found;
+    int notification_pipe[2] = {-1, -1};
     int failures = 0;
 
     session = raw_syscall6(
@@ -157,6 +180,59 @@ START_ATTRIBUTES void _start(void) {
         (long)payload, sizeof(payload) - 1u,
         KEY_SPEC_SESSION_KEYRING, 0);
     if (key <= 0) failures += expect_result("add_key", key, 1);
+
+    failures += expect_result(
+        "notification-pipe",
+        raw_syscall6(
+            SYS_pipe2, (long)notification_pipe,
+            O_NOTIFICATION_PIPE, 0, 0, 0, 0),
+        0);
+    if (notification_pipe[0] >= 0 && notification_pipe[1] >= 0) {
+        failures += expect_result(
+            "notification-write",
+            raw_syscall6(
+                SYS_write, notification_pipe[1], (long)payload,
+                sizeof(payload) - 1u, 0, 0, 0),
+            -EXDEV);
+        failures += expect_result(
+            "notification-size",
+            raw_syscall6(
+                SYS_ioctl, notification_pipe[0],
+                IOC_WATCH_QUEUE_SET_SIZE, 1, 0, 0, 0),
+            0);
+        failures += expect_result(
+            "notification-size-repeat",
+            raw_syscall6(
+                SYS_ioctl, notification_pipe[0],
+                IOC_WATCH_QUEUE_SET_SIZE, 1, 0, 0, 0),
+            -EBUSY);
+        failures += expect_result(
+            "notification-size-write-end",
+            raw_syscall6(
+                SYS_ioctl, notification_pipe[1],
+                IOC_WATCH_QUEUE_SET_SIZE, 1, 0, 0, 0),
+            -EBUSY);
+    }
+    if (key > 0 && notification_pipe[0] >= 0) {
+        failures += expect_result(
+            "watch-key",
+            raw_syscall6(
+                SYS_keyctl, KEYCTL_WATCH_KEY, key,
+                notification_pipe[0], 7, 0, 0),
+            0);
+        failures += expect_result(
+            "watch-key-duplicate",
+            raw_syscall6(
+                SYS_keyctl, KEYCTL_WATCH_KEY, key,
+                notification_pipe[0], 8, 0, 0),
+            -EBUSY);
+        failures += expect_result(
+            "watch-key-id-range",
+            raw_syscall6(
+                SYS_keyctl, KEYCTL_WATCH_KEY, key,
+                notification_pipe[0], 256, 0, 0),
+            -EINVAL);
+    }
 
     if (key > 0) {
         failures += expect_result(
@@ -205,6 +281,47 @@ START_ATTRIBUTES void _start(void) {
             raw_syscall6(SYS_keyctl, KEYCTL_UPDATE, key,
                          (long)replacement, sizeof(replacement) - 1u, 0, 0),
             0);
+        if (notification_pipe[0] >= 0) {
+            struct key_notification notification;
+
+            failures += expect_result(
+                "watch-update-read",
+                raw_syscall6(
+                    SYS_read, notification_pipe[0],
+                    (long)&notification, sizeof(notification), 0, 0, 0),
+                sizeof(notification));
+            if ((notification.type_subtype & 0x00ffffffu) != 1u ||
+                (notification.type_subtype >> 24u) != 1u ||
+                (notification.info & 0x7fu) != sizeof(notification) ||
+                ((notification.info >> 8u) & 0xffu) != 7u ||
+                notification.key_id != (uint32_t)key) {
+                print_text("FAIL watch-update-record\n");
+                ++failures;
+            }
+            failures += expect_result(
+                "watch-key-remove",
+                raw_syscall6(
+                    SYS_keyctl, KEYCTL_WATCH_KEY, key,
+                    notification_pipe[0], -1, 0, 0),
+                0);
+            {
+                struct removal_notification removal;
+
+                failures += expect_result(
+                    "watch-removal-read",
+                    raw_syscall6(
+                        SYS_read, notification_pipe[0], (long)&removal,
+                        sizeof(removal), 0, 0, 0),
+                    sizeof(removal));
+                if (removal.type_subtype != 0u ||
+                    (removal.info & 0x7fu) != sizeof(removal) ||
+                    ((removal.info >> 8u) & 0xffu) != 7u ||
+                    removal.key_id != (uint64_t)(uint32_t)key) {
+                    print_text("FAIL watch-removal-record\n");
+                    ++failures;
+                }
+            }
+        }
     }
 
     ring = raw_syscall6(
@@ -229,6 +346,10 @@ START_ATTRIBUTES void _start(void) {
         print_text("FAIL capabilities-bit\n");
         ++failures;
     }
+    if (!(capabilities[1] & 0x04u)) {
+        print_text("FAIL notification-capability-bit\n");
+        ++failures;
+    }
     failures += expect_result(
         "unknown-type",
         raw_syscall6(SYS_add_key, (long)"edge-unknown",
@@ -250,6 +371,12 @@ START_ATTRIBUTES void _start(void) {
                          (long)output, sizeof(output), 0, 0),
             -EKEYREVOKED);
     }
+    if (notification_pipe[0] >= 0)
+        (void)raw_syscall6(
+            SYS_close, notification_pipe[0], 0, 0, 0, 0, 0);
+    if (notification_pipe[1] >= 0)
+        (void)raw_syscall6(
+            SYS_close, notification_pipe[1], 0, 0, 0, 0, 0);
 
     {
         static const char child_name[] = "edge-probe-child-session";

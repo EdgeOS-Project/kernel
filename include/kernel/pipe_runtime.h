@@ -14,8 +14,16 @@
 
 #define KERNEL_PIPE_RUNTIME_CAPACITY (64u * 1024u)
 #define KERNEL_PIPE_RUNTIME_BUF 4096u
-#define KERNEL_PIPE_RUNTIME_PACKET_SLOTS \
-    (KERNEL_PIPE_RUNTIME_CAPACITY / KERNEL_PIPE_RUNTIME_BUF)
+#define KERNEL_PIPE_RUNTIME_PACKET_SLOTS 512u
+#define KERNEL_PIPE_WATCH_FILTER_MAX 16u
+#define KERNEL_PIPE_WATCH_TYPE_COUNT 2u
+
+typedef struct kernel_pipe_watch_filter {
+    uint32_t type;
+    uint32_t info_filter;
+    uint32_t info_mask;
+    uint32_t subtype_filter[8];
+} kernel_pipe_watch_filter_t;
 
 typedef struct kernel_pipe_runtime {
     uint8_t used;
@@ -45,10 +53,19 @@ typedef struct kernel_pipe_runtime {
     uint32_t write_position;
     uint32_t count;
     uint16_t packet_lengths[KERNEL_PIPE_RUNTIME_PACKET_SLOTS];
-    uint8_t packet_head;
-    uint8_t packet_count;
+    uint8_t packet_loss[KERNEL_PIPE_RUNTIME_PACKET_SLOTS];
+    uint16_t packet_head;
+    uint16_t packet_count;
     uint8_t packet_mode;
-    uint8_t packet_reserved;
+    uint8_t notification_mode;
+    uint8_t watch_loss_pending;
+    uint8_t watch_filter_count;
+    uint8_t watch_size_set;
+    uint8_t watch_reserved;
+    uint32_t watch_note_capacity;
+    uint64_t generation;
+    kernel_pipe_watch_filter_t
+        watch_filters[KERNEL_PIPE_WATCH_FILTER_MAX];
     /*
      * Zero is reserved for callers that cannot provide transition tracking.
      * Live shared pipe objects always keep both sequences nonzero.
@@ -99,6 +116,18 @@ int kernel_pipe_metadata_snapshot(kernel_pipe_runtime_t *pipe,
 int kernel_pipe_metadata_chown(kernel_pipe_runtime_t *pipe,
                                uint32_t uid, uint32_t gid);
 int kernel_pipe_packet_mode_set(kernel_pipe_runtime_t *pipe, int enabled);
+int kernel_pipe_notification_mode_set(kernel_pipe_runtime_t *pipe,
+                                      int enabled);
+int kernel_pipe_notification_mode(const kernel_pipe_runtime_t *pipe);
+uint64_t kernel_pipe_generation(const kernel_pipe_runtime_t *pipe);
+int kernel_pipe_watch_size_set(kernel_pipe_runtime_t *pipe,
+                               uint32_t note_count);
+int kernel_pipe_watch_filter_set(
+    kernel_pipe_runtime_t *pipe,
+    const kernel_pipe_watch_filter_t *filters, uint32_t count);
+int kernel_pipe_watch_notification_post(
+    kernel_pipe_runtime_t *pipe, uint64_t generation,
+    void *notification, uint32_t length);
 
 int kernel_pipe_endpoint_retain(kernel_pipe_runtime_t *pipe,
                                 int reader, int writer);

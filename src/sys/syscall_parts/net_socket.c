@@ -7467,6 +7467,13 @@ int arch_fd_pipe_prepare(
     if (pid < 0) return -ENFILE;
     kernel_pipe_metadata_initialize(
         &g_pipes[pid], cur ? cur->euid : 0u, cur ? cur->egid : 0u, 0600u);
+    if (flags & LINUX_O_EXCL) {
+        status = kernel_pipe_notification_mode_set(&g_pipes[pid], 1);
+        if (status < 0) {
+            memset(&g_pipes[pid], 0, sizeof(g_pipes[pid]));
+            return status;
+        }
+    }
     if (flags & LINUX_O_DIRECT) {
         status = kernel_pipe_packet_mode_set(&g_pipes[pid], 1);
         if (status < 0) {

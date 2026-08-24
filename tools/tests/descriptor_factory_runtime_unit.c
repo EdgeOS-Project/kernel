@@ -132,6 +132,10 @@ static void test_descriptor_factories(void) {
                     descriptors, &publication) == 17 &&
                 descriptors[0] == 3 && descriptors[1] == 4 &&
                 g_pipe_calls == 1);
+    expect_true("notification pipe dispatch",
+                kernel_fd_pipe_prepare(
+                    0x00000080u, descriptors, &publication) == 17 &&
+                g_pipe_calls == 2);
 
     expect_true("memfd null name",
                 kernel_memfd_create_descriptor(0, 7) ==

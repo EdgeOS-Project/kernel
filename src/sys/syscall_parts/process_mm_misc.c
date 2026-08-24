@@ -1360,6 +1360,8 @@ static int64_t x86_io_atomic_pipe_vector_write_entry(
         return -EINVAL;
 
     pipe = &g_pipes[entry->pipe_id];
+    if (kernel_pipe_notification_mode(pipe))
+        return -EXDEV;
     nonblocking =
         (entry->flags & LINUX_O_NONBLOCK) != 0;
     for (;;) {

@@ -374,6 +374,92 @@ static void test_readiness_sequences(void) {
     assert(pipe.read_ready_sequence == read_sequence + 1u);
 }
 
+typedef struct test_watch_record {
+    uint32_t type_subtype;
+    uint32_t info;
+    uint32_t key;
+    uint32_t auxiliary;
+} test_watch_record_t;
+
+static void test_notification_pipe(void) {
+    kernel_pipe_runtime_t pipe;
+    kernel_pipe_watch_filter_t filter;
+    copy_fault_context_t context = {.fail_at = UINT64_MAX};
+    test_watch_record_t record = {
+        .type_subtype = 1u | (5u << 24u),
+        .info = sizeof(test_watch_record_t) | (7u << 8u),
+        .key = 42u,
+        .auxiliary = 9u,
+    };
+    test_watch_record_t output;
+    uint32_t loss[2];
+    uint64_t generation;
+
+    kernel_pipe_object_initialize(&pipe);
+    generation = kernel_pipe_generation(&pipe);
+    assert(generation != 0u);
+    assert(kernel_pipe_notification_mode_set(&pipe, 1) == 0);
+    assert(kernel_pipe_notification_mode(&pipe));
+    assert(pipe.packet_mode);
+    assert(kernel_pipe_write_user(
+               &pipe, (uint64_t)(uintptr_t)&record, sizeof(record),
+               test_copy_from_user, &context) == -EDGE_LINUX_EXDEV);
+    assert(kernel_pipe_watch_notification_post(
+               &pipe, generation, &record, sizeof(record)) ==
+           -EDGE_LINUX_ENOSPC);
+    assert(kernel_pipe_watch_size_set(&pipe, 0u) == -EDGE_LINUX_EINVAL);
+    assert(kernel_pipe_watch_size_set(&pipe, 513u) == -EDGE_LINUX_EINVAL);
+    assert(kernel_pipe_watch_size_set(&pipe, 8u) == 0);
+    assert(kernel_pipe_watch_size_set(&pipe, 8u) == -EDGE_LINUX_EBUSY);
+
+    memset(&filter, 0, sizeof(filter));
+    filter.type = 1u;
+    filter.subtype_filter[0] = 1u << 5u;
+    filter.info_mask = 0x00ff0000u;
+    filter.info_filter = 0u;
+    assert(kernel_pipe_watch_filter_set(&pipe, &filter, 1u) == 0);
+    assert(kernel_pipe_watch_notification_post(
+               &pipe, generation, &record, sizeof(record)) == 1);
+    assert(kernel_pipe_read_user(
+               &pipe, (uint64_t)(uintptr_t)&output, 8u,
+               test_copy_to_user, &context) == -EDGE_LINUX_ENOBUFS);
+    assert(kernel_pipe_read_kernel(
+               &pipe, &output, sizeof(output)) == sizeof(output));
+    assert(memcmp(&record, &output, sizeof(record)) == 0);
+
+    filter.subtype_filter[0] = 1u << 4u;
+    assert(kernel_pipe_watch_filter_set(&pipe, &filter, 1u) == 0);
+    assert(kernel_pipe_watch_notification_post(
+               &pipe, generation, &record, sizeof(record)) == 0);
+    assert(pipe.count == 0u);
+
+    assert(kernel_pipe_watch_filter_set(&pipe, 0, 0u) == 0);
+    assert(kernel_pipe_watch_notification_post(
+               &pipe, generation + 1u, &record, sizeof(record)) ==
+           -EDGE_LINUX_EINVAL);
+    assert(kernel_pipe_watch_notification_post(
+               &pipe, generation, &record, sizeof(record)) == 1);
+
+    for (uint32_t index = 1u; index < pipe.watch_note_capacity; ++index)
+        assert(kernel_pipe_watch_notification_post(
+                   &pipe, generation, &record, sizeof(record)) == 1);
+    assert(kernel_pipe_watch_notification_post(
+               &pipe, generation, &record, sizeof(record)) ==
+           -EDGE_LINUX_ENOSPC);
+    while (pipe.packet_count)
+        assert(kernel_pipe_read_kernel(
+                   &pipe, &output, sizeof(output)) == sizeof(output));
+    assert(pipe.watch_loss_pending);
+    assert(kernel_pipe_read_user(
+               &pipe, (uint64_t)(uintptr_t)loss, 4u,
+               test_copy_to_user, &context) == -EDGE_LINUX_ENOBUFS);
+    assert(kernel_pipe_read_kernel(&pipe, loss, sizeof(loss)) ==
+           sizeof(loss));
+    assert(loss[0] == (1u << 24u));
+    assert(loss[1] == sizeof(loss));
+    assert(!pipe.watch_loss_pending);
+}
+
 int main(void) {
     test_wraparound();
     test_copy_fault_commit_order();
@@ -385,6 +471,7 @@ int main(void) {
     test_readable_byte_query();
     test_packet_mode();
     test_readiness_sequences();
+    test_notification_pipe();
     puts("pipe_runtime_unit: PASS");
     return 0;
 }

@@ -17038,6 +17038,15 @@ static int pipe_prepare(
     if (pipe_index < 0) return pipe_index;
     kernel_pipe_metadata_initialize(
         &g_pipes[pipe_index], task->euid, task->egid, 0600u);
+    if (flags & LINUX_O_EXCL) {
+        result = kernel_pipe_notification_mode_set(
+            &g_pipes[pipe_index], 1);
+        if (result < 0) {
+            bytes_zero(
+                &g_pipes[pipe_index], sizeof(g_pipes[pipe_index]));
+            return result;
+        }
+    }
     if (flags & LINUX_O_DIRECT) {
         result = kernel_pipe_packet_mode_set(
             &g_pipes[pipe_index], 1);

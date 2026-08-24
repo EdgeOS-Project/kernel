@@ -10026,8 +10026,6 @@ static int32_t edge_linux_io_uring_pipe(
     if (pipe_flags & ~(EDGE_LINUX_IORING_PIPE_COMMON_FLAGS |
                        direct_flag))
         return -EDGE_LINUX_EINVAL;
-    if (pipe_flags & EDGE_LINUX_IORING_PIPE_O_NOTIFICATION)
-        return -EDGE_LINUX_EOPNOTSUPP;
     if (file_slot &&
         (pipe_flags & EDGE_LINUX_IORING_PIPE_O_CLOEXEC))
         return -EDGE_LINUX_EINVAL;
@@ -12149,7 +12147,7 @@ static int64_t edge_linux_sys_pipe(
     int32_t descriptors[2];
     int status;
     if (flags & ~(EDGE_LINUX_O_NONBLOCK | EDGE_LINUX_O_CLOEXEC |
-                  direct_flag))
+                  EDGE_LINUX_O_EXCL | direct_flag))
         return -EDGE_LINUX_EINVAL;
     status = kernel_fd_pipe_prepare(
         flags, descriptors, &publication);
