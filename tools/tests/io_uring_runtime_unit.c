@@ -26,6 +26,43 @@ static uint32_t g_fixed_file_references;
 static uint32_t g_materialize_flags;
 static uint32_t g_epoll_references;
 static int g_epoll_ready;
+static kernel_futex_request_t g_futex_request;
+static uint64_t g_futex_wait_id;
+static uint64_t g_next_futex_wait_id;
+static int32_t g_futex_result;
+static uint32_t g_futex_cancel_count;
+static int g_futex_ready;
+
+int kernel_futex_async_wait_add(const kernel_futex_request_t *request,
+                                uint64_t *wait_id) {
+    if (!request || !wait_id || g_futex_wait_id)
+        return -EDGE_LINUX_EINVAL;
+    g_futex_request = *request;
+    ++g_next_futex_wait_id;
+    if (!g_next_futex_wait_id) ++g_next_futex_wait_id;
+    g_futex_wait_id = g_next_futex_wait_id;
+    *wait_id = g_futex_wait_id;
+    return 0;
+}
+
+int kernel_futex_async_wait_poll(uint64_t wait_id, int32_t *result) {
+    if (!wait_id || wait_id != g_futex_wait_id || !result)
+        return -EDGE_LINUX_ENOENT;
+    if (!g_futex_ready) return 0;
+    *result = g_futex_result;
+    g_futex_wait_id = 0u;
+    g_futex_ready = 0;
+    return 1;
+}
+
+int kernel_futex_async_wait_cancel(uint64_t wait_id) {
+    if (!wait_id || wait_id != g_futex_wait_id)
+        return -EDGE_LINUX_ENOENT;
+    g_futex_wait_id = 0u;
+    g_futex_ready = 0;
+    ++g_futex_cancel_count;
+    return 0;
+}
 
 int kernel_anonymous_fd_descriptor_object_id(
         int32_t descriptor, kernel_anonymous_fd_kind_t kind) {
@@ -1147,6 +1184,52 @@ int main(void) {
 
         test_page_release(0, &link_cq);
         kernel_io_uring_release(second_ring_id);
+    }
+    {
+        struct edge_linux_io_uring_params futex_parameters = {0};
+        kernel_io_uring_page_t futex_cq;
+        struct edge_linux_io_uring_cqe *futex_completion;
+        kernel_futex_request_t futex_request = {0};
+        uint32_t cancel_count;
+
+        futex_request.operation = KERNEL_FUTEX_WAIT;
+        futex_request.address = 0x1000u;
+        futex_request.expected_value = 7u;
+        futex_request.bitset = UINT32_MAX;
+        assert(kernel_io_uring_create(
+                   4u, &futex_parameters, &second_ring_id) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_CQ_RING,
+                   0u, &futex_cq) == 0);
+        futex_completion = (struct edge_linux_io_uring_cqe *)(
+            (uint8_t *)futex_cq.address +
+            futex_parameters.cq_off.cqes);
+        assert(kernel_io_uring_futex_wait_add(
+                   second_ring_id, 0x46555458u,
+                   &futex_request) == 0);
+        assert(g_futex_request.operation == KERNEL_FUTEX_WAIT);
+        assert(kernel_io_uring_collect(second_ring_id, 0u) == 0);
+        g_futex_result = 0;
+        g_futex_ready = 1;
+        assert(kernel_io_uring_collect(second_ring_id, 0u) == 1);
+        assert(futex_completion[0].user_data == 0x46555458u);
+        assert(futex_completion[0].result == 0);
+
+        assert(kernel_io_uring_futex_wait_add(
+                   second_ring_id, 0x46555443u,
+                   &futex_request) == 0);
+        cancel_count = g_futex_cancel_count;
+        assert(kernel_io_uring_pending_cancel(
+                   second_ring_id, 0x46555443u) == 0);
+        assert(g_futex_cancel_count == cancel_count + 1u);
+
+        assert(kernel_io_uring_futex_wait_add(
+                   second_ring_id, 0x46555452u,
+                   &futex_request) == 0);
+        cancel_count = g_futex_cancel_count;
+        test_page_release(0, &futex_cq);
+        kernel_io_uring_release(second_ring_id);
+        assert(g_futex_cancel_count == cancel_count + 1u);
     }
     {
         struct edge_linux_io_uring_params buffer_parameters = {0};

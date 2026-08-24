@@ -138,6 +138,10 @@ typedef struct kernel_futex_backend_ops {
 int kernel_futex_backend_register(
     const kernel_futex_backend_ops_t *ops, void *context);
 int64_t kernel_futex_execute(const kernel_futex_request_t *request);
+int kernel_futex_async_wait_add(const kernel_futex_request_t *request,
+                                uint64_t *wait_id);
+int kernel_futex_async_wait_poll(uint64_t wait_id, int32_t *result);
+int kernel_futex_async_wait_cancel(uint64_t wait_id);
 int kernel_futex_current_scratch(kernel_futex_scratch_t *scratch);
 int32_t kernel_futex_atomic_apply(const kernel_futex_request_t *request,
                                   int32_t old_value);

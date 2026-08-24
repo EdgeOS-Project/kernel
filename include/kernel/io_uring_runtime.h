@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include "kernel/fd_runtime.h"
+#include "kernel/futex_runtime.h"
 #include "kernel/linux_abi.h"
 
 #define KERNEL_IO_URING_MAX_RINGS 64u
@@ -220,6 +221,9 @@ int kernel_io_uring_epoll_wait_add(int32_t ring_id, uint64_t user_data,
                                    uint32_t maximum_events,
                                    uint8_t event_size,
                                    uint8_t event_data_offset);
+int kernel_io_uring_futex_wait_add(
+    int32_t ring_id, uint64_t user_data,
+    const kernel_futex_request_t *request);
 int kernel_io_uring_poll_update(int32_t ring_id, uint64_t old_user_data,
                                 int update_events, uint32_t events,
                                 int update_user_data,

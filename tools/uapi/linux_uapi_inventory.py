@@ -161,6 +161,7 @@ EDGEOS_ASSESSMENTS = [
             "pending poll requests retain their open file descriptions across descriptor close and reuse",
             "EPOLL_WAIT with retained epoll objects, asynchronous completion and native x86_64 and AArch64 event layouts",
             "LINK_TIMEOUT cancellation races, target lifetime and paired completion results",
+            "FUTEX_WAIT and FUTEX_WAITV asynchronous completion through the shared futex2 wait registry",
             "scheduler-native enter suspension without an initial busy-poll window",
         ],
         "missing": [
@@ -186,6 +187,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/io_uring_send_zc_abi_probe.c",
             "tools/tests/io_uring_epoll_wait_abi_probe.c",
             "tools/tests/io_uring_link_timeout_abi_probe.c",
+            "tools/tests/io_uring_futex_wait_abi_probe.c",
             "tools/tests/io_uring_runtime_unit.c",
         ],
         "linux_oracle": {
@@ -232,7 +234,9 @@ EDGEOS_ASSESSMENTS = [
                 "and report-usage results, plus EPOLL_WAIT validation, retained "
                 "epoll lifetime, deferred completion and architecture-native "
                 "epoll_event layouts, plus LINK_TIMEOUT target-first, "
-                "timeout-first and unlinked-request completion behavior"
+                "timeout-first and unlinked-request completion behavior, plus "
+                "FUTEX_WAIT and FUTEX_WAITV value validation, wake results, "
+                "vector indexes and cancellation lifetime"
             ),
         },
     },

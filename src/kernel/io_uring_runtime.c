@@ -8,6 +8,7 @@
 #include "kernel/event_runtime.h"
 #include "kernel/eventfd.h"
 #include "kernel/fd_runtime.h"
+#include "kernel/futex_runtime.h"
 #include "kernel/io_runtime.h"
 #include "kernel/linux_errno.h"
 #include "kernel/linux_time.h"
@@ -94,6 +95,7 @@ typedef struct kernel_io_uring_pending {
     uint32_t reserved2;
     uint64_t sequence;
     uint64_t link_target_sequence;
+    uint64_t futex_wait_id;
     uint64_t user_address;
     uint64_t address_space;
     uint32_t maximum_events;
@@ -229,6 +231,7 @@ static int32_t io_uring_event_retain_locked(
 #define IO_URING_PENDING_POLL    2u
 #define IO_URING_PENDING_EPOLL   3u
 #define IO_URING_PENDING_LINK_TIMEOUT 4u
+#define IO_URING_PENDING_FUTEX 5u
 
 static kernel_io_uring_t g_io_urings[KERNEL_IO_URING_MAX_RINGS];
 static kernel_io_uring_task_registry_t
@@ -366,6 +369,10 @@ static void io_uring_release_storage(kernel_io_uring_t *ring) {
         if (pending->used &&
             pending->kind == IO_URING_PENDING_EPOLL)
             kernel_epoll_object_release(pending->descriptor);
+        if (pending->used &&
+            pending->kind == IO_URING_PENDING_FUTEX)
+            (void)kernel_futex_async_wait_cancel(
+                pending->futex_wait_id);
     }
     for (uint32_t page = 0;
          page < KERNEL_IO_URING_MAX_PBUF_PAGES; ++page) {
@@ -2568,6 +2575,47 @@ int kernel_io_uring_epoll_wait_add(int32_t ring_id, uint64_t user_data,
     return result;
 }
 
+int kernel_io_uring_futex_wait_add(
+        int32_t ring_id, uint64_t user_data,
+        const kernel_futex_request_t *request) {
+    kernel_io_uring_t *ring;
+    uint64_t futex_wait_id;
+    uint64_t flags;
+    uint32_t slot;
+    int result;
+
+    result = kernel_futex_async_wait_add(request, &futex_wait_id);
+    if (result < 0) return result;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+    } else {
+        for (slot = 0; slot < KERNEL_IO_URING_MAX_PENDING; ++slot)
+            if (!ring->pending[slot].used) break;
+        if (slot == KERNEL_IO_URING_MAX_PENDING) {
+            result = -EDGE_LINUX_EAGAIN;
+        } else {
+            memset(&ring->pending[slot], 0,
+                   sizeof(ring->pending[slot]));
+            ring->pending[slot].used = 1u;
+            ring->pending[slot].kind = IO_URING_PENDING_FUTEX;
+            ring->pending[slot].user_data = user_data;
+            ring->pending[slot].futex_wait_id = futex_wait_id;
+            ++ring->next_pending_sequence;
+            if (!ring->next_pending_sequence)
+                ++ring->next_pending_sequence;
+            ring->pending[slot].sequence =
+                ring->next_pending_sequence;
+            result = 0;
+        }
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (result < 0)
+        (void)kernel_futex_async_wait_cancel(futex_wait_id);
+    return result;
+}
+
 int kernel_io_uring_poll_update(int32_t ring_id, uint64_t old_user_data,
                                 int update_events, uint32_t events,
                                 int update_user_data,
@@ -2617,6 +2665,7 @@ int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data) {
     uint64_t canceled_sequence = 0;
     uint64_t link_timeout_user_data = 0;
     int link_timeout_canceled = 0;
+    uint64_t futex_wait_id = 0u;
     kernel_io_uring_t *ring;
     uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
     uint32_t slot;
@@ -2637,6 +2686,9 @@ int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data) {
             } else if (ring->pending[slot].kind ==
                        IO_URING_PENDING_EPOLL) {
                 epoll_index = ring->pending[slot].descriptor;
+            } else if (ring->pending[slot].kind ==
+                       IO_URING_PENDING_FUTEX) {
+                futex_wait_id = ring->pending[slot].futex_wait_id;
             }
             canceled_sequence = ring->pending[slot].sequence;
             memset(&ring->pending[slot], 0, sizeof(ring->pending[slot]));
@@ -2664,6 +2716,8 @@ int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data) {
         (void)kernel_fd_operation_release(&descriptor_lease);
     if (epoll_index >= 0)
         kernel_epoll_object_release(epoll_index);
+    if (futex_wait_id)
+        (void)kernel_futex_async_wait_cancel(futex_wait_id);
     if (link_timeout_canceled)
         (void)kernel_io_uring_completion_add_async(
             ring_id, link_timeout_user_data,
@@ -2687,6 +2741,7 @@ typedef struct io_uring_pending_snapshot {
     uint32_t repeat_count;
     uint64_t sequence;
     uint64_t link_target_sequence;
+    uint64_t futex_wait_id;
     uint64_t user_address;
     uint64_t address_space;
     uint32_t maximum_events;
@@ -2713,6 +2768,7 @@ static void io_uring_pending_snapshot(
     destination->repeat_count = source->repeat_count;
     destination->sequence = source->sequence;
     destination->link_target_sequence = source->link_target_sequence;
+    destination->futex_wait_id = source->futex_wait_id;
     destination->user_address = source->user_address;
     destination->address_space = source->address_space;
     destination->maximum_events = source->maximum_events;
@@ -2757,6 +2813,7 @@ static int io_uring_epoll_copy_event(
 typedef struct io_uring_pending_release {
     kernel_fd_operation_lease_t descriptor_lease;
     int32_t epoll_index;
+    uint64_t futex_wait_id;
 } io_uring_pending_release_t;
 
 static int io_uring_pending_remove_locked(
@@ -2774,6 +2831,8 @@ static int io_uring_pending_remove_locked(
         return -EDGE_LINUX_EBUSY;
     if (pending->kind == IO_URING_PENDING_EPOLL)
         release->epoll_index = pending->descriptor;
+    if (pending->kind == IO_URING_PENDING_FUTEX)
+        release->futex_wait_id = pending->futex_wait_id;
     memset(pending, 0, sizeof(*pending));
     return 0;
 }
@@ -2786,6 +2845,9 @@ static void io_uring_pending_release_finish(
             &release->descriptor_lease);
     if (release->epoll_index >= 0)
         kernel_epoll_object_release(release->epoll_index);
+    if (release->futex_wait_id)
+        (void)kernel_futex_async_wait_cancel(
+            release->futex_wait_id);
     release->epoll_index = -1;
 }
 
@@ -3028,6 +3090,25 @@ uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us) {
             spin_unlock_irqrestore(&g_io_uring_lock, flags);
             if (release_epoll >= 0)
                 kernel_epoll_object_release(release_epoll);
+        } else if (pending.kind == IO_URING_PENDING_FUTEX) {
+            int poll_result;
+
+            spin_unlock_irqrestore(&g_io_uring_lock, flags);
+            poll_result = kernel_futex_async_wait_poll(
+                pending.futex_wait_id, &result);
+            if (poll_result <= 0) continue;
+            flags = spin_lock_irqsave(&g_io_uring_lock);
+            ring = io_uring_lookup_locked(ring_id);
+            if (ring && ring->pending[slot].used &&
+                ring->pending[slot].kind == IO_URING_PENDING_FUTEX &&
+                ring->pending[slot].sequence == pending.sequence) {
+                completion_user_data = ring->pending[slot].user_data;
+                memset(&ring->pending[slot], 0,
+                       sizeof(ring->pending[slot]));
+                remove = 1;
+                request_final = 1;
+            }
+            spin_unlock_irqrestore(&g_io_uring_lock, flags);
         } else {
             spin_unlock_irqrestore(&g_io_uring_lock, flags);
             continue;

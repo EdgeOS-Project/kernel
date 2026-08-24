@@ -6,9 +6,11 @@
 #include <string.h>
 
 #include "kernel/futex_runtime.h"
+#include "kernel/linux_errno.h"
 
 typedef struct futex_test_backend {
     uint32_t word;
+    uint32_t source_word;
     uint32_t compare_exchange_calls;
     uint32_t source_wakes;
     uint32_t destination_wakes;
@@ -66,8 +68,10 @@ static void unlock_backend(void *context, uintptr_t lock_state) {
 
 static int read_word(void *context, uint64_t address, uint32_t *value) {
     futex_test_backend_t *backend = context;
-    assert(address == backend->destination_address);
-    *value = backend->word;
+    assert(address == backend->destination_address ||
+           address == backend->source_address);
+    *value = address == backend->destination_address ?
+        backend->word : backend->source_word;
     return 0;
 }
 
@@ -130,6 +134,7 @@ int main(void) {
 
     memset(&backend, 0, sizeof(backend));
     backend.word = 8u;
+    backend.source_word = 3u;
     backend.source_address = UINT64_C(0x1000);
     backend.destination_address = UINT64_C(0x2000);
     assert(kernel_futex_backend_register(&ops, &backend) == 0);
@@ -150,6 +155,84 @@ int main(void) {
     assert(backend.compare_exchange_calls == 2u);
     assert(backend.source_wakes == 1u);
     assert(backend.destination_wakes == 0u);
+
+    {
+        uint64_t wait_id;
+        int32_t wait_result = -1;
+
+        memset(&request, 0, sizeof(request));
+        request.operation = KERNEL_FUTEX_WAIT;
+        request.address = backend.destination_address;
+        request.expected_value = backend.word;
+        request.bitset = 2u;
+        assert(kernel_futex_async_wait_add(&request, &wait_id) == 0);
+        assert(kernel_futex_async_wait_poll(wait_id, &wait_result) == 0);
+
+        request.operation = KERNEL_FUTEX_WAKE;
+        request.wake_count = 1u;
+        request.bitset = 1u;
+        assert(kernel_futex_execute(&request) == 0);
+        assert(kernel_futex_async_wait_poll(wait_id, &wait_result) == 0);
+        request.bitset = 2u;
+        assert(kernel_futex_execute(&request) == 1);
+        assert(kernel_futex_async_wait_poll(wait_id, &wait_result) == 1);
+        assert(wait_result == 0);
+        assert(kernel_futex_async_wait_poll(wait_id, &wait_result) ==
+               -EDGE_LINUX_ENOENT);
+    }
+    {
+        uint64_t wait_id;
+        int32_t wait_result = -1;
+
+        memset(&request, 0, sizeof(request));
+        request.operation = KERNEL_FUTEX_WAIT_VECTOR;
+        request.waiter_count = 2u;
+        request.waiters[0].address = backend.source_address;
+        request.waiters[0].expected_value = backend.source_word;
+        request.waiters[1].address = backend.destination_address;
+        request.waiters[1].expected_value = backend.word;
+        assert(kernel_futex_async_wait_add(&request, &wait_id) == 0);
+
+        memset(&request, 0, sizeof(request));
+        request.operation = KERNEL_FUTEX_WAKE;
+        request.address = backend.destination_address;
+        request.wake_count = 1u;
+        request.bitset = UINT32_MAX;
+        assert(kernel_futex_execute(&request) == 1);
+        assert(kernel_futex_async_wait_poll(wait_id, &wait_result) == 1);
+        assert(wait_result == 1);
+    }
+    {
+        uint64_t wait_id;
+        int32_t wait_result = -1;
+
+        memset(&request, 0, sizeof(request));
+        request.operation = KERNEL_FUTEX_WAIT;
+        request.address = backend.source_address;
+        request.expected_value = backend.source_word + 1u;
+        request.bitset = UINT32_MAX;
+        assert(kernel_futex_async_wait_add(&request, &wait_id) ==
+               -EDGE_LINUX_EAGAIN);
+        request.expected_value = backend.source_word;
+        assert(kernel_futex_async_wait_add(&request, &wait_id) == 0);
+        assert(kernel_futex_async_wait_cancel(wait_id) == 0);
+        assert(kernel_futex_async_wait_poll(wait_id, &wait_result) ==
+               -EDGE_LINUX_ENOENT);
+
+        assert(kernel_futex_async_wait_add(&request, &wait_id) == 0);
+        request.operation = KERNEL_FUTEX_REQUEUE;
+        request.secondary_address = backend.destination_address;
+        request.wake_count = 0u;
+        request.secondary_count = 1u;
+        assert(kernel_futex_execute(&request) == 1);
+        request.operation = KERNEL_FUTEX_WAKE;
+        request.address = backend.destination_address;
+        request.wake_count = 1u;
+        request.bitset = UINT32_MAX;
+        assert(kernel_futex_execute(&request) == 1);
+        assert(kernel_futex_async_wait_poll(wait_id, &wait_result) == 1);
+        assert(wait_result == 0);
+    }
     puts("futex runtime unit: ok");
     return 0;
 }

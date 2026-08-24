@@ -14,6 +14,7 @@ static const kernel_futex_backend_ops_t *g_backend_ops;
 static void *g_backend_context;
 
 #define KERNEL_FUTEX_PI_MAX_WAITERS 256u
+#define KERNEL_FUTEX_ASYNC_MAX_WAITERS 128u
 
 typedef struct kernel_futex_pi_waiter {
     uint8_t used;
@@ -31,6 +32,22 @@ static kernel_futex_pi_waiter_t
     g_pi_waiters[KERNEL_FUTEX_PI_MAX_WAITERS];
 static uint64_t g_pi_sequence;
 
+typedef struct kernel_futex_async_waiter {
+    uint8_t used;
+    uint8_t ready;
+    uint16_t waiter_count;
+    int32_t result;
+    uint64_t id;
+    uint64_t sequence;
+    kernel_futex_key_t keys[KERNEL_FUTEX_WAITV_MAX];
+    uint32_t bitsets[KERNEL_FUTEX_WAITV_MAX];
+} kernel_futex_async_waiter_t;
+
+static kernel_futex_async_waiter_t
+    g_async_waiters[KERNEL_FUTEX_ASYNC_MAX_WAITERS];
+static uint64_t g_async_wait_id;
+static uint64_t g_async_wait_sequence;
+
 static int futex_resolve_key(uint64_t address, int private_futex,
                              kernel_futex_key_t *key);
 
@@ -43,12 +60,239 @@ int kernel_futex_backend_register(
         return -EDGE_LINUX_EINVAL;
     g_backend_ops = ops;
     g_backend_context = context;
+    for (uint32_t index = 0;
+         index < KERNEL_FUTEX_ASYNC_MAX_WAITERS; ++index)
+        g_async_waiters[index].used = 0u;
     return 0;
 }
 
 static int futex_key_equal(const kernel_futex_key_t *left,
                            const kernel_futex_key_t *right) {
     return left->value == right->value && left->scope == right->scope;
+}
+
+static int futex_async_match_locked(
+        const kernel_futex_async_waiter_t *waiter,
+        const kernel_futex_key_t *key, uint32_t bitset,
+        uint16_t *waiter_index) {
+    if (!waiter || !waiter->used || waiter->ready) return 0;
+    for (uint16_t index = 0; index < waiter->waiter_count; ++index) {
+        if (futex_key_equal(&waiter->keys[index], key) &&
+            (waiter->bitsets[index] & bitset)) {
+            if (waiter_index) *waiter_index = index;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int futex_async_best_locked(const kernel_futex_key_t *key,
+                                   uint32_t bitset,
+                                   uint16_t *waiter_index) {
+    int best = -1;
+    uint16_t best_waiter = 0u;
+
+    for (uint32_t index = 0;
+         index < KERNEL_FUTEX_ASYNC_MAX_WAITERS; ++index) {
+        uint16_t candidate_waiter;
+        if (!futex_async_match_locked(
+                &g_async_waiters[index], key, bitset,
+                &candidate_waiter))
+            continue;
+        if (best < 0 || g_async_waiters[index].sequence <
+                            g_async_waiters[best].sequence) {
+            best = (int)index;
+            best_waiter = candidate_waiter;
+        }
+    }
+    if (best >= 0 && waiter_index) *waiter_index = best_waiter;
+    return best;
+}
+
+static int futex_async_wake_locked(const kernel_futex_key_t *key,
+                                   uint32_t maximum,
+                                   uint32_t bitset) {
+    uint32_t woken = 0u;
+
+    while (woken < maximum) {
+        uint16_t waiter_index;
+        int best = futex_async_best_locked(
+            key, bitset, &waiter_index);
+        if (best < 0) break;
+        g_async_waiters[best].ready = 1u;
+        g_async_waiters[best].result =
+            g_async_waiters[best].waiter_count == 1u ?
+                0 : (int32_t)waiter_index;
+        ++woken;
+    }
+    return (int)woken;
+}
+
+static int futex_wake_locked(const kernel_futex_key_t *key,
+                             uint32_t maximum, uint32_t bitset) {
+    int async_woken;
+    int backend_woken;
+
+    async_woken = futex_async_wake_locked(key, maximum, bitset);
+    if ((uint32_t)async_woken == maximum) return async_woken;
+    backend_woken = g_backend_ops->wake_locked(
+        g_backend_context, key, maximum - (uint32_t)async_woken,
+        bitset);
+    return backend_woken < 0 ? backend_woken :
+                              async_woken + backend_woken;
+}
+
+static int futex_async_requeue_locked(
+        const kernel_futex_key_t *source,
+        const kernel_futex_key_t *destination,
+        uint32_t maximum, uint32_t bitset) {
+    uint32_t moved = 0u;
+
+    while (moved < maximum) {
+        uint16_t waiter_index;
+        int best = futex_async_best_locked(
+            source, bitset, &waiter_index);
+        if (best < 0) break;
+        g_async_waiters[best].keys[waiter_index] = *destination;
+        ++moved;
+    }
+    return (int)moved;
+}
+
+int kernel_futex_async_wait_add(const kernel_futex_request_t *request,
+                                uint64_t *wait_id) {
+    uintptr_t lock_state;
+    uint16_t waiter_count;
+    uint32_t slot;
+    int status;
+
+    if (!request || !wait_id || !g_backend_ops)
+        return -EDGE_LINUX_EINVAL;
+    if (request->operation == KERNEL_FUTEX_WAIT) {
+        if (!request->bitset) return -EDGE_LINUX_EINVAL;
+        waiter_count = 1u;
+    } else if (request->operation == KERNEL_FUTEX_WAIT_VECTOR) {
+        waiter_count = request->waiter_count;
+        if (!waiter_count || waiter_count > KERNEL_FUTEX_WAITV_MAX)
+            return -EDGE_LINUX_EINVAL;
+    } else {
+        return -EDGE_LINUX_EINVAL;
+    }
+
+    /* Reserve storage before resolving keys to keep this stack bounded. */
+    lock_state = g_backend_ops->lock(g_backend_context);
+    for (slot = 0; slot < KERNEL_FUTEX_ASYNC_MAX_WAITERS; ++slot)
+        if (!g_async_waiters[slot].used) break;
+    if (slot == KERNEL_FUTEX_ASYNC_MAX_WAITERS) {
+        g_backend_ops->unlock(g_backend_context, lock_state);
+        return -EDGE_LINUX_ENOMEM;
+    }
+    g_async_waiters[slot].used = 1u;
+    g_async_waiters[slot].ready = 0u;
+    g_async_waiters[slot].waiter_count = 0u;
+    g_async_waiters[slot].id = 0u;
+    g_backend_ops->unlock(g_backend_context, lock_state);
+
+    for (uint16_t index = 0; index < waiter_count; ++index) {
+        uint64_t address = request->operation == KERNEL_FUTEX_WAIT ?
+            request->address : request->waiters[index].address;
+        int private_futex = request->operation == KERNEL_FUTEX_WAIT ?
+            request->private_futex :
+            request->waiters[index].private_futex;
+
+        status = futex_resolve_key(
+            address, private_futex, &g_async_waiters[slot].keys[index]);
+        if (status < 0) goto release_slot;
+    }
+
+    lock_state = g_backend_ops->lock(g_backend_context);
+    for (uint16_t index = 0; index < waiter_count; ++index) {
+        uint64_t address = request->operation == KERNEL_FUTEX_WAIT ?
+            request->address : request->waiters[index].address;
+        uint32_t expected = request->operation == KERNEL_FUTEX_WAIT ?
+            request->expected_value :
+            request->waiters[index].expected_value;
+        uint32_t observed;
+
+        status = g_backend_ops->read_word_locked(
+            g_backend_context, address, &observed);
+        if (status < 0) goto release_locked;
+        if (observed != expected) {
+            status = -EDGE_LINUX_EAGAIN;
+            goto release_locked;
+        }
+    }
+
+    g_async_waiters[slot].result = 0;
+    ++g_async_wait_id;
+    if (!g_async_wait_id) ++g_async_wait_id;
+    ++g_async_wait_sequence;
+    if (!g_async_wait_sequence) ++g_async_wait_sequence;
+    g_async_waiters[slot].id = g_async_wait_id;
+    g_async_waiters[slot].sequence = g_async_wait_sequence;
+    for (uint16_t index = 0; index < waiter_count; ++index) {
+        g_async_waiters[slot].bitsets[index] =
+            request->operation == KERNEL_FUTEX_WAIT ?
+                request->bitset : UINT32_MAX;
+    }
+    g_async_waiters[slot].waiter_count = waiter_count;
+    *wait_id = g_async_wait_id;
+    status = 0;
+    g_backend_ops->unlock(g_backend_context, lock_state);
+    return status;
+
+release_locked:
+    g_async_waiters[slot].used = 0u;
+    g_backend_ops->unlock(g_backend_context, lock_state);
+    return status;
+
+release_slot:
+    lock_state = g_backend_ops->lock(g_backend_context);
+    g_async_waiters[slot].used = 0u;
+    g_backend_ops->unlock(g_backend_context, lock_state);
+    return status;
+}
+
+int kernel_futex_async_wait_poll(uint64_t wait_id, int32_t *result) {
+    uintptr_t lock_state;
+    int status = -EDGE_LINUX_ENOENT;
+
+    if (!wait_id || !result || !g_backend_ops)
+        return -EDGE_LINUX_EINVAL;
+    lock_state = g_backend_ops->lock(g_backend_context);
+    for (uint32_t index = 0;
+         index < KERNEL_FUTEX_ASYNC_MAX_WAITERS; ++index) {
+        kernel_futex_async_waiter_t *waiter = &g_async_waiters[index];
+        if (!waiter->used || waiter->id != wait_id) continue;
+        if (!waiter->ready) {
+            status = 0;
+        } else {
+            *result = waiter->result;
+            waiter->used = 0u;
+            status = 1;
+        }
+        break;
+    }
+    g_backend_ops->unlock(g_backend_context, lock_state);
+    return status;
+}
+
+int kernel_futex_async_wait_cancel(uint64_t wait_id) {
+    uintptr_t lock_state;
+    int status = -EDGE_LINUX_ENOENT;
+
+    if (!wait_id || !g_backend_ops) return -EDGE_LINUX_EINVAL;
+    lock_state = g_backend_ops->lock(g_backend_context);
+    for (uint32_t index = 0;
+         index < KERNEL_FUTEX_ASYNC_MAX_WAITERS; ++index) {
+        kernel_futex_async_waiter_t *waiter = &g_async_waiters[index];
+        if (!waiter->used || waiter->id != wait_id) continue;
+        waiter->used = 0u;
+        status = 0;
+        break;
+    }
+    g_backend_ops->unlock(g_backend_context, lock_state);
+    return status;
 }
 
 static int futex_pi_supported(void) {
@@ -657,9 +901,8 @@ int64_t kernel_futex_execute(const kernel_futex_request_t *request) {
     if (request->operation == KERNEL_FUTEX_WAKE) {
         int woken;
         lock_state = g_backend_ops->lock(g_backend_context);
-        woken = g_backend_ops->wake_locked(
-            g_backend_context, &source, request->wake_count,
-            request->bitset);
+        woken = futex_wake_locked(
+            &source, request->wake_count, request->bitset);
         g_backend_ops->unlock(g_backend_context, lock_state);
         if (g_backend_ops->record_result)
             g_backend_ops->record_result(
@@ -693,15 +936,23 @@ int64_t kernel_futex_execute(const kernel_futex_request_t *request) {
                 return -EDGE_LINUX_EAGAIN;
             }
         }
-        woken = g_backend_ops->wake_locked(
-            g_backend_context, &source, request->wake_count, UINT32_MAX);
+        woken = futex_wake_locked(
+            &source, request->wake_count, UINT32_MAX);
         if (woken < 0) {
             g_backend_ops->unlock(g_backend_context, lock_state);
             return woken;
         }
-        moved = g_backend_ops->requeue_locked(
-            g_backend_context, &source, &destination,
+        moved = futex_async_requeue_locked(
+            &source, &destination,
             request->secondary_count, UINT32_MAX);
+        if ((uint32_t)moved < request->secondary_count) {
+            int backend_moved = g_backend_ops->requeue_locked(
+                g_backend_context, &source, &destination,
+                request->secondary_count - (uint32_t)moved,
+                UINT32_MAX);
+            if (backend_moved < 0) moved = backend_moved;
+            else moved += backend_moved;
+        }
         g_backend_ops->unlock(g_backend_context, lock_state);
         return moved < 0 ? moved : woken + moved;
     }
@@ -740,12 +991,11 @@ int64_t kernel_futex_execute(const kernel_futex_request_t *request) {
         }
         wake_destination =
             kernel_futex_atomic_compare(request, old_value);
-        woken = g_backend_ops->wake_locked(
-            g_backend_context, &source, request->wake_count, UINT32_MAX);
+        woken = futex_wake_locked(
+            &source, request->wake_count, UINT32_MAX);
         if (woken >= 0 && wake_destination)
-            destination_woken = g_backend_ops->wake_locked(
-                g_backend_context, &destination,
-                request->secondary_count, UINT32_MAX);
+            destination_woken = futex_wake_locked(
+                &destination, request->secondary_count, UINT32_MAX);
         g_backend_ops->unlock(g_backend_context, lock_state);
         if (woken < 0) return woken;
         if (destination_woken < 0) return destination_woken;

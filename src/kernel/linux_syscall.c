@@ -157,6 +157,10 @@ static int64_t edge_linux_sys_socket_message(
     edge_linux_syscall_context_t *context);
 static int64_t edge_linux_sys_futex(
     edge_linux_syscall_context_t *context);
+static int edge_linux_futex_word_access(
+    edge_linux_syscall_context_t *context, uint64_t address);
+static int edge_linux_futex2_flags(uint64_t raw_flags,
+                                   uint8_t *private_futex);
 static int64_t edge_linux_io_uring_files_update_user(
     edge_linux_syscall_context_t *context, int32_t ring_id,
     uint32_t offset, uint64_t user_descriptors,
@@ -8926,7 +8930,9 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_OP_SOCKET    45u
 #define EDGE_LINUX_IORING_OP_SEND_ZC   47u
 #define EDGE_LINUX_IORING_OP_SENDMSG_ZC 48u
+#define EDGE_LINUX_IORING_OP_FUTEX_WAIT 51u
 #define EDGE_LINUX_IORING_OP_FUTEX_WAKE 52u
+#define EDGE_LINUX_IORING_OP_FUTEX_WAITV 53u
 #define EDGE_LINUX_IORING_OP_FIXED_FD_INSTALL 54u
 #define EDGE_LINUX_IORING_OP_FTRUNCATE 55u
 #define EDGE_LINUX_IORING_OP_BIND      56u
@@ -9970,6 +9976,7 @@ static int32_t edge_linux_io_uring_execute_descriptor(
         submission->opcode != EDGE_LINUX_IORING_OP_SETXATTR &&
         submission->opcode != EDGE_LINUX_IORING_OP_GETXATTR &&
         submission->opcode != EDGE_LINUX_IORING_OP_MSG_RING &&
+        submission->opcode != EDGE_LINUX_IORING_OP_FUTEX_WAIT &&
         submission->opcode != EDGE_LINUX_IORING_OP_FUTEX_WAKE &&
         submission->opcode != EDGE_LINUX_IORING_OP_SEND_ZC &&
         submission->opcode != EDGE_LINUX_IORING_OP_SENDMSG_ZC)
@@ -10126,6 +10133,90 @@ static int32_t edge_linux_io_uring_execute_descriptor(
         nested.arguments[2] = submission->offset;
         nested.arguments[3] = (uint32_t)submission->descriptor;
         result = edge_linux_sys_futex(&nested);
+        break;
+    }
+    case EDGE_LINUX_IORING_OP_FUTEX_WAIT:
+    case EDGE_LINUX_IORING_OP_FUTEX_WAITV: {
+        kernel_futex_scratch_t scratch;
+        kernel_futex_request_t *request;
+
+        if (kernel_futex_current_scratch(&scratch) < 0 ||
+            !scratch.memory || scratch.capacity < sizeof(*request)) {
+            result = -EDGE_LINUX_EIO;
+            break;
+        }
+        request = (kernel_futex_request_t *)scratch.memory;
+        memset(request, 0, sizeof(*request));
+        request->user_registers = context->user_registers;
+        if (submission->opcode == EDGE_LINUX_IORING_OP_FUTEX_WAIT) {
+            if (submission->length || submission->operation_flags ||
+                submission->buffer_index ||
+                submission->splice_descriptor ||
+                submission->offset > UINT32_MAX ||
+                !submission->address3 ||
+                submission->address3 > UINT32_MAX) {
+                result = -EDGE_LINUX_EINVAL;
+                break;
+            }
+            request->operation = KERNEL_FUTEX_WAIT;
+            request->address = submission->address;
+            request->expected_value = (uint32_t)submission->offset;
+            request->bitset = (uint32_t)submission->address3;
+            result = edge_linux_futex2_flags(
+                (uint32_t)submission->descriptor,
+                &request->private_futex);
+            if (result < 0) break;
+            result = edge_linux_futex_word_access(
+                context, request->address);
+        } else {
+            uint32_t count = submission->length;
+
+            if (submission->descriptor || submission->offset ||
+                submission->operation_flags ||
+                submission->buffer_index ||
+                submission->splice_descriptor ||
+                submission->address3 || !submission->address ||
+                !count || count > EDGE_LINUX_FUTEX_WAITV_MAX) {
+                result = -EDGE_LINUX_EINVAL;
+                break;
+            }
+            request->operation = KERNEL_FUTEX_WAIT_VECTOR;
+            request->waiter_count = (uint16_t)count;
+            request->bitset = EDGE_LINUX_FUTEX_BITSET_MATCH_ANY;
+            result = 0;
+            for (uint32_t index = 0; index < count; ++index) {
+                struct edge_futex_waitv waiter;
+
+                if (edge_linux_copy_from_user(
+                        context, &waiter,
+                        submission->address +
+                            (uint64_t)index * sizeof(waiter),
+                        sizeof(waiter)) < 0) {
+                    result = -EDGE_LINUX_EFAULT;
+                    break;
+                }
+                if (waiter.reserved || waiter.val > UINT32_MAX) {
+                    result = -EDGE_LINUX_EINVAL;
+                    break;
+                }
+                result = edge_linux_futex2_flags(
+                    waiter.flags,
+                    &request->waiters[index].private_futex);
+                if (result < 0) break;
+                result = edge_linux_futex_word_access(
+                    context, waiter.uaddr);
+                if (result < 0) break;
+                request->waiters[index].address = waiter.uaddr;
+                request->waiters[index].expected_value =
+                    (uint32_t)waiter.val;
+            }
+        }
+        if (result == 0) {
+            result = kernel_io_uring_futex_wait_add(
+                ring_id, submission->user_data, request);
+            if (result == 0)
+                result = EDGE_LINUX_IORING_PENDING_RESULT;
+        }
         break;
     }
     case EDGE_LINUX_IORING_OP_MSG_RING:
@@ -11037,7 +11128,9 @@ static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
            opcode == EDGE_LINUX_IORING_OP_SETXATTR ||
            opcode == EDGE_LINUX_IORING_OP_FGETXATTR ||
            opcode == EDGE_LINUX_IORING_OP_GETXATTR ||
+           opcode == EDGE_LINUX_IORING_OP_FUTEX_WAIT ||
            opcode == EDGE_LINUX_IORING_OP_FUTEX_WAKE ||
+           opcode == EDGE_LINUX_IORING_OP_FUTEX_WAITV ||
            opcode == EDGE_LINUX_IORING_OP_FIXED_FD_INSTALL ||
            opcode == EDGE_LINUX_IORING_OP_FTRUNCATE ||
            opcode == EDGE_LINUX_IORING_OP_PIPE ||
