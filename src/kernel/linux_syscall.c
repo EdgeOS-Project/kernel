@@ -10635,7 +10635,7 @@ static int64_t edge_linux_sys_io_uring_enter(
         uint32_t entries_consumed = 1u;
         int32_t layout_result = 0;
         int take_result = kernel_io_uring_take_submission(
-            ring_id, to_submit - submitted, &submission,
+            ring_id, submitted, to_submit - submitted, &submission,
             &entries_consumed, &layout_result);
         int32_t operation_result;
         uint32_t completion_flags = 0u;

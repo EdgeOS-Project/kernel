@@ -360,7 +360,7 @@ int main(void) {
             uint32_t entries_consumed = 0u;
             int32_t layout_result = 0;
             assert(kernel_io_uring_take_submission(
-                       second_ring_id, 1u, &extended_submission,
+                       second_ring_id, 0u, 1u, &extended_submission,
                        &entries_consumed, &layout_result) == 0);
             assert(entries_consumed == 1u);
             assert(layout_result == 0);
@@ -436,7 +436,7 @@ int main(void) {
         entries_consumed = 0u;
         layout_result = 0;
         assert(kernel_io_uring_take_submission(
-                   second_ring_id, 2u, &mixed_submission,
+                   second_ring_id, 0u, 2u, &mixed_submission,
                    &entries_consumed, &layout_result) == 0);
         assert(entries_consumed == 2u);
         assert(layout_result == 0);
@@ -453,7 +453,7 @@ int main(void) {
         entries_consumed = 0u;
         layout_result = 0;
         assert(kernel_io_uring_take_submission(
-                   second_ring_id, 1u, &mixed_submission,
+                   second_ring_id, 0u, 1u, &mixed_submission,
                    &entries_consumed, &layout_result) == 0);
         assert(entries_consumed == 1u);
         assert(layout_result == -EDGE_LINUX_EINVAL);
@@ -498,6 +498,97 @@ int main(void) {
         test_page_release(0, &mixed_sq_ring);
         test_page_release(0, &mixed_cq_ring);
         test_page_release(0, &mixed_sqes);
+        kernel_io_uring_release(second_ring_id);
+    }
+    {
+        struct edge_linux_io_uring_params no_array_parameters = {
+            .flags = 1u << 16,
+            .sq_off = {
+                .array = UINT32_MAX,
+                .reserved1 = UINT32_MAX,
+            },
+            .cq_off = {
+                .reserved1 = UINT32_MAX,
+            },
+        };
+        struct edge_linux_io_uring_params rewind_parameters = {
+            .flags = (1u << 16) | (1u << 20),
+        };
+        struct edge_linux_io_uring_params invalid_parameters = {
+            .flags = 1u << 20,
+        };
+        struct edge_linux_io_uring_sqe no_array_submission = {0};
+        kernel_io_uring_page_t no_array_sq_ring;
+        kernel_io_uring_page_t no_array_sqes;
+        uint32_t entries_consumed = 0u;
+        int32_t layout_result = 0;
+
+        assert(kernel_io_uring_create(
+                   4u, &invalid_parameters, &second_ring_id) ==
+               -EDGE_LINUX_EINVAL);
+        invalid_parameters.flags = 1u << 13;
+        assert(kernel_io_uring_create(
+                   4u, &invalid_parameters, &second_ring_id) ==
+               -EDGE_LINUX_EINVAL);
+
+        assert(kernel_io_uring_create(
+                   4u, &no_array_parameters, &second_ring_id) == 0);
+        assert(no_array_parameters.sq_off.array == 0u);
+        assert(no_array_parameters.sq_off.reserved1 == 0u);
+        assert(no_array_parameters.cq_off.reserved1 == 0u);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_SQ_RING,
+                   0u, &no_array_sq_ring) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_SQES,
+                   0u, &no_array_sqes) == 0);
+        mapped_sqe = (struct edge_linux_io_uring_sqe *)(void *)
+            no_array_sqes.address;
+        memset(mapped_sqe, 0, 2u * sizeof(*mapped_sqe));
+        mapped_sqe[0].user_data = 0x4e4f5f4152524159ull;
+        *page_u32(&no_array_sq_ring, no_array_parameters.sq_off.tail) = 1u;
+        assert(kernel_io_uring_take_submission(
+                   second_ring_id, 0u, 1u, &no_array_submission,
+                   &entries_consumed, &layout_result) == 0);
+        assert(no_array_submission.user_data == 0x4e4f5f4152524159ull);
+        assert(*page_u32(
+                   &no_array_sq_ring, no_array_parameters.sq_off.head) == 1u);
+        test_page_release(0, &no_array_sq_ring);
+        test_page_release(0, &no_array_sqes);
+        kernel_io_uring_release(second_ring_id);
+
+        assert(kernel_io_uring_create(
+                   4u, &rewind_parameters, &second_ring_id) == 0);
+        assert(rewind_parameters.sq_off.array == 0u);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_SQ_RING,
+                   0u, &no_array_sq_ring) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_SQES,
+                   0u, &no_array_sqes) == 0);
+        mapped_sqe = (struct edge_linux_io_uring_sqe *)(void *)
+            no_array_sqes.address;
+        memset(mapped_sqe, 0, 2u * sizeof(*mapped_sqe));
+        mapped_sqe[0].user_data = 0x524557494e4430ull;
+        mapped_sqe[1].user_data = 0x524557494e4431ull;
+        entries_consumed = 0u;
+        layout_result = 0;
+        assert(kernel_io_uring_take_submission(
+                   second_ring_id, 0u, 2u, &no_array_submission,
+                   &entries_consumed, &layout_result) == 0);
+        assert(no_array_submission.user_data == 0x524557494e4430ull);
+        assert(*page_u32(
+                   &no_array_sq_ring, rewind_parameters.sq_off.head) == 0u);
+        assert(kernel_io_uring_take_submission(
+                   second_ring_id, 1u, 1u, &no_array_submission,
+                   &entries_consumed, &layout_result) == 0);
+        assert(no_array_submission.user_data == 0x524557494e4431ull);
+        assert(kernel_io_uring_take_submission(
+                   second_ring_id, 4u, 1u, &no_array_submission,
+                   &entries_consumed, &layout_result) ==
+               -EDGE_LINUX_EAGAIN);
+        test_page_release(0, &no_array_sq_ring);
+        test_page_release(0, &no_array_sqes);
         kernel_io_uring_release(second_ring_id);
     }
     assert(kernel_io_uring_files_register(
@@ -675,7 +766,7 @@ int main(void) {
         uint32_t entries_consumed = 0u;
         int32_t layout_result = 0;
         assert(kernel_io_uring_take_submission(
-                   ring_id, 1u, &submission,
+                   ring_id, 0u, 1u, &submission,
                    &entries_consumed, &layout_result) == 0);
         assert(entries_consumed == 1u);
         assert(layout_result == 0);

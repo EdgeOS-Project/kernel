@@ -82,6 +82,10 @@ struct linux_epoll_event {
 #define IORING_ENTER_GETEVENTS 1u
 #define IORING_ENTER_EXT_ARG (1u << 3)
 #define IORING_SETUP_R_DISABLED (1u << 6)
+#define IORING_SETUP_SINGLE_ISSUER (1u << 12)
+#define IORING_SETUP_DEFER_TASKRUN (1u << 13)
+#define IORING_SETUP_NO_SQARRAY (1u << 16)
+#define IORING_SETUP_SQ_REWIND (1u << 20)
 #define IOSQE_FIXED_FILE (1u << 0)
 #define IOSQE_IO_LINK (1u << 2)
 #define IORING_REGISTER_BUFFERS 0u
@@ -392,6 +396,131 @@ static int expect_true(const char *name, int condition) {
     print_text(name);
     print_text("\n");
     return 1;
+}
+
+static void *map_ring(long descriptor, uint64_t offset);
+
+static int run_setup_modes(void) {
+    struct io_uring_params parameters;
+    struct io_uring_sqe *sqes;
+    struct io_uring_cqe *cqes;
+    volatile uint32_t *sq_head;
+    volatile uint32_t *sq_tail;
+    volatile uint32_t *cq_tail;
+    void *sq_ring;
+    void *cq_ring;
+    long descriptor;
+    int failures = 0;
+
+    memset(&parameters, 0, sizeof(parameters));
+    parameters.flags = IORING_SETUP_SQ_REWIND;
+    failures += expect("rewind requires no sqarray", raw_syscall6(
+        SYS_io_uring_setup, 4, (long)&parameters, 0, 0, 0, 0), -EINVAL);
+
+    memset(&parameters, 0, sizeof(parameters));
+    parameters.flags = IORING_SETUP_DEFER_TASKRUN;
+    failures += expect("defer taskrun requires single issuer", raw_syscall6(
+        SYS_io_uring_setup, 4, (long)&parameters, 0, 0, 0, 0), -EINVAL);
+
+    memset(&parameters, 0, sizeof(parameters));
+    parameters.flags = IORING_SETUP_NO_SQARRAY;
+    parameters.sq_off.array = UINT32_MAX;
+    parameters.sq_off.reserved1 = UINT32_MAX;
+    parameters.cq_off.reserved1 = UINT32_MAX;
+    descriptor = raw_syscall6(
+        SYS_io_uring_setup, 4, (long)&parameters, 0, 0, 0, 0);
+    failures += expect_true("no sqarray setup", descriptor >= 0);
+    if (descriptor >= 0) {
+        failures += expect("no sqarray offset", parameters.sq_off.array, 0);
+        failures += expect(
+            "no sqarray sq reserved", parameters.sq_off.reserved1, 0);
+        failures += expect(
+            "no sqarray cq reserved", parameters.cq_off.reserved1, 0);
+        sq_ring = map_ring(descriptor, IORING_OFF_SQ_RING);
+        cq_ring = map_ring(descriptor, IORING_OFF_CQ_RING);
+        sqes = map_ring(descriptor, IORING_OFF_SQES);
+        failures += expect_true(
+            "no sqarray mappings", sq_ring && cq_ring && sqes);
+        if (sq_ring && cq_ring && sqes) {
+            sq_head = (volatile uint32_t *)((uint8_t *)sq_ring +
+                parameters.sq_off.head);
+            sq_tail = (volatile uint32_t *)((uint8_t *)sq_ring +
+                parameters.sq_off.tail);
+            cq_tail = (volatile uint32_t *)((uint8_t *)cq_ring +
+                parameters.cq_off.tail);
+            cqes = (struct io_uring_cqe *)((uint8_t *)cq_ring +
+                parameters.cq_off.cqes);
+            memset(&sqes[0], 0, sizeof(sqes[0]));
+            sqes[0].user_data = 0x4e4f5f5351415252ull;
+            __atomic_store_n(sq_tail, 1u, __ATOMIC_RELEASE);
+            failures += expect("no sqarray submit", raw_syscall6(
+                SYS_io_uring_enter, descriptor, 1, 1,
+                IORING_ENTER_GETEVENTS, 0, 0), 1);
+            failures += expect("no sqarray head", *sq_head, 1);
+            failures += expect("no sqarray cq tail", *cq_tail, 1);
+            failures += expect_true("no sqarray completion",
+                cqes[0].user_data == 0x4e4f5f5351415252ull &&
+                cqes[0].result == 0);
+        }
+        if (sq_ring)
+            (void)raw_syscall6(
+                SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
+        if (cq_ring)
+            (void)raw_syscall6(
+                SYS_munmap, (long)cq_ring, PAGE_SIZE, 0, 0, 0, 0);
+        if (sqes)
+            (void)raw_syscall6(
+                SYS_munmap, (long)sqes, PAGE_SIZE, 0, 0, 0, 0);
+        (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+    }
+
+    memset(&parameters, 0, sizeof(parameters));
+    parameters.flags = IORING_SETUP_NO_SQARRAY | IORING_SETUP_SQ_REWIND;
+    descriptor = raw_syscall6(
+        SYS_io_uring_setup, 4, (long)&parameters, 0, 0, 0, 0);
+    failures += expect_true("sq rewind setup", descriptor >= 0);
+    if (descriptor >= 0) {
+        sq_ring = map_ring(descriptor, IORING_OFF_SQ_RING);
+        cq_ring = map_ring(descriptor, IORING_OFF_CQ_RING);
+        sqes = map_ring(descriptor, IORING_OFF_SQES);
+        failures += expect_true(
+            "sq rewind mappings", sq_ring && cq_ring && sqes);
+        if (sq_ring && cq_ring && sqes) {
+            sq_head = (volatile uint32_t *)((uint8_t *)sq_ring +
+                parameters.sq_off.head);
+            cq_tail = (volatile uint32_t *)((uint8_t *)cq_ring +
+                parameters.cq_off.tail);
+            cqes = (struct io_uring_cqe *)((uint8_t *)cq_ring +
+                parameters.cq_off.cqes);
+            memset(&sqes[0], 0, 2u * sizeof(sqes[0]));
+            sqes[0].user_data = 0x524557494e4430ull;
+            sqes[1].user_data = 0x524557494e4431ull;
+            failures += expect("sq rewind submit", raw_syscall6(
+                SYS_io_uring_enter, descriptor, 2, 2,
+                IORING_ENTER_GETEVENTS, 0, 0), 2);
+            failures += expect("sq rewind head", *sq_head, 0);
+            failures += expect("sq rewind cq tail", *cq_tail, 2);
+            failures += expect_true("sq rewind completions",
+                cqes[0].user_data == 0x524557494e4430ull &&
+                cqes[1].user_data == 0x524557494e4431ull);
+            failures += expect("sq rewind repeat", raw_syscall6(
+                SYS_io_uring_enter, descriptor, 1, 0, 0, 0, 0), 1);
+            failures += expect("sq rewind repeat tail", *cq_tail, 3);
+            failures += expect_true("sq rewind repeat completion",
+                cqes[2].user_data == 0x524557494e4430ull);
+        }
+        if (sq_ring)
+            (void)raw_syscall6(
+                SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
+        if (cq_ring)
+            (void)raw_syscall6(
+                SYS_munmap, (long)cq_ring, PAGE_SIZE, 0, 0, 0, 0);
+        if (sqes)
+            (void)raw_syscall6(
+                SYS_munmap, (long)sqes, PAGE_SIZE, 0, 0, 0, 0);
+        (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+    }
+    return failures;
 }
 
 static void *map_ring(long descriptor, uint64_t offset) {
@@ -1242,7 +1371,7 @@ static int run_tests(void) {
     uint32_t futex_word = 0;
     int32_t fixed_files[2] = {-1, -1};
     int fixed_vector_supported;
-    int failures = 0;
+    int failures = run_setup_modes();
 
     memset(&parameters, 0, sizeof(parameters));
     parameters.reserved[0] = 1;
@@ -2504,9 +2633,15 @@ close_ring:
 __attribute__((force_align_arg_pointer))
 #endif
 void _start(void) {
+#if defined(IO_URING_SETUP_MODES_ONLY)
+    int failures = run_setup_modes();
+    print_text(failures ? "io-uring-setup-modes: FAIL\n" :
+                          "io-uring-setup-modes: PASS\n");
+#else
     int failures = run_tests();
     print_text(failures ? "io-uring-abi: FAIL\n" :
                           "io-uring-abi: PASS\n");
+#endif
     raw_syscall6(SYS_exit, failures ? 1 : 0, 0, 0, 0, 0, 0);
     for (;;) {}
 }
