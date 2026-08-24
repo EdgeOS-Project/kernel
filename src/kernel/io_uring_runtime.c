@@ -87,8 +87,10 @@ typedef struct kernel_io_uring_pending {
     uint8_t realtime_clock;
     uint8_t multishot;
     uint8_t ready_latched;
-    uint8_t reserved[3];
+    uint8_t opcode;
+    uint8_t reserved[2];
     int32_t descriptor;
+    uint64_t file_description_id;
     uint32_t events;
     uint32_t completion_target;
     int32_t expiration_result;
@@ -2328,6 +2330,7 @@ int kernel_io_uring_fixed_file_registered(
 }
 
 static int io_uring_pending_add(int32_t ring_id, uint8_t kind,
+                                uint8_t opcode,
                                 uint64_t user_data, int32_t descriptor,
                                 uint32_t events, uint64_t deadline_us,
                                 uint32_t completion_target,
@@ -2340,11 +2343,18 @@ static int io_uring_pending_add(int32_t ring_id, uint8_t kind,
     uint32_t slot;
     int result = 0;
     int lease_transferred = 0;
+    uint64_t file_description_id = 0u;
 
     if (kind == IO_URING_PENDING_POLL) {
         result = kernel_fd_operation_acquire(
             descriptor, &descriptor_lease);
         if (result < 0) return result;
+        result = kernel_fd_operation_description_id(
+            &descriptor_lease, &file_description_id);
+        if (result < 0) {
+            (void)kernel_fd_operation_release(&descriptor_lease);
+            return result;
+        }
     }
 
     flags = spin_lock_irqsave(&g_io_uring_lock);
@@ -2366,7 +2376,10 @@ static int io_uring_pending_add(int32_t ring_id, uint8_t kind,
             }
             ring->pending[slot].used = 1u;
             ring->pending[slot].kind = kind;
+            ring->pending[slot].opcode = opcode;
             ring->pending[slot].descriptor = descriptor;
+            ring->pending[slot].file_description_id =
+                file_description_id;
             ring->pending[slot].events = events;
             ring->pending[slot].realtime_clock = realtime_clock ? 1u : 0u;
             ring->pending[slot].multishot = multishot ? 1u : 0u;
@@ -2398,7 +2411,7 @@ int kernel_io_uring_timeout_add(int32_t ring_id, uint64_t user_data,
                                 uint32_t repeat_count,
                                 int multishot) {
     return io_uring_pending_add(
-        ring_id, IO_URING_PENDING_TIMEOUT, user_data, -1, 0,
+        ring_id, IO_URING_PENDING_TIMEOUT, 11u, user_data, -1, 0,
         deadline_us, completion_target, expiration_result,
         realtime_clock, interval_us, repeat_count, multishot);
 }
@@ -2468,6 +2481,7 @@ int kernel_io_uring_link_timeout_add(int32_t ring_id,
     memset(&ring->pending[slot], 0, sizeof(ring->pending[slot]));
     ring->pending[slot].used = 1u;
     ring->pending[slot].kind = IO_URING_PENDING_LINK_TIMEOUT;
+    ring->pending[slot].opcode = 15u;
     ring->pending[slot].realtime_clock = realtime_clock ? 1u : 0u;
     ring->pending[slot].user_data = user_data;
     ring->pending[slot].deadline_us = deadline_us;
@@ -2542,7 +2556,7 @@ int kernel_io_uring_poll_add(int32_t ring_id, uint64_t user_data,
                              int multishot) {
     if (descriptor < 0 || !events) return -EDGE_LINUX_EINVAL;
     return io_uring_pending_add(
-        ring_id, IO_URING_PENDING_POLL, user_data, descriptor,
+        ring_id, IO_URING_PENDING_POLL, 6u, user_data, descriptor,
         events, UINT64_MAX, 0, 0, 0, 0, 0, multishot);
 }
 
@@ -2557,6 +2571,8 @@ int kernel_io_uring_epoll_wait_add(int32_t ring_id, uint64_t user_data,
     uint64_t flags;
     uint32_t slot;
     int32_t epoll_index;
+    kernel_fd_operation_lease_t descriptor_lease = {0};
+    uint64_t file_description_id = 0u;
     int result;
 
     if (!user_events || !address_space || !maximum_events ||
@@ -2564,6 +2580,13 @@ int kernel_io_uring_epoll_wait_add(int32_t ring_id, uint64_t user_data,
         event_size > 16u || event_data_offset < sizeof(uint32_t) ||
         event_data_offset > event_size - sizeof(uint64_t))
         return -EDGE_LINUX_EINVAL;
+    result = kernel_fd_operation_acquire(
+        descriptor, &descriptor_lease);
+    if (result < 0) return result;
+    result = kernel_fd_operation_description_id(
+        &descriptor_lease, &file_description_id);
+    (void)kernel_fd_operation_release(&descriptor_lease);
+    if (result < 0) return result;
     result = kernel_epoll_descriptor_retain(
         descriptor, &epoll_index);
     if (result < 0) return result;
@@ -2582,7 +2605,9 @@ int kernel_io_uring_epoll_wait_add(int32_t ring_id, uint64_t user_data,
             memset(pending, 0, sizeof(*pending));
             pending->used = 1u;
             pending->kind = IO_URING_PENDING_EPOLL;
+            pending->opcode = 59u;
             pending->descriptor = epoll_index;
+            pending->file_description_id = file_description_id;
             pending->user_data = user_data;
             pending->user_address = user_events;
             pending->address_space = address_space;
@@ -2602,7 +2627,7 @@ int kernel_io_uring_epoll_wait_add(int32_t ring_id, uint64_t user_data,
 }
 
 int kernel_io_uring_futex_wait_add(
-        int32_t ring_id, uint64_t user_data,
+        int32_t ring_id, uint64_t user_data, uint8_t opcode,
         const kernel_futex_request_t *request) {
     kernel_io_uring_t *ring;
     uint64_t futex_wait_id;
@@ -2626,6 +2651,7 @@ int kernel_io_uring_futex_wait_add(
                    sizeof(ring->pending[slot]));
             ring->pending[slot].used = 1u;
             ring->pending[slot].kind = IO_URING_PENDING_FUTEX;
+            ring->pending[slot].opcode = opcode;
             ring->pending[slot].user_data = user_data;
             ring->pending[slot].futex_wait_id = futex_wait_id;
             ++ring->next_pending_sequence;
@@ -2672,6 +2698,7 @@ int kernel_io_uring_waitid_add(
             memset(pending, 0, sizeof(*pending));
             pending->used = 1u;
             pending->kind = IO_URING_PENDING_WAITID;
+            pending->opcode = 50u;
             pending->user_data = user_data;
             pending->user_address = user_information;
             pending->address_space = address_space;
@@ -2754,7 +2781,9 @@ int kernel_io_uring_read_multishot_add(
             memset(pending, 0, sizeof(*pending));
             pending->used = 1u;
             pending->kind = IO_URING_PENDING_READ_MULTISHOT;
+            pending->opcode = 49u;
             pending->multishot = 1u;
+            pending->descriptor = descriptor;
             pending->user_data = user_data;
             pending->address_space = address_space;
             pending->buffer_group = buffer_group;
@@ -2766,6 +2795,19 @@ int kernel_io_uring_read_multishot_add(
                 read_page = pending->read_page;
                 memset(pending, 0, sizeof(*pending));
             } else {
+                result = kernel_fd_operation_description_id(
+                    &pending->descriptor_lease,
+                    &pending->file_description_id);
+                if (result < 0) {
+                    read_page = pending->read_page;
+                    memset(&pending->read_page, 0,
+                           sizeof(pending->read_page));
+                    (void)kernel_fd_operation_move(
+                        &descriptor_lease,
+                        &pending->descriptor_lease);
+                    memset(pending, 0, sizeof(*pending));
+                    goto read_multishot_locked_done;
+                }
                 ++ring->next_pending_sequence;
                 if (!ring->next_pending_sequence)
                     ++ring->next_pending_sequence;
@@ -2773,6 +2815,7 @@ int kernel_io_uring_read_multishot_add(
             }
         }
     }
+read_multishot_locked_done:
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
 
 fail:
@@ -2827,7 +2870,31 @@ int kernel_io_uring_poll_update(int32_t ring_id, uint64_t old_user_data,
     return result;
 }
 
-int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data) {
+static int io_uring_pending_cancel_matches(
+        const kernel_io_uring_pending_t *pending,
+        const kernel_io_uring_cancel_match_t *match) {
+    int match_user_data;
+
+    if (!pending || !pending->used || !match) return 0;
+    if (match->flags & KERNEL_IO_URING_CANCEL_ANY) return 1;
+    if ((match->flags & KERNEL_IO_URING_CANCEL_FD) &&
+        (!match->file_description_id ||
+         pending->file_description_id != match->file_description_id))
+        return 0;
+    if ((match->flags & KERNEL_IO_URING_CANCEL_OP) &&
+        pending->opcode != match->opcode)
+        return 0;
+    match_user_data =
+        (match->flags & KERNEL_IO_URING_CANCEL_USERDATA) != 0;
+    if (!(match->flags & (KERNEL_IO_URING_CANCEL_FD |
+                          KERNEL_IO_URING_CANCEL_OP)))
+        match_user_data = 1;
+    return !match_user_data || pending->user_data == match->user_data;
+}
+
+int kernel_io_uring_pending_cancel_match(
+        int32_t ring_id, const kernel_io_uring_cancel_match_t *match,
+        uint64_t *canceled_user_data) {
     kernel_fd_operation_lease_t descriptor_lease = {0};
     kernel_io_uring_page_t read_page = {0};
     int32_t epoll_index = -1;
@@ -2840,12 +2907,17 @@ int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data) {
     uint32_t slot;
     int result = -EDGE_LINUX_ENOENT;
 
+    if (!match || !canceled_user_data) {
+        spin_unlock_irqrestore(&g_io_uring_lock, flags);
+        return -EDGE_LINUX_EINVAL;
+    }
+    *canceled_user_data = 0u;
     ring = io_uring_lookup_locked(ring_id);
     if (!ring) result = -EDGE_LINUX_EBADF;
     else {
         for (slot = 0; slot < KERNEL_IO_URING_MAX_PENDING; ++slot) {
-            if (!ring->pending[slot].used ||
-                ring->pending[slot].user_data != user_data)
+            if (!io_uring_pending_cancel_matches(
+                    &ring->pending[slot], match))
                 continue;
             if (ring->pending[slot].kind == IO_URING_PENDING_POLL ||
                 ring->pending[slot].kind ==
@@ -2861,11 +2933,7 @@ int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data) {
                        IO_URING_PENDING_FUTEX) {
                 futex_wait_id = ring->pending[slot].futex_wait_id;
             }
-            if (ring->pending[slot].kind == IO_URING_PENDING_FUTEX ||
-                ring->pending[slot].kind == IO_URING_PENDING_WAITID)
-                result = 1;
-            else
-                result = 0;
+            result = 0;
             if (ring->pending[slot].kind ==
                     IO_URING_PENDING_READ_MULTISHOT &&
                 ring->pending[slot].read_page.address) {
@@ -2874,6 +2942,7 @@ int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data) {
                        sizeof(ring->pending[slot].read_page));
             }
             canceled_sequence = ring->pending[slot].sequence;
+            *canceled_user_data = ring->pending[slot].user_data;
             memset(&ring->pending[slot], 0, sizeof(ring->pending[slot]));
             break;
         }
@@ -2908,6 +2977,17 @@ int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data) {
             ring_id, link_timeout_user_data,
             -EDGE_LINUX_ECANCELED, 0u);
     return result;
+}
+
+int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data) {
+    kernel_io_uring_cancel_match_t match;
+    uint64_t canceled_user_data;
+
+    memset(&match, 0, sizeof(match));
+    match.user_data = user_data;
+    match.flags = KERNEL_IO_URING_CANCEL_USERDATA;
+    return kernel_io_uring_pending_cancel_match(
+        ring_id, &match, &canceled_user_data);
 }
 
 typedef struct io_uring_pending_snapshot {

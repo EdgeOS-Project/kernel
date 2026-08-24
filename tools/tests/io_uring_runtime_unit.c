@@ -134,6 +134,19 @@ const void *kernel_fd_operation_view(
         (const void *)lease : 0;
 }
 
+int kernel_fd_operation_description_id(
+        const kernel_fd_operation_lease_t *lease,
+        uint64_t *description_id) {
+    int32_t stored;
+
+    if (!lease || !description_id ||
+        (stored = *(const int32_t *)(const void *)lease) <= 0)
+        return -EDGE_LINUX_EBADF;
+    *description_id = ((uint64_t)(uint32_t)stored << 32u) |
+        ((const uint32_t *)(const void *)lease)[1];
+    return 0;
+}
+
 int kernel_fd_operation_move(
         kernel_fd_operation_lease_t *destination,
         kernel_fd_operation_lease_t *source) {
@@ -1272,7 +1285,7 @@ int main(void) {
             (uint8_t *)futex_cq.address +
             futex_parameters.cq_off.cqes);
         assert(kernel_io_uring_futex_wait_add(
-                   second_ring_id, 0x46555458u,
+                   second_ring_id, 0x46555458u, 51u,
                    &futex_request) == 0);
         assert(g_futex_request.operation == KERNEL_FUTEX_WAIT);
         assert(kernel_io_uring_collect(second_ring_id, 0u) == 0);
@@ -1283,15 +1296,15 @@ int main(void) {
         assert(futex_completion[0].result == 0);
 
         assert(kernel_io_uring_futex_wait_add(
-                   second_ring_id, 0x46555443u,
+                   second_ring_id, 0x46555443u, 51u,
                    &futex_request) == 0);
         cancel_count = g_futex_cancel_count;
         assert(kernel_io_uring_pending_cancel(
-                   second_ring_id, 0x46555443u) == 1);
+                   second_ring_id, 0x46555443u) == 0);
         assert(g_futex_cancel_count == cancel_count + 1u);
 
         assert(kernel_io_uring_futex_wait_add(
-                   second_ring_id, 0x46555452u,
+                   second_ring_id, 0x46555452u, 51u,
                    &futex_request) == 0);
         cancel_count = g_futex_cancel_count;
         test_page_release(0, &futex_cq);
@@ -1337,7 +1350,7 @@ int main(void) {
                    second_ring_id, 0x57414943u, &wait_request, 41,
                    0u, 0u, 0) == 0);
         assert(kernel_io_uring_pending_cancel(
-                   second_ring_id, 0x57414943u) == 1);
+                   second_ring_id, 0x57414943u) == 0);
         test_page_release(0, &wait_cq);
         kernel_io_uring_release(second_ring_id);
     }

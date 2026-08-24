@@ -9045,6 +9045,20 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_CQE_F_BUF_MORE (1u << 4)
 #define EDGE_LINUX_IORING_CQE_BUFFER_SHIFT 16u
 
+#define EDGE_LINUX_IORING_ASYNC_CANCEL_ALL      (1u << 0)
+#define EDGE_LINUX_IORING_ASYNC_CANCEL_FD       (1u << 1)
+#define EDGE_LINUX_IORING_ASYNC_CANCEL_ANY      (1u << 2)
+#define EDGE_LINUX_IORING_ASYNC_CANCEL_FD_FIXED (1u << 3)
+#define EDGE_LINUX_IORING_ASYNC_CANCEL_USERDATA (1u << 4)
+#define EDGE_LINUX_IORING_ASYNC_CANCEL_OP       (1u << 5)
+#define EDGE_LINUX_IORING_ASYNC_CANCEL_SUPPORTED \
+    (EDGE_LINUX_IORING_ASYNC_CANCEL_ALL | \
+     EDGE_LINUX_IORING_ASYNC_CANCEL_FD | \
+     EDGE_LINUX_IORING_ASYNC_CANCEL_ANY | \
+     EDGE_LINUX_IORING_ASYNC_CANCEL_FD_FIXED | \
+     EDGE_LINUX_IORING_ASYNC_CANCEL_USERDATA | \
+     EDGE_LINUX_IORING_ASYNC_CANCEL_OP)
+
 #define EDGE_LINUX_IORING_RECVSEND_POLL_FIRST (1u << 0)
 #define EDGE_LINUX_IORING_RECVSEND_FIXED_BUF  (1u << 2)
 #define EDGE_LINUX_IORING_SEND_ZC_REPORT_USAGE (1u << 3)
@@ -9109,6 +9123,7 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_UNREGISTER_RING_FDS    21u
 #define EDGE_LINUX_IORING_REGISTER_PBUF_RING     22u
 #define EDGE_LINUX_IORING_UNREGISTER_PBUF_RING   23u
+#define EDGE_LINUX_IORING_REGISTER_SYNC_CANCEL   24u
 #define EDGE_LINUX_IORING_REGISTER_FILE_ALLOC_RANGE 25u
 #define EDGE_LINUX_IORING_REGISTER_PBUF_STATUS   26u
 #define EDGE_LINUX_IORING_REGISTER_CLOCK         29u
@@ -9412,6 +9427,78 @@ static int32_t edge_linux_io_uring_poll_remove_update(
         update_events, submission->operation_flags,
         update_user_data, submission->offset,
         (flags & EDGE_LINUX_IORING_POLL_ADD_MULTI) != 0);
+}
+
+static int edge_linux_io_uring_cancel_file_id(
+        int32_t ring_id, int32_t descriptor, int fixed,
+        uint64_t *file_description_id) {
+    kernel_fd_operation_lease_t lease = {0};
+    int32_t materialized = -1;
+    int result;
+
+    if (!file_description_id) return -EDGE_LINUX_EINVAL;
+    *file_description_id = 0u;
+    if (fixed) {
+        result = kernel_io_uring_fixed_file_materialize(
+            ring_id, (uint32_t)descriptor, &materialized);
+        if (result < 0) return result;
+        descriptor = materialized;
+    }
+    result = kernel_fd_operation_acquire(descriptor, &lease);
+    if (result == 0)
+        result = kernel_fd_operation_description_id(
+            &lease, file_description_id);
+    if (kernel_fd_operation_view(&lease))
+        (void)kernel_fd_operation_release(&lease);
+    if (materialized >= 0) (void)kernel_fd_close(materialized);
+    return result;
+}
+
+static int32_t edge_linux_io_uring_cancel_pending(
+        int32_t ring_id, uint64_t user_data, int32_t descriptor,
+        uint32_t flags, uint8_t opcode, int strict_combinations) {
+    kernel_io_uring_cancel_match_t match;
+    uint32_t canceled = 0u;
+    int cancel_all;
+    int result;
+
+    if (flags & ~EDGE_LINUX_IORING_ASYNC_CANCEL_SUPPORTED)
+        return -EDGE_LINUX_EINVAL;
+    if (strict_combinations &&
+        (flags & EDGE_LINUX_IORING_ASYNC_CANCEL_ANY) &&
+        (flags & (EDGE_LINUX_IORING_ASYNC_CANCEL_FD |
+                  EDGE_LINUX_IORING_ASYNC_CANCEL_OP)))
+        return -EDGE_LINUX_EINVAL;
+    if ((flags & EDGE_LINUX_IORING_ASYNC_CANCEL_OP) &&
+        opcode >= EDGE_LINUX_IORING_OP_LAST)
+        return -EDGE_LINUX_EINVAL;
+    memset(&match, 0, sizeof(match));
+    match.user_data = user_data;
+    match.flags = flags;
+    match.opcode = opcode;
+    if (flags & EDGE_LINUX_IORING_ASYNC_CANCEL_FD) {
+        result = edge_linux_io_uring_cancel_file_id(
+            ring_id, descriptor,
+            (flags & EDGE_LINUX_IORING_ASYNC_CANCEL_FD_FIXED) != 0,
+            &match.file_description_id);
+        if (result < 0) return result;
+    }
+    cancel_all =
+        (flags & (EDGE_LINUX_IORING_ASYNC_CANCEL_ALL |
+                  EDGE_LINUX_IORING_ASYNC_CANCEL_ANY)) != 0;
+    do {
+        uint64_t canceled_user_data;
+
+        result = kernel_io_uring_pending_cancel_match(
+            ring_id, &match, &canceled_user_data);
+        if (result < 0) break;
+        ++canceled;
+        (void)kernel_io_uring_completion_add_async(
+            ring_id, canceled_user_data,
+            -EDGE_LINUX_ECANCELED, 0u);
+    } while (cancel_all);
+    if (!canceled) return cancel_all ? 0 : result;
+    return cancel_all ? (int32_t)canceled : 0;
 }
 
 static int32_t edge_linux_io_uring_epoll_wait(
@@ -10243,13 +10330,14 @@ static int32_t edge_linux_io_uring_execute_descriptor(
             context, ring_id, submission);
         break;
     case EDGE_LINUX_IORING_OP_ASYNC_CANCEL:
-        if (!submission->address || submission->offset ||
-            submission->length || submission->operation_flags ||
-            submission->buffer_index || submission->splice_descriptor)
+        if (submission->offset || submission->splice_descriptor)
             result = -EDGE_LINUX_EINVAL;
         else
-            result = kernel_io_uring_pending_cancel(
-                ring_id, submission->address);
+            result = edge_linux_io_uring_cancel_pending(
+                ring_id, submission->address,
+                submission->descriptor,
+                submission->operation_flags,
+                (uint8_t)submission->length, 1);
         break;
     case EDGE_LINUX_IORING_OP_POLL_REMOVE:
         result = edge_linux_io_uring_poll_remove_update(
@@ -10367,7 +10455,8 @@ static int32_t edge_linux_io_uring_execute_descriptor(
         }
         if (result == 0) {
             result = kernel_io_uring_futex_wait_add(
-                ring_id, submission->user_data, request);
+                ring_id, submission->user_data,
+                submission->opcode, request);
             if (result == 0)
                 result = EDGE_LINUX_IORING_PENDING_RESULT;
         }
@@ -11179,8 +11268,7 @@ static int64_t edge_linux_sys_io_uring_enter(
             ((submission.opcode == EDGE_LINUX_IORING_OP_POLL_REMOVE &&
               submission.length == 0u) ||
              (submission.opcode == EDGE_LINUX_IORING_OP_TIMEOUT_REMOVE &&
-              submission.operation_flags == 0u) ||
-             submission.opcode == EDGE_LINUX_IORING_OP_ASYNC_CANCEL))
+              submission.operation_flags == 0u)))
             (void)kernel_io_uring_completion_add_async(
                 ring_id, submission.address, -EDGE_LINUX_ECANCELED, 0);
         if (cancel_link) cancel_link = linked || hard_linked;
@@ -11851,6 +11939,32 @@ static int64_t edge_linux_io_uring_query(
     return 0;
 }
 
+static int64_t edge_linux_io_uring_sync_cancel(
+        edge_linux_syscall_context_t *context, int32_t ring_id,
+        uint64_t argument, uint32_t operation_count) {
+    struct edge_linux_io_uring_sync_cancel_reg cancellation;
+
+    if (!argument || operation_count != 1u)
+        return -EDGE_LINUX_EINVAL;
+    if (edge_linux_copy_from_user(
+            context, &cancellation, argument,
+            sizeof(cancellation)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    if (cancellation.flags &
+            ~EDGE_LINUX_IORING_ASYNC_CANCEL_SUPPORTED)
+        return -EDGE_LINUX_EINVAL;
+    for (uint32_t index = 0; index < sizeof(cancellation.padding);
+         ++index)
+        if (cancellation.padding[index]) return -EDGE_LINUX_EINVAL;
+    for (uint32_t index = 0;
+         index < sizeof(cancellation.padding2) /
+                     sizeof(cancellation.padding2[0]); ++index)
+        if (cancellation.padding2[index]) return -EDGE_LINUX_EINVAL;
+    return edge_linux_io_uring_cancel_pending(
+        ring_id, cancellation.address, cancellation.descriptor,
+        cancellation.flags, cancellation.opcode, 0);
+}
+
 static int64_t edge_linux_sys_io_uring_register(
         edge_linux_syscall_context_t *context) {
     struct edge_linux_io_uring_probe probe;
@@ -11882,6 +11996,9 @@ static int64_t edge_linux_sys_io_uring_register(
             context, ring_id, argument, operation_count);
     if (opcode == EDGE_LINUX_IORING_UNREGISTER_PBUF_RING)
         return edge_linux_io_uring_unregister_pbuf_ring(
+            context, ring_id, argument, operation_count);
+    if (opcode == EDGE_LINUX_IORING_REGISTER_SYNC_CANCEL)
+        return edge_linux_io_uring_sync_cancel(
             context, ring_id, argument, operation_count);
     if (opcode == EDGE_LINUX_IORING_REGISTER_PBUF_STATUS)
         return edge_linux_io_uring_pbuf_status(

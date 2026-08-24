@@ -82,6 +82,21 @@ typedef int (*kernel_io_uring_waitid_copy_t)(
     uint64_t address_space, uint64_t user_address,
     const kernel_process_wait_result_t *result, int event_present);
 
+#define KERNEL_IO_URING_CANCEL_ALL       (1u << 0)
+#define KERNEL_IO_URING_CANCEL_FD        (1u << 1)
+#define KERNEL_IO_URING_CANCEL_ANY       (1u << 2)
+#define KERNEL_IO_URING_CANCEL_FD_FIXED  (1u << 3)
+#define KERNEL_IO_URING_CANCEL_USERDATA  (1u << 4)
+#define KERNEL_IO_URING_CANCEL_OP        (1u << 5)
+
+typedef struct kernel_io_uring_cancel_match {
+    uint64_t user_data;
+    uint64_t file_description_id;
+    uint32_t flags;
+    uint8_t opcode;
+    uint8_t reserved[3];
+} kernel_io_uring_cancel_match_t;
+
 int kernel_io_uring_page_allocator_register(
     const kernel_io_uring_page_allocator_t *allocator);
 int kernel_io_uring_create(uint32_t entries,
@@ -229,7 +244,7 @@ int kernel_io_uring_epoll_wait_add(int32_t ring_id, uint64_t user_data,
                                    uint8_t event_size,
                                    uint8_t event_data_offset);
 int kernel_io_uring_futex_wait_add(
-    int32_t ring_id, uint64_t user_data,
+    int32_t ring_id, uint64_t user_data, uint8_t opcode,
     const kernel_futex_request_t *request);
 int kernel_io_uring_waitid_add(
     int32_t ring_id, uint64_t user_data,
@@ -245,6 +260,9 @@ int kernel_io_uring_poll_update(int32_t ring_id, uint64_t old_user_data,
                                 uint64_t new_user_data,
                                 int multishot);
 int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data);
+int kernel_io_uring_pending_cancel_match(
+    int32_t ring_id, const kernel_io_uring_cancel_match_t *match,
+    uint64_t *canceled_user_data);
 uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us);
 int kernel_io_uring_mmap_info(int32_t ring_id, uint64_t offset,
                               uint64_t length, uint32_t *page_count);

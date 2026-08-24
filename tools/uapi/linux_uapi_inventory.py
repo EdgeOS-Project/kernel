@@ -165,6 +165,7 @@ EDGEOS_ASSESSMENTS = [
             "WAITID immediate and asynchronous child-state completion with retained submitter identity",
             "READ_MULTISHOT pipe reads with retained descriptions, legacy provided buffers and normal buffer rings",
             "linked capability queries for supported request, registration, setup, enter, SQE and feature flags",
+            "synchronous and asynchronous cancellation by user data, file description, opcode or any request, including all-match counts",
             "scheduler-native enter suspension without an initial busy-poll window",
         ],
         "missing": [
@@ -195,6 +196,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/io_uring_waitid_abi_probe.c",
             "tools/tests/io_uring_read_multishot_abi_probe.c",
             "tools/tests/io_uring_query_abi_probe.c",
+            "tools/tests/io_uring_sync_cancel_abi_probe.c",
             "tools/tests/io_uring_runtime_unit.c",
         ],
         "linux_oracle": {
@@ -247,7 +249,9 @@ EDGEOS_ASSESSMENTS = [
                 "pipe reads, provided-buffer IDs, ENOBUFS termination, "
                 "cancellation and descriptor validation, plus frozen-source "
                 "linked capability-query layouts, per-entry results and "
-                "zero-filled extension bytes"
+                "zero-filled extension bytes, plus synchronous and asynchronous "
+                "cancel matching, all-match counts, target completions and "
+                "reserved-field validation"
             ),
         },
     },

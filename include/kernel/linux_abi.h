@@ -690,6 +690,17 @@ struct edge_linux_io_uring_query_opcodes {
     uint32_t padding;
 };
 
+struct edge_linux_io_uring_sync_cancel_reg {
+    uint64_t address;
+    int32_t descriptor;
+    uint32_t flags;
+    int64_t timeout_seconds;
+    int64_t timeout_nanoseconds;
+    uint8_t opcode;
+    uint8_t padding[7];
+    uint64_t padding2[3];
+};
+
 struct edge_linux_io_uring_getevents_arg {
     uint64_t signal_mask;
     uint32_t signal_mask_size;
@@ -845,6 +856,8 @@ _Static_assert(sizeof(struct edge_linux_io_uring_query_header) == 40,
                "Linux io_uring query header size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_query_opcodes) == 48,
                "Linux io_uring opcode query size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_uring_sync_cancel_reg) == 64,
+               "Linux io_uring synchronous cancel size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_getevents_arg) == 24,
                "Linux io_uring getevents argument size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_region_desc) == 64,
