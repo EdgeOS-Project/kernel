@@ -9131,6 +9131,7 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_REGISTER_PBUF_STATUS   26u
 #define EDGE_LINUX_IORING_REGISTER_CLOCK         29u
 #define EDGE_LINUX_IORING_REGISTER_CLONE_BUFFERS 30u
+#define EDGE_LINUX_IORING_REGISTER_SEND_MSG_RING 31u
 #define EDGE_LINUX_IORING_REGISTER_MEM_REGION    34u
 #define EDGE_LINUX_IORING_REGISTER_QUERY         35u
 #define EDGE_LINUX_IORING_REGISTER_LAST          38u
@@ -12094,6 +12095,26 @@ static int64_t edge_linux_io_uring_clone_buffers(
         (clone.flags & EDGE_LINUX_IORING_REGISTER_DST_REPLACE) != 0);
 }
 
+static int64_t edge_linux_io_uring_send_msg_ring(
+        edge_linux_syscall_context_t *context, uint64_t argument,
+        uint32_t operation_count) {
+    struct edge_linux_io_uring_sqe submission;
+
+    if (!argument || operation_count != 1u)
+        return -EDGE_LINUX_EINVAL;
+    if (edge_linux_copy_from_user(
+            context, &submission, argument, sizeof(submission)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    if (submission.flags ||
+        submission.opcode != EDGE_LINUX_IORING_OP_MSG_RING ||
+        submission.personality || submission.buffer_index)
+        return -EDGE_LINUX_EINVAL;
+
+    /* The blind registration form has no source ring or source CQE. */
+    submission.ioprio = 0u;
+    return edge_linux_io_uring_msg_ring(-1, &submission);
+}
+
 static int64_t edge_linux_sys_io_uring_register(
         edge_linux_syscall_context_t *context) {
     struct edge_linux_io_uring_probe probe;
@@ -12111,6 +12132,10 @@ static int64_t edge_linux_sys_io_uring_register(
     registered =
         (opcode & EDGE_LINUX_IORING_REGISTER_USE_REGISTERED_RING) != 0;
     opcode &= ~EDGE_LINUX_IORING_REGISTER_USE_REGISTERED_RING;
+    if (descriptor == -1 &&
+        opcode == EDGE_LINUX_IORING_REGISTER_SEND_MSG_RING)
+        return edge_linux_io_uring_send_msg_ring(
+            context, argument, operation_count);
     result = edge_linux_io_uring_resolve_ring_descriptor(
         descriptor, registered, &ring_id);
     if (result < 0) return result;
