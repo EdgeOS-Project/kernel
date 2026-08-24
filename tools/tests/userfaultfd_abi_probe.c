@@ -14,6 +14,8 @@
 #define SYS_clone 56
 #define SYS_wait4 61
 #define SYS_kill 62
+#define SYS_ftruncate 77
+#define SYS_memfd_create 319
 #define SYS_sched_yield 24
 #define SYS_exit 60
 #define SYS_userfaultfd 323
@@ -28,6 +30,8 @@
 #define SYS_clone 220
 #define SYS_wait4 260
 #define SYS_kill 129
+#define SYS_ftruncate 46
+#define SYS_memfd_create 279
 #define SYS_sched_yield 124
 #define SYS_exit 93
 #define SYS_userfaultfd 282
@@ -39,6 +43,7 @@
 #define PROT_READ 0x1
 #define PROT_WRITE 0x2
 #define MAP_PRIVATE 0x2
+#define MAP_SHARED 0x1
 #define MAP_FIXED 0x10
 #define MAP_ANONYMOUS 0x20
 #define MREMAP_MAYMOVE 0x1
@@ -48,6 +53,7 @@
 #define UFFD_USER_MODE_ONLY 0x1
 #define UFFD_API 0xAAu
 #define UFFD_FEATURE_PAGEFAULT_FLAG_WP (1ULL << 0)
+#define UFFD_FEATURE_MISSING_SHMEM (1ULL << 5)
 #define UFFD_FEATURE_SIGBUS (1ULL << 7)
 #define UFFD_FEATURE_THREAD_ID (1ULL << 8)
 #define UFFD_FEATURE_EXACT_ADDRESS (1ULL << 11)
@@ -288,6 +294,7 @@ START_ATTRIBUTES void _start(void) {
         .api = UFFD_API,
         .features = UFFD_FEATURE_THREAD_ID |
                     UFFD_FEATURE_PAGEFAULT_FLAG_WP |
+                    UFFD_FEATURE_MISSING_SHMEM |
                     UFFD_FEATURE_EXACT_ADDRESS |
                     UFFD_FEATURE_POISON |
                     UFFD_FEATURE_MOVE,
@@ -346,6 +353,7 @@ START_ATTRIBUTES void _start(void) {
             SYS_ioctl, descriptor, UFFDIO_API, (long)&api, 0, 0, 0), 0);
     if (api.api != UFFD_API || !api.ioctls ||
         !(api.features & UFFD_FEATURE_THREAD_ID) ||
+        !(api.features & UFFD_FEATURE_MISSING_SHMEM) ||
         !(api.features & UFFD_FEATURE_SIGBUS) ||
         !(api.features & UFFD_FEATURE_EXACT_ADDRESS) ||
         !(api.features & UFFD_FEATURE_WP_UNPOPULATED) ||
@@ -473,6 +481,111 @@ START_ATTRIBUTES void _start(void) {
         "unregister", raw_syscall6(
             SYS_ioctl, descriptor, UFFDIO_UNREGISTER,
             (long)&registration.range, 0, 0, 0), 0);
+
+    {
+        static const char shmem_name[] = "uffd-shmem";
+        long shmem_descriptor = raw_syscall6(
+            SYS_memfd_create, (long)shmem_name, 0, 0, 0, 0, 0);
+        unsigned char *shmem_area = (unsigned char *)(uintptr_t)-1;
+
+        failures += expect_result(
+            "shmem-create", shmem_descriptor < 0 ? shmem_descriptor : 0,
+            0);
+        if (shmem_descriptor >= 0) {
+            failures += expect_result(
+                "shmem-size", raw_syscall6(
+                    SYS_ftruncate, shmem_descriptor, PAGE_SIZE,
+                    0, 0, 0, 0), 0);
+            shmem_area = (unsigned char *)raw_syscall6(
+                SYS_mmap, 0, PAGE_SIZE, PROT_READ | PROT_WRITE,
+                MAP_SHARED, shmem_descriptor, 0);
+            failures += expect_result(
+                "shmem-map", (long)shmem_area < 0 ? (long)shmem_area : 0,
+                0);
+        }
+        if ((long)shmem_area >= 0) {
+            registration.range.start =
+                (uint64_t)(uintptr_t)shmem_area;
+            registration.range.len = PAGE_SIZE;
+            registration.mode = UFFDIO_REGISTER_MODE_MISSING;
+            registration.ioctls = 0;
+            failures += expect_result(
+                "shmem-register", raw_syscall6(
+                    SYS_ioctl, descriptor, UFFDIO_REGISTER,
+                    (long)&registration, 0, 0, 0), 0);
+            g_fault_address = shmem_area + 83u;
+            g_fault_value = 0;
+            {
+                long child = spawn_fault_child(
+                    CLONE_VM | SIGCHLD,
+                    &g_fault_stack[sizeof(g_fault_stack)]);
+                long received = -EAGAIN;
+                int child_status = -1;
+
+                failures += expect_result(
+                    "shmem-child", child < 0 ? child : 0, 0);
+                if (child >= 0) {
+                    for (unsigned long attempt = 0;
+                         attempt < 100000u; ++attempt) {
+                        received = raw_syscall6(
+                            SYS_read, descriptor, (long)&message,
+                            sizeof(message), 0, 0, 0);
+                        if (received != -EAGAIN) break;
+                        (void)raw_syscall6(
+                            SYS_sched_yield, 0, 0, 0, 0, 0, 0);
+                    }
+                    failures += expect_result(
+                        "shmem-event-size", received, sizeof(message));
+                    if (received == (long)sizeof(message) &&
+                        (message.event != UFFD_EVENT_PAGEFAULT ||
+                         message.flags != 0 ||
+                         message.thread_id != (uint32_t)child ||
+                         message.address !=
+                            (uint64_t)(uintptr_t)g_fault_address)) {
+                        print_text("FAIL shmem-event-data\n");
+                        ++failures;
+                    }
+                    if (received == (long)sizeof(message)) {
+                        copy.dst = (uint64_t)(uintptr_t)shmem_area;
+                        copy.src = (uint64_t)(uintptr_t)source;
+                        copy.len = PAGE_SIZE;
+                        copy.mode = 0;
+                        copy.copy = 0;
+                        failures += expect_result(
+                            "shmem-copy", raw_syscall6(
+                                SYS_ioctl, descriptor, UFFDIO_COPY,
+                                (long)&copy, 0, 0, 0), 0);
+                        failures += expect_result(
+                            "shmem-copy-count", copy.copy, PAGE_SIZE);
+                    } else {
+                        (void)raw_syscall6(
+                            SYS_kill, child, SIGKILL, 0, 0, 0, 0);
+                    }
+                    failures += expect_result(
+                        "shmem-wait", raw_syscall6(
+                            SYS_wait4, child, (long)&child_status,
+                            0, 0, 0, 0), child);
+                    failures += expect_result(
+                        "shmem-child-status", child_status, 0);
+                    failures += expect_result(
+                        "shmem-child-value", g_fault_value, source[83]);
+                }
+            }
+            failures += expect_result(
+                "shmem-empty-read", raw_syscall6(
+                    SYS_read, descriptor, (long)&message,
+                    sizeof(message), 0, 0, 0), -EAGAIN);
+            failures += expect_result(
+                "shmem-unregister", raw_syscall6(
+                    SYS_ioctl, descriptor, UFFDIO_UNREGISTER,
+                    (long)&registration.range, 0, 0, 0), 0);
+            (void)raw_syscall6(
+                SYS_munmap, (long)shmem_area, PAGE_SIZE, 0, 0, 0, 0);
+        }
+        if (shmem_descriptor >= 0)
+            (void)raw_syscall6(
+                SYS_close, shmem_descriptor, 0, 0, 0, 0, 0);
+    }
 
     registration.range.start =
         (uint64_t)(uintptr_t)(move_area + PAGE_SIZE);

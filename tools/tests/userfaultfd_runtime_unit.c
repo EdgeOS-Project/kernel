@@ -41,6 +41,7 @@ int main(void) {
         .api = KERNEL_UFFD_API,
         .features = KERNEL_UFFD_FEATURE_THREAD_ID |
                     KERNEL_UFFD_FEATURE_PAGEFAULT_FLAG_WP |
+                    KERNEL_UFFD_FEATURE_MISSING_SHMEM |
                     KERNEL_UFFD_FEATURE_EXACT_ADDRESS |
                     KERNEL_UFFD_FEATURE_WP_UNPOPULATED |
                     KERNEL_UFFD_FEATURE_POISON |
