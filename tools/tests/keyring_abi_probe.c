@@ -43,8 +43,15 @@
 #define KEYCTL_UNLINK 9
 #define KEYCTL_SEARCH 10
 #define KEYCTL_READ 11
+#define KEYCTL_INSTANTIATE 12
+#define KEYCTL_NEGATE 13
+#define KEYCTL_ASSUME_AUTHORITY 16
 #define KEYCTL_GET_SECURITY 17
 #define KEYCTL_SESSION_TO_PARENT 18
+#define KEYCTL_REJECT 19
+#define KEYCTL_INSTANTIATE_IOV 20
+#define KEYCTL_DH_COMPUTE 23
+#define KEYCTL_PKEY_QUERY 24
 #define KEYCTL_CAPABILITIES 31
 #define KEYCTL_WATCH_KEY 32
 
@@ -55,7 +62,10 @@
 #define ENOKEY 126
 #define ENODEV 19
 #define EBUSY 16
+#define EPERM 1
+#define EFAULT 14
 #define EINVAL 22
+#define EOPNOTSUPP 95
 #define EXDEV 18
 #define SIGCHLD 17
 
@@ -362,6 +372,78 @@ START_ATTRIBUTES void _start(void) {
                      (long)"edge-missing", 0, 0, 0, 0),
         -ENOKEY);
     if (key > 0) {
+        struct {
+            uint64_t base;
+            uint64_t length;
+        } vector = {
+            .base = (uint64_t)(uintptr_t)payload,
+            .length = sizeof(payload) - 1u,
+        };
+
+        failures += expect_result(
+            "drop-authority",
+            raw_syscall6(
+                SYS_keyctl, KEYCTL_ASSUME_AUTHORITY, 0, 0, 0, 0, 0),
+            0);
+        failures += expect_result(
+            "negative-authority",
+            raw_syscall6(
+                SYS_keyctl, KEYCTL_ASSUME_AUTHORITY, -1, 0, 0, 0, 0),
+            -EINVAL);
+        failures += expect_result(
+            "missing-authority",
+            raw_syscall6(
+                SYS_keyctl, KEYCTL_ASSUME_AUTHORITY, key, 0, 0, 0, 0),
+            -ENOKEY);
+        failures += expect_result(
+            "instantiate-without-authority",
+            raw_syscall6(
+                SYS_keyctl, KEYCTL_INSTANTIATE, key,
+                (long)payload, sizeof(payload) - 1u, 0, 0),
+            -EPERM);
+        failures += expect_result(
+            "instantiate-length",
+            raw_syscall6(
+                SYS_keyctl, KEYCTL_INSTANTIATE, key,
+                (long)payload, 1024u * 1024u, 0, 0),
+            -EINVAL);
+        failures += expect_result(
+            "instantiate-iov-without-authority",
+            raw_syscall6(
+                SYS_keyctl, KEYCTL_INSTANTIATE_IOV, key,
+                (long)&vector, 1, 0, 0),
+            -EPERM);
+        failures += expect_result(
+            "instantiate-iov-fault",
+            raw_syscall6(
+                SYS_keyctl, KEYCTL_INSTANTIATE_IOV, key,
+                1, 1, 0, 0),
+            -EFAULT);
+        failures += expect_result(
+            "negate-without-authority",
+            raw_syscall6(
+                SYS_keyctl, KEYCTL_NEGATE, key, 0, 0, 0, 0),
+            -EPERM);
+        failures += expect_result(
+            "reject-error",
+            raw_syscall6(
+                SYS_keyctl, KEYCTL_REJECT, key, 0, 0, 0, 0),
+            -EINVAL);
+        failures += expect_result(
+            "reject-without-authority",
+            raw_syscall6(
+                SYS_keyctl, KEYCTL_REJECT, key, 0, ENOKEY, 0, 0),
+            -EPERM);
+        failures += expect_result(
+            "dh-disabled",
+            raw_syscall6(
+                SYS_keyctl, KEYCTL_DH_COMPUTE, 1, 1, 1, 0, 0),
+            -EOPNOTSUPP);
+        failures += expect_result(
+            "pkey-disabled",
+            raw_syscall6(
+                SYS_keyctl, KEYCTL_PKEY_QUERY, 1, 1, 1, 0, 0),
+            -EOPNOTSUPP);
         failures += expect_result(
             "revoke",
             raw_syscall6(SYS_keyctl, KEYCTL_REVOKE, key, 0, 0, 0, 0), 0);

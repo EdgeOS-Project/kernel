@@ -260,6 +260,47 @@ int main(void) {
         assert(capabilities[index] == 0u);
 
     memset(arguments, 0, sizeof(arguments));
+    assert(kernel_keyring_keyctl(
+               &parent, &access, EDGE_LINUX_KEYCTL_ASSUME_AUTHORITY,
+               arguments) == 0);
+    arguments[0] = UINT64_MAX;
+    assert(kernel_keyring_keyctl(
+               &parent, &access, EDGE_LINUX_KEYCTL_ASSUME_AUTHORITY,
+               arguments) == -EDGE_LINUX_EINVAL);
+    arguments[0] = (uint64_t)key;
+    assert(kernel_keyring_keyctl(
+               &parent, &access, EDGE_LINUX_KEYCTL_ASSUME_AUTHORITY,
+               arguments) == -EDGE_LINUX_ENOKEY);
+    memset(arguments, 0, sizeof(arguments));
+    arguments[0] = (uint64_t)key;
+    assert(kernel_keyring_keyctl(
+               &parent, &access, EDGE_LINUX_KEYCTL_INSTANTIATE,
+               arguments) == -EDGE_LINUX_EPERM);
+    arguments[2] = 1024u * 1024u;
+    assert(kernel_keyring_keyctl(
+               &parent, &access, EDGE_LINUX_KEYCTL_INSTANTIATE,
+               arguments) == -EDGE_LINUX_EINVAL);
+    memset(arguments, 0, sizeof(arguments));
+    arguments[0] = (uint64_t)key;
+    assert(kernel_keyring_keyctl(
+               &parent, &access, EDGE_LINUX_KEYCTL_NEGATE,
+               arguments) == -EDGE_LINUX_EPERM);
+    assert(kernel_keyring_keyctl(
+               &parent, &access, EDGE_LINUX_KEYCTL_REJECT,
+               arguments) == -EDGE_LINUX_EINVAL);
+    arguments[2] = EDGE_LINUX_ENOKEY;
+    assert(kernel_keyring_keyctl(
+               &parent, &access, EDGE_LINUX_KEYCTL_REJECT,
+               arguments) == -EDGE_LINUX_EPERM);
+    memset(arguments, 0, sizeof(arguments));
+    assert(kernel_keyring_keyctl(
+               &parent, &access, EDGE_LINUX_KEYCTL_DH_COMPUTE,
+               arguments) == -EDGE_LINUX_EOPNOTSUPP);
+    assert(kernel_keyring_keyctl(
+               &parent, &access, EDGE_LINUX_KEYCTL_PKEY_QUERY,
+               arguments) == -EDGE_LINUX_EOPNOTSUPP);
+
+    memset(arguments, 0, sizeof(arguments));
     arguments[0] = (uint64_t)key;
     arguments[1] = 1;
     assert(kernel_keyring_keyctl(

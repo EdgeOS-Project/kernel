@@ -22,6 +22,7 @@
 #define KERNEL_KEY_PAYLOAD_MAX 65536u
 #define KERNEL_KEY_SEARCH_DEPTH_MAX 8u
 #define KERNEL_KEY_WATCH_MAX 16u
+#define KERNEL_KEY_IOV_MAX 1024u
 
 enum kernel_key_notification_subtype {
     KERNEL_KEY_NOTIFY_INSTANTIATED = 0,
@@ -54,6 +55,11 @@ typedef struct kernel_key_removal_notification {
     uint32_t info;
     uint64_t key_id;
 } kernel_key_removal_notification_t;
+
+typedef struct kernel_key_user_iovec {
+    uint64_t base;
+    uint64_t length;
+} kernel_key_user_iovec_t;
 
 enum kernel_key_kind {
     KERNEL_KEY_KIND_KEYRING = 1,
@@ -1044,6 +1050,59 @@ int64_t kernel_keyring_keyctl(
     if (!identity || !access || !arguments) return -EDGE_LINUX_EINVAL;
     if (command == EDGE_LINUX_KEYCTL_SESSION_TO_PARENT)
         return keyctl_session_to_parent(identity);
+    if (command == EDGE_LINUX_KEYCTL_ASSUME_AUTHORITY) {
+        int32_t serial = (int32_t)arguments[0];
+
+        if (serial < 0) return -EDGE_LINUX_EINVAL;
+        return serial ? -EDGE_LINUX_ENOKEY : 0;
+    }
+    if (command == EDGE_LINUX_KEYCTL_INSTANTIATE) {
+        if (arguments[2] > 1024u * 1024u - 1u)
+            return -EDGE_LINUX_EINVAL;
+        return -EDGE_LINUX_EPERM;
+    }
+    if (command == EDGE_LINUX_KEYCTL_INSTANTIATE_IOV) {
+        uint64_t total = 0u;
+        uint32_t count = (uint32_t)arguments[2];
+
+        if (arguments[2] != count || count > KERNEL_KEY_IOV_MAX)
+            return -EDGE_LINUX_EINVAL;
+        if (!arguments[1]) count = 0u;
+        for (uint32_t index = 0; index < count; ++index) {
+            kernel_key_user_iovec_t vector;
+
+            if (!access->copy_from_user ||
+                access->copy_from_user(
+                    access->context, &vector,
+                    arguments[1] +
+                        (uint64_t)index * sizeof(vector),
+                    sizeof(vector)) < 0)
+                return -EDGE_LINUX_EFAULT;
+            if (vector.length > UINT64_MAX - total)
+                return -EDGE_LINUX_EINVAL;
+            total += vector.length;
+        }
+        if (total > 1024u * 1024u - 1u)
+            return -EDGE_LINUX_EINVAL;
+        return -EDGE_LINUX_EPERM;
+    }
+    if (command == EDGE_LINUX_KEYCTL_NEGATE)
+        return -EDGE_LINUX_EPERM;
+    if (command == EDGE_LINUX_KEYCTL_REJECT) {
+        uint32_t error = (uint32_t)arguments[2];
+
+        if (!error || error >= 4095u || error == 512u ||
+            error == 513u || error == 514u || error == 516u)
+            return -EDGE_LINUX_EINVAL;
+        return -EDGE_LINUX_EPERM;
+    }
+    if (command == EDGE_LINUX_KEYCTL_DH_COMPUTE ||
+        command == EDGE_LINUX_KEYCTL_PKEY_QUERY ||
+        command == EDGE_LINUX_KEYCTL_PKEY_ENCRYPT ||
+        command == EDGE_LINUX_KEYCTL_PKEY_DECRYPT ||
+        command == EDGE_LINUX_KEYCTL_PKEY_SIGN ||
+        command == EDGE_LINUX_KEYCTL_PKEY_VERIFY)
+        return -EDGE_LINUX_EOPNOTSUPP;
     key_lock(&g_key_lock);
     state = key_task_get_locked(identity);
     if (!state) {
