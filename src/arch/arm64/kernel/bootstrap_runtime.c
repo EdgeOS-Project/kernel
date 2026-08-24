@@ -26227,6 +26227,31 @@ static int64_t arm64_fd_operation_file_range(
         case KERNEL_IO_FILE_RANGE_READ:
             if (!request->buffer && length)
                 return -LINUX_EFAULT;
+            if (file->kind == KERNEL_FD_PIPE_READ ||
+                file->kind == KERNEL_FD_PIPE_RW) {
+                kernel_pipe_t *pipe;
+                kernel_pipe_io_decision_t decision;
+                uint32_t read;
+
+                if (file->pipe_index >= g_pipe_capacity ||
+                    !g_pipes[file->pipe_index].used)
+                    return -LINUX_EBADF;
+                pipe = &g_pipes[file->pipe_index];
+                decision = kernel_pipe_read_decide(pipe, 1);
+                if (decision == KERNEL_PIPE_IO_COMPLETE) return 0;
+                if (decision == KERNEL_PIPE_IO_WOULD_BLOCK ||
+                    decision == KERNEL_PIPE_IO_WAIT)
+                    return -LINUX_EAGAIN;
+                if (decision != KERNEL_PIPE_IO_READY)
+                    return -LINUX_EBADF;
+                read = kernel_pipe_read_kernel(
+                    pipe, request->buffer, length);
+                if (read) {
+                    pipe_wake_writers(file->pipe_index);
+                    pipe_poll_wake_waiters(file->pipe_index);
+                }
+                return (int64_t)read;
+            }
             if (file->kind != KERNEL_FD_FILE || !file->sb ||
                 !file->sb->ops || !file->sb->ops->read)
                 return -LINUX_EINVAL;

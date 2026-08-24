@@ -234,6 +234,9 @@ int kernel_io_uring_waitid_add(
     const kernel_process_wait_request_t *request, int32_t waiter_tid,
     uint64_t user_information, uint64_t address_space,
     kernel_io_uring_waitid_copy_t copy_information);
+int kernel_io_uring_read_multishot_add(
+    int32_t ring_id, uint64_t user_data, int32_t descriptor,
+    uint16_t buffer_group, uint64_t address_space);
 int kernel_io_uring_poll_update(int32_t ring_id, uint64_t old_user_data,
                                 int update_events, uint32_t events,
                                 int update_user_data,

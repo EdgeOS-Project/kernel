@@ -1717,6 +1717,27 @@ static int64_t x86_fd_operation_file_range(
             return 0;
         case KERNEL_IO_FILE_RANGE_READ:
             if (!request->buffer && length) return -EFAULT;
+            if (entry->kind == FD_PIPE_R || entry->kind == FD_PIPE_RW) {
+                edge_pipe_t *pipe;
+                kernel_pipe_io_decision_t decision;
+                uint32_t read;
+
+                if (entry->pipe_id < 0 ||
+                    entry->pipe_id >= EDGE_MAX_PIPES)
+                    return -EBADF;
+                pipe = &g_pipes[entry->pipe_id];
+                if (!pipe->used) return -EBADF;
+                decision = kernel_pipe_read_decide(pipe, 1);
+                if (decision == KERNEL_PIPE_IO_COMPLETE) return 0;
+                if (decision == KERNEL_PIPE_IO_WOULD_BLOCK ||
+                    decision == KERNEL_PIPE_IO_WAIT)
+                    return -EAGAIN;
+                if (decision != KERNEL_PIPE_IO_READY) return -EBADF;
+                read = kernel_pipe_read_kernel(
+                    pipe, request->buffer, length);
+                if (read) fd_wake_pipe_waiters(entry->pipe_id);
+                return (int64_t)read;
+            }
             if (entry->kind == FD_MEMFD) {
                 edge_memfd_t *memory = memfd_get(entry->pipe_id);
                 if (!memory) return -EBADF;

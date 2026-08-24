@@ -37,6 +37,9 @@ static kernel_process_wait_result_t g_process_wait_result;
 static int32_t g_process_waiter_tid;
 static int64_t g_process_wait_status;
 static uint32_t g_waitid_copy_count;
+static uint8_t g_multishot_read_data[64];
+static uint32_t g_multishot_read_length;
+static int32_t g_multishot_read_result;
 
 int64_t kernel_process_wait_for_tid(
         const kernel_process_wait_request_t *request,
@@ -214,6 +217,34 @@ int kernel_fd_operation_ready(
     if (descriptor < 0) return -EDGE_LINUX_EBADF;
     return descriptor == g_ready_descriptor &&
            ((uint32_t *)(void *)lease)[1] == g_ready_generation;
+}
+
+int64_t kernel_fd_operation_file_range(
+        kernel_fd_operation_lease_t *lease,
+        const kernel_io_file_range_request_t *request) {
+    int32_t descriptor;
+
+    if (!lease || !request) return -EDGE_LINUX_EINVAL;
+    descriptor = *(int32_t *)(void *)lease - 1;
+    if (descriptor < 0) return -EDGE_LINUX_EBADF;
+    if (request->operation == KERNEL_IO_FILE_RANGE_QUERY) {
+        if (!request->information) return -EDGE_LINUX_EINVAL;
+        memset(request->information, 0,
+               sizeof(*request->information));
+        request->information->kind = KERNEL_IO_FILE_PIPE;
+        request->information->readable = 1u;
+        return 0;
+    }
+    if (request->operation != KERNEL_IO_FILE_RANGE_READ)
+        return -EDGE_LINUX_EOPNOTSUPP;
+    if (g_multishot_read_result <= 0)
+        return g_multishot_read_result;
+    assert(request->buffer);
+    assert(request->length >= g_multishot_read_length);
+    memcpy(request->buffer, g_multishot_read_data,
+           g_multishot_read_length);
+    g_multishot_read_result = -EDGE_LINUX_EAGAIN;
+    return (int64_t)g_multishot_read_length;
 }
 
 int kernel_epoll_descriptor_retain(int32_t descriptor,
@@ -1302,6 +1333,128 @@ int main(void) {
         assert(kernel_io_uring_pending_cancel(
                    second_ring_id, 0x57414943u) == 1);
         test_page_release(0, &wait_cq);
+        kernel_io_uring_release(second_ring_id);
+    }
+    {
+        struct edge_linux_io_uring_params read_parameters = {0};
+        kernel_io_uring_page_t read_cq;
+        struct edge_linux_io_uring_cqe *read_completion;
+        uint8_t buffers[2][32] = {{0}};
+        const uint8_t first[] = {'o', 'n', 'e'};
+        const uint8_t second[] = {'t', 'w', 'o'};
+        uint32_t references = g_fixed_file_references;
+
+        assert(kernel_io_uring_create(
+                   4u, &read_parameters, &second_ring_id) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_CQ_RING,
+                   0u, &read_cq) == 0);
+        read_completion = (struct edge_linux_io_uring_cqe *)(
+            (uint8_t *)read_cq.address + read_parameters.cq_off.cqes);
+        assert(kernel_io_uring_provided_buffers_add(
+                   second_ring_id, 9u, 7u,
+                   (uint64_t)(uintptr_t)&buffers[0][0],
+                   sizeof(buffers[0]), 2u) == 0);
+        g_ready_descriptor = 20;
+        g_ready_generation = g_descriptor_generation[20];
+        assert(kernel_io_uring_read_multishot_add(
+                   second_ring_id, 0x4d53484fu, 20, 9u, 1u) == 0);
+        assert(g_fixed_file_references == references + 1u);
+
+        memcpy(g_multishot_read_data, first, sizeof(first));
+        g_multishot_read_length = sizeof(first);
+        g_multishot_read_result = (int32_t)sizeof(first);
+        assert(kernel_io_uring_collect(second_ring_id, 0u) == 1u);
+        assert(read_completion[0].result == (int32_t)sizeof(first));
+        assert((read_completion[0].flags & 3u) == 3u);
+        assert((read_completion[0].flags >> 16) == 7u);
+        assert(memcmp(buffers[0], first, sizeof(first)) == 0);
+
+        memcpy(g_multishot_read_data, second, sizeof(second));
+        g_multishot_read_length = sizeof(second);
+        g_multishot_read_result = (int32_t)sizeof(second);
+        assert(kernel_io_uring_collect(second_ring_id, 0u) == 1u);
+        assert(read_completion[1].result == (int32_t)sizeof(second));
+        assert((read_completion[1].flags & 3u) == 3u);
+        assert((read_completion[1].flags >> 16) == 8u);
+        assert(memcmp(buffers[1], second, sizeof(second)) == 0);
+
+        assert(kernel_io_uring_collect(second_ring_id, 0u) == 1u);
+        assert(read_completion[2].result == -EDGE_LINUX_ENOBUFS);
+        assert(read_completion[2].flags == 0u);
+        assert(g_fixed_file_references == references);
+
+        {
+            kernel_io_uring_page_t pbuf_page;
+            kernel_io_uring_pbuf_ring_t pbuf_snapshot;
+            struct edge_linux_io_uring_buf pbuf_entry = {0};
+            uint8_t pbuf_buffers[2][32] = {{0}};
+            uint16_t pbuf_tail = 2u;
+
+            assert(kernel_io_uring_pbuf_ring_register(
+                       second_ring_id, 11u, 0u, 0u, 8u,
+                       1, 0, 0u) == 0);
+            assert(kernel_io_uring_mmap_page(
+                       second_ring_id,
+                       KERNEL_IO_URING_OFF_PBUF_RING |
+                           (11ull << KERNEL_IO_URING_OFF_PBUF_SHIFT),
+                       0u, &pbuf_page) == 0);
+            pbuf_entry.address =
+                (uint64_t)(uintptr_t)&pbuf_buffers[0][0];
+            pbuf_entry.length = sizeof(pbuf_buffers[0]);
+            pbuf_entry.id = 21u;
+            memcpy(pbuf_page.address, &pbuf_entry, sizeof(pbuf_entry));
+            pbuf_entry.address =
+                (uint64_t)(uintptr_t)&pbuf_buffers[1][0];
+            pbuf_entry.id = 22u;
+            memcpy((uint8_t *)pbuf_page.address + sizeof(pbuf_entry),
+                   &pbuf_entry, sizeof(pbuf_entry));
+            memcpy((uint8_t *)pbuf_page.address + 14u,
+                   &pbuf_tail, sizeof(pbuf_tail));
+
+            assert(kernel_io_uring_read_multishot_add(
+                       second_ring_id, 0x50425546u, 20, 11u, 1u) == 0);
+            memcpy(g_multishot_read_data, first, sizeof(first));
+            g_multishot_read_length = sizeof(first);
+            g_multishot_read_result = (int32_t)sizeof(first);
+            assert(kernel_io_uring_collect(second_ring_id, 0u) == 1u);
+            assert(read_completion[3].result == (int32_t)sizeof(first));
+            assert((read_completion[3].flags & 3u) == 3u);
+            assert((read_completion[3].flags >> 16) == 21u);
+            assert(memcmp(pbuf_buffers[0], first, sizeof(first)) == 0);
+
+            memcpy(g_multishot_read_data, second, sizeof(second));
+            g_multishot_read_length = sizeof(second);
+            g_multishot_read_result = (int32_t)sizeof(second);
+            assert(kernel_io_uring_collect(second_ring_id, 0u) == 1u);
+            assert(read_completion[4].result == (int32_t)sizeof(second));
+            assert((read_completion[4].flags & 3u) == 3u);
+            assert((read_completion[4].flags >> 16) == 22u);
+            assert(memcmp(pbuf_buffers[1], second, sizeof(second)) == 0);
+
+            assert(kernel_io_uring_collect(second_ring_id, 0u) == 1u);
+            assert(read_completion[5].result == -EDGE_LINUX_ENOBUFS);
+            assert(read_completion[5].flags == 0u);
+            assert(kernel_io_uring_pbuf_ring_snapshot(
+                       second_ring_id, 11u, &pbuf_snapshot) == 0);
+            assert(pbuf_snapshot.head == 2u);
+            assert(g_fixed_file_references == references);
+            test_page_release(0, &pbuf_page);
+            assert(kernel_io_uring_pbuf_ring_unregister(
+                       second_ring_id, 11u) == 0);
+        }
+
+        assert(kernel_io_uring_provided_buffers_add(
+                   second_ring_id, 10u, 3u,
+                   (uint64_t)(uintptr_t)&buffers[0][0],
+                   sizeof(buffers[0]), 1u) == 0);
+        assert(kernel_io_uring_read_multishot_add(
+                   second_ring_id, 0x4d534843u, 20, 10u, 1u) == 0);
+        assert(kernel_io_uring_pending_cancel(
+                   second_ring_id, 0x4d534843u) == 0);
+        assert(g_fixed_file_references == references);
+        g_ready_descriptor = -1;
+        test_page_release(0, &read_cq);
         kernel_io_uring_release(second_ring_id);
     }
     {

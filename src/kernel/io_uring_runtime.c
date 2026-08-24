@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 /* Architecture-independent Linux io_uring ring storage and lifetime. */
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "kernel/io_uring_runtime.h"
@@ -33,6 +34,9 @@
 #define IORING_SETUP_SQ_REWIND       (1u << 20)
 
 #define IORING_CQE_F_SKIP            (1u << 5)
+#define IORING_CQE_F_MORE            (1u << 1)
+#define IORING_CQE_F_BUFFER          (1u << 0)
+#define IORING_CQE_BUFFER_SHIFT      16u
 #define IORING_CQE_F_32              (1u << 15)
 
 #define IORING_OP_NOP128             63u
@@ -101,10 +105,11 @@ typedef struct kernel_io_uring_pending {
     uint32_t maximum_events;
     uint8_t event_size;
     uint8_t event_data_offset;
-    uint16_t reserved3;
+    uint16_t buffer_group;
     int32_t wait_owner_tid;
     kernel_process_wait_request_t process_wait_request;
     kernel_io_uring_waitid_copy_t waitid_copy;
+    kernel_io_uring_page_t read_page;
     kernel_fd_operation_lease_t descriptor_lease;
 } kernel_io_uring_pending_t;
 
@@ -236,6 +241,7 @@ static int32_t io_uring_event_retain_locked(
 #define IO_URING_PENDING_LINK_TIMEOUT 4u
 #define IO_URING_PENDING_FUTEX 5u
 #define IO_URING_PENDING_WAITID 6u
+#define IO_URING_PENDING_READ_MULTISHOT 7u
 
 static kernel_io_uring_t g_io_urings[KERNEL_IO_URING_MAX_RINGS];
 static kernel_io_uring_task_registry_t
@@ -366,10 +372,16 @@ static void io_uring_release_storage(kernel_io_uring_t *ring) {
          slot < KERNEL_IO_URING_MAX_PENDING; ++slot) {
         kernel_io_uring_pending_t *pending = &ring->pending[slot];
         if (pending->used &&
-            pending->kind == IO_URING_PENDING_POLL &&
+            (pending->kind == IO_URING_PENDING_POLL ||
+             pending->kind == IO_URING_PENDING_READ_MULTISHOT) &&
             kernel_fd_operation_view(&pending->descriptor_lease))
             (void)kernel_fd_operation_release(
                 &pending->descriptor_lease);
+        if (pending->used &&
+            pending->kind == IO_URING_PENDING_READ_MULTISHOT &&
+            pending->read_page.address)
+            g_io_uring_allocator.release(
+                g_io_uring_allocator.context, &pending->read_page);
         if (pending->used &&
             pending->kind == IO_URING_PENDING_EPOLL)
             kernel_epoll_object_release(pending->descriptor);
@@ -2667,6 +2679,101 @@ int kernel_io_uring_waitid_add(
     return result;
 }
 
+int kernel_io_uring_read_multishot_add(
+        int32_t ring_id, uint64_t user_data, int32_t descriptor,
+        uint16_t buffer_group, uint64_t address_space) {
+    kernel_io_file_range_info_t information;
+    kernel_io_file_range_request_t query;
+    kernel_fd_operation_lease_t descriptor_lease = {0};
+    kernel_io_uring_page_t read_page = {0};
+    kernel_io_uring_pbuf_ring_t pbuf_ring;
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    uint32_t slot;
+    int result;
+
+    if (descriptor < 0 || !address_space)
+        return -EDGE_LINUX_EINVAL;
+    result = kernel_io_uring_pbuf_ring_snapshot(
+        ring_id, buffer_group, &pbuf_ring);
+    if (result == 0) {
+        if (pbuf_ring.incremental)
+            return -EDGE_LINUX_EOPNOTSUPP;
+    } else if (result != -EDGE_LINUX_EINVAL &&
+               result != -EDGE_LINUX_ENOENT) {
+        return result;
+    }
+    result = kernel_fd_operation_acquire(
+        descriptor, &descriptor_lease);
+    if (result < 0) return result;
+    memset(&information, 0, sizeof(information));
+    memset(&query, 0, sizeof(query));
+    query.operation = KERNEL_IO_FILE_RANGE_QUERY;
+    query.information = &information;
+    result = (int)kernel_fd_operation_file_range(
+        &descriptor_lease, &query);
+    if (result < 0) goto fail;
+    if (information.kind != KERNEL_IO_FILE_PIPE) {
+        result = -EDGE_LINUX_EBADFD;
+        goto fail;
+    }
+    if (!information.readable) {
+        result = -EDGE_LINUX_EBADF;
+        goto fail;
+    }
+    if (!g_io_uring_allocator.allocate) {
+        result = -EDGE_LINUX_ENODEV;
+        goto fail;
+    }
+    result = g_io_uring_allocator.allocate(
+        g_io_uring_allocator.context, &read_page);
+    if (result < 0) goto fail;
+
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+    } else {
+        for (slot = 0; slot < KERNEL_IO_URING_MAX_PENDING; ++slot)
+            if (!ring->pending[slot].used) break;
+        if (slot == KERNEL_IO_URING_MAX_PENDING) {
+            result = -EDGE_LINUX_EAGAIN;
+        } else {
+            kernel_io_uring_pending_t *pending = &ring->pending[slot];
+
+            memset(pending, 0, sizeof(*pending));
+            pending->used = 1u;
+            pending->kind = IO_URING_PENDING_READ_MULTISHOT;
+            pending->multishot = 1u;
+            pending->user_data = user_data;
+            pending->address_space = address_space;
+            pending->buffer_group = buffer_group;
+            pending->read_page = read_page;
+            memset(&read_page, 0, sizeof(read_page));
+            result = kernel_fd_operation_move(
+                &pending->descriptor_lease, &descriptor_lease);
+            if (result < 0) {
+                read_page = pending->read_page;
+                memset(pending, 0, sizeof(*pending));
+            } else {
+                ++ring->next_pending_sequence;
+                if (!ring->next_pending_sequence)
+                    ++ring->next_pending_sequence;
+                pending->sequence = ring->next_pending_sequence;
+            }
+        }
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+
+fail:
+    if (read_page.address)
+        g_io_uring_allocator.release(
+            g_io_uring_allocator.context, &read_page);
+    if (kernel_fd_operation_view(&descriptor_lease))
+        (void)kernel_fd_operation_release(&descriptor_lease);
+    return result;
+}
+
 int kernel_io_uring_poll_update(int32_t ring_id, uint64_t old_user_data,
                                 int update_events, uint32_t events,
                                 int update_user_data,
@@ -2712,6 +2819,7 @@ int kernel_io_uring_poll_update(int32_t ring_id, uint64_t old_user_data,
 
 int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data) {
     kernel_fd_operation_lease_t descriptor_lease = {0};
+    kernel_io_uring_page_t read_page = {0};
     int32_t epoll_index = -1;
     uint64_t canceled_sequence = 0;
     uint64_t link_timeout_user_data = 0;
@@ -2729,7 +2837,9 @@ int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data) {
             if (!ring->pending[slot].used ||
                 ring->pending[slot].user_data != user_data)
                 continue;
-            if (ring->pending[slot].kind == IO_URING_PENDING_POLL) {
+            if (ring->pending[slot].kind == IO_URING_PENDING_POLL ||
+                ring->pending[slot].kind ==
+                    IO_URING_PENDING_READ_MULTISHOT) {
                 result = kernel_fd_operation_move(
                     &descriptor_lease,
                     &ring->pending[slot].descriptor_lease);
@@ -2746,6 +2856,13 @@ int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data) {
                 result = 1;
             else
                 result = 0;
+            if (ring->pending[slot].kind ==
+                    IO_URING_PENDING_READ_MULTISHOT &&
+                ring->pending[slot].read_page.address) {
+                read_page = ring->pending[slot].read_page;
+                memset(&ring->pending[slot].read_page, 0,
+                       sizeof(ring->pending[slot].read_page));
+            }
             canceled_sequence = ring->pending[slot].sequence;
             memset(&ring->pending[slot], 0, sizeof(ring->pending[slot]));
             break;
@@ -2769,6 +2886,9 @@ int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data) {
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     if (kernel_fd_operation_view(&descriptor_lease))
         (void)kernel_fd_operation_release(&descriptor_lease);
+    if (read_page.address)
+        g_io_uring_allocator.release(
+            g_io_uring_allocator.context, &read_page);
     if (epoll_index >= 0)
         kernel_epoll_object_release(epoll_index);
     if (futex_wait_id)
@@ -2802,9 +2922,11 @@ typedef struct io_uring_pending_snapshot {
     uint32_t maximum_events;
     uint8_t event_size;
     uint8_t event_data_offset;
+    uint16_t buffer_group;
     int32_t wait_owner_tid;
     kernel_process_wait_request_t process_wait_request;
     kernel_io_uring_waitid_copy_t waitid_copy;
+    kernel_io_uring_page_t read_page;
 } io_uring_pending_snapshot_t;
 
 static void io_uring_pending_snapshot(
@@ -2832,9 +2954,11 @@ static void io_uring_pending_snapshot(
     destination->maximum_events = source->maximum_events;
     destination->event_size = source->event_size;
     destination->event_data_offset = source->event_data_offset;
+    destination->buffer_group = source->buffer_group;
     destination->wait_owner_tid = source->wait_owner_tid;
     destination->process_wait_request = source->process_wait_request;
     destination->waitid_copy = source->waitid_copy;
+    destination->read_page = source->read_page;
 }
 
 typedef struct io_uring_epoll_copy_context {
@@ -2871,8 +2995,70 @@ static int io_uring_epoll_copy_event(
         -EDGE_LINUX_EFAULT : 0;
 }
 
+static int io_uring_multishot_buffer_select(
+        int32_t ring_id, uint16_t group_id,
+        kernel_io_uring_selected_buffer_t *selected,
+        uint32_t *provided_ring_head, int *provided_ring) {
+    kernel_io_uring_pbuf_ring_t ring;
+    int result;
+
+    if (!selected || !provided_ring_head || !provided_ring)
+        return -EDGE_LINUX_EINVAL;
+    memset(selected, 0, sizeof(*selected));
+    *provided_ring_head = 0u;
+    *provided_ring = 0;
+    result = kernel_io_uring_pbuf_ring_snapshot(
+        ring_id, group_id, &ring);
+    if (result == 0) {
+        struct edge_linux_io_uring_buf buffer;
+        uint16_t tail;
+        uint64_t entry_address;
+
+        if (ring.incremental) return -EDGE_LINUX_EOPNOTSUPP;
+        if (ring.kernel_allocated) {
+            result = kernel_io_uring_pbuf_ring_read(
+                ring_id, group_id, ring.head, &buffer, &tail);
+            if (result < 0) return result;
+        } else {
+            if (kernel_mm_address_space_copy(
+                    ring.address_space,
+                    ring.address + offsetof(
+                        struct edge_linux_io_uring_buf, reserved),
+                    &tail, sizeof(tail),
+                    KERNEL_MM_PROCESS_VM_READ) < 0)
+                return -EDGE_LINUX_EFAULT;
+            if (tail == (uint16_t)ring.head)
+                return -EDGE_LINUX_ENOBUFS;
+            entry_address = ring.address +
+                (uint64_t)(ring.head & (ring.entries - 1u)) *
+                sizeof(buffer);
+            if (kernel_mm_address_space_copy(
+                    ring.address_space, entry_address,
+                    &buffer, sizeof(buffer),
+                    KERNEL_MM_PROCESS_VM_READ) < 0)
+                return -EDGE_LINUX_EFAULT;
+        }
+        if (tail == (uint16_t)ring.head)
+            return -EDGE_LINUX_ENOBUFS;
+        selected->address = buffer.address;
+        selected->capacity = buffer.length;
+        selected->length = buffer.length > KERNEL_IO_URING_PAGE_SIZE ?
+            KERNEL_IO_URING_PAGE_SIZE : buffer.length;
+        selected->id = buffer.id;
+        selected->group_id = group_id;
+        *provided_ring_head = ring.head;
+        *provided_ring = 1;
+        return 0;
+    }
+    if (result != -EDGE_LINUX_EINVAL && result != -EDGE_LINUX_ENOENT)
+        return result;
+    return kernel_io_uring_provided_buffer_select(
+        ring_id, group_id, KERNEL_IO_URING_PAGE_SIZE, selected);
+}
+
 typedef struct io_uring_pending_release {
     kernel_fd_operation_lease_t descriptor_lease;
+    kernel_io_uring_page_t read_page;
     int32_t epoll_index;
     uint64_t futex_wait_id;
 } io_uring_pending_release_t;
@@ -2884,12 +3070,17 @@ static int io_uring_pending_remove_locked(
         return -EDGE_LINUX_EINVAL;
     memset(release, 0, sizeof(*release));
     release->epoll_index = -1;
-    if (pending->kind == IO_URING_PENDING_POLL &&
+    if ((pending->kind == IO_URING_PENDING_POLL ||
+         pending->kind == IO_URING_PENDING_READ_MULTISHOT) &&
         kernel_fd_operation_view(&pending->descriptor_lease) &&
         kernel_fd_operation_move(
             &release->descriptor_lease,
             &pending->descriptor_lease) < 0)
         return -EDGE_LINUX_EBUSY;
+    if (pending->kind == IO_URING_PENDING_READ_MULTISHOT) {
+        release->read_page = pending->read_page;
+        memset(&pending->read_page, 0, sizeof(pending->read_page));
+    }
     if (pending->kind == IO_URING_PENDING_EPOLL)
         release->epoll_index = pending->descriptor;
     if (pending->kind == IO_URING_PENDING_FUTEX)
@@ -2904,6 +3095,9 @@ static void io_uring_pending_release_finish(
     if (kernel_fd_operation_view(&release->descriptor_lease))
         (void)kernel_fd_operation_release(
             &release->descriptor_lease);
+    if (release->read_page.address)
+        g_io_uring_allocator.release(
+            g_io_uring_allocator.context, &release->read_page);
     if (release->epoll_index >= 0)
         kernel_epoll_object_release(release->epoll_index);
     if (release->futex_wait_id)
@@ -3122,6 +3316,93 @@ uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us) {
             spin_unlock_irqrestore(&g_io_uring_lock, flags);
             if (kernel_fd_operation_view(&release_lease))
                 (void)kernel_fd_operation_release(&release_lease);
+        } else if (pending.kind == IO_URING_PENDING_READ_MULTISHOT) {
+            io_uring_pending_release_t final_release;
+            kernel_io_uring_selected_buffer_t selected;
+            kernel_io_file_range_request_t read_request;
+            uint32_t provided_ring_head = 0u;
+            int provided_ring = 0;
+            int final = 0;
+            int selection;
+
+            memset(&final_release, 0, sizeof(final_release));
+            final_release.epoll_index = -1;
+            if (kernel_fd_operation_clone(
+                    &poll_lease,
+                    &ring->pending[slot].descriptor_lease) < 0) {
+                spin_unlock_irqrestore(&g_io_uring_lock, flags);
+                continue;
+            }
+            spin_unlock_irqrestore(&g_io_uring_lock, flags);
+            if (kernel_fd_operation_ready(
+                    &poll_lease, KERNEL_IO_READ_CURRENT) <= 0) {
+                (void)kernel_fd_operation_release(&poll_lease);
+                continue;
+            }
+            memset(&selected, 0, sizeof(selected));
+            selection = io_uring_multishot_buffer_select(
+                ring_id, pending.buffer_group, &selected,
+                &provided_ring_head, &provided_ring);
+            if (selection < 0) {
+                result = selection;
+                final = 1;
+            } else {
+                memset(&read_request, 0, sizeof(read_request));
+                read_request.operation = KERNEL_IO_FILE_RANGE_READ;
+                read_request.buffer = pending.read_page.address;
+                read_request.length = selected.length;
+                result = (int32_t)kernel_fd_operation_file_range(
+                    &poll_lease, &read_request);
+                if (result <= 0) {
+                    if (!provided_ring)
+                        (void)kernel_io_uring_provided_buffers_add(
+                            ring_id, selected.group_id, selected.id,
+                            selected.address, selected.capacity, 1u);
+                    if (result == -EDGE_LINUX_EAGAIN) {
+                        (void)kernel_fd_operation_release(&poll_lease);
+                        continue;
+                    }
+                    final = 1;
+                } else {
+                    if (provided_ring)
+                        (void)kernel_io_uring_pbuf_ring_commit(
+                            ring_id, selected.group_id,
+                            provided_ring_head);
+                    if (kernel_mm_address_space_copy(
+                               pending.address_space, selected.address,
+                               pending.read_page.address, (uint32_t)result,
+                               KERNEL_MM_PROCESS_VM_WRITE) < 0) {
+                        result = -EDGE_LINUX_EFAULT;
+                        final = 1;
+                    } else {
+                        completion_flags = IORING_CQE_F_MORE |
+                            IORING_CQE_F_BUFFER |
+                            ((uint32_t)selected.id <<
+                             IORING_CQE_BUFFER_SHIFT);
+                    }
+                }
+            }
+            (void)kernel_fd_operation_release(&poll_lease);
+            flags = spin_lock_irqsave(&g_io_uring_lock);
+            ring = io_uring_lookup_locked(ring_id);
+            if (ring && ring->pending[slot].used &&
+                ring->pending[slot].kind ==
+                    IO_URING_PENDING_READ_MULTISHOT &&
+                ring->pending[slot].sequence == pending.sequence) {
+                completion_user_data = ring->pending[slot].user_data;
+                if (final) {
+                    if (io_uring_pending_remove_locked(
+                            &ring->pending[slot],
+                            &final_release) == 0) {
+                        request_final = 1;
+                        remove = 1;
+                    }
+                } else {
+                    remove = 1;
+                }
+            }
+            spin_unlock_irqrestore(&g_io_uring_lock, flags);
+            io_uring_pending_release_finish(&final_release);
         } else if (pending.kind == IO_URING_PENDING_EPOLL) {
             io_uring_epoll_copy_context_t copy_context = {
                 .address = pending.user_address,

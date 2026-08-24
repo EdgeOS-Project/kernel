@@ -9009,6 +9009,7 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_OP_SOCKET    45u
 #define EDGE_LINUX_IORING_OP_SEND_ZC   47u
 #define EDGE_LINUX_IORING_OP_SENDMSG_ZC 48u
+#define EDGE_LINUX_IORING_OP_READ_MULTISHOT 49u
 #define EDGE_LINUX_IORING_OP_WAITID    50u
 #define EDGE_LINUX_IORING_OP_FUTEX_WAIT 51u
 #define EDGE_LINUX_IORING_OP_FUTEX_WAKE 52u
@@ -10079,6 +10080,27 @@ static int32_t edge_linux_io_uring_waitid(
                         EDGE_LINUX_IORING_PENDING_RESULT;
 }
 
+static int32_t edge_linux_io_uring_read_multishot(
+        int32_t ring_id,
+        const struct edge_linux_io_uring_sqe *submission) {
+    uint32_t runtime_flags;
+    int result;
+
+    if (!(submission->flags & EDGE_LINUX_IOSQE_BUFFER_SELECT) ||
+        submission->address || submission->length ||
+        submission->splice_descriptor || submission->address3 ||
+        submission->reserved2 || submission->personality)
+        return -EDGE_LINUX_EINVAL;
+    result = edge_linux_aio_decode_rw_flags(
+        submission->operation_flags, &runtime_flags);
+    if (result < 0) return result;
+    (void)runtime_flags;
+    result = kernel_io_uring_read_multishot_add(
+        ring_id, submission->user_data, submission->descriptor,
+        submission->buffer_index, arch_mm_current_address_space());
+    return result < 0 ? result : EDGE_LINUX_IORING_PENDING_RESULT;
+}
+
 static int32_t edge_linux_io_uring_execute_descriptor(
         edge_linux_syscall_context_t *context,
         int32_t ring_id,
@@ -10418,6 +10440,7 @@ static int edge_linux_io_uring_fixed_file_supported(uint8_t opcode) {
     case EDGE_LINUX_IORING_OP_CONNECT:
     case EDGE_LINUX_IORING_OP_FALLOCATE:
     case EDGE_LINUX_IORING_OP_READ:
+    case EDGE_LINUX_IORING_OP_READ_MULTISHOT:
     case EDGE_LINUX_IORING_OP_WRITE:
     case EDGE_LINUX_IORING_OP_READ_FIXED:
     case EDGE_LINUX_IORING_OP_WRITE_FIXED:
@@ -10753,6 +10776,25 @@ static int32_t edge_linux_io_uring_execute(
     if (submission->opcode == EDGE_LINUX_IORING_OP_PIPE)
         return edge_linux_io_uring_pipe(
             context, ring_id, submission);
+    if (submission->opcode == EDGE_LINUX_IORING_OP_READ_MULTISHOT) {
+        if (!(submission->flags & EDGE_LINUX_IOSQE_FIXED_FILE))
+            return edge_linux_io_uring_read_multishot(
+                ring_id, submission);
+        if ((submission->flags & ~EDGE_LINUX_IOSQE_KNOWN) ||
+            !edge_linux_io_uring_fixed_file_supported(
+                submission->opcode))
+            return -EDGE_LINUX_EINVAL;
+        result = kernel_io_uring_fixed_file_materialize(
+            ring_id, (uint32_t)submission->descriptor, &descriptor);
+        if (result < 0) return result;
+        resolved = *submission;
+        resolved.flags &= ~EDGE_LINUX_IOSQE_FIXED_FILE;
+        resolved.descriptor = descriptor;
+        result = edge_linux_io_uring_read_multishot(
+            ring_id, &resolved);
+        (void)kernel_fd_close(descriptor);
+        return result;
+    }
     if (submission->opcode == EDGE_LINUX_IORING_OP_PROVIDE_BUFFERS ||
         submission->opcode == EDGE_LINUX_IORING_OP_REMOVE_BUFFERS)
         return edge_linux_io_uring_manage_buffers(
@@ -11230,6 +11272,7 @@ static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
            opcode == EDGE_LINUX_IORING_OP_FILES_UPDATE ||
            opcode == EDGE_LINUX_IORING_OP_STATX ||
            opcode == EDGE_LINUX_IORING_OP_READ ||
+           opcode == EDGE_LINUX_IORING_OP_READ_MULTISHOT ||
            opcode == EDGE_LINUX_IORING_OP_WRITE ||
            opcode == EDGE_LINUX_IORING_OP_FADVISE ||
            opcode == EDGE_LINUX_IORING_OP_MADVISE ||

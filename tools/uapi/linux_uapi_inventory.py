@@ -163,6 +163,7 @@ EDGEOS_ASSESSMENTS = [
             "LINK_TIMEOUT cancellation races, target lifetime and paired completion results",
             "FUTEX_WAIT and FUTEX_WAITV asynchronous completion through the shared futex2 wait registry",
             "WAITID immediate and asynchronous child-state completion with retained submitter identity",
+            "READ_MULTISHOT pipe reads with retained descriptions, legacy provided buffers and normal buffer rings",
             "scheduler-native enter suspension without an initial busy-poll window",
         ],
         "missing": [
@@ -172,6 +173,7 @@ EDGEOS_ASSESSMENTS = [
             "notification-pipe semantics",
             "application-provided ring memory",
             "provided-buffer page pinning and owner-mm-independent lifetime across unmap and exit",
+            "incremental buffer-ring READ_MULTISHOT with partial-buffer BUF_MORE lifetime",
             "remaining supported VFS and socket operations",
             "ia32 and x32 compatibility layouts",
         ],
@@ -190,6 +192,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/io_uring_link_timeout_abi_probe.c",
             "tools/tests/io_uring_futex_wait_abi_probe.c",
             "tools/tests/io_uring_waitid_abi_probe.c",
+            "tools/tests/io_uring_read_multishot_abi_probe.c",
             "tools/tests/io_uring_runtime_unit.c",
         ],
         "linux_oracle": {
@@ -238,7 +241,9 @@ EDGEOS_ASSESSMENTS = [
                 "epoll_event layouts, plus LINK_TIMEOUT target-first, "
                 "timeout-first and unlinked-request completion behavior, plus "
                 "FUTEX_WAIT and FUTEX_WAITV value validation, wake results, "
-                "vector indexes and cancellation lifetime"
+                "vector indexes and cancellation lifetime, plus READ_MULTISHOT "
+                "pipe reads, provided-buffer IDs, ENOBUFS termination, "
+                "cancellation and descriptor validation"
             ),
         },
     },
