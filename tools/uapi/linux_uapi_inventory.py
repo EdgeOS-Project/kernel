@@ -15,6 +15,89 @@ REFERENCE_COMMIT = "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
 
 EDGEOS_ASSESSMENTS = [
     {
+        "domain": "key retention service",
+        "status": "partial",
+        "kconfig": ["KEYS"],
+        "architectures": {
+            "x86_64": "runtime-verified-partial",
+            "aarch64": "runtime-verified-partial",
+            "ia32": "unimplemented",
+            "x32": "unimplemented",
+        },
+        "implemented": [
+            "user, logon, big-key and keyring objects with descriptor-independent serial lifetime",
+            "thread, process, session, user, user-session and persistent keyrings",
+            "per-user-namespace named keyring isolation",
+            "add, request, update, revoke, invalidate, search, read, link, unlink and move operations",
+            "ownership, permissions, timeout, restriction and session-to-parent policy",
+            "Linux capability discovery with zero-filled extension bytes",
+        ],
+        "missing": [
+            "request-key construction authorization, instantiate, negate and reject operations",
+            "Diffie-Hellman and asymmetric key operations",
+            "key notification watches and namespace-tagged indexing",
+            "ia32 and x32 compatibility layouts",
+        ],
+        "runtime_tests": [
+            "tools/tests/keyring_abi_probe.c",
+            "tools/tests/keyring_runtime_unit.c",
+        ],
+        "linux_oracle": {
+            "status": "partial",
+            "reference": REFERENCE_COMMIT,
+            "scope": (
+                "capability byte layout, session keyring creation, object add, "
+                "search, read, update, revoke, links and named keyring "
+                "user-namespace isolation"
+            ),
+        },
+    },
+    {
+        "domain": "userfaultfd",
+        "status": "partial",
+        "kconfig": ["USERFAULTFD"],
+        "architectures": {
+            "x86_64": "runtime-verified-partial",
+            "aarch64": "runtime-verified-partial",
+            "ia32": "unimplemented",
+            "x32": "unimplemented",
+        },
+        "implemented": [
+            "API negotiation and thread-ID page-fault records",
+            "exact fault addresses and signal-delivery mode without queued events",
+            "missing-page registration, copy, zero-page, wake and unregister operations",
+            "missing-page handling for shared memfd and tmpfs mappings",
+            "write-protect registration, resident-page permission faults and wake behavior",
+            "copy-and-write-protect mode and close-time permission restoration",
+            "write-protecting unpopulated anonymous pages and asynchronous per-page write-fault resolution",
+            "anonymous private page moves with strict destination and source-hole handling",
+            "anonymous poisoned-page markers with persistent SIGBUS fault behavior",
+            "registration cleanup across unmap, replacing fixed mappings and remap without event negotiation",
+            "architecture-independent range, event and waiter state",
+        ],
+        "missing": [
+            "minor-fault registration and continue operation",
+            "hugetlb and shmem minor-fault behavior",
+            "exact Linux fork, remap and remove events",
+            "ia32 and x32 compatibility layouts",
+        ],
+        "runtime_tests": [
+            "tools/tests/userfaultfd_abi_probe.c",
+            "tools/tests/userfaultfd_runtime_unit.c",
+        ],
+        "linux_oracle": {
+            "status": "partial",
+            "reference": REFERENCE_COMMIT,
+            "scope": (
+                "feature bits, range ioctl masks, anonymous and shared memfd "
+                "missing-page copy and zero-page behavior, anonymous private "
+                "page moves, poisoned-page markers and SIGBUS faults, mapping "
+                "lifecycle cleanup, resident and unpopulated asynchronous write "
+                "protection, write-protect event flags and wake behavior"
+            ),
+        },
+    },
+    {
         "domain": "io_uring",
         "status": "partial",
         "kconfig": ["IO_URING"],
@@ -76,6 +159,7 @@ EDGEOS_ASSESSMENTS = [
             "MSG_RING registered-file transfer with explicit or allocated target slots, CQE skipping and retained lifetime",
             "SEND_ZC and SENDMSG_ZC copy fallback for IPv4 and IPv6 sockets with Linux main and notification CQEs",
             "pending poll requests retain their open file descriptions across descriptor close and reuse",
+            "EPOLL_WAIT with retained epoll objects, asynchronous completion and native x86_64 and AArch64 event layouts",
             "scheduler-native enter suspension without an initial busy-poll window",
         ],
         "missing": [
@@ -99,6 +183,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/io_uring_poll_multishot_abi_probe.c",
             "tools/tests/io_uring_registration_abi_probe.c",
             "tools/tests/io_uring_send_zc_abi_probe.c",
+            "tools/tests/io_uring_epoll_wait_abi_probe.c",
             "tools/tests/io_uring_runtime_unit.c",
         ],
         "linux_oracle": {
@@ -142,7 +227,9 @@ EDGEOS_ASSESSMENTS = [
                 "and BUF_MORE completions on kernel-allocated and user-provided rings, "
                 "plus SEND_ZC and SENDMSG_ZC copied sends, fixed-file and "
                 "fixed-buffer validation, vectorized payloads, notification CQEs "
-                "and report-usage results"
+                "and report-usage results, plus EPOLL_WAIT validation, retained "
+                "epoll lifetime, deferred completion and architecture-native "
+                "epoll_event layouts"
             ),
         },
     },
@@ -219,19 +306,25 @@ EDGEOS_ASSESSMENTS = [
 def coverage_assessment(
         identifier: str, status: str, architectures: dict[str, str],
         *, kconfig: list[str] | None = None,
-        runtime_tests: list[str] | None = None) -> dict[str, object]:
+        runtime_tests: list[str] | None = None,
+        oracle_status: str | None = None,
+        oracle_scope: str | None = None) -> dict[str, object]:
     """Describe the evidence boundary for an extracted UAPI group."""
-    return {
+    assessment = {
         "id": identifier,
         "status": status,
         "kconfig": kconfig or [],
         "architectures": architectures,
         "runtime_tests": runtime_tests or [],
         "linux_oracle": {
-            "status": "required" if status != "verified" else "verified",
+            "status": oracle_status or
+                      ("required" if status != "verified" else "verified"),
             "reference": REFERENCE_COMMIT,
         },
     }
+    if oracle_scope:
+        assessment["linux_oracle"]["scope"] = oracle_scope
+    return assessment
 
 
 NATIVE_ARCHITECTURES = {
@@ -263,7 +356,17 @@ COVERAGE_ASSESSMENTS = [
     coverage_assessment(
         "ioctl-tty", "partial", NATIVE_ARCHITECTURES,
         runtime_tests=["tools/tests/tty_session_unit.c"]),
-    coverage_assessment("ioctl-input", "partial", NATIVE_ARCHITECTURES),
+    coverage_assessment(
+        "ioctl-input", "partial", NATIVE_ARCHITECTURES,
+        runtime_tests=[
+            "tools/tests/linux_input_unit.c",
+            "tools/tests/file_description_runtime_unit.c",
+        ],
+        oracle_status="partial",
+        oracle_scope=(
+            "EVIOCGRAB owner, repeat-grab and non-owner release errors, plus "
+            "EVIOCREVOKE post-revocation behavior"
+        )),
     coverage_assessment("ioctl-graphics", "partial", NATIVE_ARCHITECTURES,
                         kconfig=["DRM"]),
     coverage_assessment("ioctl-media", "partial", NATIVE_ARCHITECTURES,

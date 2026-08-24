@@ -205,6 +205,13 @@ int kernel_io_uring_timeout_update(int32_t ring_id, uint64_t user_data,
 int kernel_io_uring_poll_add(int32_t ring_id, uint64_t user_data,
                              int32_t descriptor, uint32_t events,
                              int multishot);
+int kernel_io_uring_epoll_wait_add(int32_t ring_id, uint64_t user_data,
+                                   int32_t descriptor,
+                                   uint64_t user_events,
+                                   uint64_t address_space,
+                                   uint32_t maximum_events,
+                                   uint8_t event_size,
+                                   uint8_t event_data_offset);
 int kernel_io_uring_poll_update(int32_t ring_id, uint64_t old_user_data,
                                 int update_events, uint32_t events,
                                 int update_user_data,

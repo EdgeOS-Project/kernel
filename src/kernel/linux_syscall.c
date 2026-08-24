@@ -8930,6 +8930,7 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_OP_FTRUNCATE 55u
 #define EDGE_LINUX_IORING_OP_BIND      56u
 #define EDGE_LINUX_IORING_OP_LISTEN    57u
+#define EDGE_LINUX_IORING_OP_EPOLL_WAIT 59u
 #define EDGE_LINUX_IORING_OP_READV_FIXED 60u
 #define EDGE_LINUX_IORING_OP_WRITEV_FIXED 61u
 #define EDGE_LINUX_IORING_OP_PIPE      62u
@@ -9268,6 +9269,37 @@ static int32_t edge_linux_io_uring_poll_remove_update(
         update_events, submission->operation_flags,
         update_user_data, submission->offset,
         (flags & EDGE_LINUX_IORING_POLL_ADD_MULTI) != 0);
+}
+
+static int32_t edge_linux_io_uring_epoll_wait(
+        edge_linux_syscall_context_t *context, int32_t ring_id,
+        const struct edge_linux_io_uring_sqe *submission) {
+    uint64_t event_size;
+    uint8_t event_data_offset;
+    uint64_t bytes;
+    int result;
+
+    if (!context || !context->arch_ops ||
+        !(event_size = context->arch_ops->epoll_event_size) ||
+        !(event_data_offset =
+              context->arch_ops->epoll_event_data_offset) ||
+        event_size > 16u ||
+        event_data_offset > event_size - sizeof(uint64_t) ||
+        submission->ioprio || submission->offset ||
+        submission->operation_flags || submission->buffer_index ||
+        submission->splice_descriptor || !submission->length ||
+        submission->length > (uint32_t)(INT32_MAX / event_size))
+        return -EDGE_LINUX_EINVAL;
+    bytes = (uint64_t)submission->length * event_size;
+    if (edge_linux_validate_user_range(
+            context, submission->address, bytes, 1) < 0)
+        return -EDGE_LINUX_EFAULT;
+    result = kernel_io_uring_epoll_wait_add(
+        ring_id, submission->user_data, submission->descriptor,
+        submission->address, arch_mm_current_address_space(),
+        submission->length, (uint8_t)event_size,
+        event_data_offset);
+    return result < 0 ? result : EDGE_LINUX_IORING_PENDING_RESULT;
 }
 
 static int64_t edge_linux_io_uring_execute_rw(
@@ -9995,6 +10027,10 @@ static int32_t edge_linux_io_uring_execute_descriptor(
     case EDGE_LINUX_IORING_OP_POLL_ADD:
         result = edge_linux_io_uring_poll(ring_id, submission);
         break;
+    case EDGE_LINUX_IORING_OP_EPOLL_WAIT:
+        result = edge_linux_io_uring_epoll_wait(
+            context, ring_id, submission);
+        break;
     case EDGE_LINUX_IORING_OP_ASYNC_CANCEL:
         if (!submission->address || submission->offset ||
             submission->length || submission->operation_flags ||
@@ -10125,6 +10161,7 @@ static int edge_linux_io_uring_fixed_file_supported(uint8_t opcode) {
     case EDGE_LINUX_IORING_OP_LISTEN:
     case EDGE_LINUX_IORING_OP_SPLICE:
     case EDGE_LINUX_IORING_OP_MSG_RING:
+    case EDGE_LINUX_IORING_OP_EPOLL_WAIT:
         return 1;
     default:
         return 0;
@@ -10921,6 +10958,7 @@ static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
            opcode == EDGE_LINUX_IORING_OP_SOCKET ||
            opcode == EDGE_LINUX_IORING_OP_BIND ||
            opcode == EDGE_LINUX_IORING_OP_LISTEN ||
+           opcode == EDGE_LINUX_IORING_OP_EPOLL_WAIT ||
            opcode == EDGE_LINUX_IORING_OP_FSETXATTR ||
            opcode == EDGE_LINUX_IORING_OP_SETXATTR ||
            opcode == EDGE_LINUX_IORING_OP_FGETXATTR ||

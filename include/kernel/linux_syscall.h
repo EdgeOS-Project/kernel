@@ -45,6 +45,8 @@ typedef struct edge_linux_syscall_arch_ops {
     int (*copy_epoll_event_from_user)(void *context,
                                       uint64_t user_source,
                                       kernel_epoll_event_t *event);
+    uint8_t epoll_event_size;
+    uint8_t epoll_event_data_offset;
     uint32_t fcntl_setfl_mask;
     uint32_t open_direct_flag;
     const char *machine;

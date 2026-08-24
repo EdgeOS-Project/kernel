@@ -5,11 +5,13 @@
 
 #include "kernel/io_uring_runtime.h"
 #include "kernel/anonymous_fd.h"
+#include "kernel/event_runtime.h"
 #include "kernel/eventfd.h"
 #include "kernel/fd_runtime.h"
 #include "kernel/io_runtime.h"
 #include "kernel/linux_errno.h"
 #include "kernel/linux_time.h"
+#include "kernel/mm_runtime.h"
 #include "kernel/runtime_limits.h"
 #include "string.h"
 #include "sys/spinlock.h"
@@ -91,6 +93,12 @@ typedef struct kernel_io_uring_pending {
     uint32_t repeat_count;
     uint32_t reserved2;
     uint64_t sequence;
+    uint64_t user_address;
+    uint64_t address_space;
+    uint32_t maximum_events;
+    uint8_t event_size;
+    uint8_t event_data_offset;
+    uint16_t reserved3;
     kernel_fd_operation_lease_t descriptor_lease;
 } kernel_io_uring_pending_t;
 
@@ -218,6 +226,7 @@ static int32_t io_uring_event_retain_locked(
 
 #define IO_URING_PENDING_TIMEOUT 1u
 #define IO_URING_PENDING_POLL    2u
+#define IO_URING_PENDING_EPOLL   3u
 
 static kernel_io_uring_t g_io_urings[KERNEL_IO_URING_MAX_RINGS];
 static kernel_io_uring_task_registry_t
@@ -352,6 +361,9 @@ static void io_uring_release_storage(kernel_io_uring_t *ring) {
             kernel_fd_operation_view(&pending->descriptor_lease))
             (void)kernel_fd_operation_release(
                 &pending->descriptor_lease);
+        if (pending->used &&
+            pending->kind == IO_URING_PENDING_EPOLL)
+            kernel_epoll_object_release(pending->descriptor);
     }
     for (uint32_t page = 0;
          page < KERNEL_IO_URING_MAX_PBUF_PAGES; ++page) {
@@ -2420,6 +2432,61 @@ int kernel_io_uring_poll_add(int32_t ring_id, uint64_t user_data,
         events, UINT64_MAX, 0, 0, 0, 0, 0, multishot);
 }
 
+int kernel_io_uring_epoll_wait_add(int32_t ring_id, uint64_t user_data,
+                                   int32_t descriptor,
+                                   uint64_t user_events,
+                                   uint64_t address_space,
+                                   uint32_t maximum_events,
+                                   uint8_t event_size,
+                                   uint8_t event_data_offset) {
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    uint32_t slot;
+    int32_t epoll_index;
+    int result;
+
+    if (!user_events || !address_space || !maximum_events ||
+        event_size < sizeof(uint32_t) + sizeof(uint64_t) ||
+        event_size > 16u || event_data_offset < sizeof(uint32_t) ||
+        event_data_offset > event_size - sizeof(uint64_t))
+        return -EDGE_LINUX_EINVAL;
+    result = kernel_epoll_descriptor_retain(
+        descriptor, &epoll_index);
+    if (result < 0) return result;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+    } else {
+        for (slot = 0; slot < KERNEL_IO_URING_MAX_PENDING; ++slot)
+            if (!ring->pending[slot].used) break;
+        if (slot == KERNEL_IO_URING_MAX_PENDING) {
+            result = -EDGE_LINUX_EAGAIN;
+        } else {
+            kernel_io_uring_pending_t *pending = &ring->pending[slot];
+
+            memset(pending, 0, sizeof(*pending));
+            pending->used = 1u;
+            pending->kind = IO_URING_PENDING_EPOLL;
+            pending->descriptor = epoll_index;
+            pending->user_data = user_data;
+            pending->user_address = user_events;
+            pending->address_space = address_space;
+            pending->maximum_events = maximum_events;
+            pending->event_size = event_size;
+            pending->event_data_offset = event_data_offset;
+            ++ring->next_pending_sequence;
+            if (!ring->next_pending_sequence)
+                ++ring->next_pending_sequence;
+            pending->sequence = ring->next_pending_sequence;
+            result = 0;
+        }
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (result < 0) kernel_epoll_object_release(epoll_index);
+    return result;
+}
+
 int kernel_io_uring_poll_update(int32_t ring_id, uint64_t old_user_data,
                                 int update_events, uint32_t events,
                                 int update_user_data,
@@ -2465,6 +2532,7 @@ int kernel_io_uring_poll_update(int32_t ring_id, uint64_t old_user_data,
 
 int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data) {
     kernel_fd_operation_lease_t descriptor_lease = {0};
+    int32_t epoll_index = -1;
     kernel_io_uring_t *ring;
     uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
     uint32_t slot;
@@ -2482,6 +2550,9 @@ int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data) {
                     &descriptor_lease,
                     &ring->pending[slot].descriptor_lease);
                 if (result < 0) break;
+            } else if (ring->pending[slot].kind ==
+                       IO_URING_PENDING_EPOLL) {
+                epoll_index = ring->pending[slot].descriptor;
             }
             memset(&ring->pending[slot], 0, sizeof(ring->pending[slot]));
             result = 0;
@@ -2491,6 +2562,8 @@ int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data) {
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     if (kernel_fd_operation_view(&descriptor_lease))
         (void)kernel_fd_operation_release(&descriptor_lease);
+    if (epoll_index >= 0)
+        kernel_epoll_object_release(epoll_index);
     return result;
 }
 
@@ -2512,6 +2585,45 @@ static void io_uring_pending_snapshot(
     destination->interval_us = source->interval_us;
     destination->repeat_count = source->repeat_count;
     destination->sequence = source->sequence;
+    destination->user_address = source->user_address;
+    destination->address_space = source->address_space;
+    destination->maximum_events = source->maximum_events;
+    destination->event_size = source->event_size;
+    destination->event_data_offset = source->event_data_offset;
+}
+
+typedef struct io_uring_epoll_copy_context {
+    uint64_t address;
+    uint64_t address_space;
+    uint8_t event_size;
+    uint8_t event_data_offset;
+} io_uring_epoll_copy_context_t;
+
+static int io_uring_epoll_copy_event(
+        void *opaque, uint32_t event_index,
+        const kernel_epoll_event_t *event) {
+    io_uring_epoll_copy_context_t *context =
+        (io_uring_epoll_copy_context_t *)opaque;
+    uint8_t result[16];
+    uint64_t destination;
+
+    if (!context || !event || context->event_size > sizeof(result) ||
+        context->event_data_offset >
+            context->event_size - sizeof(event->data))
+        return -EDGE_LINUX_EFAULT;
+    destination = context->address +
+        (uint64_t)event_index * context->event_size;
+    if (destination < context->address)
+        return -EDGE_LINUX_EFAULT;
+    memset(result, 0, sizeof(result));
+    memcpy(result, &event->events, sizeof(event->events));
+    memcpy(result + context->event_data_offset,
+           &event->data, sizeof(event->data));
+    return kernel_mm_address_space_copy(
+        context->address_space, destination, result,
+        context->event_size,
+        KERNEL_MM_PROCESS_VM_WRITE) < 0 ?
+        -EDGE_LINUX_EFAULT : 0;
 }
 
 uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us) {
@@ -2621,6 +2733,34 @@ uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us) {
             spin_unlock_irqrestore(&g_io_uring_lock, flags);
             if (kernel_fd_operation_view(&release_lease))
                 (void)kernel_fd_operation_release(&release_lease);
+        } else if (pending.kind == IO_URING_PENDING_EPOLL) {
+            io_uring_epoll_copy_context_t copy_context = {
+                .address = pending.user_address,
+                .address_space = pending.address_space,
+                .event_size = pending.event_size,
+                .event_data_offset = pending.event_data_offset,
+            };
+            int32_t release_epoll = -1;
+
+            spin_unlock_irqrestore(&g_io_uring_lock, flags);
+            result = kernel_epoll_deliver_events(
+                pending.descriptor, pending.maximum_events,
+                io_uring_epoll_copy_event, &copy_context);
+            if (result == 0) continue;
+            flags = spin_lock_irqsave(&g_io_uring_lock);
+            ring = io_uring_lookup_locked(ring_id);
+            if (ring && ring->pending[slot].used &&
+                ring->pending[slot].kind == IO_URING_PENDING_EPOLL &&
+                ring->pending[slot].sequence == pending.sequence) {
+                completion_user_data = ring->pending[slot].user_data;
+                release_epoll = ring->pending[slot].descriptor;
+                memset(&ring->pending[slot], 0,
+                       sizeof(ring->pending[slot]));
+                remove = 1;
+            }
+            spin_unlock_irqrestore(&g_io_uring_lock, flags);
+            if (release_epoll >= 0)
+                kernel_epoll_object_release(release_epoll);
         } else {
             spin_unlock_irqrestore(&g_io_uring_lock, flags);
             continue;

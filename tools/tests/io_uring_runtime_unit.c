@@ -9,8 +9,10 @@
 #include "kernel/io_uring_runtime.h"
 #include "kernel/anonymous_fd.h"
 #include "kernel/fd_runtime.h"
+#include "kernel/event_runtime.h"
 #include "kernel/io_runtime.h"
 #include "kernel/linux_errno.h"
+#include "kernel/mm_runtime.h"
 
 #define TEST_PAGE_COUNT 16u
 
@@ -22,6 +24,8 @@ static uint32_t g_ready_generation;
 static uint32_t g_descriptor_generation[128];
 static uint32_t g_fixed_file_references;
 static uint32_t g_materialize_flags;
+static uint32_t g_epoll_references;
+static int g_epoll_ready;
 
 int kernel_anonymous_fd_descriptor_object_id(
         int32_t descriptor, kernel_anonymous_fd_kind_t kind) {
@@ -143,6 +147,50 @@ int kernel_fd_operation_ready(
     if (descriptor < 0) return -EDGE_LINUX_EBADF;
     return descriptor == g_ready_descriptor &&
            ((uint32_t *)(void *)lease)[1] == g_ready_generation;
+}
+
+int kernel_epoll_descriptor_retain(int32_t descriptor,
+                                   int32_t *epoll_index) {
+    if (descriptor != 55 || !epoll_index)
+        return -EDGE_LINUX_EBADF;
+    *epoll_index = 3;
+    ++g_epoll_references;
+    return 0;
+}
+
+void kernel_epoll_object_release(int32_t epoll_index) {
+    assert(epoll_index == 3);
+    assert(g_epoll_references != 0u);
+    --g_epoll_references;
+}
+
+int kernel_epoll_deliver_events(int32_t epoll_index,
+                                uint32_t maximum_events,
+                                kernel_epoll_event_copy_fn copy_event,
+                                void *copy_context) {
+    const kernel_epoll_event_t event = {
+        .events = 0x11u,
+        .data = 0x8877665544332211ull,
+    };
+    int result;
+
+    if (epoll_index != 3 || !maximum_events || !copy_event)
+        return -EDGE_LINUX_EINVAL;
+    if (!g_epoll_ready) return 0;
+    result = copy_event(copy_context, 0u, &event);
+    if (result < 0) return result;
+    g_epoll_ready = 0;
+    return 1;
+}
+
+int kernel_mm_address_space_copy(
+        uint64_t address_space, uint64_t address, void *buffer,
+        uint64_t size, kernel_mm_process_vm_operation_t operation) {
+    if (address_space != 1u || !address || !buffer ||
+        operation != KERNEL_MM_PROCESS_VM_WRITE)
+        return -EDGE_LINUX_EFAULT;
+    memcpy((void *)(uintptr_t)address, buffer, (size_t)size);
+    return 0;
 }
 
 static int test_page_allocate(void *context, kernel_io_uring_page_t *page) {
@@ -962,6 +1010,70 @@ int main(void) {
                    second_ring_id, 0x52455454u) == 0);
 
         test_page_release(0, &timeout_cq);
+        kernel_io_uring_release(second_ring_id);
+    }
+    {
+        struct edge_linux_io_uring_params epoll_parameters = {0};
+        kernel_io_uring_page_t epoll_cq;
+        struct edge_linux_io_uring_cqe *epoll_completion;
+        struct {
+            uint32_t events;
+            uint8_t data[8];
+        } __attribute__((packed)) delivered = {0};
+        struct {
+            uint32_t events;
+            uint32_t padding;
+            uint8_t data[8];
+        } aligned_delivered = {0};
+
+        assert(kernel_io_uring_create(
+                   4u, &epoll_parameters, &second_ring_id) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_CQ_RING,
+                   0u, &epoll_cq) == 0);
+        epoll_completion = (struct edge_linux_io_uring_cqe *)(
+            (uint8_t *)epoll_cq.address +
+            epoll_parameters.cq_off.cqes);
+        assert(kernel_io_uring_epoll_wait_add(
+                   second_ring_id, 0x45504f4c4cu, 55,
+                   (uint64_t)(uintptr_t)&delivered, 1u, 4u,
+                   12u, 4u) == 0);
+        assert(g_epoll_references == 1u);
+        assert(kernel_io_uring_collect(second_ring_id, 1u) == 0);
+        g_epoll_ready = 1;
+        assert(kernel_io_uring_collect(second_ring_id, 2u) == 1);
+        assert(g_epoll_references == 0u);
+        assert(epoll_completion[0].user_data == 0x45504f4c4cu);
+        assert(epoll_completion[0].result == 1);
+        assert(delivered.events == 0x11u);
+        {
+            uint64_t data = 0;
+            memcpy(&data, delivered.data, sizeof(data));
+            assert(data == 0x8877665544332211ull);
+        }
+        assert(kernel_io_uring_epoll_wait_add(
+                   second_ring_id, 0x414c49474e4544u, 55,
+                   (uint64_t)(uintptr_t)&aligned_delivered, 1u, 1u,
+                   16u, 8u) == 0);
+        g_epoll_ready = 1;
+        assert(kernel_io_uring_collect(second_ring_id, 3u) == 1);
+        assert(epoll_completion[1].user_data == 0x414c49474e4544u);
+        assert(epoll_completion[1].result == 1);
+        assert(aligned_delivered.events == 0x11u);
+        assert(aligned_delivered.padding == 0u);
+        {
+            uint64_t data = 0;
+            memcpy(&data, aligned_delivered.data, sizeof(data));
+            assert(data == 0x8877665544332211ull);
+        }
+        assert(kernel_io_uring_epoll_wait_add(
+                   second_ring_id, 0x43414e43454cu, 55,
+                   (uint64_t)(uintptr_t)&delivered, 1u, 1u,
+                   12u, 4u) == 0);
+        assert(kernel_io_uring_pending_cancel(
+                   second_ring_id, 0x43414e43454cu) == 0);
+        assert(g_epoll_references == 0u);
+        test_page_release(0, &epoll_cq);
         kernel_io_uring_release(second_ring_id);
     }
     {

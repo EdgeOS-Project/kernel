@@ -372,7 +372,7 @@ INITRAMFS_FORMAT_ARG = $(if $(filter y,$(CONFIG_INITRAMFS_CRC)),--format crc,)
 INITRAMFS_COMPRESSION = $(if $(filter y,$(CONFIG_INITRAMFS_COMPRESSION_GZIP)),gzip,none)
 CFLAGS += -I$(LWIP_DIR)/src/include
 
-.PHONY: all clean run-x86-initramfs run-arm64-initramfs-uefi run-arm64-rpi4 x86-initramfs-iso arm64-initramfs-uefi arm64-rpi4 arm64-rpi5 arm64-rpi5-fdt-acceptance initramfs initramfs-tool-unit gzip-unit aes-unit defconfig x86_64_defconfig arm64_defconfig olddefconfig arm64-olddefconfig menuconfig arm64-menuconfig kconfig-check syscall-inventory-check cross-arch-unity-check abi-service-dispatch-unit directory-runtime-unit vfs-path-cache-unit vfs-filesystem-registry-unit vfs-mount-table-unit overlayfs-capacity-unit vfs-mount-snapshot-unit vfs-mount-topology-unit mount-api-unit vfs-read-exact-unit vfs-readahead-state-unit vfs-seek-data-hole-unit vfs-readlink-unit vfs-metadata-unit vfs-open-unit vfs-fileattr-unit loop-device-unit device-mapper-unit squashfs-reader-unit erofs-reader-unit xfs-reader-unit btrfs-reader-unit nfsd-protocol-unit process-clone-unit process-exec-unit wait-runtime-unit process-commit-unit process-native-view-unit proc-task-unit mm-runtime-unit event-dispatch-policy-unit inotify-readiness-sequence-unit io-dispatch-policy-unit proc-maps-unit scheduler-policy-unit scheduler-runtime-unit restart-block-unit rseq-slice-runtime-unit boottime-discipline-unit time-discipline-unit timerfd-realtime-jump-unit linux-module-unit deferred-work-unit smp-unit x86-scheduler-context-unit syslog-runtime-unit task-scratch-current-unit vfs-context-unit vfs-descriptor-policy-unit vfs-writeback-unit file-description-runtime-unit pipe-runtime-unit fd-runtime-unit fd-table-runtime-unit descriptor-factory-runtime-unit socket-runtime-unit socket-message-unit socket-rights-unit socket-rights-delivery-unit socket-accept-queue-unit network-core-unit linux-netlink-netfilter-unit linux-genetlink-unit linux-ethtool-unit namespace-ioctl-runtime-unit bpf-runtime-unit kernelrelease prepare syncconfig arm64-syncconfig arm64-kernel kernel FORCE
+.PHONY: all clean run-x86-initramfs run-arm64-initramfs-uefi run-arm64-rpi4 x86-initramfs-iso arm64-initramfs-uefi arm64-rpi4 arm64-rpi5 arm64-rpi5-fdt-acceptance initramfs initramfs-tool-unit gzip-unit aes-unit defconfig x86_64_defconfig arm64_defconfig olddefconfig arm64-olddefconfig menuconfig arm64-menuconfig kconfig-check syscall-inventory-check cross-arch-unity-check abi-service-dispatch-unit directory-runtime-unit vfs-path-cache-unit vfs-filesystem-registry-unit vfs-mount-table-unit overlayfs-capacity-unit vfs-mount-snapshot-unit vfs-mount-topology-unit mount-api-unit vfs-read-exact-unit vfs-readahead-state-unit vfs-seek-data-hole-unit vfs-readlink-unit vfs-metadata-unit vfs-open-unit vfs-fileattr-unit loop-device-unit device-mapper-unit squashfs-reader-unit erofs-reader-unit xfs-reader-unit btrfs-reader-unit nfsd-protocol-unit process-clone-unit process-exec-unit wait-runtime-unit epoll-runtime-unit process-commit-unit process-native-view-unit proc-task-unit mm-runtime-unit event-dispatch-policy-unit inotify-readiness-sequence-unit io-dispatch-policy-unit proc-maps-unit scheduler-policy-unit scheduler-runtime-unit restart-block-unit rseq-slice-runtime-unit boottime-discipline-unit time-discipline-unit timerfd-realtime-jump-unit linux-module-unit deferred-work-unit smp-unit x86-scheduler-context-unit syslog-runtime-unit task-scratch-current-unit vfs-context-unit vfs-descriptor-policy-unit vfs-writeback-unit file-description-runtime-unit pipe-runtime-unit fd-runtime-unit fd-table-runtime-unit descriptor-factory-runtime-unit socket-runtime-unit socket-message-unit socket-rights-unit socket-rights-delivery-unit socket-accept-queue-unit network-core-unit linux-netlink-netfilter-unit linux-genetlink-unit linux-ethtool-unit namespace-ioctl-runtime-unit bpf-runtime-unit kernelrelease prepare syncconfig arm64-syncconfig arm64-kernel kernel FORCE
 
 BSD_DRIVER_MANIFEST_DIR := config/bsd_drivers/manifests
 BSD_DRIVER_CAPABILITY_DIR := config/bsd_drivers/capabilities
@@ -4110,6 +4110,15 @@ wait-runtime-unit: tools/tests/wait_runtime_unit.c $(SRC)/kernel/wait_runtime.c
 		tools/tests/wait_runtime_unit.c $(SRC)/kernel/wait_runtime.c \
 		-o $(OUT)/tests/wait_runtime_unit
 	@$(OUT)/tests/wait_runtime_unit
+
+epoll-runtime-unit: tools/tests/epoll_runtime_unit.c \
+		$(SRC)/kernel/epoll_runtime.c include/kernel/event_runtime.h
+	@mkdir -p $(OUT)/tests
+	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fno-builtin \
+		-DEDGEOS_HOST_TEST -iquote $(INC) \
+		tools/tests/epoll_runtime_unit.c \
+		-o $(OUT)/tests/epoll_runtime_unit
+	@$(OUT)/tests/epoll_runtime_unit
 
 futex-runtime-unit: tools/tests/futex_runtime_unit.c \
 		$(SRC)/kernel/futex_runtime.c include/kernel/futex_runtime.h

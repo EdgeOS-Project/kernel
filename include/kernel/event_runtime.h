@@ -47,6 +47,10 @@ typedef struct kernel_epoll_event {
     uint64_t data;
 } kernel_epoll_event_t;
 
+typedef int (*kernel_epoll_event_copy_fn)(
+    void *context, uint32_t event_index,
+    const kernel_epoll_event_t *event);
+
 /*
  * Architecture backends capture a stable, non-pointer description of the
  * object that supplies readiness. Object identifiers and the cookie are
@@ -168,6 +172,16 @@ typedef struct kernel_epoll_backend_ops {
     void (*release_target_source)(
         void *context,
         const kernel_epoll_target_source_t *source);
+    int (*observe_target_source)(
+        void *context,
+        const kernel_epoll_target_source_t *source,
+        uint32_t requested_events,
+        uint32_t *ready_events,
+        uint64_t *read_ready_sequence,
+        uint64_t *write_ready_sequence);
+    void (*commit_target_source)(
+        void *context,
+        const kernel_epoll_target_source_t *source);
     void (*watch_set_changed)(void *context, int32_t epoll_index);
 } kernel_epoll_backend_ops_t;
 
@@ -181,6 +195,12 @@ int kernel_epoll_watch_snapshot(
     kernel_epoll_watch_snapshot_t *snapshot);
 int kernel_epoll_object_retain(int32_t epoll_index);
 void kernel_epoll_object_release(int32_t epoll_index);
+int kernel_epoll_descriptor_retain(int32_t descriptor,
+                                   int32_t *epoll_index);
+int kernel_epoll_deliver_events(int32_t epoll_index,
+                                uint32_t maximum_events,
+                                kernel_epoll_event_copy_fn copy_event,
+                                void *copy_context);
 int kernel_epoll_wait_lease_acquire(kernel_epoll_wait_lease_t *lease,
                                     int32_t epoll_index);
 void kernel_epoll_wait_lease_release(kernel_epoll_wait_lease_t *lease);

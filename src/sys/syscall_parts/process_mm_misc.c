@@ -11664,6 +11664,44 @@ static void x86_epoll_release_target_source(
     x86_epoll_target_source_release(source);
 }
 
+static int x86_epoll_observe_target_source(
+        void *context,
+        const kernel_epoll_target_source_t *captured,
+        uint32_t requested_events, uint32_t *ready_events,
+        uint64_t *read_ready_sequence,
+        uint64_t *write_ready_sequence) {
+    kernel_wait_observation_t observation;
+    kernel_wait_source_t source;
+    int status;
+
+    (void)context;
+    if (!captured || !ready_events || !read_ready_sequence ||
+        !write_ready_sequence)
+        return -EINVAL;
+    status = x86_wait_source_from_captured(captured, &source);
+    if (status < 0) return status;
+    status = x86_wait_observe_source(
+        0, &source,
+        kernel_wait_epoll_to_poll_events(requested_events),
+        &observation);
+    if (status < 0) return status;
+    *ready_events = observation.events;
+    *read_ready_sequence = observation.read_sequence;
+    *write_ready_sequence = observation.write_sequence;
+    return 0;
+}
+
+static void x86_epoll_commit_target_source(
+        void *context,
+        const kernel_epoll_target_source_t *captured) {
+    edge_fd_t entry;
+
+    (void)context;
+    if (x86_epoll_source_to_entry(captured, &entry) == 0 &&
+        fd_is_mount_event_source(&entry))
+        fd_mount_monitor_acknowledge(&entry);
+}
+
 static void x86_epoll_watch_set_changed(void *context,
                                         int32_t epoll_index) {
     task_t *current = process_current_task();
@@ -11726,6 +11764,10 @@ static const kernel_epoll_backend_ops_t x86_epoll_backend_ops = {
         x86_epoll_capture_target_source,
     .release_target_source =
         x86_epoll_release_target_source,
+    .observe_target_source =
+        x86_epoll_observe_target_source,
+    .commit_target_source =
+        x86_epoll_commit_target_source,
     .watch_set_changed = x86_epoll_watch_set_changed,
 };
 

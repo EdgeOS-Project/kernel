@@ -63,11 +63,16 @@ typedef struct fake_backend {
     atomic_uint source_release_count;
     atomic_uint live_source_count;
     atomic_uint callback_reentry_count;
+    atomic_uint source_commit_count;
     atomic_uint source_references[FAKE_SOURCE_TRACK_CAPACITY];
     int32_t callback_reentry_epoll_index;
     uint8_t reenter_capture_callback;
     uint8_t reenter_release_callback;
     uint8_t fail_source_capture;
+    uint64_t ready_description_id;
+    uint32_t ready_events;
+    uint64_t read_ready_sequence;
+    uint64_t write_ready_sequence;
 } fake_backend_t;
 
 typedef struct start_gate {
@@ -227,6 +232,35 @@ static void fake_release_target_source(
         fake_callback_reenter_epoll(backend);
 }
 
+static int fake_observe_target_source(
+        void *context,
+        const kernel_epoll_target_source_t *source,
+        uint32_t requested_events, uint32_t *ready_events,
+        uint64_t *read_ready_sequence,
+        uint64_t *write_ready_sequence) {
+    fake_backend_t *backend = context;
+
+    (void)requested_events;
+    if (!backend || !source || !ready_events ||
+        !read_ready_sequence || !write_ready_sequence)
+        return -EDGE_LINUX_EINVAL;
+    *ready_events = source->cookie == backend->ready_description_id ?
+        backend->ready_events : 0u;
+    *read_ready_sequence = backend->read_ready_sequence;
+    *write_ready_sequence = backend->write_ready_sequence;
+    return 0;
+}
+
+static void fake_commit_target_source(
+        void *context,
+        const kernel_epoll_target_source_t *source) {
+    fake_backend_t *backend = context;
+
+    assert(backend && source);
+    atomic_fetch_add_explicit(
+        &backend->source_commit_count, 1u, memory_order_relaxed);
+}
+
 static void fake_watch_set_changed(void *context, int32_t epoll_index) {
     fake_backend_t *backend = context;
 
@@ -242,6 +276,8 @@ static const kernel_epoll_backend_ops_t g_fake_backend_ops = {
     .resolve_target_descriptor = fake_resolve_target_descriptor,
     .capture_target_source = fake_capture_target_source,
     .release_target_source = fake_release_target_source,
+    .observe_target_source = fake_observe_target_source,
+    .commit_target_source = fake_commit_target_source,
     .watch_set_changed = fake_watch_set_changed,
 };
 
@@ -264,12 +300,96 @@ static void fake_backend_initialize_with_ops(
     atomic_init(&backend->source_release_count, 0);
     atomic_init(&backend->live_source_count, 0);
     atomic_init(&backend->callback_reentry_count, 0);
+    atomic_init(&backend->source_commit_count, 0);
     for (uint32_t index = 0;
          index < FAKE_SOURCE_TRACK_CAPACITY; ++index)
         atomic_init(&backend->source_references[index], 0);
     epoll_core_reset();
     assert(kernel_epoll_backend_register(
                ops, backend) == 0);
+}
+
+static void fake_backend_initialize(fake_backend_t *backend);
+static int fake_create_epoll(fake_backend_t *backend,
+                             int32_t *index_out);
+static int fake_create_leaf(fake_backend_t *backend);
+static void fake_close_descriptor(fake_backend_t *backend,
+                                  int descriptor);
+static int epoll_add(int epoll_descriptor, int target_descriptor,
+                     uint32_t events, uint64_t data);
+
+typedef struct fake_event_copy_context {
+    kernel_epoll_event_t events[4];
+    uint32_t count;
+    int fail;
+} fake_event_copy_context_t;
+
+static int fake_copy_event(void *context, uint32_t event_index,
+                           const kernel_epoll_event_t *event) {
+    fake_event_copy_context_t *copy = context;
+
+    if (!copy || !event || event_index >= 4u)
+        return -EDGE_LINUX_EFAULT;
+    if (copy->fail) return -EDGE_LINUX_EFAULT;
+    copy->events[event_index] = *event;
+    copy->count = event_index + 1u;
+    return 0;
+}
+
+static void test_common_event_delivery(void) {
+    fake_backend_t backend;
+    fake_event_copy_context_t copy = {0};
+    kernel_epoll_object_snapshot_t snapshot;
+    int32_t epoll_index;
+    int32_t retained_index = -1;
+    int epoll_descriptor;
+    int leaf;
+
+    fake_backend_initialize(&backend);
+    epoll_descriptor = fake_create_epoll(&backend, &epoll_index);
+    leaf = fake_create_leaf(&backend);
+    assert(epoll_add(
+               epoll_descriptor, leaf,
+               KERNEL_EPOLLIN | KERNEL_EPOLLET,
+               0x1122334455667788ull) == 0);
+    assert(kernel_epoll_descriptor_retain(
+               epoll_descriptor, &retained_index) == 0);
+    assert(retained_index == epoll_index);
+    assert(kernel_epoll_object_snapshot(
+               epoll_index, &snapshot) == 0);
+    assert(snapshot.refs == 2u);
+    assert(kernel_epoll_deliver_events(
+               epoll_index, 4u, fake_copy_event, &copy) == 0);
+
+    backend.ready_description_id =
+        backend.descriptors[leaf].description_id;
+    backend.ready_events = KERNEL_EPOLLIN;
+    backend.read_ready_sequence = 1u;
+    copy.fail = 1;
+    assert(kernel_epoll_deliver_events(
+               epoll_index, 4u, fake_copy_event, &copy) ==
+           -EDGE_LINUX_EFAULT);
+    copy.fail = 0;
+    assert(kernel_epoll_deliver_events(
+               epoll_index, 4u, fake_copy_event, &copy) == 1);
+    assert(copy.count == 1u);
+    assert(copy.events[0].events == KERNEL_EPOLLIN);
+    assert(copy.events[0].data == 0x1122334455667788ull);
+    assert(atomic_load_explicit(
+               &backend.source_commit_count,
+               memory_order_relaxed) == 1u);
+    assert(kernel_epoll_deliver_events(
+               epoll_index, 4u, fake_copy_event, &copy) == 0);
+    ++backend.read_ready_sequence;
+    assert(kernel_epoll_deliver_events(
+               epoll_index, 4u, fake_copy_event, &copy) == 1);
+
+    kernel_epoll_object_release(retained_index);
+    fake_close_descriptor(&backend, leaf);
+    fake_close_descriptor(&backend, epoll_descriptor);
+    assert(atomic_load_explicit(
+               &backend.live_source_count,
+               memory_order_relaxed) == 0u);
 }
 
 static void fake_backend_initialize(fake_backend_t *backend) {
@@ -1371,6 +1491,7 @@ static void test_wait_lease_releases_abandoned_wait(void) {
 }
 
 int main(void) {
+    test_common_event_delivery();
     test_optional_source_callbacks();
     test_source_survives_descriptor_close_and_reuse();
     test_modify_preserves_captured_source();

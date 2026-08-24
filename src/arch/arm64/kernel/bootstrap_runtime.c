@@ -17565,6 +17565,14 @@ static void arm64_epoll_release_target_source(
     fd_drop_backing_object(&retained);
 }
 
+static int arm64_epoll_observe_target_source(
+    void *context, const kernel_epoll_target_source_t *source,
+    uint32_t requested_events, uint32_t *ready_events,
+    uint64_t *read_ready_sequence,
+    uint64_t *write_ready_sequence);
+static void arm64_epoll_commit_target_source(
+    void *context, const kernel_epoll_target_source_t *source);
+
 static int arm64_epoll_watch_source_entry(
         const arm64_epoll_entry_t *entry,
         bootstrap_fd_t *fd) {
@@ -17592,6 +17600,10 @@ static const kernel_epoll_backend_ops_t arm64_epoll_backend_ops = {
         arm64_epoll_capture_target_source,
     .release_target_source =
         arm64_epoll_release_target_source,
+    .observe_target_source =
+        arm64_epoll_observe_target_source,
+    .commit_target_source =
+        arm64_epoll_commit_target_source,
     .watch_set_changed = arm64_epoll_watch_set_changed,
 };
 
@@ -20687,6 +20699,45 @@ static int arm64_wait_observe_source(
         fd, &observation->read_sequence,
         &observation->write_sequence);
     return 0;
+}
+
+static int arm64_epoll_observe_target_source(
+        void *context,
+        const kernel_epoll_target_source_t *captured,
+        uint32_t requested_events, uint32_t *ready_events,
+        uint64_t *read_ready_sequence,
+        uint64_t *write_ready_sequence) {
+    kernel_wait_observation_t observation;
+    kernel_wait_source_t source;
+    kernel_task_t *task = current_task();
+    int status;
+
+    (void)context;
+    if (!task || !captured || !ready_events ||
+        !read_ready_sequence || !write_ready_sequence)
+        return -LINUX_EBADF;
+    status = arm64_wait_source_from_captured(captured, &source);
+    if (status < 0) return status;
+    status = arm64_wait_observe_source(
+        task, &source,
+        kernel_wait_epoll_to_poll_events(requested_events),
+        &observation);
+    if (status < 0) return status;
+    *ready_events = observation.events;
+    *read_ready_sequence = observation.read_sequence;
+    *write_ready_sequence = observation.write_sequence;
+    return 0;
+}
+
+static void arm64_epoll_commit_target_source(
+        void *context,
+        const kernel_epoll_target_source_t *captured) {
+    bootstrap_fd_t fd;
+
+    (void)context;
+    if (arm64_epoll_source_to_fd(captured, &fd) == 0 &&
+        fd_is_mount_event_source(&fd))
+        fd_mount_monitor_acknowledge(&fd);
 }
 
 static kernel_wait_registration_t arm64_wait_register_source(
@@ -32736,6 +32787,8 @@ static const edge_linux_syscall_arch_ops_t arm64_linux_syscall_ops = {
     .validate_user_range_arch = 0,
     .copy_stat_to_user = edge_arm64_linux_stat_to_user,
     .copy_epoll_event_from_user = arm64_linux_copy_epoll_event_from_user,
+    .epoll_event_size = 16u,
+    .epoll_event_data_offset = 8u,
     .fcntl_setfl_mask = 0x00050000u, /* O_DIRECT | O_NOATIME */
     .open_direct_flag = 0x00010000u,
     .machine = "aarch64",

@@ -106,6 +106,184 @@ int kernel_epoll_object_exists(int32_t epoll_index) {
     return exists;
 }
 
+int kernel_epoll_descriptor_retain(int32_t descriptor,
+                                   int32_t *epoll_index) {
+    const kernel_epoll_backend_ops_t *backend;
+    void *backend_context;
+    uint64_t irq_flags;
+    int32_t resolved;
+    int status;
+
+    if (!epoll_index) return -EDGE_LINUX_EINVAL;
+    irq_flags = spin_lock_irqsave(&g_epoll_lock);
+    backend = g_backend_ops;
+    backend_context = g_backend_context;
+    spin_unlock_irqrestore(&g_epoll_lock, irq_flags);
+    if (!backend) return -EDGE_LINUX_ENODEV;
+    status = backend->resolve_epoll_descriptor(
+        backend_context, descriptor, &resolved);
+    if (status < 0) return status;
+    status = kernel_epoll_object_retain(resolved);
+    if (status < 0) return status;
+    *epoll_index = resolved;
+    return 0;
+}
+
+static uint32_t epoll_collect_project(uint32_t ready,
+                                      uint32_t requested) {
+    uint32_t result = ready & (KERNEL_EPOLLERR | KERNEL_EPOLLHUP);
+
+    if (ready & (KERNEL_EPOLLIN | KERNEL_EPOLLRDNORM))
+        result |= requested & (KERNEL_EPOLLIN | KERNEL_EPOLLRDNORM);
+    if (ready & KERNEL_EPOLLPRI)
+        result |= requested & KERNEL_EPOLLPRI;
+    if (ready & KERNEL_EPOLLRDBAND)
+        result |= requested & KERNEL_EPOLLRDBAND;
+    if (ready & (KERNEL_EPOLLOUT | KERNEL_EPOLLWRNORM))
+        result |= requested & (KERNEL_EPOLLOUT | KERNEL_EPOLLWRNORM);
+    if (ready & KERNEL_EPOLLWRBAND)
+        result |= requested & KERNEL_EPOLLWRBAND;
+    if (ready & KERNEL_EPOLLRDHUP)
+        result |= requested & KERNEL_EPOLLRDHUP;
+    return result;
+}
+
+static int epoll_collect_ready_recursive(
+        const kernel_epoll_backend_ops_t *backend,
+        void *backend_context, int32_t epoll_index,
+        uint8_t visited[EDGE_RUNTIME_MAX_EPOLLS], uint32_t depth) {
+    kernel_epoll_object_snapshot_t epoll;
+
+    if (!backend || !backend->observe_target_source || !visited ||
+        !epoll_index_valid(epoll_index) || visited[epoll_index] ||
+        depth > KERNEL_EPOLL_NESTING_MAX ||
+        kernel_epoll_object_snapshot(epoll_index, &epoll) < 0)
+        return 0;
+    visited[epoll_index] = 1u;
+    for (uint32_t slot = 0; slot < epoll.entry_high_water; ++slot) {
+        kernel_epoll_watch_snapshot_t snapshot;
+        const kernel_epoll_watch_t *watch;
+        uint64_t read_sequence = 0;
+        uint64_t write_sequence = 0;
+        uint32_t ready = 0;
+
+        if (kernel_epoll_watch_snapshot(
+                epoll_index, (uint16_t)slot, &snapshot) <= 0)
+            continue;
+        watch = &snapshot.watch;
+        if (!watch->used || watch->oneshot_disabled) continue;
+        if (watch->target_epoll_index >= 0) {
+            kernel_epoll_object_snapshot_t child;
+
+            if (!epoll_collect_ready_recursive(
+                    backend, backend_context,
+                    watch->target_epoll_index, visited,
+                    depth + 1u))
+                continue;
+            ready = KERNEL_EPOLLIN;
+            if (kernel_epoll_object_snapshot(
+                    watch->target_epoll_index, &child) == 0)
+                read_sequence = child.readiness_sequence;
+        } else if (!watch->source_captured ||
+                   backend->observe_target_source(
+                       backend_context, &watch->source,
+                       watch->events, &ready,
+                       &read_sequence, &write_sequence) < 0) {
+            continue;
+        }
+        ready = epoll_collect_project(ready, watch->events);
+        if (kernel_epoll_watch_preview(
+                &snapshot, ready, read_sequence, write_sequence)) {
+            visited[epoll_index] = 0u;
+            return 1;
+        }
+    }
+    visited[epoll_index] = 0u;
+    return 0;
+}
+
+int kernel_epoll_deliver_events(int32_t epoll_index,
+                                uint32_t maximum_events,
+                                kernel_epoll_event_copy_fn copy_event,
+                                void *copy_context) {
+    const kernel_epoll_backend_ops_t *backend;
+    void *backend_context;
+    kernel_epoll_object_snapshot_t epoll;
+    uint8_t visited[EDGE_RUNTIME_MAX_EPOLLS] = {0};
+    uint64_t irq_flags;
+    uint32_t emitted = 0;
+
+    if (!copy_event || !maximum_events) return -EDGE_LINUX_EINVAL;
+    irq_flags = spin_lock_irqsave(&g_epoll_lock);
+    backend = g_backend_ops;
+    backend_context = g_backend_context;
+    spin_unlock_irqrestore(&g_epoll_lock, irq_flags);
+    if (!backend || !backend->observe_target_source)
+        return -EDGE_LINUX_EOPNOTSUPP;
+    if (!epoll_index_valid(epoll_index) ||
+        kernel_epoll_object_snapshot(epoll_index, &epoll) < 0)
+        return -EDGE_LINUX_EBADF;
+
+    visited[epoll_index] = 1u;
+    for (uint32_t slot = 0;
+         slot < epoll.entry_high_water && emitted < maximum_events;
+         ++slot) {
+        kernel_epoll_watch_snapshot_t snapshot;
+        kernel_epoll_watch_claim_t claim;
+        const kernel_epoll_watch_t *watch;
+        uint64_t read_sequence = 0;
+        uint64_t write_sequence = 0;
+        uint32_t ready = 0;
+        uint32_t report;
+
+        if (kernel_epoll_watch_snapshot(
+                epoll_index, (uint16_t)slot, &snapshot) <= 0)
+            continue;
+        watch = &snapshot.watch;
+        if (!watch->used || watch->oneshot_disabled) continue;
+        if (watch->target_epoll_index >= 0) {
+            kernel_epoll_object_snapshot_t child;
+
+            if (!epoll_collect_ready_recursive(
+                    backend, backend_context,
+                    watch->target_epoll_index, visited, 1u))
+                continue;
+            ready = KERNEL_EPOLLIN;
+            if (kernel_epoll_object_snapshot(
+                    watch->target_epoll_index, &child) == 0)
+                read_sequence = child.readiness_sequence;
+        } else if (!watch->source_captured ||
+                   backend->observe_target_source(
+                       backend_context, &watch->source,
+                       watch->events, &ready,
+                       &read_sequence, &write_sequence) < 0) {
+            continue;
+        }
+        ready = epoll_collect_project(ready, watch->events);
+        report = kernel_epoll_watch_claim(
+            &snapshot, ready, read_sequence, write_sequence, &claim);
+        if (!report) continue;
+        {
+            kernel_epoll_event_t event;
+            int copy_status;
+
+            event.events = report;
+            event.data = watch->data;
+            copy_status = copy_event(
+                copy_context, emitted, &event);
+            kernel_epoll_watch_finish(&claim, copy_status == 0);
+            if (copy_status < 0)
+                return emitted ? (int)emitted : copy_status;
+        }
+        if (watch->target_epoll_index < 0 &&
+            backend->commit_target_source)
+            backend->commit_target_source(
+                backend_context, &watch->source);
+        ++emitted;
+    }
+    return (int)emitted;
+}
+
 int kernel_epoll_object_snapshot(
         int32_t epoll_index,
         kernel_epoll_object_snapshot_t *snapshot) {
