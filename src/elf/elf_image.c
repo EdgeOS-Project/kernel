@@ -244,8 +244,11 @@ static int elf_image_load_demand_source(
             return -1;
         if (ph.type != ELF_PT_LOAD) continue;
         if (ph.memsz < ph.filesz || ph.vaddr + load_bias < ph.vaddr ||
-            ph.vaddr + load_bias + ph.memsz < ph.vaddr + load_bias ||
-            ((ph.vaddr + load_bias) & 0xfffu) != (ph.offset & 0xfffu))
+            ph.vaddr + load_bias + ph.memsz < ph.vaddr + load_bias)
+            return -1;
+        if (!ph.memsz) continue;
+        if (((ph.vaddr + load_bias) & 0xfffu) !=
+            (ph.offset & 0xfffu))
             return -1;
         segment_start = ph.vaddr + load_bias;
         segment_end = segment_start + ph.memsz;
@@ -253,7 +256,6 @@ static int elf_image_load_demand_source(
         if (ph.flags & 4u) prot |= ARCH_VM_PROT_READ;
         if (ph.flags & 2u) prot |= ARCH_VM_PROT_WRITE;
         if (ph.flags & 1u) prot |= ARCH_VM_PROT_EXEC;
-        if (!ph.memsz) continue;
         if (mapper->validate_range(
                 mapper_context, page_down(segment_start),
                 page_up(segment_end) - page_down(segment_start)) < 0)
