@@ -20,6 +20,7 @@
 #define KERNEL_UFFDIO_ZEROPAGE   0xc020aa04u
 #define KERNEL_UFFDIO_MOVE       0xc028aa05u
 #define KERNEL_UFFDIO_WRITEPROTECT 0xc018aa06u
+#define KERNEL_UFFDIO_CONTINUE   0xc020aa07u
 #define KERNEL_UFFDIO_POISON     0xc020aa08u
 #define KERNEL_UFFDIO_API        0xc018aa3fu
 #define KERNEL_UFFD_PAGE_SIZE 4096u
@@ -108,6 +109,12 @@ int64_t kernel_userfaultfd_ioctl(const kernel_ioctl_request_t *request) {
             state.address_space,
             registration.range.start, registration.range.length);
         if (status < 0) return status;
+        if (registration.mode & KERNEL_UFFD_REGISTER_MODE_MINOR) {
+            status = arch_mm_address_space_shmem_range_supported(
+                state.address_space, registration.range.start,
+                registration.range.length);
+            if (status < 0) return status;
+        }
         status = kernel_userfaultfd_register(context_id, &registration);
         if (status < 0) return status;
         status = userfaultfd_copy_to_user(
@@ -269,6 +276,110 @@ int64_t kernel_userfaultfd_ioctl(const kernel_ioctl_request_t *request) {
                 request, request->argument, &zero, sizeof(zero)) < 0)
             return -EDGE_LINUX_EFAULT;
         if (completed == zero.range.length) return 0;
+        return completed ? -EDGE_LINUX_EAGAIN : status;
+    }
+
+    if (request->command == KERNEL_UFFDIO_CONTINUE) {
+        kernel_uffdio_continue_t continuation;
+        uint64_t completed = 0;
+
+        memset(&continuation, 0, sizeof(continuation));
+        status = userfaultfd_copy_from_user(
+            request, &continuation, request->argument,
+            sizeof(continuation) - sizeof(continuation.mapped));
+        if (status < 0) return status;
+        if (!continuation.range.length ||
+            ((continuation.range.start | continuation.range.length) &
+             (KERNEL_UFFD_PAGE_SIZE - 1u)) ||
+            continuation.range.start >
+                UINT64_MAX - continuation.range.length ||
+            (continuation.mode &
+             ~(KERNEL_UFFDIO_CONTINUE_MODE_DONTWAKE |
+               KERNEL_UFFDIO_CONTINUE_MODE_WP)))
+            return -EDGE_LINUX_EINVAL;
+        status = arch_mm_address_space_range_mapped(
+            state.address_space, continuation.range.start,
+            continuation.range.length);
+        if (status < 0) return status;
+        status = arch_mm_address_space_shmem_range_supported(
+            state.address_space, continuation.range.start,
+            continuation.range.length);
+        if (status < 0) return status;
+        status = kernel_userfaultfd_continue_validate(
+            context_id, &continuation.range, continuation.mode,
+            &state.address_space);
+        if (status < 0) return status;
+        if (continuation.mode & KERNEL_UFFDIO_CONTINUE_MODE_WP) {
+            status = kernel_userfaultfd_writeprotect_validate(
+                context_id, &continuation.range,
+                KERNEL_UFFDIO_WRITEPROTECT_MODE_WP,
+                &state.address_space);
+            if (status < 0) {
+                (void)kernel_userfaultfd_cancel_resolution(
+                    context_id, &continuation.range);
+                return status == -EDGE_LINUX_ENOENT ?
+                    -EDGE_LINUX_EINVAL : status;
+            }
+        }
+        __sync_synchronize();
+        while (completed < continuation.range.length) {
+            kernel_uffdio_range_t page_range = {
+                .start = continuation.range.start + completed,
+                .length = KERNEL_UFFD_PAGE_SIZE,
+            };
+            status = arch_mm_address_space_shmem_page_state(
+                state.address_space, page_range.start);
+            if (status <= 0) {
+                status = status < 0 ? status : -EDGE_LINUX_EFAULT;
+                break;
+            }
+            status = arch_mm_address_space_page_resident(
+                state.address_space, page_range.start);
+            if (status < 0) break;
+            if (status > 0) {
+                status = -EDGE_LINUX_EEXIST;
+                break;
+            }
+            status = kernel_mm_resolve_user_page(
+                state.address_space, page_range.start,
+                KERNEL_MM_PROT_READ);
+            if (status <= 0) {
+                status = status < 0 ? status : -EDGE_LINUX_EFAULT;
+                break;
+            }
+            if (continuation.mode & KERNEL_UFFDIO_CONTINUE_MODE_WP) {
+                status = arch_mm_address_space_write_protect(
+                    state.address_space, page_range.start,
+                    page_range.length, 1);
+                if (status < 0) break;
+                status = kernel_userfaultfd_writeprotect_commit(
+                    context_id, &page_range,
+                    KERNEL_UFFDIO_WRITEPROTECT_MODE_WP |
+                    KERNEL_UFFDIO_WRITEPROTECT_MODE_DONTWAKE);
+                if (status < 0) {
+                    (void)arch_mm_address_space_write_protect(
+                        state.address_space, page_range.start,
+                        page_range.length, 0);
+                    break;
+                }
+            }
+            completed += KERNEL_UFFD_PAGE_SIZE;
+            if (!(continuation.mode &
+                  KERNEL_UFFDIO_CONTINUE_MODE_DONTWAKE))
+                (void)kernel_userfaultfd_continue_resolve(
+                    context_id, &page_range);
+        }
+        continuation.mapped = completed ? (int64_t)completed : status;
+        if (completed < continuation.range.length ||
+            (continuation.mode &
+             KERNEL_UFFDIO_CONTINUE_MODE_DONTWAKE))
+            (void)kernel_userfaultfd_cancel_resolution(
+                context_id, &continuation.range);
+        if (userfaultfd_copy_to_user(
+                request, request->argument, &continuation,
+                sizeof(continuation)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (completed == continuation.range.length) return 0;
         return completed ? -EDGE_LINUX_EAGAIN : status;
     }
 

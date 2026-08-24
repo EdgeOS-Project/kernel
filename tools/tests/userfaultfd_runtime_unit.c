@@ -12,6 +12,7 @@ static int changed_context = -1;
 static int writeprotect_calls;
 static uint64_t writeprotect_address;
 static int writeprotect_enable;
+static int shmem_page_state;
 
 void kernel_userfaultfd_state_changed(int context_id) {
     changed_context = context_id;
@@ -26,6 +27,13 @@ int arch_mm_address_space_write_protect(
     ++writeprotect_calls;
     (void)length;
     return 0;
+}
+
+int arch_mm_address_space_shmem_page_state(
+        uint64_t address_space, uint64_t address) {
+    assert(address_space != 0);
+    (void)address;
+    return shmem_page_state;
 }
 
 static int copy_message(void *opaque, uint64_t offset,
@@ -65,7 +73,9 @@ int main(void) {
     assert(api.features == KERNEL_UFFD_SUPPORTED_FEATURES &&
            api.ioctls == KERNEL_UFFD_API_IOCTLS);
     assert(kernel_userfaultfd_register(context_id, &registration) == 0);
-    assert(registration.ioctls == KERNEL_UFFD_RANGE_IOCTLS);
+    assert(registration.ioctls ==
+           (KERNEL_UFFD_RANGE_IOCTLS &
+            ~(1ULL << KERNEL_UFFDIO_CONTINUE_NUMBER)));
 
     assert(kernel_userfaultfd_missing_fault(
         0x12345000u, 0x401234u, 1, 91,
@@ -177,6 +187,43 @@ int main(void) {
             &fault_context, &ticket) == 0);
         assert(kernel_userfaultfd_unregister(
             context_id, &protected_range) == 0);
+    }
+    {
+        kernel_uffdio_register_t minor_registration = {
+            .range = { .start = 0x900000u, .length = 0x2000u },
+            .mode = KERNEL_UFFD_REGISTER_MODE_MINOR,
+        };
+        kernel_uffdio_range_t minor_page = {
+            .start = 0x900000u, .length = 0x1000u,
+        };
+        uint64_t minor_address_space = 0;
+
+        shmem_page_state = 1;
+        assert(kernel_userfaultfd_register(
+            context_id, &minor_registration) == 0);
+        assert((minor_registration.ioctls &
+                (1ULL << KERNEL_UFFDIO_CONTINUE_NUMBER)) != 0);
+        assert(kernel_userfaultfd_page_fault(
+            0x12345000u, 0x900123u, 0, 0, 106,
+            &fault_context, &ticket) == KERNEL_UFFD_FAULT_QUEUED);
+        memset(&message, 0, sizeof(message));
+        assert(kernel_userfaultfd_read(
+            context_id, copy_message, &message, sizeof(message)) ==
+            (int64_t)sizeof(message));
+        assert(message.flags == KERNEL_UFFD_PAGEFAULT_FLAG_MINOR);
+        assert(kernel_userfaultfd_continue_validate(
+            context_id, &minor_page, 0, &minor_address_space) == 0);
+        assert(minor_address_space == 0x12345000u);
+        assert(kernel_userfaultfd_continue_resolve(
+            context_id, &minor_page) == 1);
+        assert(kernel_userfaultfd_fault_pending(
+            context_id, ticket) == 0);
+        shmem_page_state = 0;
+        assert(kernel_userfaultfd_page_fault(
+            0x12345000u, 0x901123u, 0, 0, 107,
+            &fault_context, &ticket) == 0);
+        assert(kernel_userfaultfd_unregister(
+            context_id, &minor_registration.range) == 0);
     }
     {
         kernel_uffdio_register_t lifecycle_registration = {

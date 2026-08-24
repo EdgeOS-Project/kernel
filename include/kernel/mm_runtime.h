@@ -363,6 +363,10 @@ int arch_mm_address_space_range_mapped(
     uint64_t address_space, uint64_t address, uint64_t length);
 int arch_mm_address_space_page_resident(
     uint64_t address_space, uint64_t address);
+int arch_mm_address_space_shmem_range_supported(
+    uint64_t address_space, uint64_t address, uint64_t length);
+int arch_mm_address_space_shmem_page_state(
+    uint64_t address_space, uint64_t address);
 int arch_mm_address_space_copy(
     uint64_t address_space, uint64_t address, void *buffer, uint64_t size,
     kernel_mm_process_vm_operation_t operation);

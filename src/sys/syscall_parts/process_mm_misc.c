@@ -8674,6 +8674,93 @@ int arch_mm_address_space_page_resident(
         address_space & ~0xfffULL, address) & PTE_PRESENT) != 0u;
 }
 
+static int x86_user_vma_shmem_snapshot(
+        task_t *memory, uint64_t address, edge_user_vma_t *snapshot) {
+    const edge_user_vma_t *mapping;
+    const char *path;
+    vfs_superblock_t *superblock = 0;
+    vfs_inode_t inode;
+    int supported = 0;
+
+    if (!memory || !snapshot) return 0;
+    process_user_vma_mutation_lock(memory);
+    mapping = user_vma_find_at(memory, address);
+    if (mapping && mapping->file_backed) {
+        path = user_mmap_file_path(mapping->file_slot);
+        if (memfd_id_from_path(path) > 0) {
+            *snapshot = *mapping;
+            supported = 1;
+        } else if (user_vma_get_file_inode(
+                       mapping, &inode, &superblock) == 0 &&
+                   superblock &&
+                   (strcmp(superblock->fs_name, "tmpfs") == 0 ||
+                    strcmp(superblock->fs_name, "shmem") == 0)) {
+            *snapshot = *mapping;
+            supported = 1;
+        }
+    }
+    process_user_vma_mutation_unlock(memory);
+    return supported;
+}
+
+int arch_mm_address_space_shmem_range_supported(
+        uint64_t address_space, uint64_t address, uint64_t length) {
+    task_t *memory = x86_mm_task_for_address_space(address_space);
+    uint64_t end;
+    uint64_t cursor;
+
+    if (!memory || !length || length > UINT64_MAX - address)
+        return -EINVAL;
+    end = address + length;
+    for (cursor = address; cursor < end;) {
+        edge_user_vma_t mapping;
+        uint64_t next;
+
+        if (!x86_user_vma_shmem_snapshot(memory, cursor, &mapping))
+            return -EINVAL;
+        next = mapping.end < end ? mapping.end : end;
+        if (next <= cursor) return -EINVAL;
+        cursor = next;
+    }
+    return 0;
+}
+
+int arch_mm_address_space_shmem_page_state(
+        uint64_t address_space, uint64_t address) {
+    task_t *memory = x86_mm_task_for_address_space(address_space);
+    edge_user_vma_t mapping;
+    const char *path;
+    uint64_t file_offset;
+    int memfd_id;
+
+    if (!memory || !x86_user_vma_shmem_snapshot(
+            memory, address, &mapping))
+        return -EINVAL;
+    file_offset = mapping.file_off +
+                  (address & ~(PAGE_SIZE - 1u)) - mapping.start;
+    path = user_mmap_file_path(mapping.file_slot);
+    memfd_id = memfd_id_from_path(path);
+    if (memfd_id > 0) {
+        edge_memfd_t *memfd = memfd_get(memfd_id);
+        if (!memfd || file_offset >= memfd->size) return 0;
+        return memfd_storage_page(
+                   memfd, file_offset / PAGE_SIZE, 0) >= 0 ? 1 : 0;
+    }
+    {
+        vfs_inode_t inode;
+        vfs_superblock_t *superblock = 0;
+        uint64_t physical;
+
+        if (file_offset > UINT32_MAX ||
+            user_vma_get_file_inode(
+                &mapping, &inode, &superblock) < 0)
+            return -EINVAL;
+        return tmpfs_shared_page(
+                   superblock, &inode, (uint32_t)file_offset, 0,
+                   &physical) == 0 ? 1 : 0;
+    }
+}
+
 int arch_mm_address_space_copy(
         uint64_t address_space, uint64_t address, void *buffer,
         uint64_t size, kernel_mm_process_vm_operation_t operation) {

@@ -8250,6 +8250,45 @@ int arch_mm_address_space_page_resident(
     return user_page_resident(address_space, address) ? 1 : 0;
 }
 
+int arch_mm_address_space_shmem_range_supported(
+        uint64_t address_space, uint64_t address, uint64_t length) {
+    uint64_t end;
+    uint64_t cursor;
+
+    if (!address_space || !length || length > UINT64_MAX - address)
+        return -LINUX_EINVAL;
+    end = address + length;
+    for (cursor = address; cursor < end;) {
+        kernel_tmpfs_mapping_t mapping;
+        uint64_t next;
+
+        if (!tmpfs_mapping_page_snapshot(
+                address_space, cursor, &mapping))
+            return -LINUX_EINVAL;
+        next = mapping.end < end ? mapping.end : end;
+        if (next <= cursor) return -LINUX_EINVAL;
+        cursor = next;
+    }
+    return 0;
+}
+
+int arch_mm_address_space_shmem_page_state(
+        uint64_t address_space, uint64_t address) {
+    kernel_tmpfs_mapping_t mapping;
+    uint64_t file_offset;
+    uint64_t physical;
+
+    address &= ~(uint64_t)(PAGE_SIZE - 1u);
+    if (!tmpfs_mapping_page_snapshot(
+            address_space, address, &mapping))
+        return -LINUX_EINVAL;
+    file_offset = mapping.file_offset + address - mapping.start;
+    if (file_offset > UINT32_MAX) return 0;
+    return tmpfs_shared_page(
+               mapping.sb, &mapping.inode, (uint32_t)file_offset, 0,
+               &physical) == 0 ? 1 : 0;
+}
+
 int arch_mm_address_space_copy(
         uint64_t address_space, uint64_t address, void *buffer,
         uint64_t size, kernel_mm_process_vm_operation_t operation) {

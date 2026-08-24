@@ -484,7 +484,8 @@ int kernel_userfaultfd_register(int context_id,
         !registration->mode ||
         (registration->mode &
          ~(KERNEL_UFFD_REGISTER_MODE_MISSING |
-           KERNEL_UFFD_REGISTER_MODE_WP)))
+           KERNEL_UFFD_REGISTER_MODE_WP |
+           KERNEL_UFFD_REGISTER_MODE_MINOR)))
         return -EDGE_LINUX_EINVAL;
     end = registration->range.start + registration->range.length;
     userfaultfd_lock();
@@ -524,8 +525,12 @@ int kernel_userfaultfd_register(int context_id,
     free_range->end = end;
     free_range->mode = registration->mode;
     registration->ioctls = 0;
-    if (registration->mode & KERNEL_UFFD_REGISTER_MODE_MISSING)
+    if (registration->mode & (KERNEL_UFFD_REGISTER_MODE_MISSING |
+                              KERNEL_UFFD_REGISTER_MODE_MINOR))
         registration->ioctls |= KERNEL_UFFD_RANGE_IOCTLS;
+    if (!(registration->mode & KERNEL_UFFD_REGISTER_MODE_MINOR))
+        registration->ioctls &=
+            ~(1ULL << KERNEL_UFFDIO_CONTINUE_NUMBER);
     if (registration->mode & KERNEL_UFFD_REGISTER_MODE_WP)
         registration->ioctls |= KERNEL_UFFD_WP_RANGE_IOCTLS;
 out:
@@ -691,6 +696,83 @@ int kernel_userfaultfd_cancel_resolution(
     }
     userfaultfd_unlock();
     return changed;
+}
+
+int kernel_userfaultfd_continue_validate(
+    int context_id, const kernel_uffdio_range_t *range, uint64_t mode,
+    uint64_t *address_space) {
+    kernel_userfaultfd_context_t *context;
+    uint64_t end;
+    int covered;
+
+    if (!address_space || !userfaultfd_range_valid(range) ||
+        (mode & ~(KERNEL_UFFDIO_CONTINUE_MODE_DONTWAKE |
+                  KERNEL_UFFDIO_CONTINUE_MODE_WP)))
+        return -EDGE_LINUX_EINVAL;
+    end = range->start + range->length;
+    userfaultfd_lock();
+    context = userfaultfd_context_locked(context_id);
+    if (!context) {
+        userfaultfd_unlock();
+        return -EDGE_LINUX_EBADF;
+    }
+    covered = userfaultfd_registered_range_covers_locked(
+        context_id, range->start, end,
+        KERNEL_UFFD_REGISTER_MODE_MINOR);
+    if (covered) {
+        for (uint16_t index = 0;
+             index < EDGE_RUNTIME_USERFAULTFD_EVENT_POOL; ++index) {
+            kernel_userfaultfd_event_t *event =
+                &g_userfaultfd_events[index];
+            if (event->used && event->context_id == context_id &&
+                event->page >= range->start && event->page < end &&
+                (event->flags & KERNEL_UFFD_PAGEFAULT_FLAG_MINOR))
+                event->resolving = 1;
+        }
+    }
+    *address_space = context->address_space;
+    userfaultfd_unlock();
+    return covered ? 0 : -EDGE_LINUX_ENOENT;
+}
+
+static int userfaultfd_resolve_events(
+    int context_id, const kernel_uffdio_range_t *range,
+    uint64_t required_flags) {
+    kernel_userfaultfd_context_t *context;
+    uint64_t end;
+    int resolved = 0;
+
+    if (!userfaultfd_range_valid(range)) return -EDGE_LINUX_EINVAL;
+    end = range->start + range->length;
+    userfaultfd_lock();
+    context = userfaultfd_context_locked(context_id);
+    if (!context) {
+        userfaultfd_unlock();
+        return -EDGE_LINUX_EBADF;
+    }
+    for (uint16_t index = 0;
+         index < EDGE_RUNTIME_USERFAULTFD_EVENT_POOL; ++index) {
+        kernel_userfaultfd_event_t *event = &g_userfaultfd_events[index];
+        if (!event->used || event->context_id != context_id ||
+            event->page < range->start || event->page >= end ||
+            (event->flags & required_flags) != required_flags)
+            continue;
+        if (event->queued)
+            userfaultfd_remove_queued_event_locked(context, index);
+        userfaultfd_event_free_locked(index);
+        if (context->unresolved_faults) --context->unresolved_faults;
+        ++resolved;
+    }
+    if (resolved) userfaultfd_sequence_advance(context);
+    userfaultfd_unlock();
+    if (resolved) kernel_userfaultfd_state_changed(context_id);
+    return resolved;
+}
+
+int kernel_userfaultfd_continue_resolve(
+    int context_id, const kernel_uffdio_range_t *range) {
+    return userfaultfd_resolve_events(
+        context_id, range, KERNEL_UFFD_PAGEFAULT_FLAG_MINOR);
 }
 
 int kernel_userfaultfd_writeprotect_validate(
@@ -913,34 +995,7 @@ void kernel_userfaultfd_mapping_unmap(
 
 int kernel_userfaultfd_resolve(int context_id,
                                const kernel_uffdio_range_t *range) {
-    kernel_userfaultfd_context_t *context;
-    uint64_t end;
-    int resolved = 0;
-
-    if (!userfaultfd_range_valid(range)) return -EDGE_LINUX_EINVAL;
-    end = range->start + range->length;
-    userfaultfd_lock();
-    context = userfaultfd_context_locked(context_id);
-    if (!context) {
-        userfaultfd_unlock();
-        return -EDGE_LINUX_EBADF;
-    }
-    for (uint16_t index = 0;
-         index < EDGE_RUNTIME_USERFAULTFD_EVENT_POOL; ++index) {
-        kernel_userfaultfd_event_t *event = &g_userfaultfd_events[index];
-        if (!event->used || event->context_id != context_id ||
-            event->page < range->start || event->page >= end)
-            continue;
-        if (event->queued)
-            userfaultfd_remove_queued_event_locked(context, index);
-        userfaultfd_event_free_locked(index);
-        if (context->unresolved_faults) --context->unresolved_faults;
-        ++resolved;
-    }
-    if (resolved) userfaultfd_sequence_advance(context);
-    userfaultfd_unlock();
-    if (resolved) kernel_userfaultfd_state_changed(context_id);
-    return resolved;
+    return userfaultfd_resolve_events(context_id, range, 0);
 }
 
 int kernel_userfaultfd_page_fault(
@@ -951,29 +1006,39 @@ int kernel_userfaultfd_page_fault(
     uint16_t event_index;
     int found_context = -1;
     int writeprotect_fault = 0;
+    int minor_fault = 0;
+    int shmem_page_state = 0;
 
     if (!address_space || !context_id || !ticket)
         return -EDGE_LINUX_EINVAL;
+    if (!present)
+        shmem_page_state = arch_mm_address_space_shmem_page_state(
+            address_space, page);
     userfaultfd_lock();
     for (uint16_t index = 0;
          index < EDGE_RUNTIME_MAX_USERFAULTFD_RANGES; ++index) {
         kernel_userfaultfd_range_t *range = &g_userfaultfd_ranges[index];
         int missing_fault;
+        int backed_minor_fault;
         int protected_write;
 
         if (!range->used || page < range->start || page >= range->end)
             continue;
-        missing_fault = !present &&
+        backed_minor_fault = !present && shmem_page_state > 0 &&
+            (range->mode & KERNEL_UFFD_REGISTER_MODE_MINOR);
+        missing_fault = !present && !backed_minor_fault &&
             (range->mode & KERNEL_UFFD_REGISTER_MODE_MISSING);
         protected_write = write &&
             (range->mode & KERNEL_UFFD_REGISTER_MODE_WP) &&
             userfaultfd_wp_page_active_locked(range->context_id, page);
-        if (!missing_fault && !protected_write) continue;
+        if (!missing_fault && !backed_minor_fault && !protected_write)
+            continue;
         context = userfaultfd_context_locked(range->context_id);
         if (context && context->api_ready &&
             context->address_space == address_space) {
             found_context = range->context_id;
             writeprotect_fault = protected_write;
+            minor_fault = backed_minor_fault;
             break;
         }
     }
@@ -1016,6 +1081,8 @@ int kernel_userfaultfd_page_fault(
         if (write) event->flags |= KERNEL_UFFD_PAGEFAULT_FLAG_WRITE;
         if (writeprotect_fault)
             event->flags |= KERNEL_UFFD_PAGEFAULT_FLAG_WP;
+        if (minor_fault)
+            event->flags |= KERNEL_UFFD_PAGEFAULT_FLAG_MINOR;
         *context_id = found_context;
         *ticket = event->ticket;
         userfaultfd_unlock();
@@ -1036,6 +1103,9 @@ int kernel_userfaultfd_page_fault(
     if (writeprotect_fault)
         g_userfaultfd_events[event_index].flags |=
             KERNEL_UFFD_PAGEFAULT_FLAG_WP;
+    if (minor_fault)
+        g_userfaultfd_events[event_index].flags |=
+            KERNEL_UFFD_PAGEFAULT_FLAG_MINOR;
     g_userfaultfd_events[event_index].ticket = context->next_ticket++;
     if (context->features & KERNEL_UFFD_FEATURE_THREAD_ID)
         g_userfaultfd_events[event_index].thread_id = thread_id;

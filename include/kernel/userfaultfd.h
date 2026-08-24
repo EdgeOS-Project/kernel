@@ -17,18 +17,22 @@
 
 #define KERNEL_UFFD_REGISTER_MODE_MISSING (1ULL << 0)
 #define KERNEL_UFFD_REGISTER_MODE_WP      (1ULL << 1)
+#define KERNEL_UFFD_REGISTER_MODE_MINOR   (1ULL << 2)
 #define KERNEL_UFFDIO_MODE_DONTWAKE       (1ULL << 0)
 #define KERNEL_UFFDIO_COPY_MODE_WP        (1ULL << 1)
 #define KERNEL_UFFDIO_MOVE_MODE_DONTWAKE         (1ULL << 0)
 #define KERNEL_UFFDIO_MOVE_MODE_ALLOW_SRC_HOLES  (1ULL << 1)
 #define KERNEL_UFFDIO_WRITEPROTECT_MODE_WP       (1ULL << 0)
 #define KERNEL_UFFDIO_WRITEPROTECT_MODE_DONTWAKE (1ULL << 1)
+#define KERNEL_UFFDIO_CONTINUE_MODE_DONTWAKE      (1ULL << 0)
+#define KERNEL_UFFDIO_CONTINUE_MODE_WP            (1ULL << 1)
 #define KERNEL_UFFDIO_POISON_MODE_DONTWAKE        (1ULL << 0)
 
 #define KERNEL_UFFD_FEATURE_PAGEFAULT_FLAG_WP (1ULL << 0)
 #define KERNEL_UFFD_FEATURE_MISSING_SHMEM (1ULL << 5)
 #define KERNEL_UFFD_FEATURE_SIGBUS      (1ULL << 7)
 #define KERNEL_UFFD_FEATURE_THREAD_ID (1ULL << 8)
+#define KERNEL_UFFD_FEATURE_MINOR_SHMEM (1ULL << 10)
 #define KERNEL_UFFD_FEATURE_EXACT_ADDRESS (1ULL << 11)
 #define KERNEL_UFFD_FEATURE_WP_UNPOPULATED (1ULL << 13)
 #define KERNEL_UFFD_FEATURE_POISON    (1ULL << 14)
@@ -38,12 +42,14 @@
     (KERNEL_UFFD_FEATURE_PAGEFAULT_FLAG_WP | \
      KERNEL_UFFD_FEATURE_MISSING_SHMEM | \
      KERNEL_UFFD_FEATURE_SIGBUS | KERNEL_UFFD_FEATURE_THREAD_ID | \
+     KERNEL_UFFD_FEATURE_MINOR_SHMEM | \
      KERNEL_UFFD_FEATURE_EXACT_ADDRESS | \
      KERNEL_UFFD_FEATURE_WP_UNPOPULATED | KERNEL_UFFD_FEATURE_POISON | \
      KERNEL_UFFD_FEATURE_WP_ASYNC | KERNEL_UFFD_FEATURE_MOVE)
 
 #define KERNEL_UFFD_PAGEFAULT_FLAG_WRITE (1ULL << 0)
 #define KERNEL_UFFD_PAGEFAULT_FLAG_WP    (1ULL << 1)
+#define KERNEL_UFFD_PAGEFAULT_FLAG_MINOR (1ULL << 2)
 #define KERNEL_UFFD_EVENT_PAGEFAULT 0x12u
 #define KERNEL_UFFD_FAULT_QUEUED 1
 #define KERNEL_UFFD_FAULT_SIGBUS 2
@@ -55,6 +61,7 @@
 #define KERNEL_UFFDIO_ZEROPAGE_NUMBER   0x04u
 #define KERNEL_UFFDIO_MOVE_NUMBER       0x05u
 #define KERNEL_UFFDIO_WRITEPROTECT_NUMBER 0x06u
+#define KERNEL_UFFDIO_CONTINUE_NUMBER   0x07u
 #define KERNEL_UFFDIO_POISON_NUMBER     0x08u
 #define KERNEL_UFFDIO_API_NUMBER        0x3fu
 
@@ -68,6 +75,7 @@
      (1ULL << KERNEL_UFFDIO_COPY_NUMBER) | \
      (1ULL << KERNEL_UFFDIO_ZEROPAGE_NUMBER) | \
      (1ULL << KERNEL_UFFDIO_MOVE_NUMBER) | \
+     (1ULL << KERNEL_UFFDIO_CONTINUE_NUMBER) | \
      (1ULL << KERNEL_UFFDIO_POISON_NUMBER))
 
 #define KERNEL_UFFD_WP_RANGE_IOCTLS \
@@ -117,6 +125,12 @@ typedef struct kernel_uffdio_writeprotect {
     kernel_uffdio_range_t range;
     uint64_t mode;
 } kernel_uffdio_writeprotect_t;
+
+typedef struct kernel_uffdio_continue {
+    kernel_uffdio_range_t range;
+    uint64_t mode;
+    int64_t mapped;
+} kernel_uffdio_continue_t;
 
 typedef struct kernel_uffdio_poison {
     kernel_uffdio_range_t range;
@@ -170,6 +184,11 @@ int kernel_userfaultfd_validate_resolution(
 int kernel_userfaultfd_resolve(int context_id,
                                const kernel_uffdio_range_t *range);
 int kernel_userfaultfd_cancel_resolution(
+    int context_id, const kernel_uffdio_range_t *range);
+int kernel_userfaultfd_continue_validate(
+    int context_id, const kernel_uffdio_range_t *range, uint64_t mode,
+    uint64_t *address_space);
+int kernel_userfaultfd_continue_resolve(
     int context_id, const kernel_uffdio_range_t *range);
 int kernel_userfaultfd_writeprotect_validate(
     int context_id, const kernel_uffdio_range_t *range, uint64_t mode,
