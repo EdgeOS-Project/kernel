@@ -983,6 +983,95 @@ static void test_program(void) {
     kernel_bpf_object_release(object);
 }
 
+static void test_program_bind_map(void) {
+    const kernel_bpf_instruction_t instructions[] = {
+        { .code = 0xb7u, .registers = 0u,
+          .offset = 0, .immediate = 1 },
+        { .code = 0x95u, .registers = 0u,
+          .offset = 0, .immediate = 0 },
+    };
+    kernel_bpf_program_create_request_t request = {
+        .type = KERNEL_BPF_PROG_TYPE_CGROUP_DEVICE,
+        .instruction_count = 2u,
+        .expected_attach_type = KERNEL_BPF_CGROUP_DEVICE,
+        .created_by_uid = 1000u,
+    };
+    kernel_bpf_map_info_t map_info;
+    uint32_t map_ids[2] = {0u, 0u};
+    uint32_t first_id = 0u;
+    uint32_t second_id = 0u;
+    uint32_t count = 0u;
+    int program;
+    int first_map;
+    int second_map;
+
+    strcpy(request.name, "bound_maps");
+    program = kernel_bpf_program_create(&request, instructions);
+    first_map = create_map(KERNEL_BPF_MAP_TYPE_ARRAY,
+                           sizeof(uint32_t), sizeof(uint64_t), 1u,
+                           "bound_a");
+    second_map = create_map(KERNEL_BPF_MAP_TYPE_HASH,
+                            sizeof(uint32_t), sizeof(uint64_t), 1u,
+                            "bound_b");
+    assert(program >= 0 && first_map >= 0 && second_map >= 0);
+    assert(kernel_bpf_object_user_id(first_map, &first_id) == 0);
+    assert(kernel_bpf_object_user_id(second_map, &second_id) == 0);
+    assert(kernel_bpf_program_bind_map(program, first_map) == 0);
+    assert(kernel_bpf_program_bind_map(program, first_map) == 0);
+    assert(kernel_bpf_program_bind_map(program, second_map) == 0);
+    assert(kernel_bpf_program_map_ids(
+               program, map_ids, 1u, &count) == 0);
+    assert(count == 2u && map_ids[0] == first_id);
+    assert(kernel_bpf_program_map_ids(
+               program, map_ids, 2u, &count) == 0);
+    assert(count == 2u && map_ids[0] == first_id &&
+           map_ids[1] == second_id);
+    kernel_bpf_object_release(first_map);
+    kernel_bpf_object_release(second_map);
+    assert(kernel_bpf_map_info(first_map, &map_info) == 0);
+    assert(kernel_bpf_map_info(second_map, &map_info) == 0);
+    kernel_bpf_object_release(program);
+    assert(kernel_bpf_map_info(first_map, &map_info) < 0);
+    assert(kernel_bpf_map_info(second_map, &map_info) < 0);
+
+    {
+        kernel_bpf_instruction_t referenced_instructions[] = {
+            { .code = 0x18u, .registers = 0x12u,
+              .offset = 0, .immediate = 0 },
+            { .code = 0u, .registers = 0u,
+              .offset = 0, .immediate = 0 },
+            { .code = 0xb7u, .registers = 0u,
+              .offset = 0, .immediate = 1 },
+            { .code = 0x95u, .registers = 0u,
+              .offset = 0, .immediate = 0 },
+        };
+
+        first_map = create_map(KERNEL_BPF_MAP_TYPE_PROG_ARRAY,
+                               sizeof(uint32_t), sizeof(uint32_t), 1u,
+                               "referenced");
+        assert(first_map >= 0);
+        assert(kernel_bpf_object_user_id(first_map, &first_id) == 0);
+        referenced_instructions[0].immediate = first_map;
+        request.instruction_count =
+            sizeof(referenced_instructions) /
+            sizeof(referenced_instructions[0]);
+        request.map_references_resolved = 1u;
+        strcpy(request.name, "map_reference");
+        program = kernel_bpf_program_create(
+            &request, referenced_instructions);
+        assert(program >= 0);
+        assert(kernel_bpf_program_bind_map(program, first_map) == 0);
+        count = 0u;
+        assert(kernel_bpf_program_map_ids(
+                   program, map_ids, 2u, &count) == 0);
+        assert(count == 1u && map_ids[0] == first_id);
+        kernel_bpf_object_release(first_map);
+        assert(kernel_bpf_map_info(first_map, &map_info) == 0);
+        kernel_bpf_object_release(program);
+        assert(kernel_bpf_map_info(first_map, &map_info) < 0);
+    }
+}
+
 static void test_program_array_tail_call(void) {
     const kernel_bpf_instruction_t callee_instructions[] = {
         { .code = 0xb7u, .registers = 0u,
@@ -1482,6 +1571,7 @@ int main(void) {
     test_map_in_map();
     test_batch_and_freeze();
     test_program();
+    test_program_bind_map();
     test_program_array_tail_call();
     test_perf_event_array();
     test_ring_buffer_maps();

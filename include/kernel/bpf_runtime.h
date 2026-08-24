@@ -184,6 +184,9 @@ int kernel_bpf_map_info(int object_id, kernel_bpf_map_info_t *info);
 int kernel_bpf_map_value_buffer_size(int object_id, uint64_t flags,
                                      uint32_t *size_out);
 int kernel_bpf_program_info(int object_id, kernel_bpf_program_info_t *info);
+int kernel_bpf_program_bind_map(int program_object_id, int map_object_id);
+int kernel_bpf_program_map_ids(int program_object_id, uint32_t *map_ids,
+                               uint32_t capacity, uint32_t *actual_count);
 int kernel_bpf_program_copy_instructions(int object_id, void *buffer,
                                          uint32_t capacity,
                                          uint32_t *actual_size);

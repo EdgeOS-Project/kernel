@@ -112,10 +112,12 @@ typedef struct kernel_bpf_program {
     uint32_t gpl_compatible;
     uint32_t storage_pages;
     uint32_t map_reference_count;
+    uint32_t bound_map_count;
     uint64_t run_time_ns;
     uint64_t run_count;
     uint8_t tag[8];
     kernel_bpf_instruction_t *instructions;
+    int32_t bound_map_ids[BPF_OBJECT_CAPACITY];
     char name[KERNEL_BPF_OBJECT_NAME_LENGTH];
 } kernel_bpf_program_t;
 
@@ -1210,6 +1212,8 @@ void kernel_bpf_object_release(int object_id) {
     uint32_t map_key_size = 0u;
     uint32_t program_instruction_count = 0u;
     uint32_t program_map_reference_count = 0u;
+    uint32_t program_bound_map_count = 0u;
+    int32_t program_bound_map_ids[BPF_OBJECT_CAPACITY];
     int32_t map_btf_object = -1;
     int32_t released_link_program = -1;
 
@@ -1231,6 +1235,12 @@ void kernel_bpf_object_release(int object_id) {
                 object->value.program.instruction_count;
             program_map_reference_count =
                 object->value.program.map_reference_count;
+            program_bound_map_count =
+                object->value.program.bound_map_count;
+            memcpy(program_bound_map_ids,
+                   object->value.program.bound_map_ids,
+                   (uint64_t)program_bound_map_count *
+                       sizeof(program_bound_map_ids[0]));
         } else if (object->kind == KERNEL_BPF_OBJECT_BTF) {
             storage = object->value.btf.data;
             pages = object->value.btf.storage_pages;
@@ -1292,6 +1302,8 @@ void kernel_bpf_object_release(int object_id) {
         bpf_program_map_references_release(
             (const kernel_bpf_instruction_t *)storage,
             program_instruction_count, program_map_reference_count);
+    for (uint32_t index = 0; index < program_bound_map_count; ++index)
+        kernel_bpf_object_release(program_bound_map_ids[index]);
     bpf_free_pages(storage, pages);
 }
 
@@ -1701,6 +1713,117 @@ int kernel_bpf_program_info(int object_id, kernel_bpf_program_info_t *info) {
     memcpy(info->name, object->value.program.name, sizeof(info->name));
     bpf_unlock();
     return 0;
+}
+
+static int bpf_program_has_map_locked(const kernel_bpf_program_t *program,
+                                      int map_object_id) {
+    uint32_t pc;
+
+    for (pc = 0; pc + 1u < program->instruction_count; ++pc) {
+        const kernel_bpf_instruction_t *instruction =
+            &program->instructions[pc];
+
+        if (instruction->code != (BPF_LD | BPF_DW | BPF_IMM) ||
+            bpf_program_source(instruction) != BPF_PSEUDO_MAP_FD)
+            continue;
+        if (instruction->immediate == map_object_id) return 1;
+        ++pc;
+    }
+    for (uint32_t index = 0; index < program->bound_map_count; ++index)
+        if (program->bound_map_ids[index] == map_object_id) return 1;
+    return 0;
+}
+
+int kernel_bpf_program_bind_map(int program_object_id, int map_object_id) {
+    kernel_bpf_object_t *program_object;
+    kernel_bpf_object_t *map_object;
+    kernel_bpf_program_t *program;
+    int status = 0;
+
+    bpf_lock();
+    program_object = bpf_object_locked(program_object_id);
+    if (!program_object ||
+        program_object->kind != KERNEL_BPF_OBJECT_PROGRAM) {
+        status = -EDGE_LINUX_EBADF;
+        goto out;
+    }
+    map_object = bpf_object_locked(map_object_id);
+    if (!map_object || map_object->kind != KERNEL_BPF_OBJECT_MAP) {
+        status = -EDGE_LINUX_EBADF;
+        goto out;
+    }
+    program = &program_object->value.program;
+    if (bpf_program_has_map_locked(program, map_object_id)) goto out;
+    if (program->bound_map_count >= BPF_OBJECT_CAPACITY) {
+        status = -EDGE_LINUX_E2BIG;
+        goto out;
+    }
+    if (map_object->references == UINT32_MAX) {
+        status = -EDGE_LINUX_EBADF;
+        goto out;
+    }
+    ++map_object->references;
+    program->bound_map_ids[program->bound_map_count++] = map_object_id;
+out:
+    bpf_unlock();
+    return status;
+}
+
+int kernel_bpf_program_map_ids(int program_object_id, uint32_t *map_ids,
+                               uint32_t capacity, uint32_t *actual_count) {
+    kernel_bpf_object_t *program_object;
+    kernel_bpf_program_t *program;
+    int32_t object_ids[BPF_OBJECT_CAPACITY];
+    uint32_t count = 0u;
+    int status = 0;
+
+    if (!actual_count || (capacity && !map_ids))
+        return -EDGE_LINUX_EINVAL;
+    bpf_lock();
+    program_object = bpf_object_locked(program_object_id);
+    if (!program_object ||
+        program_object->kind != KERNEL_BPF_OBJECT_PROGRAM) {
+        status = -EDGE_LINUX_EBADF;
+        goto out;
+    }
+    program = &program_object->value.program;
+    for (uint32_t pc = 0; pc + 1u < program->instruction_count; ++pc) {
+        const kernel_bpf_instruction_t *instruction =
+            &program->instructions[pc];
+        int duplicate = 0;
+
+        if (instruction->code != (BPF_LD | BPF_DW | BPF_IMM) ||
+            bpf_program_source(instruction) != BPF_PSEUDO_MAP_FD)
+            continue;
+        for (uint32_t index = 0; index < count; ++index)
+            if (object_ids[index] == instruction->immediate)
+                duplicate = 1;
+        if (!duplicate && count < BPF_OBJECT_CAPACITY)
+            object_ids[count++] = instruction->immediate;
+        ++pc;
+    }
+    for (uint32_t bound = 0; bound < program->bound_map_count; ++bound) {
+        int duplicate = 0;
+
+        for (uint32_t index = 0; index < count; ++index)
+            if (object_ids[index] == program->bound_map_ids[bound])
+                duplicate = 1;
+        if (!duplicate && count < BPF_OBJECT_CAPACITY)
+            object_ids[count++] = program->bound_map_ids[bound];
+    }
+    for (uint32_t index = 0; index < count && index < capacity; ++index) {
+        kernel_bpf_object_t *map = bpf_object_locked(object_ids[index]);
+
+        if (!map || map->kind != KERNEL_BPF_OBJECT_MAP) {
+            status = -EDGE_LINUX_EBADF;
+            goto out;
+        }
+        map_ids[index] = map->user_id;
+    }
+    *actual_count = count;
+out:
+    bpf_unlock();
+    return status;
 }
 
 int kernel_bpf_link_info(int object_id, kernel_bpf_link_info_t *info) {

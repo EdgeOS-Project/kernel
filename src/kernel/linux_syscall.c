@@ -4183,6 +4183,7 @@ static int64_t edge_linux_sys_memfd_secret(
 #define EDGE_LINUX_BPF_LINK_GET_FD_BY_ID 30u
 #define EDGE_LINUX_BPF_LINK_GET_NEXT_ID  31u
 #define EDGE_LINUX_BPF_LINK_DETACH       34u
+#define EDGE_LINUX_BPF_PROG_BIND_MAP     35u
 
 #define EDGE_LINUX_BPF_F_RDONLY (1u << 3)
 #define EDGE_LINUX_BPF_F_WRONLY (1u << 4)
@@ -4328,6 +4329,12 @@ typedef struct edge_linux_bpf_link_detach_attribute {
     uint32_t link_descriptor;
 } edge_linux_bpf_link_detach_attribute_t;
 
+typedef struct edge_linux_bpf_program_bind_map_attribute {
+    uint32_t program_descriptor;
+    uint32_t map_descriptor;
+    uint32_t flags;
+} edge_linux_bpf_program_bind_map_attribute_t;
+
 _Static_assert(sizeof(edge_linux_bpf_program_attach_attribute_t) == 32u,
                "Linux BPF attach attribute layout changed");
 _Static_assert(sizeof(edge_linux_bpf_program_query_attribute_t) == 64u,
@@ -4336,6 +4343,8 @@ _Static_assert(sizeof(edge_linux_bpf_link_create_attribute_t) == 32u,
                "Linux BPF link create attribute layout changed");
 _Static_assert(sizeof(edge_linux_bpf_link_update_attribute_t) == 16u,
                "Linux BPF link update attribute layout changed");
+_Static_assert(sizeof(edge_linux_bpf_program_bind_map_attribute_t) == 12u,
+               "Linux BPF program bind-map attribute layout changed");
 
 typedef struct edge_linux_bpf_map_info {
     uint32_t type;
@@ -5180,6 +5189,8 @@ static int64_t edge_linux_bpf_object_info(
         kernel_bpf_program_info_t runtime_info;
         edge_linux_bpf_program_info_t linux_info;
         edge_linux_bpf_program_info_t requested;
+        uint32_t map_ids[EDGE_RUNTIME_MAX_BPF_OBJECTS];
+        uint32_t actual_map_count = 0u;
         uint32_t actual_instruction_size;
         uint32_t copied;
 
@@ -5196,6 +5207,20 @@ static int64_t edge_linux_bpf_object_info(
             return -EDGE_LINUX_EFAULT;
         status = kernel_bpf_program_info(object_id, &runtime_info);
         if (status < 0) return status;
+        status = kernel_bpf_program_map_ids(
+            object_id, map_ids, EDGE_RUNTIME_MAX_BPF_OBJECTS,
+            &actual_map_count);
+        if (status < 0) return status;
+        if (requested.map_id_count && actual_map_count) {
+            uint32_t map_count = requested.map_id_count;
+
+            if (map_count > actual_map_count)
+                map_count = actual_map_count;
+            if (edge_linux_copy_to_user(
+                    context, requested.map_ids, map_ids,
+                    (uint64_t)map_count * sizeof(map_ids[0])) < 0)
+                return -EDGE_LINUX_EFAULT;
+        }
         status = kernel_bpf_program_copy_instructions(
             object_id, 0, 0, &actual_instruction_size);
         if (status < 0) return status;
@@ -5234,6 +5259,8 @@ static int64_t edge_linux_bpf_object_info(
         linux_info.translated_program_instructions =
             requested.translated_program_instructions;
         linux_info.created_by_uid = runtime_info.created_by_uid;
+        linux_info.map_id_count = actual_map_count;
+        linux_info.map_ids = requested.map_ids;
         linux_info.gpl_compatible = runtime_info.gpl_compatible;
         linux_info.run_time_ns = runtime_info.run_time_ns;
         linux_info.run_count = runtime_info.run_count;
@@ -5472,6 +5499,30 @@ static int64_t edge_linux_bpf_link_command(
     return -EDGE_LINUX_ENOSYS;
 }
 
+static int64_t edge_linux_bpf_program_bind_map(
+        edge_linux_syscall_context_t *context, uint64_t user_attribute,
+        uint32_t attribute_size) {
+    edge_linux_bpf_program_bind_map_attribute_t attribute;
+    int program_object_id;
+    int map_object_id;
+    int status;
+
+    status = edge_linux_bpf_copy_attribute(
+        context, &attribute, sizeof(attribute), sizeof(attribute),
+        user_attribute, attribute_size);
+    if (status < 0) return status;
+    if (attribute.flags) return -EDGE_LINUX_EINVAL;
+    program_object_id = kernel_bpf_descriptor_object(
+        (int32_t)attribute.program_descriptor,
+        KERNEL_BPF_OBJECT_PROGRAM);
+    if (program_object_id < 0) return program_object_id;
+    map_object_id = kernel_bpf_descriptor_object(
+        (int32_t)attribute.map_descriptor, KERNEL_BPF_OBJECT_MAP);
+    if (map_object_id < 0) return map_object_id;
+    return kernel_bpf_program_bind_map(
+        program_object_id, map_object_id);
+}
+
 static int64_t edge_linux_bpf_program_query(
         edge_linux_syscall_context_t *context, uint64_t user_attribute,
         uint32_t attribute_size) {
@@ -5658,6 +5709,9 @@ static int64_t edge_linux_sys_bpf(
         return edge_linux_bpf_link_command(
             context, command, user_attribute, attribute_size);
     }
+    if (command == EDGE_LINUX_BPF_PROG_BIND_MAP)
+        return edge_linux_bpf_program_bind_map(
+            context, user_attribute, attribute_size);
     return -EDGE_LINUX_ENOSYS;
 }
 

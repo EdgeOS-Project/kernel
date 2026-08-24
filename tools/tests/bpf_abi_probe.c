@@ -69,6 +69,7 @@
 #define BPF_LINK_GET_FD_BY_ID 30u
 #define BPF_LINK_GET_NEXT_ID 31u
 #define BPF_LINK_DETACH 34u
+#define BPF_PROG_BIND_MAP 35u
 
 #define BPF_MAP_TYPE_HASH 1u
 #define BPF_MAP_TYPE_ARRAY 2u
@@ -273,6 +274,11 @@ union bpf_attr {
     struct {
         uint32_t link_fd;
     } link_detach;
+    struct {
+        uint32_t prog_fd;
+        uint32_t map_fd;
+        uint32_t flags;
+    } prog_bind_map;
     uint8_t padding[144];
 };
 
@@ -2280,6 +2286,160 @@ static int test_program(void) {
     return failures;
 }
 
+static int test_program_bind_map(void) {
+    static const struct bpf_insn instructions[] = {
+        { .code = 0xb7u, .registers = 0u,
+          .offset = 0, .immediate = 1 },
+        { .code = 0x95u, .registers = 0u,
+          .offset = 0, .immediate = 0 },
+    };
+    static const char license[] = "GPL";
+    union bpf_attr attribute;
+    struct bpf_map_info map_info;
+    struct bpf_prog_info program_info;
+    uint32_t map_ids[2] = {0u, 0u};
+    uint32_t first_id;
+    uint32_t second_id;
+    long program_descriptor;
+    long first_map_descriptor;
+    long second_map_descriptor;
+    long reopened;
+    int failures = 0;
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.prog_load.prog_type = BPF_PROG_TYPE_CGROUP_DEVICE;
+    attribute.prog_load.insn_count = 2u;
+    attribute.prog_load.insns = (uint64_t)(uintptr_t)instructions;
+    attribute.prog_load.license = (uint64_t)(uintptr_t)license;
+    attribute.prog_load.prog_name[0] = 'b';
+    attribute.prog_load.prog_name[1] = 'i';
+    attribute.prog_load.prog_name[2] = 'n';
+    attribute.prog_load.prog_name[3] = 'd';
+    program_descriptor = bpf_call(BPF_PROG_LOAD, &attribute);
+    failures += expect_true(
+        "bind map program load", program_descriptor >= 0);
+    if (program_descriptor < 0) return failures + 1;
+
+    first_map_descriptor = create_map(
+        BPF_MAP_TYPE_ARRAY, 1u, "bind_first");
+    second_map_descriptor = create_map(
+        BPF_MAP_TYPE_HASH, 1u, "bind_second");
+    failures += expect_true(
+        "bind map create maps",
+        first_map_descriptor >= 0 && second_map_descriptor >= 0);
+    if (first_map_descriptor < 0 || second_map_descriptor < 0) {
+        if (first_map_descriptor >= 0)
+            (void)raw_syscall6(
+                SYS_close, first_map_descriptor, 0, 0, 0, 0, 0);
+        if (second_map_descriptor >= 0)
+            (void)raw_syscall6(
+                SYS_close, second_map_descriptor, 0, 0, 0, 0, 0);
+        (void)raw_syscall6(
+            SYS_close, program_descriptor, 0, 0, 0, 0, 0);
+        return failures + 1;
+    }
+
+    clear_bytes(&map_info, sizeof(map_info));
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.info.bpf_fd = (uint32_t)first_map_descriptor;
+    attribute.info.info_len = sizeof(map_info);
+    attribute.info.info = (uint64_t)(uintptr_t)&map_info;
+    failures += expect("bind first map info", bpf_call(
+        BPF_OBJ_GET_INFO_BY_FD, &attribute), 0);
+    first_id = map_info.id;
+    clear_bytes(&map_info, sizeof(map_info));
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.info.bpf_fd = (uint32_t)second_map_descriptor;
+    attribute.info.info_len = sizeof(map_info);
+    attribute.info.info = (uint64_t)(uintptr_t)&map_info;
+    failures += expect("bind second map info", bpf_call(
+        BPF_OBJ_GET_INFO_BY_FD, &attribute), 0);
+    second_id = map_info.id;
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.prog_bind_map.prog_fd = UINT32_MAX;
+    attribute.prog_bind_map.map_fd = UINT32_MAX;
+    attribute.prog_bind_map.flags = 1u;
+    failures += expect("bind map flags first", bpf_call(
+        BPF_PROG_BIND_MAP, &attribute), -EINVAL);
+    attribute.prog_bind_map.flags = 0u;
+    failures += expect("bind map bad program", bpf_call(
+        BPF_PROG_BIND_MAP, &attribute), -EBADF);
+    attribute.prog_bind_map.prog_fd = (uint32_t)program_descriptor;
+    failures += expect("bind map bad map", bpf_call(
+        BPF_PROG_BIND_MAP, &attribute), -EBADF);
+
+    attribute.prog_bind_map.map_fd = (uint32_t)first_map_descriptor;
+    failures += expect("bind first map", bpf_call(
+        BPF_PROG_BIND_MAP, &attribute), 0);
+    failures += expect("bind first map duplicate", bpf_call(
+        BPF_PROG_BIND_MAP, &attribute), 0);
+    attribute.prog_bind_map.map_fd = (uint32_t)second_map_descriptor;
+    failures += expect("bind second map", bpf_call(
+        BPF_PROG_BIND_MAP, &attribute), 0);
+
+    clear_bytes(&program_info, sizeof(program_info));
+    program_info.nr_map_ids = 1u;
+    program_info.map_ids = (uint64_t)(uintptr_t)map_ids;
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.info.bpf_fd = (uint32_t)program_descriptor;
+    attribute.info.info_len = sizeof(program_info);
+    attribute.info.info = (uint64_t)(uintptr_t)&program_info;
+    failures += expect("bind map truncated program info", bpf_call(
+        BPF_OBJ_GET_INFO_BY_FD, &attribute), 0);
+    failures += expect_true(
+        "bind map truncated IDs",
+        program_info.nr_map_ids == 2u && map_ids[0] == first_id);
+
+    map_ids[0] = 0u;
+    map_ids[1] = 0u;
+    clear_bytes(&program_info, sizeof(program_info));
+    program_info.nr_map_ids = 2u;
+    program_info.map_ids = (uint64_t)(uintptr_t)map_ids;
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.info.bpf_fd = (uint32_t)program_descriptor;
+    attribute.info.info_len = sizeof(program_info);
+    attribute.info.info = (uint64_t)(uintptr_t)&program_info;
+    failures += expect("bind map complete program info", bpf_call(
+        BPF_OBJ_GET_INFO_BY_FD, &attribute), 0);
+    failures += expect_true(
+        "bind map complete IDs",
+        program_info.nr_map_ids == 2u && map_ids[0] == first_id &&
+        map_ids[1] == second_id);
+
+    (void)raw_syscall6(
+        SYS_close, first_map_descriptor, 0, 0, 0, 0, 0);
+    (void)raw_syscall6(
+        SYS_close, second_map_descriptor, 0, 0, 0, 0, 0);
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.id.start_or_object_id = first_id;
+    reopened = bpf_call(BPF_MAP_GET_FD_BY_ID, &attribute);
+    failures += expect_true("bound first map alive", reopened >= 0);
+    if (reopened >= 0)
+        (void)raw_syscall6(SYS_close, reopened, 0, 0, 0, 0, 0);
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.id.start_or_object_id = second_id;
+    reopened = bpf_call(BPF_MAP_GET_FD_BY_ID, &attribute);
+    failures += expect_true("bound second map alive", reopened >= 0);
+    if (reopened >= 0)
+        (void)raw_syscall6(SYS_close, reopened, 0, 0, 0, 0, 0);
+
+    (void)raw_syscall6(
+        SYS_close, program_descriptor, 0, 0, 0, 0, 0);
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.id.start_or_object_id = first_id;
+    reopened = bpf_call(BPF_MAP_GET_FD_BY_ID, &attribute);
+    if (reopened >= 0)
+        (void)raw_syscall6(SYS_close, reopened, 0, 0, 0, 0, 0);
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.id.start_or_object_id = second_id;
+    reopened = bpf_call(BPF_MAP_GET_FD_BY_ID, &attribute);
+    if (reopened >= 0)
+        (void)raw_syscall6(SYS_close, reopened, 0, 0, 0, 0, 0);
+    if (!failures) print_text("BPF_PROG_BIND_MAP_PASS\n");
+    return failures;
+}
+
 static int test_btf_objects(void) {
     struct test_btf_blob {
         uint16_t magic;
@@ -2429,6 +2589,7 @@ START_ATTRIBUTES void _start(void) {
     failures += test_program_array();
     failures += test_perf_event_array();
     failures += test_program();
+    failures += test_program_bind_map();
     failures += test_btf_objects();
     failures += test_attribute_tail();
     print_text(failures ? "BPF_ABI_PROBE_FAIL\n" :
