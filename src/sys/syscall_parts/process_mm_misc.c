@@ -8438,8 +8438,14 @@ int arch_mm_process_madvise(
     }
     if (operation == KERNEL_MADVISE_DISCARD) {
         if (!validate_only &&
-            process_user_mmap_range_ok(address, end - address))
+            process_user_mmap_range_ok(address, end - address)) {
             process_user_mmap_discard_private(mm, address, end - address);
+            kernel_userfaultfd_mapping_remove(
+                mm->cr3, &(kernel_uffdio_range_t){
+                    .start = address,
+                    .length = end - address,
+                });
+        }
         return 0;
     }
     if (operation != KERNEL_MADVISE_POPULATE_READ &&

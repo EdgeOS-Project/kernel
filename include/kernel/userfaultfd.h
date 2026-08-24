@@ -29,7 +29,9 @@
 #define KERNEL_UFFDIO_POISON_MODE_DONTWAKE        (1ULL << 0)
 
 #define KERNEL_UFFD_FEATURE_PAGEFAULT_FLAG_WP (1ULL << 0)
+#define KERNEL_UFFD_FEATURE_EVENT_REMOVE (1ULL << 3)
 #define KERNEL_UFFD_FEATURE_MISSING_SHMEM (1ULL << 5)
+#define KERNEL_UFFD_FEATURE_EVENT_UNMAP  (1ULL << 6)
 #define KERNEL_UFFD_FEATURE_SIGBUS      (1ULL << 7)
 #define KERNEL_UFFD_FEATURE_THREAD_ID (1ULL << 8)
 #define KERNEL_UFFD_FEATURE_MINOR_SHMEM (1ULL << 10)
@@ -40,7 +42,9 @@
 #define KERNEL_UFFD_FEATURE_MOVE      (1ULL << 16)
 #define KERNEL_UFFD_SUPPORTED_FEATURES \
     (KERNEL_UFFD_FEATURE_PAGEFAULT_FLAG_WP | \
+     KERNEL_UFFD_FEATURE_EVENT_REMOVE | \
      KERNEL_UFFD_FEATURE_MISSING_SHMEM | \
+     KERNEL_UFFD_FEATURE_EVENT_UNMAP | \
      KERNEL_UFFD_FEATURE_SIGBUS | KERNEL_UFFD_FEATURE_THREAD_ID | \
      KERNEL_UFFD_FEATURE_MINOR_SHMEM | \
      KERNEL_UFFD_FEATURE_EXACT_ADDRESS | \
@@ -51,6 +55,8 @@
 #define KERNEL_UFFD_PAGEFAULT_FLAG_WP    (1ULL << 1)
 #define KERNEL_UFFD_PAGEFAULT_FLAG_MINOR (1ULL << 2)
 #define KERNEL_UFFD_EVENT_PAGEFAULT 0x12u
+#define KERNEL_UFFD_EVENT_REMOVE    0x15u
+#define KERNEL_UFFD_EVENT_UNMAP     0x16u
 #define KERNEL_UFFD_FAULT_QUEUED 1
 #define KERNEL_UFFD_FAULT_SIGBUS 2
 
@@ -199,6 +205,10 @@ int kernel_userfaultfd_writeprotect_intersects(
 int kernel_userfaultfd_writeprotect_commit(
     int context_id, const kernel_uffdio_range_t *range, uint64_t mode);
 void kernel_userfaultfd_mapping_unmap(
+    uint64_t address_space, const kernel_uffdio_range_t *range);
+void kernel_userfaultfd_mapping_forget(
+    uint64_t address_space, const kernel_uffdio_range_t *range);
+void kernel_userfaultfd_mapping_remove(
     uint64_t address_space, const kernel_uffdio_range_t *range);
 int kernel_userfaultfd_missing_fault(
     uint64_t address_space, uint64_t address, int write, uint32_t thread_id,

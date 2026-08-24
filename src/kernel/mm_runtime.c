@@ -2136,18 +2136,18 @@ int64_t kernel_mm_remap_range(uint64_t old_address, uint64_t old_length,
          * silently transferring it to the new virtual address.
          */
         if (result >= 0 && (uint64_t)result != old_address) {
-            kernel_userfaultfd_mapping_unmap(
+            kernel_userfaultfd_mapping_forget(
                 address_space, &(kernel_uffdio_range_t){
                     .start = (uint64_t)result,
                     .length = new_length,
                 });
-            kernel_userfaultfd_mapping_unmap(
+            kernel_userfaultfd_mapping_forget(
                 address_space, &(kernel_uffdio_range_t){
                     .start = old_address,
                     .length = old_length,
                 });
         } else if (result >= 0 && new_length < old_length) {
-            kernel_userfaultfd_mapping_unmap(
+            kernel_userfaultfd_mapping_forget(
                 address_space, &(kernel_uffdio_range_t){
                     .start = old_address + new_length,
                     .length = old_length - new_length,

@@ -1113,6 +1113,7 @@ typedef struct {
     uint64_t inotify_read_length;
     uint8_t inotify_wait_index;
     uint16_t userfaultfd_wait_index;
+    uint8_t userfaultfd_wait_replay;
     uint64_t userfaultfd_wait_ticket;
     uint8_t file_lock_wait_active;
     int64_t file_lock_wait_result;
@@ -5218,6 +5219,7 @@ static void task_interrupt_wait_for_signal(kernel_task_t *task,
             break;
         case KERNEL_TASK_WAITING_USERFAULTFD:
             task->userfaultfd_wait_index = 0;
+            task->userfaultfd_wait_replay = 0;
             task->userfaultfd_wait_ticket = 0;
             task_state_set(task, KERNEL_TASK_RUNNABLE);
             return;
@@ -5497,7 +5499,9 @@ int arch_runtime_yield(void) {
     if (task->vector_io_active)
         task->vector_io_replay_frame = 1u;
     if (task_state_shadow_at((uint32_t)(task - g_tasks)) !=
-        KERNEL_TASK_WAITING_FUSE_REPLY)
+            KERNEL_TASK_WAITING_FUSE_REPLY &&
+        task_state_shadow_at((uint32_t)(task - g_tasks)) !=
+            KERNEL_TASK_WAITING_USERFAULTFD)
         task_state_set(task, KERNEL_TASK_RUNNABLE);
     if (g_fuse_reschedule_target_plus_one) {
         uint16_t target_plus_one =
@@ -10573,8 +10577,10 @@ void arch_userfaultfd_state_changed(int context_id) {
             task->userfaultfd_wait_index == (uint16_t)context_id &&
             !kernel_userfaultfd_fault_pending(
                 context_id, task->userfaultfd_wait_ticket)) {
-            task->userfaultfd_wait_index = 0;
-            task->userfaultfd_wait_ticket = 0;
+            if (!task->userfaultfd_wait_replay) {
+                task->userfaultfd_wait_index = 0;
+                task->userfaultfd_wait_ticket = 0;
+            }
             task_state_set(task, KERNEL_TASK_RUNNABLE);
             continue;
         }
@@ -10606,6 +10612,43 @@ void arch_userfaultfd_state_changed(int context_id) {
         }
     }
     poll_wake_waiters();
+}
+
+void arch_userfaultfd_wait_event(int context_id, uint64_t ticket) {
+    kernel_task_t *task;
+
+    while (kernel_userfaultfd_fault_pending(context_id, ticket)) {
+        task = current_task();
+        if (!task) return;
+        task->userfaultfd_wait_index = (uint16_t)context_id;
+        task->userfaultfd_wait_replay = 1u;
+        task->userfaultfd_wait_ticket = ticket;
+        task_state_set(task, KERNEL_TASK_WAITING_USERFAULTFD);
+        if (!kernel_userfaultfd_fault_pending(context_id, ticket))
+            task_state_set(task, KERNEL_TASK_RUNNABLE);
+        scheduler_yield();
+    }
+    task = current_task();
+    if (task) {
+        task->userfaultfd_wait_index = 0;
+        task->userfaultfd_wait_replay = 0;
+        task->userfaultfd_wait_ticket = 0;
+    }
+}
+
+int arch_userfaultfd_consume_completed_event(void) {
+    kernel_task_t *task = current_task();
+
+    if (!task || !task->userfaultfd_wait_replay ||
+        !task->userfaultfd_wait_ticket ||
+        kernel_userfaultfd_fault_pending(
+            task->userfaultfd_wait_index,
+            task->userfaultfd_wait_ticket))
+        return 0;
+    task->userfaultfd_wait_index = 0;
+    task->userfaultfd_wait_replay = 0;
+    task->userfaultfd_wait_ticket = 0;
+    return 1;
 }
 
 static void inotify_notify_path(const char *path, uint32_t mask) {
@@ -17674,6 +17717,7 @@ int arch_mm_process_madvise(
     int32_t pid, uint64_t address, uint64_t length,
     kernel_madvise_operation_t operation, int validate_only) {
     int slot;
+    int result;
     kernel_task_t *target;
     slot = task_find_pid(pid);
     if (slot < 0) return -LINUX_ESRCH;
@@ -17681,8 +17725,19 @@ int arch_mm_process_madvise(
     if (target->state == KERNEL_TASK_UNUSED ||
         target->state == KERNEL_TASK_ZOMBIE)
         return -LINUX_ESRCH;
-    return (int)arm64_madvise_range(
+    result = (int)arm64_madvise_range(
         target->ttbr0, address, length, operation, validate_only);
+    if (result == 0 && !validate_only &&
+        operation == KERNEL_MADVISE_DISCARD) {
+        uint64_t rounded_length =
+            (length + PAGE_SIZE - 1u) & ~(uint64_t)(PAGE_SIZE - 1u);
+        kernel_userfaultfd_mapping_remove(
+            target->ttbr0, &(kernel_uffdio_range_t){
+                .start = address,
+                .length = rounded_length,
+            });
+    }
+    return result;
 }
 
 static int arm64_process_mrelease_group_will_free(

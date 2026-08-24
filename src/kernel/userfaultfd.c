@@ -55,7 +55,7 @@ typedef struct kernel_userfaultfd_event {
     uint8_t used;
     uint8_t queued;
     uint8_t resolving;
-    uint8_t padding;
+    uint8_t event_type;
     uint16_t next;
     uint16_t reserved;
     int32_t context_id;
@@ -64,6 +64,9 @@ typedef struct kernel_userfaultfd_event {
     uint64_t flags;
     uint64_t ticket;
     uint32_t thread_id;
+    uint32_t padding;
+    uint64_t notification_start;
+    uint64_t notification_end;
 } kernel_userfaultfd_event_t;
 
 static kernel_userfaultfd_context_t
@@ -314,6 +317,80 @@ static void userfaultfd_remove_queued_event_locked(
         }
         previous = current;
         current = event->next;
+    }
+}
+
+static int userfaultfd_queue_notification_locked(
+        kernel_userfaultfd_context_t *context, int context_id,
+        uint8_t event_type, uint64_t start, uint64_t end,
+        uint64_t *ticket) {
+    uint16_t event_index;
+    kernel_userfaultfd_event_t *event;
+
+    event_index = userfaultfd_event_allocate_locked();
+    if (event_index == KERNEL_UFFD_INDEX_NONE)
+        return -EDGE_LINUX_ENOMEM;
+    event = &g_userfaultfd_events[event_index];
+    event->context_id = context_id;
+    event->event_type = event_type;
+    event->notification_start = start;
+    event->notification_end = end;
+    event->ticket = context->next_ticket++;
+    if (!context->next_ticket) context->next_ticket = 1u;
+    event->queued = 1u;
+    if (context->tail == KERNEL_UFFD_INDEX_NONE)
+        context->head = event_index;
+    else
+        g_userfaultfd_events[context->tail].next = event_index;
+    context->tail = event_index;
+    ++context->queued_events;
+    userfaultfd_sequence_advance(context);
+    if (ticket) *ticket = event->ticket;
+    return 0;
+}
+
+static void userfaultfd_queue_mapping_notifications_locked(
+        uint64_t address_space, const kernel_uffdio_range_t *range,
+        uint64_t feature, uint8_t event_type,
+        uint8_t affected[EDGE_RUNTIME_MAX_USERFAULTFDS],
+        uint64_t tickets[EDGE_RUNTIME_MAX_USERFAULTFDS]) {
+    uint64_t end = range->start + range->length;
+
+    for (int context_id = 0;
+         context_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++context_id) {
+        kernel_userfaultfd_context_t *context =
+            userfaultfd_context_locked(context_id);
+        uint64_t overlap_start = UINT64_MAX;
+        uint64_t overlap_end = 0;
+
+        if (!context || !context->api_ready ||
+            context->address_space != address_space ||
+            !(context->features & feature))
+            continue;
+        for (uint16_t index = 0;
+             index < EDGE_RUNTIME_MAX_USERFAULTFD_RANGES; ++index) {
+            kernel_userfaultfd_range_t *registered =
+                &g_userfaultfd_ranges[index];
+            uint64_t start;
+            uint64_t stop;
+
+            if (!registered->used ||
+                registered->context_id != context_id ||
+                range->start >= registered->end ||
+                end <= registered->start)
+                continue;
+            start = range->start > registered->start ?
+                    range->start : registered->start;
+            stop = end < registered->end ? end : registered->end;
+            if (start < overlap_start) overlap_start = start;
+            if (stop > overlap_end) overlap_end = stop;
+        }
+        if (overlap_end <= overlap_start) continue;
+        if (userfaultfd_queue_notification_locked(
+                context, context_id, event_type,
+                overlap_start, overlap_end,
+                &tickets[context_id]) == 0)
+            affected[context_id] = 1u;
     }
 }
 
@@ -662,7 +739,9 @@ int kernel_userfaultfd_validate_resolution(
              index < EDGE_RUNTIME_USERFAULTFD_EVENT_POOL; ++index) {
             kernel_userfaultfd_event_t *event =
                 &g_userfaultfd_events[index];
-            if (event->used && event->context_id == context_id &&
+            if (event->used &&
+                event->event_type == KERNEL_UFFD_EVENT_PAGEFAULT &&
+                event->context_id == context_id &&
                 event->page >= range->start && event->page < end)
                 event->resolving = 1;
         }
@@ -687,7 +766,9 @@ int kernel_userfaultfd_cancel_resolution(
     for (uint16_t index = 0;
          index < EDGE_RUNTIME_USERFAULTFD_EVENT_POOL; ++index) {
         kernel_userfaultfd_event_t *event = &g_userfaultfd_events[index];
-        if (event->used && event->context_id == context_id &&
+        if (event->used &&
+            event->event_type == KERNEL_UFFD_EVENT_PAGEFAULT &&
+            event->context_id == context_id &&
             event->page >= range->start && event->page < end &&
             event->resolving) {
             event->resolving = 0;
@@ -724,7 +805,9 @@ int kernel_userfaultfd_continue_validate(
              index < EDGE_RUNTIME_USERFAULTFD_EVENT_POOL; ++index) {
             kernel_userfaultfd_event_t *event =
                 &g_userfaultfd_events[index];
-            if (event->used && event->context_id == context_id &&
+            if (event->used &&
+                event->event_type == KERNEL_UFFD_EVENT_PAGEFAULT &&
+                event->context_id == context_id &&
                 event->page >= range->start && event->page < end &&
                 (event->flags & KERNEL_UFFD_PAGEFAULT_FLAG_MINOR))
                 event->resolving = 1;
@@ -753,7 +836,9 @@ static int userfaultfd_resolve_events(
     for (uint16_t index = 0;
          index < EDGE_RUNTIME_USERFAULTFD_EVENT_POOL; ++index) {
         kernel_userfaultfd_event_t *event = &g_userfaultfd_events[index];
-        if (!event->used || event->context_id != context_id ||
+        if (!event->used ||
+            event->event_type != KERNEL_UFFD_EVENT_PAGEFAULT ||
+            event->context_id != context_id ||
             event->page < range->start || event->page >= end ||
             (event->flags & required_flags) != required_flags)
             continue;
@@ -871,15 +956,24 @@ int kernel_userfaultfd_writeprotect_commit(
     return result;
 }
 
-void kernel_userfaultfd_mapping_unmap(
-        uint64_t address_space, const kernel_uffdio_range_t *range) {
+static void userfaultfd_mapping_forget_common(
+        uint64_t address_space, const kernel_uffdio_range_t *range,
+        int notify_unmap) {
     uint8_t affected[EDGE_RUNTIME_MAX_USERFAULTFDS];
+    uint64_t tickets[EDGE_RUNTIME_MAX_USERFAULTFDS];
     uint64_t end;
 
     if (!address_space || !userfaultfd_range_valid(range)) return;
+    if (notify_unmap && arch_userfaultfd_consume_completed_event())
+        return;
     end = range->start + range->length;
     memset(affected, 0, sizeof(affected));
+    memset(tickets, 0, sizeof(tickets));
     userfaultfd_lock();
+    if (notify_unmap)
+        userfaultfd_queue_mapping_notifications_locked(
+            address_space, range, KERNEL_UFFD_FEATURE_EVENT_UNMAP,
+            KERNEL_UFFD_EVENT_UNMAP, affected, tickets);
     for (uint16_t index = 0;
          index < EDGE_RUNTIME_MAX_USERFAULTFD_RANGES; ++index) {
         kernel_userfaultfd_range_t *entry = &g_userfaultfd_ranges[index];
@@ -967,7 +1061,9 @@ void kernel_userfaultfd_mapping_unmap(
         kernel_userfaultfd_event_t *event = &g_userfaultfd_events[index];
         kernel_userfaultfd_context_t *context;
 
-        if (!event->used || event->page < range->start ||
+        if (!event->used ||
+            event->event_type != KERNEL_UFFD_EVENT_PAGEFAULT ||
+            event->page < range->start ||
             event->page >= end)
             continue;
         context = userfaultfd_context_locked(event->context_id);
@@ -991,6 +1087,46 @@ void kernel_userfaultfd_mapping_unmap(
          context_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++context_id)
         if (affected[context_id])
             kernel_userfaultfd_state_changed(context_id);
+    for (int context_id = 0;
+         context_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++context_id)
+        if (tickets[context_id])
+            arch_userfaultfd_wait_event(
+                context_id, tickets[context_id]);
+}
+
+void kernel_userfaultfd_mapping_unmap(
+        uint64_t address_space, const kernel_uffdio_range_t *range) {
+    userfaultfd_mapping_forget_common(address_space, range, 1);
+}
+
+void kernel_userfaultfd_mapping_forget(
+        uint64_t address_space, const kernel_uffdio_range_t *range) {
+    userfaultfd_mapping_forget_common(address_space, range, 0);
+}
+
+void kernel_userfaultfd_mapping_remove(
+        uint64_t address_space, const kernel_uffdio_range_t *range) {
+    uint8_t affected[EDGE_RUNTIME_MAX_USERFAULTFDS];
+    uint64_t tickets[EDGE_RUNTIME_MAX_USERFAULTFDS];
+
+    if (!address_space || !userfaultfd_range_valid(range)) return;
+    if (arch_userfaultfd_consume_completed_event()) return;
+    memset(affected, 0, sizeof(affected));
+    memset(tickets, 0, sizeof(tickets));
+    userfaultfd_lock();
+    userfaultfd_queue_mapping_notifications_locked(
+        address_space, range, KERNEL_UFFD_FEATURE_EVENT_REMOVE,
+        KERNEL_UFFD_EVENT_REMOVE, affected, tickets);
+    userfaultfd_unlock();
+    for (int context_id = 0;
+         context_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++context_id)
+        if (affected[context_id])
+            kernel_userfaultfd_state_changed(context_id);
+    for (int context_id = 0;
+         context_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++context_id)
+        if (tickets[context_id])
+            arch_userfaultfd_wait_event(
+                context_id, tickets[context_id]);
 }
 
 int kernel_userfaultfd_resolve(int context_id,
@@ -1075,7 +1211,9 @@ int kernel_userfaultfd_page_fault(
     for (uint16_t index = 0;
          index < EDGE_RUNTIME_USERFAULTFD_EVENT_POOL; ++index) {
         kernel_userfaultfd_event_t *event = &g_userfaultfd_events[index];
-        if (!event->used || event->context_id != found_context ||
+        if (!event->used ||
+            event->event_type != KERNEL_UFFD_EVENT_PAGEFAULT ||
+            event->context_id != found_context ||
             event->page != page)
             continue;
         if (write) event->flags |= KERNEL_UFFD_PAGEFAULT_FLAG_WRITE;
@@ -1094,6 +1232,8 @@ int kernel_userfaultfd_page_fault(
         return -EDGE_LINUX_ENOMEM;
     }
     g_userfaultfd_events[event_index].context_id = found_context;
+    g_userfaultfd_events[event_index].event_type =
+        KERNEL_UFFD_EVENT_PAGEFAULT;
     g_userfaultfd_events[event_index].page = page;
     g_userfaultfd_events[event_index].address =
         (context->features & KERNEL_UFFD_FEATURE_EXACT_ADDRESS) ?
@@ -1194,7 +1334,9 @@ int kernel_userfaultfd_resolution_bypasses_fault(
          index < EDGE_RUNTIME_USERFAULTFD_EVENT_POOL; ++index) {
         kernel_userfaultfd_event_t *event = &g_userfaultfd_events[index];
         kernel_userfaultfd_context_t *context;
-        if (!event->used || !event->resolving || event->page != page)
+        if (!event->used ||
+            event->event_type != KERNEL_UFFD_EVENT_PAGEFAULT ||
+            !event->resolving || event->page != page)
             continue;
         context = userfaultfd_context_locked(event->context_id);
         if (context && context->address_space == address_space) {
@@ -1231,10 +1373,17 @@ int64_t kernel_userfaultfd_read(
         return -EDGE_LINUX_EAGAIN;
     }
     memset(&message, 0, sizeof(message));
-    message.event = KERNEL_UFFD_EVENT_PAGEFAULT;
-    message.flags = g_userfaultfd_events[event_index].flags;
-    message.address = g_userfaultfd_events[event_index].address;
-    message.thread_id = g_userfaultfd_events[event_index].thread_id;
+    message.event = g_userfaultfd_events[event_index].event_type;
+    if (message.event == KERNEL_UFFD_EVENT_PAGEFAULT) {
+        message.flags = g_userfaultfd_events[event_index].flags;
+        message.address = g_userfaultfd_events[event_index].address;
+        message.thread_id = g_userfaultfd_events[event_index].thread_id;
+    } else {
+        message.flags =
+            g_userfaultfd_events[event_index].notification_start;
+        message.address =
+            g_userfaultfd_events[event_index].notification_end;
+    }
     userfaultfd_remove_queued_event_locked(context, event_index);
     userfaultfd_unlock();
     if (copy_record(copy_context, 0, &message, sizeof(message)) < 0) {
@@ -1251,6 +1400,14 @@ int64_t kernel_userfaultfd_read(
         }
         userfaultfd_unlock();
         return -EDGE_LINUX_EFAULT;
+    }
+    if (message.event != KERNEL_UFFD_EVENT_PAGEFAULT) {
+        userfaultfd_lock();
+        if (g_userfaultfd_events[event_index].used &&
+            !g_userfaultfd_events[event_index].queued)
+            userfaultfd_event_free_locked(event_index);
+        userfaultfd_unlock();
+        kernel_userfaultfd_state_changed(context_id);
     }
     return sizeof(message);
 }

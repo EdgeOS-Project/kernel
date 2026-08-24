@@ -8,6 +8,7 @@
 #define SYS_write 1
 #define SYS_mmap 9
 #define SYS_munmap 11
+#define SYS_madvise 28
 #define SYS_mremap 25
 #define SYS_ioctl 16
 #define SYS_close 3
@@ -24,6 +25,7 @@
 #define SYS_write 64
 #define SYS_mmap 222
 #define SYS_munmap 215
+#define SYS_madvise 233
 #define SYS_mremap 216
 #define SYS_ioctl 29
 #define SYS_close 57
@@ -53,7 +55,9 @@
 #define UFFD_USER_MODE_ONLY 0x1
 #define UFFD_API 0xAAu
 #define UFFD_FEATURE_PAGEFAULT_FLAG_WP (1ULL << 0)
+#define UFFD_FEATURE_EVENT_REMOVE (1ULL << 3)
 #define UFFD_FEATURE_MISSING_SHMEM (1ULL << 5)
+#define UFFD_FEATURE_EVENT_UNMAP (1ULL << 6)
 #define UFFD_FEATURE_SIGBUS (1ULL << 7)
 #define UFFD_FEATURE_THREAD_ID (1ULL << 8)
 #define UFFD_FEATURE_MINOR_SHMEM (1ULL << 10)
@@ -79,6 +83,8 @@
 #define UFFDIO_CONTINUE 0xc020aa07u
 #define UFFDIO_POISON 0xc020aa08u
 #define UFFD_EVENT_PAGEFAULT 0x12u
+#define UFFD_EVENT_REMOVE 0x15u
+#define UFFD_EVENT_UNMAP 0x16u
 #define UFFD_PAGEFAULT_FLAG_WRITE (1ULL << 0)
 #define UFFD_PAGEFAULT_FLAG_WP (1ULL << 1)
 #define UFFD_PAGEFAULT_FLAG_MINOR (1ULL << 2)
@@ -86,10 +92,12 @@
 #define SIGCHLD 17
 #define SIGKILL 9
 #define SIGBUS 7
+#define WNOHANG 1
 #define EAGAIN 11
 #define EEXIST 17
 #define EINVAL 22
 #define ENOENT 2
+#define MADV_DONTNEED 4
 
 struct uffdio_api {
     uint64_t api;
@@ -162,6 +170,9 @@ static unsigned char g_fault_stack[16384] __attribute__((aligned(16)));
 static volatile unsigned char *g_fault_address;
 static volatile unsigned char g_fault_value;
 static volatile unsigned char g_fault_write;
+static volatile unsigned long g_child_operation;
+static volatile unsigned long g_child_length;
+static volatile long g_child_result;
 
 static long raw_syscall6(long number, long a0, long a1, long a2,
                          long a3, long a4, long a5) {
@@ -200,6 +211,18 @@ static __attribute__((noreturn)) void exit_now(int status) {
 
 static __attribute__((noreturn, noinline, used))
 void fault_child_entry(void) {
+    if (g_child_operation == 1u) {
+        g_child_result = raw_syscall6(
+            SYS_madvise, (long)g_fault_address,
+            (long)g_child_length, MADV_DONTNEED, 0, 0, 0);
+        exit_now(0);
+    }
+    if (g_child_operation == 2u) {
+        g_child_result = raw_syscall6(
+            SYS_munmap, (long)g_fault_address,
+            (long)g_child_length, 0, 0, 0, 0);
+        exit_now(0);
+    }
     if (g_fault_write)
         *g_fault_address = g_fault_write;
     else
@@ -1223,6 +1246,170 @@ START_ATTRIBUTES void _start(void) {
         if ((long)sigbus_area > 0)
             (void)raw_syscall6(
                 SYS_munmap, (long)sigbus_area, PAGE_SIZE,
+                0, 0, 0, 0);
+    }
+
+    {
+        unsigned char *event_area = (unsigned char *)raw_syscall6(
+            SYS_mmap, 0, PAGE_SIZE * 2u, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        long event_descriptor = raw_syscall6(
+            SYS_userfaultfd,
+            O_NONBLOCK | O_CLOEXEC | UFFD_USER_MODE_ONLY,
+            0, 0, 0, 0, 0);
+        struct uffdio_api event_api = {
+            .api = UFFD_API,
+            .features = UFFD_FEATURE_EVENT_REMOVE |
+                        UFFD_FEATURE_EVENT_UNMAP,
+        };
+
+        if ((long)event_area < 0 || event_descriptor < 0) {
+            print_text("FAIL mapping-event-setup\n");
+            ++failures;
+        } else {
+            failures += expect_result(
+                "mapping-event-api", raw_syscall6(
+                    SYS_ioctl, event_descriptor, UFFDIO_API,
+                    (long)&event_api, 0, 0, 0), 0);
+            if ((event_api.features &
+                 (UFFD_FEATURE_EVENT_REMOVE |
+                  UFFD_FEATURE_EVENT_UNMAP)) !=
+                (UFFD_FEATURE_EVENT_REMOVE |
+                 UFFD_FEATURE_EVENT_UNMAP)) {
+                print_text("FAIL mapping-event-features\n");
+                ++failures;
+            }
+            registration.range.start =
+                (uint64_t)(uintptr_t)event_area;
+            registration.range.len = PAGE_SIZE * 2u;
+            registration.mode = UFFDIO_REGISTER_MODE_MISSING;
+            registration.ioctls = 0;
+            failures += expect_result(
+                "mapping-event-register", raw_syscall6(
+                    SYS_ioctl, event_descriptor, UFFDIO_REGISTER,
+                    (long)&registration, 0, 0, 0), 0);
+            g_fault_address = event_area;
+            g_child_length = PAGE_SIZE;
+            g_child_result = -EAGAIN;
+            g_child_operation = 1u;
+            {
+                long child = spawn_fault_child(
+                    CLONE_VM | SIGCHLD,
+                    &g_fault_stack[sizeof(g_fault_stack)]);
+                long received = -EAGAIN;
+                int child_status = -1;
+
+                failures += expect_result(
+                    "mapping-event-remove-child",
+                    child < 0 ? child : 0, 0);
+                if (child >= 0) {
+                    failures += expect_result(
+                        "mapping-event-remove-blocked", raw_syscall6(
+                            SYS_wait4, child, (long)&child_status,
+                            WNOHANG, 0, 0, 0), 0);
+                    for (unsigned long attempt = 0;
+                         attempt < 100000u; ++attempt) {
+                        received = raw_syscall6(
+                            SYS_read, event_descriptor, (long)&message,
+                            sizeof(message), 0, 0, 0);
+                        if (received != -EAGAIN) break;
+                        (void)raw_syscall6(
+                            SYS_sched_yield, 0, 0, 0, 0, 0, 0);
+                    }
+                    failures += expect_result(
+                        "mapping-event-remove-read", received,
+                        sizeof(message));
+                    failures += expect_result(
+                        "mapping-event-remove-wait", raw_syscall6(
+                            SYS_wait4, child, (long)&child_status,
+                            0, 0, 0, 0), child);
+                    failures += expect_result(
+                        "mapping-event-remove-status", child_status, 0);
+                    failures += expect_result(
+                        "mapping-event-remove-result",
+                        g_child_result, 0);
+                }
+            }
+            g_child_operation = 0;
+            if (message.event != UFFD_EVENT_REMOVE ||
+                message.flags != (uint64_t)(uintptr_t)event_area ||
+                message.address !=
+                    (uint64_t)(uintptr_t)(event_area + PAGE_SIZE)) {
+                print_text("FAIL mapping-event-remove-data\n");
+                ++failures;
+            }
+            g_fault_address = event_area + PAGE_SIZE;
+            g_child_length = PAGE_SIZE;
+            g_child_result = -EAGAIN;
+            g_child_operation = 2u;
+            {
+                long child = spawn_fault_child(
+                    CLONE_VM | SIGCHLD,
+                    &g_fault_stack[sizeof(g_fault_stack)]);
+                long received = -EAGAIN;
+                int child_status = -1;
+
+                failures += expect_result(
+                    "mapping-event-unmap-child",
+                    child < 0 ? child : 0, 0);
+                if (child >= 0) {
+                    failures += expect_result(
+                        "mapping-event-unmap-blocked", raw_syscall6(
+                            SYS_wait4, child, (long)&child_status,
+                            WNOHANG, 0, 0, 0), 0);
+                    for (unsigned long attempt = 0;
+                         attempt < 100000u; ++attempt) {
+                        received = raw_syscall6(
+                            SYS_read, event_descriptor, (long)&message,
+                            sizeof(message), 0, 0, 0);
+                        if (received != -EAGAIN) break;
+                        (void)raw_syscall6(
+                            SYS_sched_yield, 0, 0, 0, 0, 0, 0);
+                    }
+                    failures += expect_result(
+                        "mapping-event-unmap-read", received,
+                        sizeof(message));
+                    failures += expect_result(
+                        "mapping-event-unmap-wait", raw_syscall6(
+                            SYS_wait4, child, (long)&child_status,
+                            0, 0, 0, 0), child);
+                    failures += expect_result(
+                        "mapping-event-unmap-status", child_status, 0);
+                    failures += expect_result(
+                        "mapping-event-unmap-result",
+                        g_child_result, 0);
+                }
+            }
+            g_child_operation = 0;
+            if (message.event != UFFD_EVENT_UNMAP ||
+                message.flags !=
+                    (uint64_t)(uintptr_t)(event_area + PAGE_SIZE) ||
+                message.address !=
+                    (uint64_t)(uintptr_t)(event_area + PAGE_SIZE * 2u)) {
+                print_text("FAIL mapping-event-unmap-data\n");
+                print_text("  event expected=");
+                print_number(UFFD_EVENT_UNMAP);
+                print_text(" actual=");
+                print_number(message.event);
+                print_text("\n  start expected=");
+                print_number((long)(uintptr_t)(event_area + PAGE_SIZE));
+                print_text(" actual=");
+                print_number((long)message.flags);
+                print_text("\n  end expected=");
+                print_number((long)(uintptr_t)(event_area + PAGE_SIZE * 2u));
+                print_text(" actual=");
+                print_number((long)message.address);
+                print_text("\n");
+                ++failures;
+            }
+        }
+        if (event_descriptor >= 0)
+            (void)raw_syscall6(
+                SYS_close, event_descriptor, 0, 0, 0, 0, 0);
+        if ((long)event_area > 0)
+            (void)raw_syscall6(
+                SYS_munmap, (long)event_area,
+                event_descriptor >= 0 ? PAGE_SIZE : PAGE_SIZE * 2u,
                 0, 0, 0, 0);
     }
 

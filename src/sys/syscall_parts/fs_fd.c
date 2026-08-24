@@ -1156,6 +1156,35 @@ void arch_userfaultfd_state_changed(int id) {
     }
 }
 
+void arch_userfaultfd_wait_event(int context_id, uint64_t ticket) {
+    task_t *task;
+
+    while (kernel_userfaultfd_fault_pending(context_id, ticket)) {
+        task = process_current_task();
+        if (!task || task->is_idle) {
+            wait_blocking_step();
+            continue;
+        }
+        task->userfaultfd_wait_active = 1;
+        task->userfaultfd_wait_context = context_id;
+        task->userfaultfd_wait_ticket = ticket;
+        scheduler_task_set_blocked(task);
+        if (!kernel_userfaultfd_fault_pending(context_id, ticket))
+            scheduler_task_make_runnable(task, scheduler_cpu_id());
+        scheduler_yield();
+    }
+    task = process_current_task();
+    if (task && !task->is_idle) {
+        task->userfaultfd_wait_active = 0;
+        task->userfaultfd_wait_context = -1;
+        task->userfaultfd_wait_ticket = 0;
+    }
+}
+
+int arch_userfaultfd_consume_completed_event(void) {
+    return 0;
+}
+
 typedef struct edge_inotify_copy_context {
     uint64_t buffer;
 } edge_inotify_copy_context_t;

@@ -18,6 +18,15 @@ void kernel_userfaultfd_state_changed(int context_id) {
     changed_context = context_id;
 }
 
+void arch_userfaultfd_wait_event(int context_id, uint64_t ticket) {
+    assert(context_id >= 0);
+    assert(ticket != 0);
+}
+
+int arch_userfaultfd_consume_completed_event(void) {
+    return 0;
+}
+
 int arch_mm_address_space_write_protect(
         uint64_t address_space, uint64_t address, uint64_t length,
         int enable) {
@@ -263,6 +272,51 @@ int main(void) {
             context_id, &(kernel_uffdio_range_t){
                 .start = 0x702000u, .length = 0x1000u,
             }) == 0);
+    }
+    {
+        kernel_uffdio_api_t event_api = {
+            .api = KERNEL_UFFD_API,
+            .features = KERNEL_UFFD_FEATURE_EVENT_REMOVE |
+                        KERNEL_UFFD_FEATURE_EVENT_UNMAP,
+        };
+        kernel_uffdio_register_t event_registration = {
+            .range = { .start = 0xa00000u, .length = 0x2000u },
+            .mode = KERNEL_UFFD_REGISTER_MODE_MISSING,
+        };
+        int event_context = kernel_userfaultfd_create(
+            0x22345000u, 78, KERNEL_UFFD_NONBLOCK);
+
+        assert(event_context >= 0);
+        assert(kernel_userfaultfd_negotiate(
+            event_context, &event_api) == 0);
+        assert(kernel_userfaultfd_register(
+            event_context, &event_registration) == 0);
+        kernel_userfaultfd_mapping_remove(
+            0x22345000u, &(kernel_uffdio_range_t){
+                .start = 0xa00000u, .length = 0x1000u,
+            });
+        memset(&message, 0, sizeof(message));
+        assert(kernel_userfaultfd_read(
+            event_context, copy_message, &message, sizeof(message)) ==
+            (int64_t)sizeof(message));
+        assert(message.event == KERNEL_UFFD_EVENT_REMOVE);
+        assert(message.flags == 0xa00000u);
+        assert(message.address == 0xa01000u);
+        kernel_userfaultfd_mapping_unmap(
+            0x22345000u, &(kernel_uffdio_range_t){
+                .start = 0xa01000u, .length = 0x1000u,
+            });
+        memset(&message, 0, sizeof(message));
+        assert(kernel_userfaultfd_read(
+            event_context, copy_message, &message, sizeof(message)) ==
+            (int64_t)sizeof(message));
+        assert(message.event == KERNEL_UFFD_EVENT_UNMAP);
+        assert(message.flags == 0xa01000u);
+        assert(message.address == 0xa02000u);
+        assert(kernel_userfaultfd_missing_fault(
+            0x22345000u, 0xa01020u, 0, 108,
+            &fault_context, &ticket) == 0);
+        kernel_userfaultfd_release(event_context);
     }
     kernel_userfaultfd_release(context_id);
     assert(kernel_userfaultfd_query(context_id, &state) ==
