@@ -672,6 +672,7 @@ static int test_array_map(void) {
     uint64_t value = 0x1122334455667788ULL;
     uint64_t output = 0;
     uint32_t id;
+    long keeper = -1;
     long reopened;
     long descriptor = create_map(BPF_MAP_TYPE_ARRAY, 4u, "array_map");
     int failures = 0;
@@ -725,7 +726,7 @@ static int test_array_map(void) {
         failures += expect("reopened lookup", map_element(
             BPF_MAP_LOOKUP_ELEM, reopened, &key, &output, 0), 0);
         failures += expect_true("reopened value", output == value);
-        (void)raw_syscall6(SYS_close, reopened, 0, 0, 0, 0, 0);
+        keeper = reopened;
     }
     clear_bytes(&attribute, sizeof(attribute));
     attribute.id.start_or_object_id = id;
@@ -740,6 +741,8 @@ static int test_array_map(void) {
             BPF_MAP_UPDATE_ELEM, reopened, &key, &value, BPF_ANY), -EPERM);
         (void)raw_syscall6(SYS_close, reopened, 0, 0, 0, 0, 0);
     }
+    if (keeper >= 0)
+        (void)raw_syscall6(SYS_close, keeper, 0, 0, 0, 0, 0);
     return failures;
 }
 
@@ -759,14 +762,23 @@ static int test_pinned_map_access(void) {
     if (descriptor < 0) return failures + 1;
     failures += expect("pinned map initialize", map_element(
         BPF_MAP_UPDATE_ELEM, descriptor, &key, &value, BPF_ANY), 0);
-    (void)raw_syscall6(
+    status = raw_syscall6(
+        SYS_mkdirat, AT_FDCWD, (long)"/sys", 0755, 0, 0, 0);
+    if (status != 0 && status != -EEXIST)
+        failures += expect("create /sys", status, 0);
+    status = raw_syscall6(
         SYS_mkdirat, AT_FDCWD, (long)"/sys/fs", 0755, 0, 0, 0);
-    (void)raw_syscall6(
+    if (status != 0 && status != -EEXIST)
+        failures += expect("create /sys/fs", status, 0);
+    status = raw_syscall6(
         SYS_mkdirat, AT_FDCWD, (long)"/sys/fs/bpf", 0755, 0, 0, 0);
+    if (status != 0 && status != -EEXIST)
+        failures += expect("create /sys/fs/bpf", status, 0);
     status = raw_syscall6(
         SYS_mount, (long)"bpf", (long)"/sys/fs/bpf",
         (long)"bpf", 0, 0, 0);
-    failures += expect_true("bpffs mount", status == 0 || status == -EBUSY);
+    if (status != 0 && status != -EBUSY)
+        failures += expect("bpffs mount", status, 0);
     (void)raw_syscall6(SYS_unlinkat, AT_FDCWD, (long)path, 0, 0, 0, 0);
 
     clear_bytes(&attribute, sizeof(attribute));

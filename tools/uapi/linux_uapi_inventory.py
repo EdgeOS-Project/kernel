@@ -176,13 +176,17 @@ EDGEOS_ASSESSMENTS = [
             "BTF object loading, information queries, ID enumeration and descriptor reopening",
             "BTF-backed map creation with retained BTF object lifetime",
             "cgroup link objects with descriptor lifetime, ID enumeration, information queries, program replacement, explicit detach and close-time detach",
+            "kernel and user ring-buffer maps with mmap, poll and cgroup-device output execution",
+            "BPF filesystem mounting, object pinning, access-restricted reopening and unlink lifetime",
+            "explicit map binding to program lifetime with program map-ID reporting",
+            "runtime statistics enable descriptors with close-time disable semantics",
+            "program test-run and unknown-command error ordering for the supported program family",
         ],
         "missing": [
-            "ring buffers and remaining map types",
+            "remaining map types",
             "remaining specialized map families and their concurrency semantics",
             "additional attachment families and program types",
             "complete allow-override and multi-position attachment semantics",
-            "BPF filesystem pinning",
             "complete BTF type-graph validation and program integration",
             "ia32 and x32 compatibility layouts",
         ],
@@ -202,7 +206,10 @@ EDGEOS_ASSESSMENTS = [
                 "translated instructions, SHA-256 tags and cgroup-device "
                 "program loading, attachment, detachment and query behavior, "
                 "plus cgroup link object creation, replacement, information, "
-                "ID enumeration and lifetime"
+                "ID enumeration and lifetime, kernel and user ring buffers, "
+                "BPF filesystem object pinning, explicit program-map binding, "
+                "runtime statistics descriptors and supported program-test "
+                "error behavior"
             ),
         },
     },
