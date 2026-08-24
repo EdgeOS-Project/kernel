@@ -94,6 +94,7 @@ static kernel_userfaultfd_remap_notifications_t
 static kernel_userfaultfd_event_t
     g_userfaultfd_events[EDGE_RUNTIME_USERFAULTFD_EVENT_POOL];
 static volatile uint32_t g_userfaultfd_lock;
+static uint64_t g_userfaultfd_next_transaction = 1u;
 
 static void userfaultfd_lock(void) {
     while (__sync_lock_test_and_set(&g_userfaultfd_lock, 1u)) { }
@@ -313,6 +314,44 @@ static void userfaultfd_event_free_locked(uint16_t index) {
     g_userfaultfd_events[index].next = KERNEL_UFFD_INDEX_NONE;
 }
 
+static void userfaultfd_complete_fork_transaction_locked(
+        uint16_t event_index,
+        uint8_t affected[EDGE_RUNTIME_MAX_USERFAULTFDS]) {
+    kernel_userfaultfd_event_t *event;
+    uint64_t transaction_id;
+
+    if (event_index >= EDGE_RUNTIME_USERFAULTFD_EVENT_POOL || !affected)
+        return;
+    event = &g_userfaultfd_events[event_index];
+    if (!event->used || event->event_type != KERNEL_UFFD_EVENT_FORK)
+        return;
+    transaction_id = event->notification_start;
+    event->resolving = 1u;
+    for (uint16_t index = 0;
+         index < EDGE_RUNTIME_USERFAULTFD_EVENT_POOL; ++index) {
+        kernel_userfaultfd_event_t *candidate =
+            &g_userfaultfd_events[index];
+        if (candidate->used &&
+            candidate->event_type == KERNEL_UFFD_EVENT_FORK &&
+            candidate->notification_start == transaction_id &&
+            !candidate->resolving)
+            return;
+    }
+    for (uint16_t index = 0;
+         index < EDGE_RUNTIME_USERFAULTFD_EVENT_POOL; ++index) {
+        kernel_userfaultfd_event_t *candidate =
+            &g_userfaultfd_events[index];
+        if (!candidate->used ||
+            candidate->event_type != KERNEL_UFFD_EVENT_FORK ||
+            candidate->notification_start != transaction_id)
+            continue;
+        if (candidate->context_id >= 0 &&
+            candidate->context_id < EDGE_RUNTIME_MAX_USERFAULTFDS)
+            affected[candidate->context_id] = 1u;
+        userfaultfd_event_free_locked(index);
+    }
+}
+
 static void userfaultfd_remove_queued_event_locked(
     kernel_userfaultfd_context_t *context, uint16_t target) {
     uint16_t previous = KERNEL_UFFD_INDEX_NONE;
@@ -333,6 +372,34 @@ static void userfaultfd_remove_queued_event_locked(
         }
         previous = current;
         current = event->next;
+    }
+}
+
+static void userfaultfd_cancel_fork_transaction_locked(
+        uint64_t transaction_id,
+        uint8_t notify_contexts[EDGE_RUNTIME_MAX_USERFAULTFDS],
+        uint8_t release_children[EDGE_RUNTIME_MAX_USERFAULTFDS]) {
+    if (!transaction_id || !notify_contexts || !release_children)
+        return;
+    for (uint16_t index = 0;
+         index < EDGE_RUNTIME_USERFAULTFD_EVENT_POOL; ++index) {
+        kernel_userfaultfd_event_t *event = &g_userfaultfd_events[index];
+        kernel_userfaultfd_context_t *context;
+
+        if (!event->used ||
+            event->event_type != KERNEL_UFFD_EVENT_FORK ||
+            event->notification_start != transaction_id)
+            continue;
+        context = userfaultfd_context_locked(event->context_id);
+        if (event->queued && context)
+            userfaultfd_remove_queued_event_locked(context, index);
+        if (event->context_id >= 0 &&
+            event->context_id < EDGE_RUNTIME_MAX_USERFAULTFDS)
+            notify_contexts[event->context_id] = 1u;
+        if (!event->resolving &&
+            event->notification_extra < EDGE_RUNTIME_MAX_USERFAULTFDS)
+            release_children[event->notification_extra] = 1u;
+        userfaultfd_event_free_locked(index);
     }
 }
 
@@ -456,8 +523,14 @@ int kernel_userfaultfd_retain(int context_id) {
 
 void kernel_userfaultfd_release(int context_id) {
     kernel_userfaultfd_context_t *context;
+    uint8_t release_child_contexts[EDGE_RUNTIME_MAX_USERFAULTFDS];
+    uint8_t notify_contexts[EDGE_RUNTIME_MAX_USERFAULTFDS];
     uint64_t address_space = 0;
     int notify = 0;
+
+    memset(release_child_contexts, 0,
+           sizeof(release_child_contexts));
+    memset(notify_contexts, 0, sizeof(notify_contexts));
     userfaultfd_lock();
     context = userfaultfd_context_locked(context_id);
     if (!context || !context->references) {
@@ -473,8 +546,16 @@ void kernel_userfaultfd_release(int context_id) {
     for (uint16_t index = 0;
          index < EDGE_RUNTIME_USERFAULTFD_EVENT_POOL; ++index) {
         kernel_userfaultfd_event_t *event = &g_userfaultfd_events[index];
-        if (event->used && event->context_id == context_id)
+        if (event->used && event->context_id == context_id) {
+            if (event->event_type == KERNEL_UFFD_EVENT_FORK) {
+                uint64_t transaction_id = event->notification_start;
+                userfaultfd_cancel_fork_transaction_locked(
+                    transaction_id, notify_contexts,
+                    release_child_contexts);
+                continue;
+            }
             userfaultfd_event_free_locked(index);
+        }
     }
     for (uint16_t index = 0;
          index < EDGE_RUNTIME_MAX_USERFAULTFD_RANGES; ++index) {
@@ -516,7 +597,15 @@ void kernel_userfaultfd_release(int context_id) {
         notify = 1;
     }
     userfaultfd_unlock();
-    if (notify) kernel_userfaultfd_state_changed(context_id);
+    if (notify) notify_contexts[context_id] = 1u;
+    for (int notify_id = 0;
+         notify_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++notify_id)
+        if (notify_contexts[notify_id])
+            kernel_userfaultfd_state_changed(notify_id);
+    for (int child_id = 0;
+         child_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++child_id)
+        if (release_child_contexts[child_id])
+            kernel_userfaultfd_release(child_id);
 }
 
 int kernel_userfaultfd_query(int context_id,
@@ -1454,6 +1543,358 @@ void kernel_userfaultfd_mapping_expand(
             kernel_userfaultfd_state_changed(context_id);
 }
 
+static int userfaultfd_context_allocate_locked(
+        uint64_t address_space, int32_t owner_pid,
+        const kernel_userfaultfd_context_t *source) {
+    for (int context_id = 0;
+         context_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++context_id) {
+        kernel_userfaultfd_context_t *context =
+            &g_userfaultfd_contexts[context_id];
+
+        if (context->used) continue;
+        memset(context, 0, sizeof(*context));
+        context->used = 1u;
+        context->api_ready = source->api_ready;
+        context->references = 1u;
+        context->flags = source->flags;
+        context->owner_pid = owner_pid;
+        context->address_space = address_space;
+        context->features = source->features;
+        context->head = KERNEL_UFFD_INDEX_NONE;
+        context->tail = KERNEL_UFFD_INDEX_NONE;
+        context->next_ticket = 1u;
+        return context_id;
+    }
+    return -EDGE_LINUX_ENOMEM;
+}
+
+static kernel_userfaultfd_range_t *
+userfaultfd_free_range_locked(void) {
+    for (uint16_t index = 0;
+         index < EDGE_RUNTIME_MAX_USERFAULTFD_RANGES; ++index)
+        if (!g_userfaultfd_ranges[index].used)
+            return &g_userfaultfd_ranges[index];
+    return 0;
+}
+
+static kernel_userfaultfd_wp_range_t *
+userfaultfd_free_wp_range_locked(void) {
+    for (uint16_t index = 0;
+         index < EDGE_RUNTIME_MAX_USERFAULTFD_RANGES; ++index)
+        if (!g_userfaultfd_wp_ranges[index].used)
+            return &g_userfaultfd_wp_ranges[index];
+    return 0;
+}
+
+int kernel_userfaultfd_address_space_fork(
+        uint64_t parent_address_space, uint64_t child_address_space,
+        int32_t child_owner_pid, int *wait_context,
+        uint64_t *wait_ticket) {
+    uint8_t clone_parent[EDGE_RUNTIME_MAX_USERFAULTFDS];
+    uint8_t affected[EDGE_RUNTIME_MAX_USERFAULTFDS];
+    int16_t child_contexts[EDGE_RUNTIME_MAX_USERFAULTFDS];
+    uint64_t tickets[EDGE_RUNTIME_MAX_USERFAULTFDS];
+    uint16_t contexts_required = 0;
+    uint16_t ranges_required = 0;
+    uint16_t wp_ranges_required = 0;
+    uint16_t free_contexts = 0;
+    uint16_t free_ranges = 0;
+    uint16_t free_wp_ranges = 0;
+    uint16_t free_events = 0;
+    uint64_t transaction_id;
+    int status = 0;
+
+    if (wait_context) *wait_context = -1;
+    if (wait_ticket) *wait_ticket = 0;
+    if (!parent_address_space || !child_address_space ||
+        parent_address_space == child_address_space ||
+        child_owner_pid <= 0 || !wait_context || !wait_ticket)
+        return -EDGE_LINUX_EINVAL;
+    memset(clone_parent, 0, sizeof(clone_parent));
+    memset(affected, 0, sizeof(affected));
+    memset(child_contexts, 0xff, sizeof(child_contexts));
+    memset(tickets, 0, sizeof(tickets));
+
+    userfaultfd_lock();
+    for (uint16_t index = 0;
+         index < EDGE_RUNTIME_MAX_USERFAULTFD_RANGES; ++index) {
+        kernel_userfaultfd_range_t *range = &g_userfaultfd_ranges[index];
+        kernel_userfaultfd_context_t *context;
+
+        if (!range->used) {
+            ++free_ranges;
+            continue;
+        }
+        context = userfaultfd_context_locked(range->context_id);
+        if (!context || context->address_space != parent_address_space ||
+            !(context->features & KERNEL_UFFD_FEATURE_EVENT_FORK))
+            continue;
+        clone_parent[range->context_id] = 1u;
+        ++ranges_required;
+    }
+    for (uint16_t index = 0;
+         index < EDGE_RUNTIME_MAX_USERFAULTFD_RANGES; ++index) {
+        kernel_userfaultfd_wp_range_t *range =
+            &g_userfaultfd_wp_ranges[index];
+        kernel_userfaultfd_context_t *context;
+
+        if (!range->used) {
+            ++free_wp_ranges;
+            continue;
+        }
+        context = userfaultfd_context_locked(range->context_id);
+        if (!context || context->address_space != parent_address_space ||
+            !clone_parent[range->context_id])
+            continue;
+        ++wp_ranges_required;
+    }
+    for (int context_id = 0;
+         context_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++context_id) {
+        if (!g_userfaultfd_contexts[context_id].used)
+            ++free_contexts;
+        if (clone_parent[context_id]) ++contexts_required;
+    }
+    for (uint16_t index = 0;
+         index < EDGE_RUNTIME_USERFAULTFD_EVENT_POOL; ++index)
+        if (!g_userfaultfd_events[index].used) ++free_events;
+    if (!contexts_required) {
+        userfaultfd_unlock();
+        return 0;
+    }
+    if (contexts_required > free_contexts ||
+        contexts_required > free_events ||
+        ranges_required > free_ranges ||
+        wp_ranges_required > free_wp_ranges) {
+        userfaultfd_unlock();
+        return -EDGE_LINUX_ENOMEM;
+    }
+    transaction_id = g_userfaultfd_next_transaction++;
+    if (!g_userfaultfd_next_transaction)
+        g_userfaultfd_next_transaction = 1u;
+
+    for (int parent_id = 0;
+         parent_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++parent_id) {
+        int child_id;
+
+        if (!clone_parent[parent_id]) continue;
+        child_id = userfaultfd_context_allocate_locked(
+            child_address_space, child_owner_pid,
+            &g_userfaultfd_contexts[parent_id]);
+        if (child_id < 0) {
+            status = child_id;
+            break;
+        }
+        child_contexts[parent_id] = (int16_t)child_id;
+    }
+    if (!status) {
+        for (uint16_t index = 0;
+             index < EDGE_RUNTIME_MAX_USERFAULTFD_RANGES; ++index) {
+            kernel_userfaultfd_range_t *source =
+                &g_userfaultfd_ranges[index];
+            kernel_userfaultfd_range_t *destination;
+            int child_id;
+
+            if (!source->used || source->context_id < 0 ||
+                source->context_id >= EDGE_RUNTIME_MAX_USERFAULTFDS)
+                continue;
+            child_id = child_contexts[source->context_id];
+            if (child_id < 0) continue;
+            destination = userfaultfd_free_range_locked();
+            if (!destination) {
+                status = -EDGE_LINUX_ENOMEM;
+                break;
+            }
+            *destination = *source;
+            destination->context_id = child_id;
+        }
+    }
+    if (!status) {
+        for (uint16_t index = 0;
+             index < EDGE_RUNTIME_MAX_USERFAULTFD_RANGES; ++index) {
+            kernel_userfaultfd_wp_range_t *source =
+                &g_userfaultfd_wp_ranges[index];
+            kernel_userfaultfd_wp_range_t *destination;
+            int child_id;
+
+            if (!source->used || source->context_id < 0 ||
+                source->context_id >= EDGE_RUNTIME_MAX_USERFAULTFDS)
+                continue;
+            child_id = child_contexts[source->context_id];
+            if (child_id < 0) continue;
+            destination = userfaultfd_free_wp_range_locked();
+            if (!destination) {
+                status = -EDGE_LINUX_ENOMEM;
+                break;
+            }
+            *destination = *source;
+            destination->context_id = child_id;
+        }
+    }
+    if (!status) {
+        for (int parent_id = 0;
+             parent_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++parent_id) {
+            kernel_userfaultfd_context_t *context;
+
+            if (child_contexts[parent_id] < 0) continue;
+            context = userfaultfd_context_locked(parent_id);
+            if (!context || userfaultfd_queue_notification_locked(
+                    context, parent_id, KERNEL_UFFD_EVENT_FORK,
+                    transaction_id, 0,
+                    (uint64_t)child_contexts[parent_id],
+                    &tickets[parent_id]) < 0) {
+                status = -EDGE_LINUX_ENOMEM;
+                break;
+            }
+            affected[parent_id] = 1u;
+            if (!*wait_ticket) {
+                *wait_context = parent_id;
+                *wait_ticket = tickets[parent_id];
+            }
+        }
+    }
+    if (status < 0) {
+        for (uint16_t index = 0;
+             index < EDGE_RUNTIME_USERFAULTFD_EVENT_POOL; ++index) {
+            kernel_userfaultfd_event_t *event =
+                &g_userfaultfd_events[index];
+            if (!event->used ||
+                event->event_type != KERNEL_UFFD_EVENT_FORK ||
+                event->notification_extra >=
+                    EDGE_RUNTIME_MAX_USERFAULTFDS)
+                continue;
+            if (child_contexts[event->context_id] !=
+                (int16_t)event->notification_extra)
+                continue;
+            userfaultfd_remove_queued_event_locked(
+                &g_userfaultfd_contexts[event->context_id], index);
+            userfaultfd_event_free_locked(index);
+        }
+        for (uint16_t index = 0;
+             index < EDGE_RUNTIME_MAX_USERFAULTFD_RANGES; ++index) {
+            int context_id = g_userfaultfd_ranges[index].context_id;
+            int wp_context_id = g_userfaultfd_wp_ranges[index].context_id;
+            for (int parent_id = 0;
+                 parent_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++parent_id) {
+                if (child_contexts[parent_id] == context_id)
+                    memset(&g_userfaultfd_ranges[index], 0,
+                           sizeof(g_userfaultfd_ranges[index]));
+                if (child_contexts[parent_id] == wp_context_id)
+                    memset(&g_userfaultfd_wp_ranges[index], 0,
+                           sizeof(g_userfaultfd_wp_ranges[index]));
+            }
+        }
+        for (int parent_id = 0;
+             parent_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++parent_id)
+            if (child_contexts[parent_id] >= 0)
+                memset(&g_userfaultfd_contexts[
+                           child_contexts[parent_id]],
+                       0, sizeof(g_userfaultfd_contexts[0]));
+    }
+    userfaultfd_unlock();
+    if (status < 0) {
+        *wait_context = -1;
+        *wait_ticket = 0;
+        return status;
+    }
+    for (int parent_id = 0;
+         parent_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++parent_id)
+        if (affected[parent_id])
+            kernel_userfaultfd_state_changed(parent_id);
+    return 0;
+}
+
+void kernel_userfaultfd_wait_fork(int context_id, uint64_t ticket,
+                                  int64_t completion_result) {
+    if (context_id < 0 ||
+        context_id >= EDGE_RUNTIME_MAX_USERFAULTFDS || !ticket)
+        return;
+    arch_userfaultfd_wait_event(
+        context_id, ticket, completion_result);
+}
+
+int kernel_userfaultfd_consume_completed_fork(
+        int64_t *completion_result) {
+    return arch_userfaultfd_consume_completed_event(completion_result);
+}
+
+void kernel_userfaultfd_address_space_release(uint64_t address_space) {
+    uint8_t affected[EDGE_RUNTIME_MAX_USERFAULTFDS];
+    uint8_t notify_contexts[EDGE_RUNTIME_MAX_USERFAULTFDS];
+    uint8_t release_children[EDGE_RUNTIME_MAX_USERFAULTFDS];
+
+    if (!address_space) return;
+    memset(affected, 0, sizeof(affected));
+    memset(notify_contexts, 0, sizeof(notify_contexts));
+    memset(release_children, 0, sizeof(release_children));
+    userfaultfd_lock();
+    for (int context_id = 0;
+         context_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++context_id) {
+        kernel_userfaultfd_context_t *context =
+            userfaultfd_context_locked(context_id);
+
+        if (!context || context->address_space != address_space)
+            continue;
+        for (uint16_t index = 0;
+             index < EDGE_RUNTIME_USERFAULTFD_EVENT_POOL; ++index) {
+            kernel_userfaultfd_event_t *event =
+                &g_userfaultfd_events[index];
+            if (!event->used || event->context_id != context_id)
+                continue;
+            if (event->event_type == KERNEL_UFFD_EVENT_FORK) {
+                uint64_t transaction_id = event->notification_start;
+                userfaultfd_cancel_fork_transaction_locked(
+                    transaction_id, notify_contexts,
+                    release_children);
+                continue;
+            }
+            userfaultfd_event_free_locked(index);
+        }
+        context->head = KERNEL_UFFD_INDEX_NONE;
+        context->tail = KERNEL_UFFD_INDEX_NONE;
+        context->queued_events = 0;
+        context->unresolved_faults = 0;
+        context->address_space = 0;
+        userfaultfd_sequence_advance(context);
+        affected[context_id] = 1u;
+    }
+    for (uint16_t index = 0;
+         index < EDGE_RUNTIME_USERFAULTFD_EVENT_POOL; ++index) {
+        kernel_userfaultfd_event_t *event = &g_userfaultfd_events[index];
+        if (!event->used ||
+            event->event_type != KERNEL_UFFD_EVENT_FORK ||
+            event->notification_extra >= EDGE_RUNTIME_MAX_USERFAULTFDS ||
+            !affected[event->notification_extra])
+            continue;
+        userfaultfd_cancel_fork_transaction_locked(
+            event->notification_start, notify_contexts,
+            release_children);
+    }
+    for (uint16_t index = 0;
+         index < EDGE_RUNTIME_MAX_USERFAULTFD_RANGES; ++index) {
+        kernel_userfaultfd_range_t *range = &g_userfaultfd_ranges[index];
+        kernel_userfaultfd_wp_range_t *wp_range =
+            &g_userfaultfd_wp_ranges[index];
+        if (range->used && range->context_id >= 0 &&
+            range->context_id < EDGE_RUNTIME_MAX_USERFAULTFDS &&
+            affected[range->context_id])
+            memset(range, 0, sizeof(*range));
+        if (wp_range->used && wp_range->context_id >= 0 &&
+            wp_range->context_id < EDGE_RUNTIME_MAX_USERFAULTFDS &&
+            affected[wp_range->context_id])
+            memset(wp_range, 0, sizeof(*wp_range));
+    }
+    userfaultfd_unlock();
+    for (int context_id = 0;
+         context_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++context_id) {
+        if (affected[context_id])
+            kernel_userfaultfd_state_changed(context_id);
+        if (notify_contexts[context_id] && !affected[context_id])
+            kernel_userfaultfd_state_changed(context_id);
+        if (release_children[context_id])
+            kernel_userfaultfd_release(context_id);
+    }
+}
+
 int kernel_userfaultfd_resolve(int context_id,
                                const kernel_uffdio_range_t *range) {
     return userfaultfd_resolve_events(context_id, range, 0);
@@ -1503,7 +1944,7 @@ int kernel_userfaultfd_page_fault(
             break;
         }
     }
-    if (!context) {
+    if (found_context < 0) {
         userfaultfd_unlock();
         return 0;
     }
@@ -1677,11 +2118,17 @@ int64_t kernel_userfaultfd_read(
     int context_id, kernel_userfaultfd_copy_record_fn copy_record,
     void *copy_context, uint64_t length) {
     kernel_userfaultfd_context_t *context;
+    kernel_userfaultfd_context_t *fork_context;
     kernel_userfaultfd_message_t message;
     uint16_t event_index;
+    int fork_context_id = -1;
+    int fork_descriptor = -1;
+    uint32_t fork_flags = 0;
+    uint8_t fork_affected[EDGE_RUNTIME_MAX_USERFAULTFDS];
 
     if (!copy_record) return -EDGE_LINUX_EFAULT;
     if (length < sizeof(message)) return -EDGE_LINUX_EINVAL;
+    memset(fork_affected, 0, sizeof(fork_affected));
     userfaultfd_lock();
     context = userfaultfd_context_locked(context_id);
     if (!context) {
@@ -1704,6 +2151,20 @@ int64_t kernel_userfaultfd_read(
         message.address = g_userfaultfd_events[event_index].address;
         message.thread_id =
             g_userfaultfd_events[event_index].thread_id;
+    } else if (message.event == KERNEL_UFFD_EVENT_FORK) {
+        if (g_userfaultfd_events[event_index].notification_extra >=
+            EDGE_RUNTIME_MAX_USERFAULTFDS) {
+            userfaultfd_unlock();
+            return -EDGE_LINUX_EIO;
+        }
+        fork_context_id = (int)
+            g_userfaultfd_events[event_index].notification_extra;
+        fork_context = userfaultfd_context_locked(fork_context_id);
+        if (!fork_context) {
+            userfaultfd_unlock();
+            return -EDGE_LINUX_EIO;
+        }
+        fork_flags = fork_context->flags;
     } else {
         message.flags =
             g_userfaultfd_events[event_index].notification_start;
@@ -1714,10 +2175,31 @@ int64_t kernel_userfaultfd_read(
     }
     userfaultfd_remove_queued_event_locked(context, event_index);
     userfaultfd_unlock();
+    if (message.event == KERNEL_UFFD_EVENT_FORK) {
+        fork_descriptor = kernel_userfaultfd_install_existing_descriptor(
+            fork_context_id, fork_flags);
+        if (fork_descriptor < 0) {
+            userfaultfd_lock();
+            context = userfaultfd_context_locked(context_id);
+            if (context && g_userfaultfd_events[event_index].used &&
+                !g_userfaultfd_events[event_index].queued) {
+                g_userfaultfd_events[event_index].queued = 1u;
+                g_userfaultfd_events[event_index].next = context->head;
+                context->head = event_index;
+                if (context->tail == KERNEL_UFFD_INDEX_NONE)
+                    context->tail = event_index;
+                ++context->queued_events;
+            }
+            userfaultfd_unlock();
+            return fork_descriptor;
+        }
+        message.fork_ufd = (uint32_t)fork_descriptor;
+    }
     if (copy_record(copy_context, 0, &message, sizeof(message)) < 0) {
         userfaultfd_lock();
         context = userfaultfd_context_locked(context_id);
-        if (context && g_userfaultfd_events[event_index].used &&
+        if (message.event != KERNEL_UFFD_EVENT_FORK && context &&
+            g_userfaultfd_events[event_index].used &&
             !g_userfaultfd_events[event_index].queued) {
             g_userfaultfd_events[event_index].queued = 1;
             g_userfaultfd_events[event_index].next = context->head;
@@ -1726,10 +2208,34 @@ int64_t kernel_userfaultfd_read(
                 context->tail = event_index;
             ++context->queued_events;
         }
+        if (message.event == KERNEL_UFFD_EVENT_FORK &&
+            g_userfaultfd_events[event_index].used &&
+            !g_userfaultfd_events[event_index].queued)
+            userfaultfd_complete_fork_transaction_locked(
+                event_index, fork_affected);
         userfaultfd_unlock();
+        if (message.event == KERNEL_UFFD_EVENT_FORK) {
+            for (int affected_context = 0;
+                 affected_context < EDGE_RUNTIME_MAX_USERFAULTFDS;
+                 ++affected_context)
+                if (fork_affected[affected_context])
+                    kernel_userfaultfd_state_changed(affected_context);
+        }
         return -EDGE_LINUX_EFAULT;
     }
-    if (message.event != KERNEL_UFFD_EVENT_PAGEFAULT) {
+    if (message.event == KERNEL_UFFD_EVENT_FORK) {
+        userfaultfd_lock();
+        if (g_userfaultfd_events[event_index].used &&
+            !g_userfaultfd_events[event_index].queued)
+            userfaultfd_complete_fork_transaction_locked(
+                event_index, fork_affected);
+        userfaultfd_unlock();
+        for (int affected_context = 0;
+             affected_context < EDGE_RUNTIME_MAX_USERFAULTFDS;
+             ++affected_context)
+            if (fork_affected[affected_context])
+                kernel_userfaultfd_state_changed(affected_context);
+    } else if (message.event != KERNEL_UFFD_EVENT_PAGEFAULT) {
         userfaultfd_lock();
         if (g_userfaultfd_events[event_index].used &&
             !g_userfaultfd_events[event_index].queued)

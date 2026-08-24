@@ -66,11 +66,16 @@ typedef struct kernel_clone_state {
     int32_t child_visible_pid;
     int32_t pidfd;
     uintptr_t architecture_token;
+    uint64_t parent_address_space;
+    uint64_t child_address_space;
+    uint64_t userfaultfd_wait_ticket;
+    int32_t userfaultfd_wait_context;
     uint64_t architecture_state[2];
     uint8_t prepared;
     uint8_t vfork_prepared;
     uint8_t published;
     uint8_t cgroup_accounted;
+    uint8_t userfaultfd_cloned;
 } kernel_clone_state_t;
 
 /*

@@ -48,6 +48,11 @@ static int32_t g_ptrace_child;
 static int32_t g_ptrace_visible_child;
 static int g_publish_event;
 static edge_linux_scheduler_state_t g_parent_scheduler;
+static int g_userfaultfd_forks;
+static int g_userfaultfd_releases;
+static int g_userfaultfd_waits;
+static int g_userfaultfd_replay;
+static int64_t g_userfaultfd_replay_result;
 
 int kernel_current_linux_identity(kernel_linux_identity_t *identity) {
     if (!identity) return -1;
@@ -102,6 +107,11 @@ static void reset_mocks(void) {
     g_ptrace_visible_child = 0;
     g_publish_event = -1;
     memset(&g_parent_scheduler, 0, sizeof(g_parent_scheduler));
+    g_userfaultfd_forks = 0;
+    g_userfaultfd_releases = 0;
+    g_userfaultfd_waits = 0;
+    g_userfaultfd_replay = 0;
+    g_userfaultfd_replay_result = 0;
     g_parent_scheduler.affinity_mask = 1u;
     g_parent_scheduler.policy = EDGE_LINUX_SCHED_OTHER;
 }
@@ -132,6 +142,8 @@ int process_clone_arch_prepare(const kernel_clone_prepare_t *prepare,
     state->child_global_pid = 101;
     state->parent_visible_pid = 44;
     state->child_visible_pid = 7;
+    state->parent_address_space = 0x1000u;
+    state->child_address_space = prepare->share_vm ? 0x1000u : 0x2000u;
     if (g_prepare_bad_state)
         state->child_visible_pid = 0;
     return 0;
@@ -206,6 +218,46 @@ int process_clone_arch_wait_vfork(kernel_clone_state_t *state) {
 void process_clone_arch_abort(kernel_clone_state_t *state) {
     record_event(EVENT_ABORT);
     state->prepared = 0;
+}
+
+int kernel_userfaultfd_address_space_fork(
+        uint64_t parent_address_space, uint64_t child_address_space,
+        int32_t child_owner_pid, int *wait_context,
+        uint64_t *wait_ticket) {
+    expect_true("userfaultfd parent address space",
+                parent_address_space == 0x1000u);
+    expect_true("userfaultfd child address space",
+                child_address_space == 0x2000u);
+    expect_true("userfaultfd child owner", child_owner_pid == 101);
+    expect_true("userfaultfd wait outputs",
+                wait_context != 0 && wait_ticket != 0);
+    *wait_context = 3;
+    *wait_ticket = 9u;
+    ++g_userfaultfd_forks;
+    return 0;
+}
+
+void kernel_userfaultfd_wait_fork(int context_id, uint64_t ticket,
+                                  int64_t completion_result) {
+    expect_true("userfaultfd wait context", context_id == 3);
+    expect_true("userfaultfd wait ticket", ticket == 9u);
+    expect_true("userfaultfd wait result", completion_result == 44);
+    ++g_userfaultfd_waits;
+}
+
+int kernel_userfaultfd_consume_completed_fork(
+        int64_t *completion_result) {
+    if (!g_userfaultfd_replay) return 0;
+    expect_true("userfaultfd replay destination", completion_result != 0);
+    if (completion_result)
+        *completion_result = g_userfaultfd_replay_result;
+    return 1;
+}
+
+void kernel_userfaultfd_address_space_release(uint64_t address_space) {
+    expect_true("userfaultfd released child address space",
+                address_space == 0x2000u);
+    ++g_userfaultfd_releases;
 }
 
 int edge_linux_ptrace_clone_stop(void *user_registers, uint64_t clone_flags,
@@ -335,6 +387,10 @@ static void test_plain_fork_configuration(void) {
                     KERNEL_CLONE_PARENT_CURRENT);
     expect_true("fork signal",
                 g_configuration.exit_signal == EDGE_LINUX_SIGCHLD);
+    expect_true("fork cloned userfaultfd", g_userfaultfd_forks == 1);
+    expect_true("fork waited for userfaultfd", g_userfaultfd_waits == 1);
+    expect_true("fork kept child address space",
+                g_userfaultfd_releases == 0);
 }
 
 static void test_thread_configuration(void) {
@@ -496,6 +552,20 @@ static void test_deadline_requires_reset_on_fork(void) {
     expect_events("deadline fork stops before allocation", 0, 0);
 }
 
+static void test_userfaultfd_replay_does_not_clone_again(void) {
+    kernel_clone_request_t request = base_request();
+    int64_t result;
+
+    reset_mocks();
+    g_userfaultfd_replay = 1;
+    g_userfaultfd_replay_result = 44;
+    result = kernel_process_clone(&request);
+    expect_true("userfaultfd replay result", result == 44);
+    expect_true("userfaultfd replay did not allocate", g_event_count == 0);
+    expect_true("userfaultfd replay did not fork",
+                g_userfaultfd_forks == 0);
+}
+
 int main(void) {
     test_full_vfork_transaction();
     test_plain_fork_configuration();
@@ -507,6 +577,7 @@ int main(void) {
     test_incomplete_prepare_rolls_back();
     test_pids_limit_rolls_back();
     test_deadline_requires_reset_on_fork();
+    test_userfaultfd_replay_does_not_clone_again();
     if (g_failures) {
         fprintf(stderr, "process clone unit: %d failure(s)\n", g_failures);
         return 1;

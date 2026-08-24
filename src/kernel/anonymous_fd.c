@@ -227,6 +227,18 @@ int kernel_userfaultfd_create_descriptor(uint32_t flags) {
     return descriptor;
 }
 
+int kernel_userfaultfd_install_existing_descriptor(
+        int context_id, uint32_t flags) {
+    kernel_userfaultfd_state_t state;
+
+    if (kernel_userfaultfd_query(context_id, &state) < 0)
+        return -EDGE_LINUX_EBADF;
+    return kernel_anonymous_fd_install_descriptor(
+        KERNEL_ANONYMOUS_FD_USERFAULTFD, context_id,
+        (flags & KERNEL_UFFD_NONBLOCK) ? KERNEL_UFFD_NONBLOCK : 0u,
+        flags & KERNEL_UFFD_CLOEXEC);
+}
+
 int kernel_userfaultfd_descriptor_id(int32_t descriptor) {
     kernel_userfaultfd_state_t state;
     int object_id = kernel_anonymous_fd_descriptor_object_id(

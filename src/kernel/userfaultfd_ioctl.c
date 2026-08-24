@@ -7,7 +7,9 @@
 #include <stdint.h>
 
 #include "kernel/linux_errno.h"
+#include "kernel/credentials.h"
 #include "kernel/mm_runtime.h"
+#include "kernel/process_runtime.h"
 #include "kernel/task_scratch.h"
 #include "kernel/userfaultfd.h"
 #include "kernel/userfaultfd_runtime.h"
@@ -87,9 +89,23 @@ int64_t kernel_userfaultfd_ioctl(const kernel_ioctl_request_t *request) {
 
     if (request->command == KERNEL_UFFDIO_API) {
         kernel_uffdio_api_t api;
+        linux_credential_state_t credentials;
         status = userfaultfd_copy_from_user(
             request, &api, request->argument, sizeof(api));
         if (status < 0) return status;
+        if (api.features & KERNEL_UFFD_FEATURE_EVENT_FORK) {
+            if (kernel_current_credentials_get(&credentials) < 0)
+                return -EDGE_LINUX_ESRCH;
+            if (!(credentials.capabilities.effective &
+                  (1ULL << EDGE_LINUX_CAP_SYS_PTRACE))) {
+                memset(&api, 0, sizeof(api));
+                if (userfaultfd_copy_to_user(
+                        request, request->argument,
+                        &api, sizeof(api)) < 0)
+                    return -EDGE_LINUX_EFAULT;
+                return -EDGE_LINUX_EPERM;
+            }
+        }
         status = kernel_userfaultfd_negotiate(context_id, &api);
         if (userfaultfd_copy_to_user(
                 request, request->argument, &api, sizeof(api)) < 0)

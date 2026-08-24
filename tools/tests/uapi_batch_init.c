@@ -141,6 +141,9 @@ static int run_probe(const char *name) {
 
 __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
     static const char *const probes[] = {
+#ifdef UAPI_BATCH_USERFAULTFD_ONLY
+        "userfaultfd_abi_probe",
+#else
 #ifndef UAPI_BATCH_FREESTANDING_ONLY
         "restart_syscall_abi_probe",
 #endif
@@ -165,6 +168,7 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "clock_adjust_abi_probe",
         "module_abi_probe",
         "vhangup_abi_probe",
+#endif
 #endif
     };
     int failures = 0;

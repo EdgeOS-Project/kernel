@@ -12,6 +12,8 @@
 #include "kernel/ioctl_runtime.h"
 
 int kernel_userfaultfd_create_descriptor(uint32_t flags);
+int kernel_userfaultfd_install_existing_descriptor(
+    int context_id, uint32_t flags);
 int kernel_userfaultfd_descriptor_id(int32_t descriptor);
 void kernel_userfaultfd_state_changed(int context_id);
 void arch_userfaultfd_state_changed(int context_id);

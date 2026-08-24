@@ -7482,6 +7482,7 @@ static void process_user_mmap_reset_internal(task_t *t) {
     t = task_vm_owner_local(t);
     idx = task_index(t);
     if (!t || idx < 0 || idx >= USER_AS_MAX_TASKS) return;
+    kernel_userfaultfd_address_space_release(t->cr3);
     kernel_mm_lock_space_release(t->cr3);
 #ifdef CONFIG_FS_SWAP
     edge_swap_map_release_space(t->cr3);

@@ -43,6 +43,8 @@ int process_clone_arch_prepare(const kernel_clone_prepare_t *prepare,
     if (!child) return -EIO;
 
     state->child_global_pid = child_pid;
+    state->parent_address_space = current->cr3;
+    state->child_address_space = child->cr3;
     state->architecture_state[0] = prepare->share_vm ? 1u : 0u;
     state->prepared = 1;
     if (edge_pid_namespace_global_to_visible(

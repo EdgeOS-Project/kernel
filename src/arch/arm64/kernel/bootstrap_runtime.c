@@ -4532,6 +4532,7 @@ static void task_vm_release(uint64_t ttbr0, const kernel_task_t *owner) {
         if (other == owner || other->state == KERNEL_TASK_UNUSED) continue;
         if (other->ttbr0 == ttbr0) return;
     }
+    kernel_userfaultfd_address_space_release(ttbr0);
     kernel_sysv_shm_address_space_release(
         (uintptr_t)ttbr0,
         owner ? (owner->tgid ? owner->tgid : owner->pid) : 0);
@@ -35567,6 +35568,8 @@ int process_clone_arch_prepare(const kernel_clone_prepare_t *prepare,
     }
     state->child_global_pid = child->pid;
     state->architecture_token = (uintptr_t)((uint32_t)slot + 1u);
+    state->parent_address_space = task->ttbr0;
+    state->child_address_space = child->ttbr0;
     state->architecture_state[0] = prepare->share_vm ? 1u : 0u;
     state->architecture_state[1] =
         (uint64_t)(uintptr_t)prepare->user_registers;

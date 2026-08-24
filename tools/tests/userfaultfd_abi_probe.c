@@ -55,6 +55,7 @@
 #define UFFD_USER_MODE_ONLY 0x1
 #define UFFD_API 0xAAu
 #define UFFD_FEATURE_PAGEFAULT_FLAG_WP (1ULL << 0)
+#define UFFD_FEATURE_EVENT_FORK (1ULL << 1)
 #define UFFD_FEATURE_EVENT_REMAP (1ULL << 2)
 #define UFFD_FEATURE_EVENT_REMOVE (1ULL << 3)
 #define UFFD_FEATURE_MISSING_SHMEM (1ULL << 5)
@@ -84,6 +85,7 @@
 #define UFFDIO_CONTINUE 0xc020aa07u
 #define UFFDIO_POISON 0xc020aa08u
 #define UFFD_EVENT_PAGEFAULT 0x12u
+#define UFFD_EVENT_FORK 0x13u
 #define UFFD_EVENT_REMAP 0x14u
 #define UFFD_EVENT_REMOVE 0x15u
 #define UFFD_EVENT_UNMAP 0x16u
@@ -162,18 +164,32 @@ struct uffd_msg {
     uint8_t reserved1;
     uint16_t reserved2;
     uint32_t reserved3;
-    uint64_t flags;
-    uint64_t address;
     union {
         struct {
-            uint32_t thread_id;
-            uint32_t reserved4;
+            uint64_t flags;
+            uint64_t address;
+            union {
+                struct {
+                    uint32_t thread_id;
+                    uint32_t reserved4;
+                };
+                uint64_t length;
+            };
         };
-        uint64_t length;
+        struct {
+            uint32_t fork_ufd;
+            uint32_t fork_reserved;
+            uint64_t fork_reserved2;
+            uint64_t fork_reserved3;
+        };
     };
 };
 
 static unsigned char g_fault_stack[16384] __attribute__((aligned(16)));
+static unsigned char g_fork_handler_stack[16384]
+    __attribute__((aligned(16)));
+static unsigned char g_fork_child_stack[16384]
+    __attribute__((aligned(16)));
 static volatile unsigned char *g_fault_address;
 static volatile unsigned char g_fault_value;
 static volatile unsigned char g_fault_write;
@@ -181,6 +197,16 @@ static volatile unsigned long g_child_operation;
 static volatile unsigned long g_child_length;
 static volatile unsigned long g_child_target;
 static volatile long g_child_result;
+static volatile unsigned char *g_fork_area;
+static volatile long g_fork_parent_descriptor;
+static volatile long g_fork_child_descriptor;
+static volatile long g_fork_handler_ready;
+static volatile long g_fork_event_result;
+static volatile long g_fork_fault_result;
+static volatile long g_fork_fault_received;
+static volatile long g_fork_fault_event;
+static volatile uint64_t g_fork_fault_address;
+static const char g_fork_event_failure[] = "FAIL fork-handler-event\n";
 
 static long raw_syscall6(long number, long a0, long a1, long a2,
                          long a3, long a4, long a5) {
@@ -247,6 +273,69 @@ void fault_child_entry(void) {
     exit_now(0);
 }
 
+static __attribute__((noreturn, noinline, used))
+void fork_handler_entry(void) {
+    struct uffd_msg event;
+    struct uffdio_zeropage zero;
+    long received = -EAGAIN;
+
+    g_fork_handler_ready = 1;
+    for (unsigned long attempt = 0; attempt < 1000000u; ++attempt) {
+        received = raw_syscall6(
+            SYS_read, g_fork_parent_descriptor, (long)&event,
+            sizeof(event), 0, 0, 0);
+        if (received != -EAGAIN) break;
+        (void)raw_syscall6(SYS_sched_yield, 0, 0, 0, 0, 0, 0);
+    }
+    if (received != (long)sizeof(event) ||
+        event.event != UFFD_EVENT_FORK || (int32_t)event.fork_ufd < 0) {
+        g_fork_event_result = -1;
+        (void)raw_syscall6(
+            SYS_write, 1, (long)g_fork_event_failure,
+            sizeof(g_fork_event_failure) - 1u, 0, 0, 0);
+        exit_now(1);
+    }
+    g_fork_child_descriptor = (long)(int32_t)event.fork_ufd;
+    g_fork_event_result = 1;
+    received = -EAGAIN;
+    for (unsigned long attempt = 0; attempt < 1000000u; ++attempt) {
+        received = raw_syscall6(
+            SYS_read, g_fork_child_descriptor, (long)&event,
+            sizeof(event), 0, 0, 0);
+        if (received != -EAGAIN) break;
+        (void)raw_syscall6(SYS_sched_yield, 0, 0, 0, 0, 0, 0);
+    }
+    g_fork_fault_received = received;
+    g_fork_fault_event = event.event;
+    g_fork_fault_address = event.address;
+    if (received != (long)sizeof(event) ||
+        event.event != UFFD_EVENT_PAGEFAULT ||
+        event.address != (uint64_t)(uintptr_t)g_fork_area) {
+        g_fork_fault_result = -1;
+        exit_now(2);
+    }
+    zero.range.start = (uint64_t)(uintptr_t)g_fork_area;
+    zero.range.len = PAGE_SIZE;
+    zero.mode = 0;
+    zero.zeropage = 0;
+    if (raw_syscall6(
+            SYS_ioctl, g_fork_child_descriptor, UFFDIO_ZEROPAGE,
+            (long)&zero, 0, 0, 0) != 0 ||
+        zero.zeropage != PAGE_SIZE) {
+        g_fork_fault_result = -2;
+        exit_now(3);
+    }
+    g_fork_fault_result = 1;
+    exit_now(0);
+}
+
+static __attribute__((noreturn, noinline, used))
+void fork_fault_child_entry(void) {
+    unsigned char value = *g_fork_area;
+    __asm__ volatile("" ::: "memory");
+    exit_now(value == 0 ? 0 : 4);
+}
+
 #if defined(__x86_64__)
 static __attribute__((naked, noinline)) long
 spawn_fault_child(unsigned long flags __attribute__((unused)),
@@ -258,6 +347,34 @@ spawn_fault_child(unsigned long flags __attribute__((unused)),
         "jnz 1f\n"
         "xor %ebp, %ebp\n"
         "call fault_child_entry\n"
+        "ud2\n"
+        "1: ret\n");
+}
+
+static __attribute__((naked, noinline)) long
+spawn_fork_handler(unsigned long flags __attribute__((unused)),
+                   void *stack __attribute__((unused))) {
+    __asm__ volatile(
+        "mov $56, %rax\n"
+        "syscall\n"
+        "test %rax, %rax\n"
+        "jnz 1f\n"
+        "xor %ebp, %ebp\n"
+        "call fork_handler_entry\n"
+        "ud2\n"
+        "1: ret\n");
+}
+
+static __attribute__((naked, noinline)) long
+spawn_fork_fault_child(unsigned long flags __attribute__((unused)),
+                       void *stack __attribute__((unused))) {
+    __asm__ volatile(
+        "mov $56, %rax\n"
+        "syscall\n"
+        "test %rax, %rax\n"
+        "jnz 1f\n"
+        "xor %ebp, %ebp\n"
+        "call fork_fault_child_entry\n"
         "ud2\n"
         "1: ret\n");
 }
@@ -275,6 +392,48 @@ spawn_fault_child(unsigned long flags, void *stack) {
         "cbnz x0, 1f\n"
         "mov x29, xzr\n"
         "bl fault_child_entry\n"
+        "brk #0\n"
+        "1:\n"
+        : "+r"(x0)
+        : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x8)
+        : "x29", "x30", "memory", "cc");
+    return (long)x0;
+}
+
+static __attribute__((noinline)) long
+spawn_fork_handler(unsigned long flags, void *stack) {
+    register unsigned long x0 __asm__("x0") = flags;
+    register void *x1 __asm__("x1") = stack;
+    register unsigned long x2 __asm__("x2") = 0;
+    register unsigned long x3 __asm__("x3") = 0;
+    register unsigned long x4 __asm__("x4") = 0;
+    register unsigned long x8 __asm__("x8") = SYS_clone;
+    __asm__ volatile(
+        "svc #0\n"
+        "cbnz x0, 1f\n"
+        "mov x29, xzr\n"
+        "bl fork_handler_entry\n"
+        "brk #0\n"
+        "1:\n"
+        : "+r"(x0)
+        : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x8)
+        : "x29", "x30", "memory", "cc");
+    return (long)x0;
+}
+
+static __attribute__((noinline)) long
+spawn_fork_fault_child(unsigned long flags, void *stack) {
+    register unsigned long x0 __asm__("x0") = flags;
+    register void *x1 __asm__("x1") = stack;
+    register unsigned long x2 __asm__("x2") = 0;
+    register unsigned long x3 __asm__("x3") = 0;
+    register unsigned long x4 __asm__("x4") = 0;
+    register unsigned long x8 __asm__("x8") = SYS_clone;
+    __asm__ volatile(
+        "svc #0\n"
+        "cbnz x0, 1f\n"
+        "mov x29, xzr\n"
+        "bl fork_fault_child_entry\n"
         "brk #0\n"
         "1:\n"
         : "+r"(x0)
@@ -1598,6 +1757,123 @@ START_ATTRIBUTES void _start(void) {
             (void)raw_syscall6(
                 SYS_munmap, (long)event_area,
                 event_descriptor >= 0 ? PAGE_SIZE * 3u : PAGE_SIZE * 2u,
+                0, 0, 0, 0);
+    }
+
+    {
+        unsigned char *fork_area = (unsigned char *)raw_syscall6(
+            SYS_mmap, 0, PAGE_SIZE, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        long fork_descriptor = raw_syscall6(
+            SYS_userfaultfd,
+            O_NONBLOCK | O_CLOEXEC | UFFD_USER_MODE_ONLY,
+            0, 0, 0, 0, 0);
+        struct uffdio_api fork_api = {
+            .api = UFFD_API,
+            .features = UFFD_FEATURE_EVENT_FORK,
+        };
+        long handler = -1;
+        long child = -1;
+        int handler_status = -1;
+        int child_status = -1;
+
+        if ((long)fork_area < 0 || fork_descriptor < 0) {
+            print_text("FAIL fork-event-setup\n");
+            ++failures;
+        } else {
+            failures += expect_result(
+                "fork-event-api", raw_syscall6(
+                    SYS_ioctl, fork_descriptor, UFFDIO_API,
+                    (long)&fork_api, 0, 0, 0), 0);
+            if (!(fork_api.features & UFFD_FEATURE_EVENT_FORK)) {
+                print_text("FAIL fork-event-feature\n");
+                ++failures;
+            }
+            registration.range.start =
+                (uint64_t)(uintptr_t)fork_area;
+            registration.range.len = PAGE_SIZE;
+            registration.mode = UFFDIO_REGISTER_MODE_MISSING;
+            registration.ioctls = 0;
+            failures += expect_result(
+                "fork-event-register", raw_syscall6(
+                    SYS_ioctl, fork_descriptor, UFFDIO_REGISTER,
+                    (long)&registration, 0, 0, 0), 0);
+            g_fork_area = fork_area;
+            g_fork_parent_descriptor = fork_descriptor;
+            g_fork_child_descriptor = -1;
+            g_fork_handler_ready = 0;
+            g_fork_event_result = 0;
+            g_fork_fault_result = 0;
+            g_fork_fault_received = 0;
+            g_fork_fault_event = 0;
+            g_fork_fault_address = 0;
+            handler = spawn_fork_handler(
+                CLONE_VM | SIGCHLD,
+                &g_fork_handler_stack[sizeof(g_fork_handler_stack)]);
+            failures += expect_result(
+                "fork-event-handler", handler < 0 ? handler : 0, 0);
+            if (handler >= 0) {
+                for (unsigned long attempt = 0;
+                     attempt < 1000000u && !g_fork_handler_ready;
+                     ++attempt)
+                    (void)raw_syscall6(
+                        SYS_sched_yield, 0, 0, 0, 0, 0, 0);
+                failures += expect_result(
+                    "fork-event-handler-ready",
+                    g_fork_handler_ready, 1);
+                child = spawn_fork_fault_child(
+                    SIGCHLD,
+                    &g_fork_child_stack[sizeof(g_fork_child_stack)]);
+                failures += expect_result(
+                    "fork-event-child", child < 0 ? child : 0, 0);
+                if (child >= 0) {
+                    failures += expect_result(
+                        "fork-event-handler-wait", raw_syscall6(
+                            SYS_wait4, handler, (long)&handler_status,
+                            0, 0, 0, 0), handler);
+                    if (handler_status != 0)
+                        (void)raw_syscall6(
+                            SYS_kill, child, SIGKILL, 0, 0, 0, 0);
+                    failures += expect_result(
+                        "fork-event-child-wait", raw_syscall6(
+                            SYS_wait4, child, (long)&child_status,
+                            0, 0, 0, 0), child);
+                    failures += expect_result(
+                        "fork-event-child-status", child_status, 0);
+                } else {
+                    (void)raw_syscall6(
+                        SYS_kill, handler, SIGKILL, 0, 0, 0, 0);
+                    (void)raw_syscall6(
+                        SYS_wait4, handler, (long)&handler_status,
+                        0, 0, 0, 0);
+                }
+                failures += expect_result(
+                    "fork-event-handler-status", handler_status, 0);
+                failures += expect_result(
+                    "fork-event-received", g_fork_event_result, 1);
+                failures += expect_result(
+                    "fork-event-child-fault", g_fork_fault_result, 1);
+                failures += expect_result(
+                    "fork-event-fault-size", g_fork_fault_received,
+                    sizeof(message));
+                failures += expect_result(
+                    "fork-event-fault-kind", g_fork_fault_event,
+                    UFFD_EVENT_PAGEFAULT);
+                failures += expect_result(
+                    "fork-event-fault-address",
+                    (long)g_fork_fault_address,
+                    (long)(uintptr_t)fork_area);
+            }
+        }
+        if (g_fork_child_descriptor >= 0)
+            (void)raw_syscall6(
+                SYS_close, g_fork_child_descriptor, 0, 0, 0, 0, 0);
+        if (fork_descriptor >= 0)
+            (void)raw_syscall6(
+                SYS_close, fork_descriptor, 0, 0, 0, 0, 0);
+        if ((long)fork_area > 0)
+            (void)raw_syscall6(
+                SYS_munmap, (long)fork_area, PAGE_SIZE,
                 0, 0, 0, 0);
     }
 

@@ -14,8 +14,14 @@
 #include "kernel/perf_event.h"
 #include "kernel/process_runtime.h"
 #include "kernel/scheduler_policy.h"
+#include "kernel/userfaultfd.h"
 
 static int64_t clone_fail(kernel_clone_state_t *state, int status) {
+    if (state && state->userfaultfd_cloned) {
+        kernel_userfaultfd_address_space_release(
+            state->child_address_space);
+        state->userfaultfd_cloned = 0;
+    }
     if (state && state->prepared)
         process_clone_arch_abort(state);
     return status < 0 ? status : -EDGE_LINUX_EIO;
@@ -30,9 +36,12 @@ int64_t kernel_process_clone(const kernel_clone_request_t *request) {
     int ptrace_event;
     kernel_linux_identity_t parent_identity;
     edge_linux_scheduler_state_t parent_scheduler;
+    int64_t replay_result;
 
     if (!request || !request->user_registers)
         return -EDGE_LINUX_EINVAL;
+    if (kernel_userfaultfd_consume_completed_fork(&replay_result))
+        return replay_result;
     if (kernel_current_linux_identity(&parent_identity) < 0 ||
         kernel_scheduler_state_get(parent_identity.global_tid,
                                    &parent_scheduler) < 0)
@@ -48,12 +57,17 @@ int64_t kernel_process_clone(const kernel_clone_request_t *request) {
     state.child_visible_pid = 0;
     state.pidfd = -1;
     state.architecture_token = 0;
+    state.parent_address_space = 0;
+    state.child_address_space = 0;
+    state.userfaultfd_wait_ticket = 0;
+    state.userfaultfd_wait_context = -1;
     state.architecture_state[0] = 0;
     state.architecture_state[1] = 0;
     state.prepared = 0;
     state.vfork_prepared = 0;
     state.published = 0;
     state.cgroup_accounted = 0;
+    state.userfaultfd_cloned = 0;
 
     if (flags & EDGE_LINUX_CLONE_INTO_CGROUP) {
         status = process_clone_arch_validate_cgroup(
@@ -105,6 +119,16 @@ int64_t kernel_process_clone(const kernel_clone_request_t *request) {
         (flags & EDGE_LINUX_CLONE_SETTLS) != 0;
     status = process_clone_arch_configure(&configuration, &state);
     if (status < 0) return clone_fail(&state, status);
+
+    if (!prepare.share_vm) {
+        status = kernel_userfaultfd_address_space_fork(
+            state.parent_address_space, state.child_address_space,
+            state.child_global_pid,
+            &state.userfaultfd_wait_context,
+            &state.userfaultfd_wait_ticket);
+        if (status < 0) return clone_fail(&state, status);
+        state.userfaultfd_cloned = 1u;
+    }
 
     if (flags & EDGE_LINUX_CLONE_INTO_CGROUP) {
         status = process_clone_arch_attach_cgroup(
@@ -180,6 +204,12 @@ int64_t kernel_process_clone(const kernel_clone_request_t *request) {
         return clone_fail(&state, status);
     }
     state.published = 1;
+
+    if (state.userfaultfd_wait_ticket)
+        kernel_userfaultfd_wait_fork(
+            state.userfaultfd_wait_context,
+            state.userfaultfd_wait_ticket,
+            state.parent_visible_pid);
 
     if (prepare.vfork) {
         status = process_clone_arch_wait_vfork(&state);

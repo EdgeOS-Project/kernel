@@ -9,6 +9,7 @@
 #include "kernel/userfaultfd.h"
 
 static int changed_context = -1;
+static int installed_context = -1;
 static int writeprotect_calls;
 static uint64_t writeprotect_address;
 static int writeprotect_enable;
@@ -28,6 +29,14 @@ void arch_userfaultfd_wait_event(int context_id, uint64_t ticket,
 int arch_userfaultfd_consume_completed_event(int64_t *completion_result) {
     (void)completion_result;
     return 0;
+}
+
+int kernel_userfaultfd_install_existing_descriptor(
+        int context_id, uint32_t flags) {
+    assert(context_id >= 0);
+    assert((flags & KERNEL_UFFD_NONBLOCK) != 0);
+    installed_context = context_id;
+    return 42;
 }
 
 int arch_mm_address_space_write_protect(
@@ -377,6 +386,182 @@ int main(void) {
                 .start = 0xc02000u, .length = 0x1000u,
             }) == 1);
         kernel_userfaultfd_release(remap_context);
+    }
+    {
+        kernel_uffdio_api_t fork_api = {
+            .api = KERNEL_UFFD_API,
+            .features = KERNEL_UFFD_FEATURE_EVENT_FORK,
+        };
+        kernel_uffdio_register_t fork_registration = {
+            .range = { .start = 0xd00000u, .length = 0x2000u },
+            .mode = KERNEL_UFFD_REGISTER_MODE_MISSING,
+        };
+        int fork_context = kernel_userfaultfd_create(
+            0x42345000u, 89, KERNEL_UFFD_NONBLOCK);
+        int wait_context = -1;
+        uint64_t wait_ticket = 0;
+
+        assert(fork_context >= 0);
+        assert(kernel_userfaultfd_negotiate(
+            fork_context, &fork_api) == 0);
+        assert(kernel_userfaultfd_register(
+            fork_context, &fork_registration) == 0);
+        installed_context = -1;
+        assert(kernel_userfaultfd_address_space_fork(
+            0x42345000u, 0x52345000u, 90,
+            &wait_context, &wait_ticket) == 0);
+        assert(wait_context == fork_context && wait_ticket != 0);
+        memset(&message, 0, sizeof(message));
+        assert(kernel_userfaultfd_read(
+            fork_context, copy_message, &message, sizeof(message)) ==
+            (int64_t)sizeof(message));
+        assert(message.event == KERNEL_UFFD_EVENT_FORK);
+        assert(message.fork_ufd == 42u);
+        assert(installed_context >= 0);
+        assert(kernel_userfaultfd_missing_fault(
+            0x52345000u, 0xd00020u, 0, 120,
+            &fault_context, &ticket) == KERNEL_UFFD_FAULT_QUEUED);
+        assert(fault_context == installed_context);
+        assert(kernel_userfaultfd_resolve(
+            installed_context, &(kernel_uffdio_range_t){
+                .start = 0xd00000u, .length = 0x1000u,
+            }) == 1);
+        kernel_userfaultfd_release(installed_context);
+        kernel_userfaultfd_release(fork_context);
+    }
+    {
+        kernel_uffdio_api_t no_fork_api = {
+            .api = KERNEL_UFFD_API,
+        };
+        kernel_uffdio_register_t no_fork_registration = {
+            .range = { .start = 0xe00000u, .length = 0x1000u },
+            .mode = KERNEL_UFFD_REGISTER_MODE_MISSING,
+        };
+        int no_fork_context = kernel_userfaultfd_create(
+            0x62345000u, 91, KERNEL_UFFD_NONBLOCK);
+        int no_fork_fault;
+        int wait_context = -1;
+        uint64_t wait_ticket = 0;
+
+        assert(no_fork_context >= 0);
+        assert(kernel_userfaultfd_negotiate(
+            no_fork_context, &no_fork_api) == 0);
+        assert(kernel_userfaultfd_register(
+            no_fork_context, &no_fork_registration) == 0);
+        assert(kernel_userfaultfd_address_space_fork(
+            0x62345000u, 0x72345000u, 92,
+            &wait_context, &wait_ticket) == 0);
+        assert(wait_context == -1 && wait_ticket == 0);
+        assert(kernel_userfaultfd_read(
+            no_fork_context, copy_message, &message, sizeof(message)) ==
+            -EDGE_LINUX_EAGAIN);
+        no_fork_fault = kernel_userfaultfd_missing_fault(
+            0x72345000u, 0xe00020u, 0, 121,
+            &fault_context, &ticket);
+        assert(no_fork_fault == 0);
+        kernel_userfaultfd_release(no_fork_context);
+    }
+    {
+        kernel_uffdio_api_t first_api = {
+            .api = KERNEL_UFFD_API,
+            .features = KERNEL_UFFD_FEATURE_EVENT_FORK,
+        };
+        kernel_uffdio_api_t second_api = first_api;
+        kernel_uffdio_register_t first_registration = {
+            .range = { .start = 0xf00000u, .length = 0x1000u },
+            .mode = KERNEL_UFFD_REGISTER_MODE_MISSING,
+        };
+        kernel_uffdio_register_t second_registration = {
+            .range = { .start = 0xf01000u, .length = 0x1000u },
+            .mode = KERNEL_UFFD_REGISTER_MODE_MISSING,
+        };
+        int wait_context = -1;
+        uint64_t wait_ticket = 0;
+        int first_context = kernel_userfaultfd_create(
+            0x82345000u, 93, KERNEL_UFFD_NONBLOCK);
+        int second_context = kernel_userfaultfd_create(
+            0x82345000u, 93, KERNEL_UFFD_NONBLOCK);
+
+        assert(first_context >= 0 && second_context >= 0);
+        assert(kernel_userfaultfd_negotiate(
+            first_context, &first_api) == 0);
+        assert(kernel_userfaultfd_negotiate(
+            second_context, &second_api) == 0);
+        assert(kernel_userfaultfd_register(
+            first_context, &first_registration) == 0);
+        assert(kernel_userfaultfd_register(
+            second_context, &second_registration) == 0);
+        assert(kernel_userfaultfd_address_space_fork(
+            0x82345000u, 0x92345000u, 94,
+            &wait_context, &wait_ticket) == 0);
+        assert(wait_context == first_context && wait_ticket != 0);
+        assert(kernel_userfaultfd_fault_pending(
+            wait_context, wait_ticket) == 1);
+        assert(kernel_userfaultfd_read(
+            first_context, copy_message, &message, sizeof(message)) ==
+            (int64_t)sizeof(message));
+        assert(message.event == KERNEL_UFFD_EVENT_FORK);
+        assert(kernel_userfaultfd_fault_pending(
+            wait_context, wait_ticket) == 1);
+        assert(kernel_userfaultfd_read(
+            second_context, copy_message, &message, sizeof(message)) ==
+            (int64_t)sizeof(message));
+        assert(message.event == KERNEL_UFFD_EVENT_FORK);
+        assert(kernel_userfaultfd_fault_pending(
+            wait_context, wait_ticket) == 0);
+        kernel_userfaultfd_address_space_release(0x92345000u);
+        kernel_userfaultfd_release(first_context);
+        kernel_userfaultfd_release(second_context);
+    }
+    {
+        kernel_uffdio_api_t first_api = {
+            .api = KERNEL_UFFD_API,
+            .features = KERNEL_UFFD_FEATURE_EVENT_FORK,
+        };
+        kernel_uffdio_api_t second_api = first_api;
+        kernel_uffdio_register_t first_registration = {
+            .range = { .start = 0x1100000u, .length = 0x1000u },
+            .mode = KERNEL_UFFD_REGISTER_MODE_MISSING,
+        };
+        kernel_uffdio_register_t second_registration = {
+            .range = { .start = 0x1101000u, .length = 0x1000u },
+            .mode = KERNEL_UFFD_REGISTER_MODE_MISSING,
+        };
+        kernel_userfaultfd_state_t child_state;
+        int wait_context = -1;
+        uint64_t wait_ticket = 0;
+        int first_child_context;
+        int first_context = kernel_userfaultfd_create(
+            0xa2345000u, 95, KERNEL_UFFD_NONBLOCK);
+        int second_context = kernel_userfaultfd_create(
+            0xa2345000u, 95, KERNEL_UFFD_NONBLOCK);
+
+        assert(first_context >= 0 && second_context >= 0);
+        assert(kernel_userfaultfd_negotiate(
+            first_context, &first_api) == 0);
+        assert(kernel_userfaultfd_negotiate(
+            second_context, &second_api) == 0);
+        assert(kernel_userfaultfd_register(
+            first_context, &first_registration) == 0);
+        assert(kernel_userfaultfd_register(
+            second_context, &second_registration) == 0);
+        assert(kernel_userfaultfd_address_space_fork(
+            0xa2345000u, 0xb2345000u, 96,
+            &wait_context, &wait_ticket) == 0);
+        installed_context = -1;
+        assert(kernel_userfaultfd_read(
+            first_context, copy_message, &message, sizeof(message)) ==
+            (int64_t)sizeof(message));
+        first_child_context = installed_context;
+        assert(first_child_context >= 0);
+        kernel_userfaultfd_release(first_context);
+        assert(kernel_userfaultfd_query(
+            first_child_context, &child_state) == 0);
+        assert(kernel_userfaultfd_read(
+            second_context, copy_message, &message, sizeof(message)) ==
+            -EDGE_LINUX_EAGAIN);
+        kernel_userfaultfd_release(first_child_context);
+        kernel_userfaultfd_release(second_context);
     }
     kernel_userfaultfd_release(context_id);
     assert(kernel_userfaultfd_query(context_id, &state) ==
