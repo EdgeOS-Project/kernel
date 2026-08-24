@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MPL-2.0 */
-/* Linux userfaultfd missing-page and write-protect ABI probe. */
+/* Linux 7.2 userfaultfd ABI probe. */
 
 #include <stdint.h>
 
@@ -390,13 +390,12 @@ spawn_fault_child(unsigned long flags, void *stack) {
     __asm__ volatile(
         "svc #0\n"
         "cbnz x0, 1f\n"
-        "mov x29, xzr\n"
         "bl fault_child_entry\n"
         "brk #0\n"
         "1:\n"
         : "+r"(x0)
         : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x8)
-        : "x29", "x30", "memory", "cc");
+        : "x30", "memory", "cc");
     return (long)x0;
 }
 
@@ -411,13 +410,12 @@ spawn_fork_handler(unsigned long flags, void *stack) {
     __asm__ volatile(
         "svc #0\n"
         "cbnz x0, 1f\n"
-        "mov x29, xzr\n"
         "bl fork_handler_entry\n"
         "brk #0\n"
         "1:\n"
         : "+r"(x0)
         : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x8)
-        : "x29", "x30", "memory", "cc");
+        : "x30", "memory", "cc");
     return (long)x0;
 }
 
@@ -432,13 +430,12 @@ spawn_fork_fault_child(unsigned long flags, void *stack) {
     __asm__ volatile(
         "svc #0\n"
         "cbnz x0, 1f\n"
-        "mov x29, xzr\n"
         "bl fork_fault_child_entry\n"
         "brk #0\n"
         "1:\n"
         : "+r"(x0)
         : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x8)
-        : "x29", "x30", "memory", "cc");
+        : "x30", "memory", "cc");
     return (long)x0;
 }
 #endif

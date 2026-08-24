@@ -74,11 +74,12 @@ EDGEOS_ASSESSMENTS = [
             "anonymous poisoned-page markers with persistent SIGBUS fault behavior",
             "registration cleanup across unmap, replacing fixed mappings and remap without event negotiation",
             "architecture-independent range, event and waiter state",
+            "shared-memory minor faults with CONTINUE, DONTWAKE and write-protect completion modes",
+            "fork events with inherited registrations and child userfaultfd descriptors",
+            "remap, remove and unmap event records with Linux range layouts and blocking completion",
         ],
         "missing": [
-            "minor-fault registration and continue operation",
-            "hugetlb and shmem minor-fault behavior",
-            "exact Linux fork, remap and remove events",
+            "hugetlb minor-fault behavior",
             "ia32 and x32 compatibility layouts",
         ],
         "runtime_tests": [
