@@ -163,6 +163,11 @@ typedef struct kernel_io_uring {
     uint8_t submission_flags_allowed;
     uint8_t submission_flags_required;
     uint8_t restriction_reserved[6];
+    linux_credential_state_t
+        personalities[KERNEL_IO_URING_MAX_PERSONALITIES];
+    uint64_t personality_used;
+    uint16_t next_personality;
+    uint8_t personality_reserved[6];
     uint32_t sq_entries;
     uint32_t cq_entries;
     uint32_t sq_ring_pages;
@@ -784,6 +789,87 @@ int kernel_io_uring_register_allowed(int32_t ring_id, uint8_t opcode) {
     else if (opcode >= 64u) result = 0;
     else result =
         (ring->allowed_register_operations & (1ull << opcode)) != 0;
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_personality_register(
+        int32_t ring_id, const linux_credential_state_t *credentials,
+        uint16_t *personality_id) {
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    int result = -EDGE_LINUX_ENOMEM;
+
+    if (!credentials || !personality_id) return -EDGE_LINUX_EINVAL;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) result = -EDGE_LINUX_EBADF;
+    else {
+        for (uint32_t offset = 0;
+             offset < KERNEL_IO_URING_MAX_PERSONALITIES; ++offset) {
+            uint32_t slot = (ring->next_personality + offset) %
+                KERNEL_IO_URING_MAX_PERSONALITIES;
+            if (ring->personality_used & (1ull << slot)) continue;
+            ring->personalities[slot] = *credentials;
+            ring->personality_used |= 1ull << slot;
+            ring->next_personality = (uint16_t)(
+                (slot + 1u) % KERNEL_IO_URING_MAX_PERSONALITIES);
+            *personality_id = (uint16_t)(slot + 1u);
+            result = 0;
+            break;
+        }
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_personality_unregister(
+        int32_t ring_id, uint16_t personality_id) {
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    uint32_t slot;
+    int result;
+
+    if (!personality_id ||
+        personality_id > KERNEL_IO_URING_MAX_PERSONALITIES)
+        return -EDGE_LINUX_EINVAL;
+    slot = personality_id - 1u;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) result = -EDGE_LINUX_EBADF;
+    else if (!(ring->personality_used & (1ull << slot)))
+        result = -EDGE_LINUX_EINVAL;
+    else {
+        memset(&ring->personalities[slot], 0,
+               sizeof(ring->personalities[slot]));
+        ring->personality_used &= ~(1ull << slot);
+        result = 0;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_personality_get(
+        int32_t ring_id, uint16_t personality_id,
+        linux_credential_state_t *credentials) {
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    uint32_t slot;
+    int result;
+
+    if (!credentials || !personality_id ||
+        personality_id > KERNEL_IO_URING_MAX_PERSONALITIES)
+        return -EDGE_LINUX_EINVAL;
+    slot = personality_id - 1u;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) result = -EDGE_LINUX_EBADF;
+    else if (!(ring->personality_used & (1ull << slot)))
+        result = -EDGE_LINUX_EINVAL;
+    else {
+        *credentials = ring->personalities[slot];
+        result = 0;
+    }
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     return result;
 }

@@ -9114,6 +9114,8 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_REGISTER_FILES_UPDATE 6u
 #define EDGE_LINUX_IORING_REGISTER_EVENTFD_ASYNC 7u
 #define EDGE_LINUX_IORING_REGISTER_PROBE        8u
+#define EDGE_LINUX_IORING_REGISTER_PERSONALITY  9u
+#define EDGE_LINUX_IORING_UNREGISTER_PERSONALITY 10u
 #define EDGE_LINUX_IORING_REGISTER_RESTRICTIONS 11u
 #define EDGE_LINUX_IORING_REGISTER_ENABLE_RINGS 12u
 #define EDGE_LINUX_IORING_REGISTER_FILES2       13u
@@ -10860,7 +10862,7 @@ static void edge_linux_io_uring_finish_buffer_selection(
              EDGE_LINUX_IORING_CQE_BUFFER_SHIFT);
 }
 
-static int32_t edge_linux_io_uring_execute(
+static int32_t edge_linux_io_uring_execute_current(
         edge_linux_syscall_context_t *context,
         int32_t ring_id,
         const struct edge_linux_io_uring_sqe *submission,
@@ -10963,6 +10965,36 @@ static int32_t edge_linux_io_uring_execute(
         ring_id, result, &selected, provided_ring_head,
         provided_ring, completion_flags);
     (void)kernel_fd_close(descriptor);
+    return result;
+}
+
+static int32_t edge_linux_io_uring_execute(
+        edge_linux_syscall_context_t *context,
+        int32_t ring_id,
+        const struct edge_linux_io_uring_sqe *submission,
+        uint32_t *completion_flags,
+        edge_linux_io_uring_notification_t *notification) {
+    struct edge_linux_io_uring_sqe resolved;
+    linux_credential_state_t original;
+    linux_credential_state_t personality;
+    int32_t result;
+
+    if (!submission->personality)
+        return edge_linux_io_uring_execute_current(
+            context, ring_id, submission, completion_flags,
+            notification);
+    result = kernel_io_uring_personality_get(
+        ring_id, submission->personality, &personality);
+    if (result < 0) return result;
+    if (kernel_current_credentials_get(&original) < 0 ||
+        kernel_arch_current_credentials_commit(&personality, 0) < 0)
+        return -EDGE_LINUX_EINVAL;
+    resolved = *submission;
+    resolved.personality = 0u;
+    result = edge_linux_io_uring_execute_current(
+        context, ring_id, &resolved, completion_flags, notification);
+    if (kernel_arch_current_credentials_commit(&original, 0) < 0)
+        return -EDGE_LINUX_EIO;
     return result;
 }
 
@@ -12069,6 +12101,23 @@ static int64_t edge_linux_sys_io_uring_register(
     if (opcode == EDGE_LINUX_IORING_REGISTER_RESTRICTIONS)
         return edge_linux_io_uring_restrictions_register(
             context, ring_id, argument, operation_count);
+    if (opcode == EDGE_LINUX_IORING_REGISTER_PERSONALITY) {
+        linux_credential_state_t credentials;
+        uint16_t personality_id;
+
+        if (argument || operation_count) return -EDGE_LINUX_EINVAL;
+        if (kernel_current_credentials_get(&credentials) < 0)
+            return -EDGE_LINUX_EINVAL;
+        result = kernel_io_uring_personality_register(
+            ring_id, &credentials, &personality_id);
+        return result < 0 ? result : personality_id;
+    }
+    if (opcode == EDGE_LINUX_IORING_UNREGISTER_PERSONALITY) {
+        if (argument || operation_count > UINT16_MAX)
+            return -EDGE_LINUX_EINVAL;
+        return kernel_io_uring_personality_unregister(
+            ring_id, (uint16_t)operation_count);
+    }
     if (opcode == EDGE_LINUX_IORING_REGISTER_PBUF_STATUS)
         return edge_linux_io_uring_pbuf_status(
             context, ring_id, argument, operation_count);

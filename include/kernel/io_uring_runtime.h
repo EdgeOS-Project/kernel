@@ -26,6 +26,7 @@
 #define KERNEL_IO_URING_MAX_PBUF_PAGES 256u
 #define KERNEL_IO_URING_MAX_WAIT_REGION_PAGES 64u
 #define KERNEL_IO_URING_REGISTERED_RINGS 16u
+#define KERNEL_IO_URING_MAX_PERSONALITIES 64u
 #define KERNEL_IO_URING_REGISTERED_RING_ALLOC UINT32_MAX
 #define KERNEL_IO_URING_REGISTER_FILES_SKIP (-2)
 
@@ -122,6 +123,14 @@ int kernel_io_uring_restrictions_register(
     int restrict_register_operations,
     int restrict_submission_operations);
 int kernel_io_uring_register_allowed(int32_t ring_id, uint8_t opcode);
+int kernel_io_uring_personality_register(
+    int32_t ring_id, const linux_credential_state_t *credentials,
+    uint16_t *personality_id);
+int kernel_io_uring_personality_unregister(
+    int32_t ring_id, uint16_t personality_id);
+int kernel_io_uring_personality_get(
+    int32_t ring_id, uint16_t personality_id,
+    linux_credential_state_t *credentials);
 void kernel_io_uring_capabilities(uint64_t *features,
                                   uint64_t *setup_flags);
 int kernel_io_uring_eventfd_register(int32_t ring_id, int32_t event_id,

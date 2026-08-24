@@ -558,6 +558,13 @@ int main(void) {
         kernel_io_uring_page_t restricted_sq_ring;
         kernel_io_uring_page_t restricted_sqes;
         uint64_t submission_operations[2] = {1u, 0u};
+        linux_credential_state_t personality = {
+            .uid = 1000u,
+            .euid = 1001u,
+            .fsuid = 1002u,
+        };
+        linux_credential_state_t personality_copy = {0};
+        uint16_t personality_id = 0u;
         uint32_t entries_consumed = 0u;
         int32_t layout_result = 0;
 
@@ -577,6 +584,24 @@ int main(void) {
                    second_ring_id, 8u) == 1);
         assert(kernel_io_uring_register_allowed(
                    second_ring_id, 5u) == 0);
+        assert(kernel_io_uring_personality_register(
+                   second_ring_id, &personality,
+                   &personality_id) == 0);
+        assert(personality_id != 0u);
+        assert(kernel_io_uring_personality_get(
+                   second_ring_id, personality_id,
+                   &personality_copy) == 0);
+        assert(personality_copy.uid == 1000u &&
+               personality_copy.euid == 1001u &&
+               personality_copy.fsuid == 1002u);
+        assert(kernel_io_uring_personality_unregister(
+                   second_ring_id, personality_id) == 0);
+        assert(kernel_io_uring_personality_get(
+                   second_ring_id, personality_id,
+                   &personality_copy) == -EDGE_LINUX_EINVAL);
+        assert(kernel_io_uring_personality_unregister(
+                   second_ring_id, personality_id) ==
+               -EDGE_LINUX_EINVAL);
         assert(kernel_io_uring_mmap_page(
                    second_ring_id, KERNEL_IO_URING_OFF_SQ_RING,
                    0u, &restricted_sq_ring) == 0);
