@@ -18,12 +18,15 @@ void kernel_userfaultfd_state_changed(int context_id) {
     changed_context = context_id;
 }
 
-void arch_userfaultfd_wait_event(int context_id, uint64_t ticket) {
+void arch_userfaultfd_wait_event(int context_id, uint64_t ticket,
+                                 int64_t completion_result) {
     assert(context_id >= 0);
     assert(ticket != 0);
+    (void)completion_result;
 }
 
-int arch_userfaultfd_consume_completed_event(void) {
+int arch_userfaultfd_consume_completed_event(int64_t *completion_result) {
+    (void)completion_result;
     return 0;
 }
 
@@ -246,7 +249,7 @@ int main(void) {
 
         assert(kernel_userfaultfd_register(
             context_id, &lifecycle_registration) == 0);
-        kernel_userfaultfd_mapping_unmap(0x12345000u, &middle);
+        kernel_userfaultfd_mapping_unmap(0x12345000u, &middle, 0);
         assert(kernel_userfaultfd_missing_fault(
             0x12345000u, 0x701077u, 0, 100,
             &fault_context, &lifecycle_ticket) == 0);
@@ -257,7 +260,7 @@ int main(void) {
         kernel_userfaultfd_mapping_unmap(
             0x12345000u, &(kernel_uffdio_range_t){
                 .start = 0x700000u, .length = 0x1000u,
-            });
+            }, 0);
         assert(kernel_userfaultfd_fault_pending(
             context_id, lifecycle_ticket) == 0);
         assert(kernel_userfaultfd_missing_fault(
@@ -305,7 +308,7 @@ int main(void) {
         kernel_userfaultfd_mapping_unmap(
             0x22345000u, &(kernel_uffdio_range_t){
                 .start = 0xa01000u, .length = 0x1000u,
-            });
+            }, 0);
         memset(&message, 0, sizeof(message));
         assert(kernel_userfaultfd_read(
             event_context, copy_message, &message, sizeof(message)) ==
@@ -317,6 +320,63 @@ int main(void) {
             0x22345000u, 0xa01020u, 0, 108,
             &fault_context, &ticket) == 0);
         kernel_userfaultfd_release(event_context);
+    }
+    {
+        kernel_uffdio_api_t remap_api = {
+            .api = KERNEL_UFFD_API,
+            .features = KERNEL_UFFD_FEATURE_EVENT_REMAP |
+                        KERNEL_UFFD_FEATURE_EVENT_UNMAP,
+        };
+        kernel_uffdio_register_t remap_registration = {
+            .range = { .start = 0xb00000u, .length = 0x2000u },
+            .mode = KERNEL_UFFD_REGISTER_MODE_MISSING,
+        };
+        int remap_context = kernel_userfaultfd_create(
+            0x32345000u, 79, KERNEL_UFFD_NONBLOCK);
+
+        assert(remap_context >= 0);
+        assert(kernel_userfaultfd_negotiate(
+            remap_context, &remap_api) == 0);
+        assert(kernel_userfaultfd_register(
+            remap_context, &remap_registration) == 0);
+        kernel_userfaultfd_mapping_remap(
+            0x32345000u, 0xb00000u, 0x2000u,
+            0xc00000u, 0x2000u, 0xc00000u);
+        memset(&message, 0, sizeof(message));
+        assert(kernel_userfaultfd_read(
+            remap_context, copy_message, &message, sizeof(message)) ==
+            (int64_t)sizeof(message));
+        assert(message.event == KERNEL_UFFD_EVENT_REMAP);
+        assert(message.flags == 0xb00000u);
+        assert(message.address == 0xc00000u);
+        assert(message.length == 0x2000u);
+        memset(&message, 0, sizeof(message));
+        assert(kernel_userfaultfd_read(
+            remap_context, copy_message, &message, sizeof(message)) ==
+            (int64_t)sizeof(message));
+        assert(message.event == KERNEL_UFFD_EVENT_UNMAP);
+        assert(message.flags == 0xb00000u);
+        assert(message.address == 0xb02000u);
+        assert(kernel_userfaultfd_missing_fault(
+            0x32345000u, 0xb00020u, 0, 109,
+            &fault_context, &ticket) == 0);
+        assert(kernel_userfaultfd_missing_fault(
+            0x32345000u, 0xc00020u, 0, 110,
+            &fault_context, &ticket) == KERNEL_UFFD_FAULT_QUEUED);
+        assert(kernel_userfaultfd_resolve(
+            remap_context, &(kernel_uffdio_range_t){
+                .start = 0xc00000u, .length = 0x1000u,
+            }) == 1);
+        kernel_userfaultfd_mapping_expand(
+            0x32345000u, 0xc00000u, 0x2000u, 0x3000u);
+        assert(kernel_userfaultfd_missing_fault(
+            0x32345000u, 0xc02020u, 0, 111,
+            &fault_context, &ticket) == KERNEL_UFFD_FAULT_QUEUED);
+        assert(kernel_userfaultfd_resolve(
+            remap_context, &(kernel_uffdio_range_t){
+                .start = 0xc02000u, .length = 0x1000u,
+            }) == 1);
+        kernel_userfaultfd_release(remap_context);
     }
     kernel_userfaultfd_release(context_id);
     assert(kernel_userfaultfd_query(context_id, &state) ==

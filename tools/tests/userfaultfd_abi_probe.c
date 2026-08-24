@@ -55,6 +55,7 @@
 #define UFFD_USER_MODE_ONLY 0x1
 #define UFFD_API 0xAAu
 #define UFFD_FEATURE_PAGEFAULT_FLAG_WP (1ULL << 0)
+#define UFFD_FEATURE_EVENT_REMAP (1ULL << 2)
 #define UFFD_FEATURE_EVENT_REMOVE (1ULL << 3)
 #define UFFD_FEATURE_MISSING_SHMEM (1ULL << 5)
 #define UFFD_FEATURE_EVENT_UNMAP (1ULL << 6)
@@ -83,6 +84,7 @@
 #define UFFDIO_CONTINUE 0xc020aa07u
 #define UFFDIO_POISON 0xc020aa08u
 #define UFFD_EVENT_PAGEFAULT 0x12u
+#define UFFD_EVENT_REMAP 0x14u
 #define UFFD_EVENT_REMOVE 0x15u
 #define UFFD_EVENT_UNMAP 0x16u
 #define UFFD_PAGEFAULT_FLAG_WRITE (1ULL << 0)
@@ -162,8 +164,13 @@ struct uffd_msg {
     uint32_t reserved3;
     uint64_t flags;
     uint64_t address;
-    uint32_t thread_id;
-    uint32_t reserved4;
+    union {
+        struct {
+            uint32_t thread_id;
+            uint32_t reserved4;
+        };
+        uint64_t length;
+    };
 };
 
 static unsigned char g_fault_stack[16384] __attribute__((aligned(16)));
@@ -172,6 +179,7 @@ static volatile unsigned char g_fault_value;
 static volatile unsigned char g_fault_write;
 static volatile unsigned long g_child_operation;
 static volatile unsigned long g_child_length;
+static volatile unsigned long g_child_target;
 static volatile long g_child_result;
 
 static long raw_syscall6(long number, long a0, long a1, long a2,
@@ -221,6 +229,14 @@ void fault_child_entry(void) {
         g_child_result = raw_syscall6(
             SYS_munmap, (long)g_fault_address,
             (long)g_child_length, 0, 0, 0, 0);
+        exit_now(0);
+    }
+    if (g_child_operation == 3u) {
+        g_child_result = raw_syscall6(
+            SYS_mremap, (long)g_fault_address,
+            (long)g_child_length, (long)g_child_length,
+            MREMAP_MAYMOVE | MREMAP_FIXED,
+            (long)g_child_target, 0);
         exit_now(0);
     }
     if (g_fault_write)
@@ -1259,7 +1275,8 @@ START_ATTRIBUTES void _start(void) {
             0, 0, 0, 0, 0);
         struct uffdio_api event_api = {
             .api = UFFD_API,
-            .features = UFFD_FEATURE_EVENT_REMOVE |
+            .features = UFFD_FEATURE_EVENT_REMAP |
+                        UFFD_FEATURE_EVENT_REMOVE |
                         UFFD_FEATURE_EVENT_UNMAP,
         };
 
@@ -1272,9 +1289,11 @@ START_ATTRIBUTES void _start(void) {
                     SYS_ioctl, event_descriptor, UFFDIO_API,
                     (long)&event_api, 0, 0, 0), 0);
             if ((event_api.features &
-                 (UFFD_FEATURE_EVENT_REMOVE |
+                 (UFFD_FEATURE_EVENT_REMAP |
+                  UFFD_FEATURE_EVENT_REMOVE |
                   UFFD_FEATURE_EVENT_UNMAP)) !=
-                (UFFD_FEATURE_EVENT_REMOVE |
+                (UFFD_FEATURE_EVENT_REMAP |
+                 UFFD_FEATURE_EVENT_REMOVE |
                  UFFD_FEATURE_EVENT_UNMAP)) {
                 print_text("FAIL mapping-event-features\n");
                 ++failures;
@@ -1288,6 +1307,175 @@ START_ATTRIBUTES void _start(void) {
                 "mapping-event-register", raw_syscall6(
                     SYS_ioctl, event_descriptor, UFFDIO_REGISTER,
                     (long)&registration, 0, 0, 0), 0);
+            {
+                unsigned char *remap_source = event_area;
+                unsigned char *remap_target =
+                    (unsigned char *)raw_syscall6(
+                        SYS_mmap, 0, PAGE_SIZE * 3u,
+                        PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                long target_unmap = (long)remap_target < 0 ?
+                    (long)remap_target : raw_syscall6(
+                        SYS_munmap, (long)remap_target,
+                        PAGE_SIZE * 3u, 0, 0, 0, 0);
+
+                failures += expect_result(
+                    "mapping-event-remap-target", target_unmap, 0);
+                if ((long)remap_target >= 0 && target_unmap == 0) {
+                    long child;
+                    long received = -EAGAIN;
+                    int child_status = -1;
+
+                    g_fault_address = remap_source;
+                    g_child_length = PAGE_SIZE * 2u;
+                    g_child_target = (unsigned long)remap_target;
+                    g_child_result = -EAGAIN;
+                    g_child_operation = 3u;
+                    child = spawn_fault_child(
+                        CLONE_VM | SIGCHLD,
+                        &g_fault_stack[sizeof(g_fault_stack)]);
+                    failures += expect_result(
+                        "mapping-event-remap-child",
+                        child < 0 ? child : 0, 0);
+                    if (child >= 0) {
+                        failures += expect_result(
+                            "mapping-event-remap-blocked", raw_syscall6(
+                                SYS_wait4, child, (long)&child_status,
+                                WNOHANG, 0, 0, 0), 0);
+                        for (unsigned long attempt = 0;
+                             attempt < 100000u; ++attempt) {
+                            received = raw_syscall6(
+                                SYS_read, event_descriptor,
+                                (long)&message, sizeof(message),
+                                0, 0, 0);
+                            if (received != -EAGAIN) break;
+                            (void)raw_syscall6(
+                                SYS_sched_yield, 0, 0, 0, 0, 0, 0);
+                        }
+                        failures += expect_result(
+                            "mapping-event-remap-read", received,
+                            sizeof(message));
+                        if (received == (long)sizeof(message) &&
+                            (message.event != UFFD_EVENT_REMAP ||
+                             message.flags !=
+                                (uint64_t)(uintptr_t)remap_source ||
+                             message.address !=
+                                (uint64_t)(uintptr_t)remap_target ||
+                             message.length != PAGE_SIZE * 2u)) {
+                            print_text("FAIL mapping-event-remap-data\n");
+                            ++failures;
+                        }
+                        received = -EAGAIN;
+                        for (unsigned long attempt = 0;
+                             attempt < 100000u; ++attempt) {
+                            received = raw_syscall6(
+                                SYS_read, event_descriptor,
+                                (long)&message, sizeof(message),
+                                0, 0, 0);
+                            if (received != -EAGAIN) break;
+                            (void)raw_syscall6(
+                                SYS_sched_yield, 0, 0, 0, 0, 0, 0);
+                        }
+                        failures += expect_result(
+                            "mapping-event-remap-unmap-read", received,
+                            sizeof(message));
+                        if (received == (long)sizeof(message) &&
+                            (message.event != UFFD_EVENT_UNMAP ||
+                             message.flags !=
+                                (uint64_t)(uintptr_t)remap_source ||
+                             message.address !=
+                                (uint64_t)(uintptr_t)
+                                    (remap_source + PAGE_SIZE * 2u))) {
+                            print_text(
+                                "FAIL mapping-event-remap-unmap-data\n");
+                            ++failures;
+                        }
+                        failures += expect_result(
+                            "mapping-event-remap-wait", raw_syscall6(
+                                SYS_wait4, child, (long)&child_status,
+                                0, 0, 0, 0), child);
+                        failures += expect_result(
+                            "mapping-event-remap-status", child_status, 0);
+                        failures += expect_result(
+                            "mapping-event-remap-result",
+                            g_child_result, (long)remap_target);
+                    }
+                    g_child_operation = 0;
+                    g_child_target = 0;
+                    if (g_child_result == (long)remap_target)
+                        event_area = remap_target;
+                }
+            }
+            if (g_child_result == (long)event_area) {
+                long expanded = raw_syscall6(
+                    SYS_mremap, (long)event_area,
+                    PAGE_SIZE * 2u, PAGE_SIZE * 3u,
+                    0, 0, 0);
+
+                failures += expect_result(
+                    "mapping-event-expand", expanded, (long)event_area);
+                failures += expect_result(
+                    "mapping-event-expand-empty", raw_syscall6(
+                        SYS_read, event_descriptor, (long)&message,
+                        sizeof(message), 0, 0, 0), -EAGAIN);
+                if (expanded == (long)event_area) {
+                    long child;
+                    long received = -EAGAIN;
+                    int child_status = -1;
+
+                    g_fault_address = event_area + PAGE_SIZE * 2u;
+                    g_child_operation = 0;
+                    child = spawn_fault_child(
+                        CLONE_VM | SIGCHLD,
+                        &g_fault_stack[sizeof(g_fault_stack)]);
+                    failures += expect_result(
+                        "mapping-event-expand-child",
+                        child < 0 ? child : 0, 0);
+                    if (child >= 0) {
+                        for (unsigned long attempt = 0;
+                             attempt < 100000u; ++attempt) {
+                            received = raw_syscall6(
+                                SYS_read, event_descriptor,
+                                (long)&message, sizeof(message),
+                                0, 0, 0);
+                            if (received != -EAGAIN) break;
+                            (void)raw_syscall6(
+                                SYS_sched_yield, 0, 0, 0, 0, 0, 0);
+                        }
+                        failures += expect_result(
+                            "mapping-event-expand-read", received,
+                            sizeof(message));
+                        if (received == (long)sizeof(message) &&
+                            (message.event != UFFD_EVENT_PAGEFAULT ||
+                             message.address !=
+                                (uint64_t)(uintptr_t)g_fault_address)) {
+                            print_text(
+                                "FAIL mapping-event-expand-data\n");
+                            ++failures;
+                        }
+                        zero.range.start =
+                            (uint64_t)(uintptr_t)g_fault_address;
+                        zero.range.len = PAGE_SIZE;
+                        zero.mode = 0;
+                        zero.zeropage = 0;
+                        failures += expect_result(
+                            "mapping-event-expand-zero", raw_syscall6(
+                                SYS_ioctl, event_descriptor,
+                                UFFDIO_ZEROPAGE, (long)&zero,
+                                0, 0, 0), 0);
+                        failures += expect_result(
+                            "mapping-event-expand-zero-count",
+                            zero.zeropage, PAGE_SIZE);
+                        failures += expect_result(
+                            "mapping-event-expand-wait", raw_syscall6(
+                                SYS_wait4, child, (long)&child_status,
+                                0, 0, 0, 0), child);
+                        failures += expect_result(
+                            "mapping-event-expand-status",
+                            child_status, 0);
+                    }
+                }
+            }
             g_fault_address = event_area;
             g_child_length = PAGE_SIZE;
             g_child_result = -EAGAIN;
@@ -1409,7 +1597,7 @@ START_ATTRIBUTES void _start(void) {
         if ((long)event_area > 0)
             (void)raw_syscall6(
                 SYS_munmap, (long)event_area,
-                event_descriptor >= 0 ? PAGE_SIZE : PAGE_SIZE * 2u,
+                event_descriptor >= 0 ? PAGE_SIZE * 3u : PAGE_SIZE * 2u,
                 0, 0, 0, 0);
     }
 

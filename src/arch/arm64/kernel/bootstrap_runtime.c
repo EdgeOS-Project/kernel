@@ -1115,6 +1115,7 @@ typedef struct {
     uint16_t userfaultfd_wait_index;
     uint8_t userfaultfd_wait_replay;
     uint64_t userfaultfd_wait_ticket;
+    int64_t userfaultfd_wait_result;
     uint8_t file_lock_wait_active;
     int64_t file_lock_wait_result;
     edge_linux_signal_action_t signal_actions[EDGE_LINUX_SIGNAL_MAX];
@@ -5221,6 +5222,7 @@ static void task_interrupt_wait_for_signal(kernel_task_t *task,
             task->userfaultfd_wait_index = 0;
             task->userfaultfd_wait_replay = 0;
             task->userfaultfd_wait_ticket = 0;
+            task->userfaultfd_wait_result = 0;
             task_state_set(task, KERNEL_TASK_RUNNABLE);
             return;
         case KERNEL_TASK_WAITING_INPUT:
@@ -10614,7 +10616,8 @@ void arch_userfaultfd_state_changed(int context_id) {
     poll_wake_waiters();
 }
 
-void arch_userfaultfd_wait_event(int context_id, uint64_t ticket) {
+void arch_userfaultfd_wait_event(int context_id, uint64_t ticket,
+                                 int64_t completion_result) {
     kernel_task_t *task;
 
     while (kernel_userfaultfd_fault_pending(context_id, ticket)) {
@@ -10623,6 +10626,7 @@ void arch_userfaultfd_wait_event(int context_id, uint64_t ticket) {
         task->userfaultfd_wait_index = (uint16_t)context_id;
         task->userfaultfd_wait_replay = 1u;
         task->userfaultfd_wait_ticket = ticket;
+        task->userfaultfd_wait_result = completion_result;
         task_state_set(task, KERNEL_TASK_WAITING_USERFAULTFD);
         if (!kernel_userfaultfd_fault_pending(context_id, ticket))
             task_state_set(task, KERNEL_TASK_RUNNABLE);
@@ -10633,21 +10637,25 @@ void arch_userfaultfd_wait_event(int context_id, uint64_t ticket) {
         task->userfaultfd_wait_index = 0;
         task->userfaultfd_wait_replay = 0;
         task->userfaultfd_wait_ticket = 0;
+        task->userfaultfd_wait_result = 0;
     }
 }
 
-int arch_userfaultfd_consume_completed_event(void) {
+int arch_userfaultfd_consume_completed_event(int64_t *completion_result) {
     kernel_task_t *task = current_task();
 
-    if (!task || !task->userfaultfd_wait_replay ||
+    if (!completion_result || !task ||
+        !task->userfaultfd_wait_replay ||
         !task->userfaultfd_wait_ticket ||
         kernel_userfaultfd_fault_pending(
             task->userfaultfd_wait_index,
             task->userfaultfd_wait_ticket))
         return 0;
+    *completion_result = task->userfaultfd_wait_result;
     task->userfaultfd_wait_index = 0;
     task->userfaultfd_wait_replay = 0;
     task->userfaultfd_wait_ticket = 0;
+    task->userfaultfd_wait_result = 0;
     return 1;
 }
 

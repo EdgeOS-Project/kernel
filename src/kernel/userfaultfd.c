@@ -67,7 +67,16 @@ typedef struct kernel_userfaultfd_event {
     uint32_t padding;
     uint64_t notification_start;
     uint64_t notification_end;
+    uint64_t notification_extra;
 } kernel_userfaultfd_event_t;
+
+typedef struct kernel_userfaultfd_remap_notifications {
+    uint8_t remap[EDGE_RUNTIME_MAX_USERFAULTFDS];
+    uint64_t destination_unmap_start[EDGE_RUNTIME_MAX_USERFAULTFDS];
+    uint64_t destination_unmap_end[EDGE_RUNTIME_MAX_USERFAULTFDS];
+    uint64_t source_unmap_start[EDGE_RUNTIME_MAX_USERFAULTFDS];
+    uint64_t source_unmap_end[EDGE_RUNTIME_MAX_USERFAULTFDS];
+} kernel_userfaultfd_remap_notifications_t;
 
 static kernel_userfaultfd_context_t
     g_userfaultfd_contexts[EDGE_RUNTIME_MAX_USERFAULTFDS];
@@ -75,6 +84,13 @@ static kernel_userfaultfd_range_t
     g_userfaultfd_ranges[EDGE_RUNTIME_MAX_USERFAULTFD_RANGES];
 static kernel_userfaultfd_wp_range_t
     g_userfaultfd_wp_ranges[EDGE_RUNTIME_MAX_USERFAULTFD_RANGES];
+static kernel_userfaultfd_range_t
+    g_userfaultfd_remap_ranges[EDGE_RUNTIME_MAX_USERFAULTFD_RANGES * 3u];
+static kernel_userfaultfd_wp_range_t
+    g_userfaultfd_remap_wp_ranges[
+        EDGE_RUNTIME_MAX_USERFAULTFD_RANGES * 3u];
+static kernel_userfaultfd_remap_notifications_t
+    g_userfaultfd_remap_notifications;
 static kernel_userfaultfd_event_t
     g_userfaultfd_events[EDGE_RUNTIME_USERFAULTFD_EVENT_POOL];
 static volatile uint32_t g_userfaultfd_lock;
@@ -322,7 +338,7 @@ static void userfaultfd_remove_queued_event_locked(
 
 static int userfaultfd_queue_notification_locked(
         kernel_userfaultfd_context_t *context, int context_id,
-        uint8_t event_type, uint64_t start, uint64_t end,
+        uint8_t event_type, uint64_t start, uint64_t end, uint64_t extra,
         uint64_t *ticket) {
     uint16_t event_index;
     kernel_userfaultfd_event_t *event;
@@ -335,6 +351,7 @@ static int userfaultfd_queue_notification_locked(
     event->event_type = event_type;
     event->notification_start = start;
     event->notification_end = end;
+    event->notification_extra = extra;
     event->ticket = context->next_ticket++;
     if (!context->next_ticket) context->next_ticket = 1u;
     event->queued = 1u;
@@ -352,6 +369,7 @@ static int userfaultfd_queue_notification_locked(
 static void userfaultfd_queue_mapping_notifications_locked(
         uint64_t address_space, const kernel_uffdio_range_t *range,
         uint64_t feature, uint8_t event_type,
+        uint64_t extra,
         uint8_t affected[EDGE_RUNTIME_MAX_USERFAULTFDS],
         uint64_t tickets[EDGE_RUNTIME_MAX_USERFAULTFDS]) {
     uint64_t end = range->start + range->length;
@@ -388,7 +406,7 @@ static void userfaultfd_queue_mapping_notifications_locked(
         if (overlap_end <= overlap_start) continue;
         if (userfaultfd_queue_notification_locked(
                 context, context_id, event_type,
-                overlap_start, overlap_end,
+                overlap_start, overlap_end, extra,
                 &tickets[context_id]) == 0)
             affected[context_id] = 1u;
     }
@@ -958,14 +976,12 @@ int kernel_userfaultfd_writeprotect_commit(
 
 static void userfaultfd_mapping_forget_common(
         uint64_t address_space, const kernel_uffdio_range_t *range,
-        int notify_unmap) {
+        int notify_unmap, int64_t completion_result) {
     uint8_t affected[EDGE_RUNTIME_MAX_USERFAULTFDS];
     uint64_t tickets[EDGE_RUNTIME_MAX_USERFAULTFDS];
     uint64_t end;
 
     if (!address_space || !userfaultfd_range_valid(range)) return;
-    if (notify_unmap && arch_userfaultfd_consume_completed_event())
-        return;
     end = range->start + range->length;
     memset(affected, 0, sizeof(affected));
     memset(tickets, 0, sizeof(tickets));
@@ -973,7 +989,7 @@ static void userfaultfd_mapping_forget_common(
     if (notify_unmap)
         userfaultfd_queue_mapping_notifications_locked(
             address_space, range, KERNEL_UFFD_FEATURE_EVENT_UNMAP,
-            KERNEL_UFFD_EVENT_UNMAP, affected, tickets);
+            KERNEL_UFFD_EVENT_UNMAP, 0, affected, tickets);
     for (uint16_t index = 0;
          index < EDGE_RUNTIME_MAX_USERFAULTFD_RANGES; ++index) {
         kernel_userfaultfd_range_t *entry = &g_userfaultfd_ranges[index];
@@ -1091,17 +1107,19 @@ static void userfaultfd_mapping_forget_common(
          context_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++context_id)
         if (tickets[context_id])
             arch_userfaultfd_wait_event(
-                context_id, tickets[context_id]);
+                context_id, tickets[context_id], completion_result);
 }
 
 void kernel_userfaultfd_mapping_unmap(
-        uint64_t address_space, const kernel_uffdio_range_t *range) {
-    userfaultfd_mapping_forget_common(address_space, range, 1);
+        uint64_t address_space, const kernel_uffdio_range_t *range,
+        int64_t completion_result) {
+    userfaultfd_mapping_forget_common(
+        address_space, range, 1, completion_result);
 }
 
 void kernel_userfaultfd_mapping_forget(
         uint64_t address_space, const kernel_uffdio_range_t *range) {
-    userfaultfd_mapping_forget_common(address_space, range, 0);
+    userfaultfd_mapping_forget_common(address_space, range, 0, 0);
 }
 
 void kernel_userfaultfd_mapping_remove(
@@ -1110,13 +1128,12 @@ void kernel_userfaultfd_mapping_remove(
     uint64_t tickets[EDGE_RUNTIME_MAX_USERFAULTFDS];
 
     if (!address_space || !userfaultfd_range_valid(range)) return;
-    if (arch_userfaultfd_consume_completed_event()) return;
     memset(affected, 0, sizeof(affected));
     memset(tickets, 0, sizeof(tickets));
     userfaultfd_lock();
     userfaultfd_queue_mapping_notifications_locked(
         address_space, range, KERNEL_UFFD_FEATURE_EVENT_REMOVE,
-        KERNEL_UFFD_EVENT_REMOVE, affected, tickets);
+        KERNEL_UFFD_EVENT_REMOVE, 0, affected, tickets);
     userfaultfd_unlock();
     for (int context_id = 0;
          context_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++context_id)
@@ -1126,7 +1143,315 @@ void kernel_userfaultfd_mapping_remove(
          context_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++context_id)
         if (tickets[context_id])
             arch_userfaultfd_wait_event(
-                context_id, tickets[context_id]);
+                context_id, tickets[context_id], 0);
+}
+
+static int userfaultfd_remap_range_append(
+        uint32_t *count, const kernel_userfaultfd_range_t *source,
+        uint64_t start, uint64_t end) {
+    kernel_userfaultfd_range_t *target;
+
+    if (end <= start) return 0;
+    if (!count || !source ||
+        *count >= EDGE_RUNTIME_MAX_USERFAULTFD_RANGES * 3u)
+        return -EDGE_LINUX_ENOSPC;
+    target = &g_userfaultfd_remap_ranges[(*count)++];
+    *target = *source;
+    target->start = start;
+    target->end = end;
+    return 0;
+}
+
+static int userfaultfd_remap_wp_range_append(
+        uint32_t *count, const kernel_userfaultfd_wp_range_t *source,
+        uint64_t start, uint64_t end) {
+    kernel_userfaultfd_wp_range_t *target;
+
+    if (end <= start) return 0;
+    if (!count || !source ||
+        *count >= EDGE_RUNTIME_MAX_USERFAULTFD_RANGES * 3u)
+        return -EDGE_LINUX_ENOSPC;
+    target = &g_userfaultfd_remap_wp_ranges[(*count)++];
+    *target = *source;
+    target->start = start;
+    target->end = end;
+    return 0;
+}
+
+void kernel_userfaultfd_mapping_remap(
+        uint64_t address_space, uint64_t from, uint64_t old_length,
+        uint64_t to, uint64_t new_length, int64_t completion_result) {
+    uint8_t affected[EDGE_RUNTIME_MAX_USERFAULTFDS];
+    uint64_t tickets[EDGE_RUNTIME_MAX_USERFAULTFDS];
+    uint64_t from_end;
+    uint64_t to_end;
+    uint32_t range_count = 0;
+    uint32_t wp_count = 0;
+    int capacity_error = 0;
+
+    if (!address_space || !old_length || !new_length ||
+        (from & (KERNEL_UFFD_PAGE_SIZE - 1u)) ||
+        (to & (KERNEL_UFFD_PAGE_SIZE - 1u)) ||
+        (old_length & (KERNEL_UFFD_PAGE_SIZE - 1u)) ||
+        (new_length & (KERNEL_UFFD_PAGE_SIZE - 1u)) ||
+        from > UINT64_MAX - old_length ||
+        to > UINT64_MAX - new_length)
+        return;
+    from_end = from + old_length;
+    to_end = to + new_length;
+    memset(affected, 0, sizeof(affected));
+    memset(tickets, 0, sizeof(tickets));
+
+    userfaultfd_lock();
+    memset(&g_userfaultfd_remap_notifications, 0,
+           sizeof(g_userfaultfd_remap_notifications));
+    memset(g_userfaultfd_remap_ranges, 0,
+           sizeof(g_userfaultfd_remap_ranges));
+    memset(g_userfaultfd_remap_wp_ranges, 0,
+           sizeof(g_userfaultfd_remap_wp_ranges));
+    for (uint16_t index = 0;
+         index < EDGE_RUNTIME_MAX_USERFAULTFD_RANGES; ++index) {
+        const kernel_userfaultfd_range_t *entry =
+            &g_userfaultfd_ranges[index];
+        kernel_userfaultfd_context_t *context;
+        uint64_t overlap_start;
+        uint64_t overlap_end;
+
+        if (!entry->used) continue;
+        context = userfaultfd_context_locked(entry->context_id);
+        if (!context || context->address_space != address_space) {
+            if (userfaultfd_remap_range_append(
+                    &range_count, entry, entry->start, entry->end) < 0)
+                capacity_error = 1;
+            continue;
+        }
+        if ((context->features & KERNEL_UFFD_FEATURE_EVENT_UNMAP) &&
+            entry->start < to_end && entry->end > to) {
+            uint64_t start = entry->start > to ? entry->start : to;
+            uint64_t end = entry->end < to_end ? entry->end : to_end;
+            if (!g_userfaultfd_remap_notifications
+                     .destination_unmap_end[entry->context_id] ||
+                start < g_userfaultfd_remap_notifications
+                            .destination_unmap_start[entry->context_id])
+                g_userfaultfd_remap_notifications
+                    .destination_unmap_start[entry->context_id] = start;
+            if (end > g_userfaultfd_remap_notifications
+                          .destination_unmap_end[entry->context_id])
+                g_userfaultfd_remap_notifications
+                    .destination_unmap_end[entry->context_id] = end;
+        }
+        if ((context->features & KERNEL_UFFD_FEATURE_EVENT_UNMAP) &&
+            entry->start < from_end && entry->end > from) {
+            uint64_t start = entry->start > from ? entry->start : from;
+            uint64_t end = entry->end < from_end ? entry->end : from_end;
+            if (!g_userfaultfd_remap_notifications
+                     .source_unmap_end[entry->context_id] ||
+                start < g_userfaultfd_remap_notifications
+                            .source_unmap_start[entry->context_id])
+                g_userfaultfd_remap_notifications
+                    .source_unmap_start[entry->context_id] = start;
+            if (end > g_userfaultfd_remap_notifications
+                          .source_unmap_end[entry->context_id])
+                g_userfaultfd_remap_notifications
+                    .source_unmap_end[entry->context_id] = end;
+        }
+        overlap_start = entry->start > from ? entry->start : from;
+        overlap_end = entry->end < from_end ? entry->end : from_end;
+        if (overlap_end > overlap_start) {
+            uint64_t moved_start =
+                to + (overlap_start - from);
+            uint64_t moved_end = to + (overlap_end - from);
+            affected[entry->context_id] = 1u;
+            if (userfaultfd_remap_range_append(
+                    &range_count, entry, entry->start, overlap_start) < 0)
+                capacity_error = 1;
+            if (userfaultfd_remap_range_append(
+                    &range_count, entry, overlap_end, entry->end) < 0)
+                capacity_error = 1;
+            if (context->features & KERNEL_UFFD_FEATURE_EVENT_REMAP) {
+                if (moved_end > to_end) moved_end = to_end;
+                if (userfaultfd_remap_range_append(
+                        &range_count, entry, moved_start, moved_end) < 0)
+                    capacity_error = 1;
+                g_userfaultfd_remap_notifications
+                    .remap[entry->context_id] = 1u;
+            }
+            continue;
+        }
+        if (entry->start < to_end && entry->end > to) {
+            affected[entry->context_id] = 1u;
+            if (userfaultfd_remap_range_append(
+                    &range_count, entry, entry->start,
+                    entry->end < to ? entry->end : to) < 0)
+                capacity_error = 1;
+            if (userfaultfd_remap_range_append(
+                    &range_count, entry,
+                    entry->start > to_end ? entry->start : to_end,
+                    entry->end) < 0)
+                capacity_error = 1;
+            continue;
+        }
+        if (userfaultfd_remap_range_append(
+                &range_count, entry, entry->start, entry->end) < 0)
+            capacity_error = 1;
+    }
+    for (uint16_t index = 0;
+         index < EDGE_RUNTIME_MAX_USERFAULTFD_RANGES; ++index) {
+        const kernel_userfaultfd_wp_range_t *entry =
+            &g_userfaultfd_wp_ranges[index];
+        kernel_userfaultfd_context_t *context;
+        uint64_t overlap_start;
+        uint64_t overlap_end;
+
+        if (!entry->used) continue;
+        context = userfaultfd_context_locked(entry->context_id);
+        if (!context || context->address_space != address_space) {
+            if (userfaultfd_remap_wp_range_append(
+                    &wp_count, entry, entry->start, entry->end) < 0)
+                capacity_error = 1;
+            continue;
+        }
+        overlap_start = entry->start > from ? entry->start : from;
+        overlap_end = entry->end < from_end ? entry->end : from_end;
+        if (overlap_end > overlap_start) {
+            uint64_t moved_start =
+                to + (overlap_start - from);
+            uint64_t moved_end = to + (overlap_end - from);
+            if (userfaultfd_remap_wp_range_append(
+                    &wp_count, entry, entry->start, overlap_start) < 0)
+                capacity_error = 1;
+            if (userfaultfd_remap_wp_range_append(
+                    &wp_count, entry, overlap_end, entry->end) < 0)
+                capacity_error = 1;
+            if (context->features & KERNEL_UFFD_FEATURE_EVENT_REMAP) {
+                if (moved_end > to_end) moved_end = to_end;
+                if (userfaultfd_remap_wp_range_append(
+                        &wp_count, entry, moved_start, moved_end) < 0)
+                    capacity_error = 1;
+            }
+            continue;
+        }
+        if (entry->start < to_end && entry->end > to) {
+            if (userfaultfd_remap_wp_range_append(
+                    &wp_count, entry, entry->start,
+                    entry->end < to ? entry->end : to) < 0)
+                capacity_error = 1;
+            if (userfaultfd_remap_wp_range_append(
+                    &wp_count, entry,
+                    entry->start > to_end ? entry->start : to_end,
+                    entry->end) < 0)
+                capacity_error = 1;
+            continue;
+        }
+        if (userfaultfd_remap_wp_range_append(
+                &wp_count, entry, entry->start, entry->end) < 0)
+            capacity_error = 1;
+    }
+    if (!capacity_error &&
+        range_count <= EDGE_RUNTIME_MAX_USERFAULTFD_RANGES &&
+        wp_count <= EDGE_RUNTIME_MAX_USERFAULTFD_RANGES) {
+        memset(g_userfaultfd_ranges, 0, sizeof(g_userfaultfd_ranges));
+        memset(g_userfaultfd_wp_ranges, 0,
+               sizeof(g_userfaultfd_wp_ranges));
+        memcpy(g_userfaultfd_ranges, g_userfaultfd_remap_ranges,
+               range_count * sizeof(g_userfaultfd_ranges[0]));
+        memcpy(g_userfaultfd_wp_ranges, g_userfaultfd_remap_wp_ranges,
+               wp_count * sizeof(g_userfaultfd_wp_ranges[0]));
+        for (int context_id = 0;
+             context_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++context_id) {
+            kernel_userfaultfd_context_t *context;
+            if (!g_userfaultfd_remap_notifications
+                     .destination_unmap_end[context_id])
+                continue;
+            context = userfaultfd_context_locked(context_id);
+            if (context && userfaultfd_queue_notification_locked(
+                    context, context_id, KERNEL_UFFD_EVENT_UNMAP,
+                    g_userfaultfd_remap_notifications
+                        .destination_unmap_start[context_id],
+                    g_userfaultfd_remap_notifications
+                        .destination_unmap_end[context_id],
+                    0,
+                    &tickets[context_id]) == 0)
+                affected[context_id] = 1u;
+        }
+        for (int context_id = 0;
+             context_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++context_id) {
+            kernel_userfaultfd_context_t *context;
+            if (!g_userfaultfd_remap_notifications.remap[context_id])
+                continue;
+            context = userfaultfd_context_locked(context_id);
+            if (context && userfaultfd_queue_notification_locked(
+                    context, context_id, KERNEL_UFFD_EVENT_REMAP,
+                    from, to, old_length, &tickets[context_id]) == 0)
+                affected[context_id] = 1u;
+        }
+        for (int context_id = 0;
+             context_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++context_id) {
+            kernel_userfaultfd_context_t *context;
+            if (!g_userfaultfd_remap_notifications
+                     .source_unmap_end[context_id])
+                continue;
+            context = userfaultfd_context_locked(context_id);
+            if (context && userfaultfd_queue_notification_locked(
+                    context, context_id, KERNEL_UFFD_EVENT_UNMAP,
+                    g_userfaultfd_remap_notifications
+                        .source_unmap_start[context_id],
+                    g_userfaultfd_remap_notifications
+                        .source_unmap_end[context_id],
+                    0,
+                    &tickets[context_id]) == 0)
+                affected[context_id] = 1u;
+        }
+    }
+    userfaultfd_unlock();
+    for (int context_id = 0;
+         context_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++context_id)
+        if (affected[context_id])
+            kernel_userfaultfd_state_changed(context_id);
+    for (int context_id = 0;
+         context_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++context_id)
+        if (tickets[context_id])
+            arch_userfaultfd_wait_event(
+                context_id, tickets[context_id], completion_result);
+}
+
+void kernel_userfaultfd_mapping_expand(
+        uint64_t address_space, uint64_t address,
+        uint64_t old_length, uint64_t new_length) {
+    uint8_t affected[EDGE_RUNTIME_MAX_USERFAULTFDS];
+    uint64_t old_end;
+    uint64_t new_end;
+
+    if (!address_space || !old_length || new_length <= old_length ||
+        (address & (KERNEL_UFFD_PAGE_SIZE - 1u)) ||
+        (old_length & (KERNEL_UFFD_PAGE_SIZE - 1u)) ||
+        (new_length & (KERNEL_UFFD_PAGE_SIZE - 1u)) ||
+        address > UINT64_MAX - old_length ||
+        address > UINT64_MAX - new_length)
+        return;
+    old_end = address + old_length;
+    new_end = address + new_length;
+    memset(affected, 0, sizeof(affected));
+    userfaultfd_lock();
+    for (uint16_t index = 0;
+         index < EDGE_RUNTIME_MAX_USERFAULTFD_RANGES; ++index) {
+        kernel_userfaultfd_range_t *entry = &g_userfaultfd_ranges[index];
+        kernel_userfaultfd_context_t *context;
+
+        if (!entry->used || entry->end != old_end ||
+            entry->start >= old_end)
+            continue;
+        context = userfaultfd_context_locked(entry->context_id);
+        if (!context || context->address_space != address_space)
+            continue;
+        entry->end = new_end;
+        affected[entry->context_id] = 1u;
+    }
+    userfaultfd_unlock();
+    for (int context_id = 0;
+         context_id < EDGE_RUNTIME_MAX_USERFAULTFDS; ++context_id)
+        if (affected[context_id])
+            kernel_userfaultfd_state_changed(context_id);
 }
 
 int kernel_userfaultfd_resolve(int context_id,
@@ -1377,12 +1702,15 @@ int64_t kernel_userfaultfd_read(
     if (message.event == KERNEL_UFFD_EVENT_PAGEFAULT) {
         message.flags = g_userfaultfd_events[event_index].flags;
         message.address = g_userfaultfd_events[event_index].address;
-        message.thread_id = g_userfaultfd_events[event_index].thread_id;
+        message.thread_id =
+            g_userfaultfd_events[event_index].thread_id;
     } else {
         message.flags =
             g_userfaultfd_events[event_index].notification_start;
         message.address =
             g_userfaultfd_events[event_index].notification_end;
+        message.length =
+            g_userfaultfd_events[event_index].notification_extra;
     }
     userfaultfd_remove_queued_event_locked(context, event_index);
     userfaultfd_unlock();

@@ -29,6 +29,7 @@
 #define KERNEL_UFFDIO_POISON_MODE_DONTWAKE        (1ULL << 0)
 
 #define KERNEL_UFFD_FEATURE_PAGEFAULT_FLAG_WP (1ULL << 0)
+#define KERNEL_UFFD_FEATURE_EVENT_REMAP  (1ULL << 2)
 #define KERNEL_UFFD_FEATURE_EVENT_REMOVE (1ULL << 3)
 #define KERNEL_UFFD_FEATURE_MISSING_SHMEM (1ULL << 5)
 #define KERNEL_UFFD_FEATURE_EVENT_UNMAP  (1ULL << 6)
@@ -42,6 +43,7 @@
 #define KERNEL_UFFD_FEATURE_MOVE      (1ULL << 16)
 #define KERNEL_UFFD_SUPPORTED_FEATURES \
     (KERNEL_UFFD_FEATURE_PAGEFAULT_FLAG_WP | \
+     KERNEL_UFFD_FEATURE_EVENT_REMAP | \
      KERNEL_UFFD_FEATURE_EVENT_REMOVE | \
      KERNEL_UFFD_FEATURE_MISSING_SHMEM | \
      KERNEL_UFFD_FEATURE_EVENT_UNMAP | \
@@ -55,6 +57,7 @@
 #define KERNEL_UFFD_PAGEFAULT_FLAG_WP    (1ULL << 1)
 #define KERNEL_UFFD_PAGEFAULT_FLAG_MINOR (1ULL << 2)
 #define KERNEL_UFFD_EVENT_PAGEFAULT 0x12u
+#define KERNEL_UFFD_EVENT_REMAP     0x14u
 #define KERNEL_UFFD_EVENT_REMOVE    0x15u
 #define KERNEL_UFFD_EVENT_UNMAP     0x16u
 #define KERNEL_UFFD_FAULT_QUEUED 1
@@ -151,8 +154,13 @@ typedef struct kernel_userfaultfd_message {
     uint32_t reserved3;
     uint64_t flags;
     uint64_t address;
-    uint32_t thread_id;
-    uint32_t reserved4;
+    union {
+        struct {
+            uint32_t thread_id;
+            uint32_t reserved4;
+        };
+        uint64_t length;
+    };
 } __attribute__((packed)) kernel_userfaultfd_message_t;
 
 typedef struct kernel_userfaultfd_state {
@@ -205,11 +213,18 @@ int kernel_userfaultfd_writeprotect_intersects(
 int kernel_userfaultfd_writeprotect_commit(
     int context_id, const kernel_uffdio_range_t *range, uint64_t mode);
 void kernel_userfaultfd_mapping_unmap(
-    uint64_t address_space, const kernel_uffdio_range_t *range);
+    uint64_t address_space, const kernel_uffdio_range_t *range,
+    int64_t completion_result);
 void kernel_userfaultfd_mapping_forget(
     uint64_t address_space, const kernel_uffdio_range_t *range);
 void kernel_userfaultfd_mapping_remove(
     uint64_t address_space, const kernel_uffdio_range_t *range);
+void kernel_userfaultfd_mapping_remap(
+    uint64_t address_space, uint64_t from, uint64_t old_length,
+    uint64_t to, uint64_t new_length, int64_t completion_result);
+void kernel_userfaultfd_mapping_expand(
+    uint64_t address_space, uint64_t address,
+    uint64_t old_length, uint64_t new_length);
 int kernel_userfaultfd_missing_fault(
     uint64_t address_space, uint64_t address, int write, uint32_t thread_id,
     int *context_id, uint64_t *ticket);

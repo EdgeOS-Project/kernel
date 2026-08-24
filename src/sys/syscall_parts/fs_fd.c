@@ -1156,8 +1156,11 @@ void arch_userfaultfd_state_changed(int id) {
     }
 }
 
-void arch_userfaultfd_wait_event(int context_id, uint64_t ticket) {
+void arch_userfaultfd_wait_event(int context_id, uint64_t ticket,
+                                 int64_t completion_result) {
     task_t *task;
+
+    (void)completion_result;
 
     while (kernel_userfaultfd_fault_pending(context_id, ticket)) {
         task = process_current_task();
@@ -1181,7 +1184,8 @@ void arch_userfaultfd_wait_event(int context_id, uint64_t ticket) {
     }
 }
 
-int arch_userfaultfd_consume_completed_event(void) {
+int arch_userfaultfd_consume_completed_event(int64_t *completion_result) {
+    (void)completion_result;
     return 0;
 }
 

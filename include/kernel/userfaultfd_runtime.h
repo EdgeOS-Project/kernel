@@ -15,8 +15,9 @@ int kernel_userfaultfd_create_descriptor(uint32_t flags);
 int kernel_userfaultfd_descriptor_id(int32_t descriptor);
 void kernel_userfaultfd_state_changed(int context_id);
 void arch_userfaultfd_state_changed(int context_id);
-void arch_userfaultfd_wait_event(int context_id, uint64_t ticket);
-int arch_userfaultfd_consume_completed_event(void);
+void arch_userfaultfd_wait_event(int context_id, uint64_t ticket,
+                                 int64_t completion_result);
+int arch_userfaultfd_consume_completed_event(int64_t *completion_result);
 int64_t kernel_userfaultfd_ioctl(const kernel_ioctl_request_t *request);
 
 #endif
