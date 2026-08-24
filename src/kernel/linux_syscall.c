@@ -9114,6 +9114,7 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_REGISTER_FILES_UPDATE 6u
 #define EDGE_LINUX_IORING_REGISTER_EVENTFD_ASYNC 7u
 #define EDGE_LINUX_IORING_REGISTER_PROBE        8u
+#define EDGE_LINUX_IORING_REGISTER_RESTRICTIONS 11u
 #define EDGE_LINUX_IORING_REGISTER_ENABLE_RINGS 12u
 #define EDGE_LINUX_IORING_REGISTER_FILES2       13u
 #define EDGE_LINUX_IORING_REGISTER_FILES_UPDATE2 14u
@@ -9131,6 +9132,13 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_REGISTER_QUERY         35u
 #define EDGE_LINUX_IORING_REGISTER_LAST          38u
 #define EDGE_LINUX_IORING_REGISTER_USE_REGISTERED_RING (1u << 31)
+
+#define EDGE_LINUX_IORING_RESTRICTION_REGISTER_OP        0u
+#define EDGE_LINUX_IORING_RESTRICTION_SQE_OP             1u
+#define EDGE_LINUX_IORING_RESTRICTION_SQE_FLAGS_ALLOWED  2u
+#define EDGE_LINUX_IORING_RESTRICTION_SQE_FLAGS_REQUIRED 3u
+#define EDGE_LINUX_IORING_MAX_RESTRICTIONS \
+    (4u + EDGE_LINUX_IORING_REGISTER_LAST + EDGE_LINUX_IORING_OP_LAST)
 
 #define EDGE_LINUX_IORING_QUERY_OPCODES           0u
 #define EDGE_LINUX_IORING_QUERY_OPCODE_COUNT      1u
@@ -11965,6 +11973,61 @@ static int64_t edge_linux_io_uring_sync_cancel(
         cancellation.flags, cancellation.opcode, 0);
 }
 
+static int64_t edge_linux_io_uring_restrictions_register(
+        edge_linux_syscall_context_t *context, int32_t ring_id,
+        uint64_t argument, uint32_t operation_count) {
+    uint64_t register_operations = 0u;
+    uint64_t submission_operations[2] = {0u, 0u};
+    uint8_t submission_flags_allowed = 0u;
+    uint8_t submission_flags_required = 0u;
+    int restrict_register_operations = operation_count == 0u;
+    int restrict_submission_operations = operation_count == 0u;
+
+    if (!argument || operation_count > EDGE_LINUX_IORING_MAX_RESTRICTIONS)
+        return -EDGE_LINUX_EINVAL;
+    for (uint32_t index = 0; index < operation_count; ++index) {
+        struct edge_linux_io_uring_restriction restriction;
+
+        if (edge_linux_copy_from_user(
+                context, &restriction,
+                argument + (uint64_t)index * sizeof(restriction),
+                sizeof(restriction)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (restriction.reserved || restriction.reserved2[0] ||
+            restriction.reserved2[1] || restriction.reserved2[2])
+            return -EDGE_LINUX_EINVAL;
+        switch (restriction.opcode) {
+        case EDGE_LINUX_IORING_RESTRICTION_REGISTER_OP:
+            if (restriction.operation >= EDGE_LINUX_IORING_REGISTER_LAST)
+                return -EDGE_LINUX_EINVAL;
+            register_operations |= 1ull << restriction.operation;
+            restrict_register_operations = 1;
+            break;
+        case EDGE_LINUX_IORING_RESTRICTION_SQE_OP:
+            if (restriction.operation >= EDGE_LINUX_IORING_OP_LAST)
+                return -EDGE_LINUX_EINVAL;
+            submission_operations[restriction.operation >> 6u] |=
+                1ull << (restriction.operation & 63u);
+            restrict_submission_operations = 1;
+            break;
+        case EDGE_LINUX_IORING_RESTRICTION_SQE_FLAGS_ALLOWED:
+            submission_flags_allowed = restriction.operation;
+            restrict_submission_operations = 1;
+            break;
+        case EDGE_LINUX_IORING_RESTRICTION_SQE_FLAGS_REQUIRED:
+            submission_flags_required = restriction.operation;
+            restrict_submission_operations = 1;
+            break;
+        default:
+            return -EDGE_LINUX_EINVAL;
+        }
+    }
+    return kernel_io_uring_restrictions_register(
+        ring_id, register_operations, submission_operations,
+        submission_flags_allowed, submission_flags_required,
+        restrict_register_operations, restrict_submission_operations);
+}
+
 static int64_t edge_linux_sys_io_uring_register(
         edge_linux_syscall_context_t *context) {
     struct edge_linux_io_uring_probe probe;
@@ -11985,6 +12048,9 @@ static int64_t edge_linux_sys_io_uring_register(
     result = edge_linux_io_uring_resolve_ring_descriptor(
         descriptor, registered, &ring_id);
     if (result < 0) return result;
+    result = kernel_io_uring_register_allowed(ring_id, (uint8_t)opcode);
+    if (result < 0) return result;
+    if (!result) return -EDGE_LINUX_EACCES;
     if (opcode == EDGE_LINUX_IORING_REGISTER_RING_FDS)
         return edge_linux_io_uring_register_ring_fds(
             context, argument, operation_count);
@@ -11999,6 +12065,9 @@ static int64_t edge_linux_sys_io_uring_register(
             context, ring_id, argument, operation_count);
     if (opcode == EDGE_LINUX_IORING_REGISTER_SYNC_CANCEL)
         return edge_linux_io_uring_sync_cancel(
+            context, ring_id, argument, operation_count);
+    if (opcode == EDGE_LINUX_IORING_REGISTER_RESTRICTIONS)
+        return edge_linux_io_uring_restrictions_register(
             context, ring_id, argument, operation_count);
     if (opcode == EDGE_LINUX_IORING_REGISTER_PBUF_STATUS)
         return edge_linux_io_uring_pbuf_status(

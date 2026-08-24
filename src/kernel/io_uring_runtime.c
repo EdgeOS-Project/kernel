@@ -154,9 +154,15 @@ typedef struct kernel_io_uring_overflow_completion {
 typedef struct kernel_io_uring {
     uint8_t used;
     uint8_t disabled;
-    uint16_t reserved;
+    uint8_t register_restricted;
+    uint8_t submission_restricted;
     uint32_t references;
     uint32_t setup_flags;
+    uint64_t allowed_register_operations;
+    uint64_t allowed_submission_operations[2];
+    uint8_t submission_flags_allowed;
+    uint8_t submission_flags_required;
+    uint8_t restriction_reserved[6];
     uint32_t sq_entries;
     uint32_t cq_entries;
     uint32_t sq_ring_pages;
@@ -729,6 +735,55 @@ int kernel_io_uring_disabled(int32_t ring_id) {
     int result;
     ring = io_uring_lookup_locked(ring_id);
     result = ring ? ring->disabled != 0 : -EDGE_LINUX_EBADF;
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_restrictions_register(
+        int32_t ring_id, uint64_t register_operations,
+        const uint64_t submission_operations[2],
+        uint8_t submission_flags_allowed,
+        uint8_t submission_flags_required,
+        int restrict_register_operations,
+        int restrict_submission_operations) {
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    int result = 0;
+
+    if (!submission_operations) return -EDGE_LINUX_EINVAL;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) result = -EDGE_LINUX_EBADF;
+    else if (!(ring->setup_flags & IORING_SETUP_R_DISABLED))
+        result = -EDGE_LINUX_EBADFD;
+    else if (ring->register_restricted || ring->submission_restricted)
+        result = -EDGE_LINUX_EBUSY;
+    else {
+        ring->allowed_register_operations = register_operations;
+        ring->allowed_submission_operations[0] =
+            submission_operations[0];
+        ring->allowed_submission_operations[1] =
+            submission_operations[1];
+        ring->submission_flags_allowed = submission_flags_allowed;
+        ring->submission_flags_required = submission_flags_required;
+        ring->register_restricted = restrict_register_operations != 0;
+        ring->submission_restricted = restrict_submission_operations != 0;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_register_allowed(int32_t ring_id, uint8_t opcode) {
+    kernel_io_uring_t *ring;
+    uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
+    int result;
+
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) result = -EDGE_LINUX_EBADF;
+    else if (ring->disabled || !ring->register_restricted) result = 1;
+    else if (opcode >= 64u) result = 0;
+    else result =
+        (ring->allowed_register_operations & (1ull << opcode)) != 0;
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     return result;
 }
@@ -3842,6 +3897,20 @@ int kernel_io_uring_take_submission(
         sqe_index * ((ring->setup_flags & IORING_SETUP_SQE128) ?
                      128u : 64u));
     memcpy(submission, source, sizeof(*submission));
+    if (ring->submission_restricted) {
+        uint32_t operation_word = submission->opcode >> 6u;
+        uint64_t operation_bit =
+            1ull << (submission->opcode & 63u);
+        if (operation_word >= 2u ||
+            !(ring->allowed_submission_operations[operation_word] &
+              operation_bit) ||
+            (submission->flags & ring->submission_flags_required) !=
+                ring->submission_flags_required ||
+            (submission->flags &
+             ~(ring->submission_flags_allowed |
+               ring->submission_flags_required)))
+            entry_layout_result = -EDGE_LINUX_EACCES;
+    }
     if ((submission->opcode == IORING_OP_NOP128 ||
          submission->opcode == IORING_OP_URING_CMD128) &&
         !(ring->setup_flags & IORING_SETUP_SQE128)) {

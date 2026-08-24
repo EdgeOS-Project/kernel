@@ -166,6 +166,7 @@ EDGEOS_ASSESSMENTS = [
             "READ_MULTISHOT pipe reads with retained descriptions, legacy provided buffers and normal buffer rings",
             "linked capability queries for supported request, registration, setup, enter, SQE and feature flags",
             "synchronous and asynchronous cancellation by user data, file description, opcode or any request, including all-match counts",
+            "disabled-ring restrictions for register operations, SQE opcodes and allowed or required SQE flags",
             "scheduler-native enter suspension without an initial busy-poll window",
         ],
         "missing": [
@@ -197,6 +198,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/io_uring_read_multishot_abi_probe.c",
             "tools/tests/io_uring_query_abi_probe.c",
             "tools/tests/io_uring_sync_cancel_abi_probe.c",
+            "tools/tests/io_uring_restrictions_abi_probe.c",
             "tools/tests/io_uring_runtime_unit.c",
         ],
         "linux_oracle": {
@@ -251,7 +253,8 @@ EDGEOS_ASSESSMENTS = [
                 "linked capability-query layouts, per-entry results and "
                 "zero-filled extension bytes, plus synchronous and asynchronous "
                 "cancel matching, all-match counts, target completions and "
-                "reserved-field validation"
+                "reserved-field validation, plus disabled-ring restriction "
+                "registration and register, opcode and SQE-flag enforcement"
             ),
         },
     },

@@ -551,6 +551,56 @@ int main(void) {
         kernel_io_uring_release(second_ring_id);
     }
     {
+        struct edge_linux_io_uring_params restricted_parameters = {
+            .flags = 1u << 6,
+        };
+        struct edge_linux_io_uring_sqe restricted_submission = {0};
+        kernel_io_uring_page_t restricted_sq_ring;
+        kernel_io_uring_page_t restricted_sqes;
+        uint64_t submission_operations[2] = {1u, 0u};
+        uint32_t entries_consumed = 0u;
+        int32_t layout_result = 0;
+
+        assert(kernel_io_uring_create(
+                   4u, &restricted_parameters, &second_ring_id) == 0);
+        assert(kernel_io_uring_restrictions_register(
+                   second_ring_id, 1ull << 8u,
+                   submission_operations, 0u, 0u, 1, 1) == 0);
+        assert(kernel_io_uring_restrictions_register(
+                   second_ring_id, 1ull << 8u,
+                   submission_operations, 0u, 0u, 1, 1) ==
+               -EDGE_LINUX_EBUSY);
+        assert(kernel_io_uring_register_allowed(
+                   second_ring_id, 5u) == 1);
+        assert(kernel_io_uring_enable(second_ring_id) == 0);
+        assert(kernel_io_uring_register_allowed(
+                   second_ring_id, 8u) == 1);
+        assert(kernel_io_uring_register_allowed(
+                   second_ring_id, 5u) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_SQ_RING,
+                   0u, &restricted_sq_ring) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_SQES,
+                   0u, &restricted_sqes) == 0);
+        mapped_sqe = (struct edge_linux_io_uring_sqe *)(void *)
+            restricted_sqes.address;
+        memset(mapped_sqe, 0, sizeof(*mapped_sqe));
+        mapped_sqe->opcode = 22u;
+        page_u32(&restricted_sq_ring,
+                 restricted_parameters.sq_off.array)[0] = 0u;
+        *page_u32(&restricted_sq_ring,
+                  restricted_parameters.sq_off.tail) = 1u;
+        assert(kernel_io_uring_take_submission(
+                   second_ring_id, 0u, 1u, &restricted_submission,
+                   &entries_consumed, &layout_result) == 0);
+        assert(entries_consumed == 1u);
+        assert(layout_result == -EDGE_LINUX_EACCES);
+        test_page_release(0, &restricted_sq_ring);
+        test_page_release(0, &restricted_sqes);
+        kernel_io_uring_release(second_ring_id);
+    }
+    {
         struct edge_linux_io_uring_params invalid_mixed_parameters = {
             .flags = (1u << 10) | (1u << 19),
         };
