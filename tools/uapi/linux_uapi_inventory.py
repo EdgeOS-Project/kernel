@@ -168,6 +168,7 @@ EDGEOS_ASSESSMENTS = [
             "synchronous and asynchronous cancellation by user data, file description, opcode or any request, including all-match counts",
             "disabled-ring restrictions for register operations, SQE opcodes and allowed or required SQE flags",
             "registered credential personalities with scoped SQE execution and submitter credential restoration",
+            "fixed-buffer cloning from ordinary or registered source rings with ranges and destination replacement",
             "scheduler-native enter suspension without an initial busy-poll window",
         ],
         "missing": [
@@ -201,6 +202,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/io_uring_sync_cancel_abi_probe.c",
             "tools/tests/io_uring_restrictions_abi_probe.c",
             "tools/tests/io_uring_personality_abi_probe.c",
+            "tools/tests/io_uring_clone_buffers_abi_probe.c",
             "tools/tests/io_uring_runtime_unit.c",
         ],
         "linux_oracle": {
@@ -258,7 +260,8 @@ EDGEOS_ASSESSMENTS = [
                 "reserved-field validation, plus disabled-ring restriction "
                 "registration and register, opcode and SQE-flag enforcement, "
                 "plus credential-personality registration, use, restoration "
-                "and invalidation"
+                "and invalidation, plus fixed-buffer cloning, range validation "
+                "and destination replacement"
             ),
         },
     },

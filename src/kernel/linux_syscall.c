@@ -9130,6 +9130,7 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_REGISTER_FILE_ALLOC_RANGE 25u
 #define EDGE_LINUX_IORING_REGISTER_PBUF_STATUS   26u
 #define EDGE_LINUX_IORING_REGISTER_CLOCK         29u
+#define EDGE_LINUX_IORING_REGISTER_CLONE_BUFFERS 30u
 #define EDGE_LINUX_IORING_REGISTER_MEM_REGION    34u
 #define EDGE_LINUX_IORING_REGISTER_QUERY         35u
 #define EDGE_LINUX_IORING_REGISTER_LAST          38u
@@ -9148,6 +9149,8 @@ static int64_t edge_linux_sys_aio(
 
 #define EDGE_LINUX_IORING_MEM_REGION_TYPE_USER   (1u << 0)
 #define EDGE_LINUX_IORING_MEM_REGION_WAIT_ARG    (1u << 0)
+#define EDGE_LINUX_IORING_REGISTER_SRC_REGISTERED (1u << 0)
+#define EDGE_LINUX_IORING_REGISTER_DST_REPLACE    (1u << 1)
 #define EDGE_LINUX_IORING_REG_WAIT_TS            (1u << 0)
 #define EDGE_LINUX_IORING_RESOURCE_SPARSE       (1u << 0)
 #define EDGE_LINUX_IORING_PBUF_RING_MMAP         (1u << 0)
@@ -12060,6 +12063,37 @@ static int64_t edge_linux_io_uring_restrictions_register(
         restrict_register_operations, restrict_submission_operations);
 }
 
+static int64_t edge_linux_io_uring_clone_buffers(
+        edge_linux_syscall_context_t *context, int32_t ring_id,
+        uint64_t argument, uint32_t operation_count) {
+    struct edge_linux_io_uring_clone_buffers clone;
+    int32_t source_ring_id;
+    int result;
+
+    if (!argument || operation_count != 1u)
+        return -EDGE_LINUX_EINVAL;
+    if (edge_linux_copy_from_user(
+            context, &clone, argument, sizeof(clone)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    if (clone.flags & ~(EDGE_LINUX_IORING_REGISTER_SRC_REGISTERED |
+                        EDGE_LINUX_IORING_REGISTER_DST_REPLACE))
+        return -EDGE_LINUX_EINVAL;
+    if (clone.padding[0] || clone.padding[1] || clone.padding[2])
+        return -EDGE_LINUX_EINVAL;
+    if (!(clone.flags & EDGE_LINUX_IORING_REGISTER_SRC_REGISTERED) &&
+        clone.source_descriptor > INT32_MAX)
+        return -EDGE_LINUX_EBADF;
+    result = edge_linux_io_uring_resolve_ring_descriptor(
+        (int32_t)clone.source_descriptor,
+        (clone.flags & EDGE_LINUX_IORING_REGISTER_SRC_REGISTERED) != 0,
+        &source_ring_id);
+    if (result < 0) return result;
+    return kernel_io_uring_buffers_clone(
+        ring_id, source_ring_id, clone.source_offset,
+        clone.destination_offset, clone.count,
+        (clone.flags & EDGE_LINUX_IORING_REGISTER_DST_REPLACE) != 0);
+}
+
 static int64_t edge_linux_sys_io_uring_register(
         edge_linux_syscall_context_t *context) {
     struct edge_linux_io_uring_probe probe;
@@ -12112,6 +12146,9 @@ static int64_t edge_linux_sys_io_uring_register(
             ring_id, &credentials, &personality_id);
         return result < 0 ? result : personality_id;
     }
+    if (opcode == EDGE_LINUX_IORING_REGISTER_CLONE_BUFFERS)
+        return edge_linux_io_uring_clone_buffers(
+            context, ring_id, argument, operation_count);
     if (opcode == EDGE_LINUX_IORING_UNREGISTER_PERSONALITY) {
         if (argument || operation_count > UINT16_MAX)
             return -EDGE_LINUX_EINVAL;

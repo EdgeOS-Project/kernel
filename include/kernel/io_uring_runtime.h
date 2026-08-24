@@ -168,6 +168,10 @@ int kernel_io_uring_buffers_update(
     int32_t ring_id, uint32_t offset,
     const struct edge_linux_iovec *buffers,
     const uint64_t *tags, uint32_t count);
+int kernel_io_uring_buffers_clone(
+    int32_t destination_ring_id, int32_t source_ring_id,
+    uint32_t source_offset, uint32_t destination_offset,
+    uint32_t count, int replace);
 int kernel_io_uring_fixed_buffer_validate(
     int32_t ring_id, uint32_t index,
     uint64_t address, uint64_t length);

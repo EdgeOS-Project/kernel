@@ -41,6 +41,10 @@ static uint8_t g_multishot_read_data[64];
 static uint32_t g_multishot_read_length;
 static int32_t g_multishot_read_result;
 
+uint64_t arch_mm_current_address_space(void) {
+    return 0xabc000u;
+}
+
 int64_t kernel_process_wait_for_tid(
         const kernel_process_wait_request_t *request,
         kernel_process_wait_result_t *result, int32_t waiter_tid) {
@@ -1579,6 +1583,8 @@ int main(void) {
         };
         kernel_io_uring_page_t buffer_cq;
         struct edge_linux_io_uring_cqe *buffer_completion;
+        struct edge_linux_io_uring_params clone_parameters = {0};
+        int32_t clone_ring_id;
 
         assert(kernel_io_uring_create(
                    4u, &buffer_parameters, &second_ring_id) == 0);
@@ -1595,6 +1601,26 @@ int main(void) {
                -EDGE_LINUX_EFAULT);
         assert(kernel_io_uring_buffers_register(
                    second_ring_id, buffers, tags, 3u) == 0);
+        assert(kernel_io_uring_create(
+                   4u, &clone_parameters, &clone_ring_id) == 0);
+        assert(kernel_io_uring_buffers_clone(
+                   clone_ring_id, second_ring_id,
+                   1u, 0u, 2u, 0) == 0);
+        assert(kernel_io_uring_fixed_buffer_validate(
+                   clone_ring_id, 0u, 0u, 0u) ==
+               -EDGE_LINUX_EFAULT);
+        assert(kernel_io_uring_fixed_buffer_validate(
+                   clone_ring_id, 1u, 0x3000u, 0x200u) == 0);
+        assert(kernel_io_uring_buffers_clone(
+                   clone_ring_id, second_ring_id,
+                   0u, 0u, 1u, 0) == -EDGE_LINUX_EBUSY);
+        assert(kernel_io_uring_buffers_clone(
+                   clone_ring_id, second_ring_id,
+                   0u, 1u, 1u, 1) == 0);
+        assert(kernel_io_uring_fixed_buffer_validate(
+                   clone_ring_id, 1u, 0x1000u, 0x100u) == 0);
+        assert(kernel_io_uring_buffers_unregister(clone_ring_id) == 0);
+        kernel_io_uring_release(clone_ring_id);
         assert(kernel_io_uring_buffers_register(
                    second_ring_id, buffers, tags, 3u) ==
                -EDGE_LINUX_EBUSY);

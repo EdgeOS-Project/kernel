@@ -158,6 +158,7 @@ typedef struct kernel_io_uring {
     uint8_t submission_restricted;
     uint32_t references;
     uint32_t setup_flags;
+    uint64_t owner_address_space;
     uint64_t allowed_register_operations;
     uint64_t allowed_submission_operations[2];
     uint8_t submission_flags_allowed;
@@ -257,6 +258,8 @@ static int32_t io_uring_event_retain_locked(
 #define IO_URING_PENDING_READ_MULTISHOT 7u
 
 static kernel_io_uring_t g_io_urings[KERNEL_IO_URING_MAX_RINGS];
+static kernel_io_uring_fixed_buffer_t
+    g_io_uring_clone_buffers[KERNEL_IO_URING_MAX_FIXED_BUFFERS];
 static kernel_io_uring_task_registry_t
     g_io_uring_task_registries[EDGE_RUNTIME_MAX_TASKS];
 static kernel_io_uring_page_allocator_t g_io_uring_allocator;
@@ -521,6 +524,7 @@ int kernel_io_uring_create(uint32_t entries,
     ring->disabled =
         (parameters->flags & IORING_SETUP_R_DISABLED) != 0;
     ring->setup_flags = parameters->flags;
+    ring->owner_address_space = arch_mm_current_address_space();
     ring->sq_entries = entries;
     ring->cq_entries = cq_entries;
     ring->sq_ring_pages = io_uring_page_count(
@@ -1465,6 +1469,97 @@ int kernel_io_uring_buffers_update(
         event_id = io_uring_event_retain_locked(ring, 0);
 
 unlock:
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (event_id >= 0) {
+        (void)kernel_eventfd_write_value(event_id, 1, 1u);
+        kernel_eventfd_release(event_id);
+    }
+    return result;
+}
+
+int kernel_io_uring_buffers_clone(
+        int32_t destination_ring_id, int32_t source_ring_id,
+        uint32_t source_offset, uint32_t destination_offset,
+        uint32_t count, int replace) {
+    kernel_io_uring_t *destination;
+    kernel_io_uring_t *source;
+    int32_t event_id = -1;
+    uint32_t source_count;
+    uint32_t final_count;
+    uint64_t flags;
+    int notify = 0;
+    int result = 0;
+
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    destination = io_uring_lookup_locked(destination_ring_id);
+    source = io_uring_lookup_locked(source_ring_id);
+    if (!destination || !source) {
+        result = -EDGE_LINUX_EBADF;
+        goto unlock_clone;
+    }
+    if (!source->fixed_buffer_count) {
+        result = -EDGE_LINUX_ENXIO;
+        goto unlock_clone;
+    }
+    if (destination->owner_address_space != source->owner_address_space) {
+        result = -EDGE_LINUX_EINVAL;
+        goto unlock_clone;
+    }
+    if (!count && (source_offset || destination_offset)) {
+        result = -EDGE_LINUX_EINVAL;
+        goto unlock_clone;
+    }
+    if (destination->fixed_buffer_count && !replace) {
+        result = -EDGE_LINUX_EBUSY;
+        goto unlock_clone;
+    }
+    source_count = source->fixed_buffer_count;
+    if (!count) count = source_count;
+    if (count > source_count || source_offset > source_count - count) {
+        result = source_offset > UINT32_MAX - count ?
+            -EDGE_LINUX_EOVERFLOW : -EDGE_LINUX_EINVAL;
+        goto unlock_clone;
+    }
+    if (destination_offset > UINT32_MAX - count) {
+        result = -EDGE_LINUX_EOVERFLOW;
+        goto unlock_clone;
+    }
+    final_count = destination_offset + count;
+    if (final_count < destination->fixed_buffer_count)
+        final_count = destination->fixed_buffer_count;
+    if (final_count > KERNEL_IO_URING_MAX_FIXED_BUFFERS) {
+        result = -EDGE_LINUX_EINVAL;
+        goto unlock_clone;
+    }
+    memset(g_io_uring_clone_buffers, 0,
+           sizeof(g_io_uring_clone_buffers));
+    if (destination->fixed_buffer_count)
+        memcpy(g_io_uring_clone_buffers, destination->fixed_buffers,
+               destination->fixed_buffer_count *
+                   sizeof(g_io_uring_clone_buffers[0]));
+    for (uint32_t index = 0; index < count; ++index) {
+        uint32_t destination_index = destination_offset + index;
+        if (g_io_uring_clone_buffers[destination_index].tag &&
+            io_uring_completion_add_locked(
+                destination,
+                g_io_uring_clone_buffers[destination_index].tag,
+                0, 0) == 0)
+            notify = 1;
+        g_io_uring_clone_buffers[destination_index] =
+            source->fixed_buffers[source_offset + index];
+        g_io_uring_clone_buffers[destination_index].tag = 0u;
+    }
+    memcpy(destination->fixed_buffers, g_io_uring_clone_buffers,
+           final_count * sizeof(g_io_uring_clone_buffers[0]));
+    if (final_count < KERNEL_IO_URING_MAX_FIXED_BUFFERS)
+        memset(&destination->fixed_buffers[final_count], 0,
+               (KERNEL_IO_URING_MAX_FIXED_BUFFERS - final_count) *
+                   sizeof(g_io_uring_clone_buffers[0]));
+    destination->fixed_buffer_count = final_count;
+    if (notify)
+        event_id = io_uring_event_retain_locked(destination, 0);
+
+unlock_clone:
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     if (event_id >= 0) {
         (void)kernel_eventfd_write_value(event_id, 1, 1u);

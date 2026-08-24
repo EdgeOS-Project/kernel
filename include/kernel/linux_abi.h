@@ -708,6 +708,15 @@ struct edge_linux_io_uring_restriction {
     uint32_t reserved2[3];
 };
 
+struct edge_linux_io_uring_clone_buffers {
+    uint32_t source_descriptor;
+    uint32_t flags;
+    uint32_t source_offset;
+    uint32_t destination_offset;
+    uint32_t count;
+    uint32_t padding[3];
+};
+
 struct edge_linux_io_uring_getevents_arg {
     uint64_t signal_mask;
     uint32_t signal_mask_size;
@@ -867,6 +876,8 @@ _Static_assert(sizeof(struct edge_linux_io_uring_sync_cancel_reg) == 64,
                "Linux io_uring synchronous cancel size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_restriction) == 16,
                "Linux io_uring restriction size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_uring_clone_buffers) == 32,
+               "Linux io_uring clone buffers size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_getevents_arg) == 24,
                "Linux io_uring getevents argument size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_region_desc) == 64,
