@@ -8893,6 +8893,7 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_OP_TIMEOUT_REMOVE 12u
 #define EDGE_LINUX_IORING_OP_ACCEPT    13u
 #define EDGE_LINUX_IORING_OP_ASYNC_CANCEL 14u
+#define EDGE_LINUX_IORING_OP_LINK_TIMEOUT 15u
 #define EDGE_LINUX_IORING_OP_CONNECT   16u
 #define EDGE_LINUX_IORING_OP_FALLOCATE 17u
 #define EDGE_LINUX_IORING_OP_OPENAT    18u
@@ -9181,6 +9182,55 @@ static int32_t edge_linux_io_uring_timeout(
         (flags & EDGE_LINUX_IORING_TIMEOUT_REALTIME) != 0,
         duration, (uint32_t)submission->offset,
         (flags & EDGE_LINUX_IORING_TIMEOUT_MULTISHOT) != 0);
+    return result < 0 ? result : EDGE_LINUX_IORING_PENDING_RESULT;
+}
+
+static int32_t edge_linux_io_uring_link_timeout(
+        edge_linux_syscall_context_t *context, int32_t ring_id,
+        const struct edge_linux_io_uring_sqe *submission,
+        int target_available, uint8_t target_opcode,
+        uint64_t target_sequence) {
+    uint64_t duration;
+    uint64_t now = boottime_monotonic_us();
+    uint64_t deadline;
+    uint64_t realtime;
+    uint32_t flags = submission->operation_flags;
+    int result;
+
+    if (!target_available ||
+        target_opcode == EDGE_LINUX_IORING_OP_LINK_TIMEOUT)
+        return -EDGE_LINUX_EINVAL;
+    if (submission->length != 1u || submission->offset ||
+        (!(flags & EDGE_LINUX_IORING_TIMEOUT_IMMEDIATE_ARG) &&
+         !submission->address) || submission->buffer_index ||
+        submission->splice_descriptor || submission->address3 ||
+        submission->reserved2 ||
+        (flags & ~EDGE_LINUX_IORING_TIMEOUT_SUPPORTED) ||
+        ((flags & EDGE_LINUX_IORING_TIMEOUT_BOOTTIME) &&
+         (flags & EDGE_LINUX_IORING_TIMEOUT_REALTIME)) ||
+        ((flags & EDGE_LINUX_IORING_TIMEOUT_MULTISHOT) &&
+         (flags & EDGE_LINUX_IORING_TIMEOUT_ABS)))
+        return -EDGE_LINUX_EINVAL;
+    result = edge_linux_io_uring_timeout_value(
+        context, submission->address, flags, &duration);
+    if (result < 0) return result;
+    if (!target_sequence) return -EDGE_LINUX_ECANCELED;
+    if (flags & EDGE_LINUX_IORING_TIMEOUT_ABS) {
+        if (flags & EDGE_LINUX_IORING_TIMEOUT_REALTIME) {
+            realtime = boottime_realtime_us();
+            deadline = duration <= realtime ? now :
+                (duration - realtime > UINT64_MAX - now ? UINT64_MAX :
+                 now + duration - realtime);
+        } else {
+            deadline = duration;
+        }
+    } else {
+        deadline = duration > UINT64_MAX - now ? UINT64_MAX :
+                   now + duration;
+    }
+    result = kernel_io_uring_link_timeout_add(
+        ring_id, submission->user_data, target_sequence, deadline,
+        (flags & EDGE_LINUX_IORING_TIMEOUT_REALTIME) != 0);
     return result < 0 ? result : EDGE_LINUX_IORING_PENDING_RESULT;
 }
 
@@ -10644,6 +10694,9 @@ static int64_t edge_linux_sys_io_uring_enter(
     uint64_t wait_deadline_us = UINT64_MAX;
     uint64_t minimum_deadline_us = 0;
     uint64_t temporary_mask = 0;
+    uint64_t previous_link_sequence = 0;
+    uint8_t previous_link_opcode = 0;
+    int previous_link_available = 0;
     int cancel_link = 0;
     int interrupted = 0;
     int signal_mask_installed = 0;
@@ -10819,11 +10872,21 @@ static int64_t edge_linux_sys_io_uring_enter(
         linked = (submission.flags & EDGE_LINUX_IOSQE_IO_LINK) != 0;
         hard_linked =
             (submission.flags & EDGE_LINUX_IOSQE_IO_HARDLINK) != 0;
-        operation_result = cancel_link ? -EDGE_LINUX_ECANCELED :
-                           layout_result < 0 ? layout_result :
-                           edge_linux_io_uring_execute(
-                               context, ring_id, &submission,
-                               &completion_flags, &notification);
+        if (cancel_link) {
+            operation_result = -EDGE_LINUX_ECANCELED;
+        } else if (layout_result < 0) {
+            operation_result = layout_result;
+        } else if (submission.opcode ==
+                   EDGE_LINUX_IORING_OP_LINK_TIMEOUT) {
+            operation_result = edge_linux_io_uring_link_timeout(
+                context, ring_id, &submission,
+                previous_link_available, previous_link_opcode,
+                previous_link_sequence);
+        } else {
+            operation_result = edge_linux_io_uring_execute(
+                context, ring_id, &submission,
+                &completion_flags, &notification);
+        }
         if (operation_result != EDGE_LINUX_IORING_PENDING_RESULT &&
             (!(submission.flags & EDGE_LINUX_IOSQE_CQE_SKIP_SUCCESS) ||
              operation_result < 0)) {
@@ -10853,8 +10916,18 @@ static int64_t edge_linux_sys_io_uring_enter(
             (void)kernel_io_uring_completion_add_async(
                 ring_id, submission.address, -EDGE_LINUX_ECANCELED, 0);
         if (cancel_link) cancel_link = linked || hard_linked;
-        else if (operation_result < 0 && linked && !hard_linked)
+        else if (operation_result < 0 &&
+                 operation_result != EDGE_LINUX_IORING_PENDING_RESULT &&
+                 linked && !hard_linked)
             cancel_link = 1;
+        previous_link_available = linked || hard_linked;
+        previous_link_opcode = submission.opcode;
+        previous_link_sequence = 0;
+        if (previous_link_available &&
+            operation_result == EDGE_LINUX_IORING_PENDING_RESULT)
+            (void)kernel_io_uring_pending_sequence(
+                ring_id, submission.user_data,
+                &previous_link_sequence);
         submitted += entries_consumed;
         if (thread_state)
             thread_state->io_uring_wait_submitted = submitted;
@@ -10929,6 +11002,7 @@ static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
            opcode == EDGE_LINUX_IORING_OP_TIMEOUT_REMOVE ||
            opcode == EDGE_LINUX_IORING_OP_ACCEPT ||
            opcode == EDGE_LINUX_IORING_OP_ASYNC_CANCEL ||
+           opcode == EDGE_LINUX_IORING_OP_LINK_TIMEOUT ||
            opcode == EDGE_LINUX_IORING_OP_CONNECT ||
            opcode == EDGE_LINUX_IORING_OP_FALLOCATE ||
            opcode == EDGE_LINUX_IORING_OP_OPENAT ||

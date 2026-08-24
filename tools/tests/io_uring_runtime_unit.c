@@ -1077,6 +1077,78 @@ int main(void) {
         kernel_io_uring_release(second_ring_id);
     }
     {
+        struct edge_linux_io_uring_params link_parameters = {0};
+        kernel_io_uring_page_t link_cq;
+        struct edge_linux_io_uring_cqe *link_completion;
+        uint64_t target_sequence = 0;
+
+        assert(kernel_io_uring_create(
+                   4u, &link_parameters, &second_ring_id) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_CQ_RING,
+                   0u, &link_cq) == 0);
+        link_completion = (struct edge_linux_io_uring_cqe *)(
+            (uint8_t *)link_cq.address + link_parameters.cq_off.cqes);
+        g_descriptor_generation[10] = 7u;
+        g_ready_generation = 7u;
+        g_ready_descriptor = -1;
+
+        assert(kernel_io_uring_poll_add(
+                   second_ring_id, 0x4c544152u, 10, 1u, 0) == 0);
+        assert(kernel_io_uring_pending_sequence(
+                   second_ring_id, 0x4c544152u,
+                   &target_sequence) == 0);
+        assert(target_sequence != 0u);
+        assert(kernel_io_uring_link_timeout_add(
+                   second_ring_id, 0x4c54494du,
+                   target_sequence, 100u, 0) == 0);
+        assert(kernel_io_uring_collect(second_ring_id, 50u) == 0);
+        g_ready_descriptor = 10;
+        assert(kernel_io_uring_collect(second_ring_id, 60u) == 2);
+        assert(link_completion[0].user_data == 0x4c544152u);
+        assert(link_completion[0].result == 1);
+        assert(link_completion[1].user_data == 0x4c54494du);
+        assert(link_completion[1].result == -EDGE_LINUX_ECANCELED);
+        assert(g_fixed_file_references == 0u);
+
+        g_ready_descriptor = -1;
+        assert(kernel_io_uring_poll_add(
+                   second_ring_id, 0x4c544252u, 10, 1u, 0) == 0);
+        assert(kernel_io_uring_pending_sequence(
+                   second_ring_id, 0x4c544252u,
+                   &target_sequence) == 0);
+        assert(kernel_io_uring_link_timeout_add(
+                   second_ring_id, 0x4c54424du,
+                   target_sequence, 100u, 0) == 0);
+        assert(kernel_io_uring_collect(second_ring_id, 99u) == 0);
+        assert(kernel_io_uring_collect(second_ring_id, 100u) == 2);
+        assert(link_completion[2].user_data == 0x4c544252u);
+        assert(link_completion[2].result == -EDGE_LINUX_ECANCELED);
+        assert(link_completion[3].user_data == 0x4c54424du);
+        assert(link_completion[3].result == -EDGE_LINUX_ETIME);
+        assert(g_fixed_file_references == 0u);
+
+        assert(kernel_io_uring_poll_add(
+                   second_ring_id, 0x4c544352u, 10, 1u, 0) == 0);
+        assert(kernel_io_uring_pending_sequence(
+                   second_ring_id, 0x4c544352u,
+                   &target_sequence) == 0);
+        assert(kernel_io_uring_link_timeout_add(
+                   second_ring_id, 0u,
+                   target_sequence, 200u, 0) == 0);
+        assert(kernel_io_uring_pending_cancel(
+                   second_ring_id, 0x4c544352u) == 0);
+        assert(link_completion[4].user_data == 0u);
+        assert(link_completion[4].result == -EDGE_LINUX_ECANCELED);
+        assert(kernel_io_uring_link_timeout_add(
+                   second_ring_id, 0x494e564cu,
+                   target_sequence, 200u, 0) == -EDGE_LINUX_EINVAL);
+        assert(g_fixed_file_references == 0u);
+
+        test_page_release(0, &link_cq);
+        kernel_io_uring_release(second_ring_id);
+    }
+    {
         struct edge_linux_io_uring_params buffer_parameters = {0};
         const struct edge_linux_iovec buffers[] = {
             {.iov_base = 0x1000u, .iov_len = 0x100u},
