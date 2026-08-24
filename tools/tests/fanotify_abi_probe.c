@@ -7,11 +7,16 @@
 #define SYS_read 0
 #define SYS_write 1
 #define SYS_close 3
+#define SYS_mmap 9
+#define SYS_munmap 11
 #define SYS_sched_yield 24
 #define SYS_getpid 39
 #define SYS_clone 56
+#define SYS_execve 59
 #define SYS_gettid 186
 #define SYS_wait4 61
+#define SYS_ftruncate 77
+#define SYS_getdents64 217
 #define SYS_exit 60
 #define SYS_openat 257
 #define SYS_mkdirat 258
@@ -22,11 +27,16 @@
 #define SYS_read 63
 #define SYS_write 64
 #define SYS_close 57
+#define SYS_mmap 222
+#define SYS_munmap 215
 #define SYS_sched_yield 124
 #define SYS_getpid 172
 #define SYS_clone 220
+#define SYS_execve 221
 #define SYS_gettid 178
 #define SYS_wait4 260
+#define SYS_ftruncate 46
+#define SYS_getdents64 61
 #define SYS_exit 93
 #define SYS_openat 56
 #define SYS_mkdirat 34
@@ -43,9 +53,13 @@
 #define O_RDWR 0x2
 #define O_CREAT 0x40
 #define O_CLOEXEC 0x80000
+#define O_DIRECTORY 0x10000
+#define PROT_READ 0x1
+#define MAP_PRIVATE 0x2
 #define FAN_CLOEXEC 0x1
 #define FAN_NONBLOCK 0x2
 #define FAN_CLASS_CONTENT 0x4
+#define FAN_CLASS_PRE_CONTENT 0x8
 #define FAN_REPORT_PIDFD 0x80
 #define FAN_REPORT_TID 0x100
 #define FAN_REPORT_FID 0x200
@@ -56,12 +70,17 @@
 #define FAN_MARK_FLUSH 0x80
 #define FAN_OPEN 0x20
 #define FAN_OPEN_PERM 0x10000
+#define FAN_ACCESS_PERM 0x20000
+#define FAN_OPEN_EXEC_PERM 0x40000
+#define FAN_PRE_ACCESS 0x100000
 #define FAN_CREATE 0x100
 #define FAN_EVENT_ON_CHILD 0x08000000u
+#define FAN_ONDIR 0x40000000u
 #define FANOTIFY_METADATA_VERSION 3
 #define FAN_EVENT_INFO_TYPE_FID 1
 #define FAN_EVENT_INFO_TYPE_DFID_NAME 2
 #define FAN_EVENT_INFO_TYPE_PIDFD 4
+#define FAN_EVENT_INFO_TYPE_RANGE 6
 #define FAN_ALLOW 0x1
 #define FAN_DENY 0x2
 #define SIGCHLD 17
@@ -71,6 +90,14 @@
 #define ENOENT 2
 #define EINVAL 22
 #define EEXIST 17
+
+#define PRE_OPERATION_MMAP 1
+#define PRE_OPERATION_TRUNCATE 2
+#define PRE_OPERATION_GETDENTS 3
+
+#ifndef FANOTIFY_EXEC_TARGET_PATH
+#define FANOTIFY_EXEC_TARGET_PATH "/probes/fanotify_exec_target"
+#endif
 
 struct fanotify_event_metadata {
     uint32_t event_len;
@@ -114,6 +141,20 @@ struct fanotify_response {
     uint32_t response;
 };
 
+struct fanotify_event_info_range {
+    uint8_t info_type;
+    uint8_t pad8;
+    uint16_t len;
+    uint32_t pad32;
+    uint64_t offset;
+    uint64_t count;
+};
+
+struct fanotify_range_record {
+    struct fanotify_event_metadata metadata;
+    struct fanotify_event_info_range range;
+};
+
 _Static_assert(sizeof(struct fanotify_event_metadata) == 24,
                "fanotify metadata layout mismatch");
 _Static_assert(sizeof(struct fanotify_event_info_pidfd) == 8,
@@ -124,6 +165,10 @@ _Static_assert(sizeof(struct fanotify_event_info_fid_prefix) == 20,
                "fanotify FID prefix layout mismatch");
 _Static_assert(sizeof(struct fanotify_response) == 8,
                "fanotify response layout mismatch");
+_Static_assert(sizeof(struct fanotify_event_info_range) == 24,
+               "fanotify range information layout mismatch");
+_Static_assert(sizeof(struct fanotify_range_record) == 48,
+               "fanotify range record layout mismatch");
 
 static long raw_syscall6(long number, long a0, long a1, long a2,
                          long a3, long a4, long a5) {
@@ -310,6 +355,323 @@ permission_out:
     return failures;
 }
 
+static int run_access_response_test(
+        const char *path, uint32_t class_flag, uint64_t mark_mask,
+        uint32_t response_value, long expected_read_result,
+        int expect_range, const char *label) {
+    struct fanotify_range_record record;
+    struct fanotify_response response;
+    long group;
+    long child;
+    long result;
+    long expected_event_length = expect_range ?
+        (long)sizeof(record) : (long)sizeof(record.metadata);
+    int status = -1;
+    int failures = 0;
+
+    group = raw_syscall6(
+        SYS_fanotify_init,
+        FAN_CLOEXEC | FAN_NONBLOCK | class_flag,
+        O_CLOEXEC, 0, 0, 0, 0);
+    if (group < 0) return expect_result(label, group, 0);
+    failures += expect_result(
+        "access-add-mark",
+        raw_syscall6(SYS_fanotify_mark, group, FAN_MARK_ADD,
+                     mark_mask, AT_FDCWD, (long)path, 0),
+        0);
+    if (failures) goto access_out;
+
+    child = raw_syscall6(SYS_clone, SIGCHLD, 0, 0, 0, 0, 0);
+    if (child < 0) {
+        failures += expect_result("access-clone", child, 0);
+        goto access_out;
+    }
+    if (child == 0) {
+        unsigned char byte = 0;
+        long descriptor = raw_syscall6(
+            SYS_openat, AT_FDCWD, (long)path,
+            O_RDONLY | O_CLOEXEC, 0, 0, 0);
+        long read_result = descriptor < 0 ? descriptor : raw_syscall6(
+            SYS_read, descriptor, (long)&byte, 1, 0, 0, 0);
+        int child_failed = read_result != expected_read_result;
+        if (descriptor >= 0)
+            (void)raw_syscall6(
+                SYS_close, descriptor, 0, 0, 0, 0, 0);
+        (void)raw_syscall6(
+            SYS_exit, child_failed ? 1 : 0, 0, 0, 0, 0, 0);
+        for (;;) { }
+    }
+
+    for (unsigned long attempt = 0; attempt < 100000u; ++attempt) {
+        result = raw_syscall6(
+            SYS_read, group, (long)&record, sizeof(record), 0, 0, 0);
+        if (result != -EAGAIN) break;
+        (void)raw_syscall6(SYS_sched_yield, 0, 0, 0, 0, 0, 0);
+    }
+    failures += expect_result(
+        "access-event-read", result, expected_event_length);
+    if (result == expected_event_length) {
+        if (record.metadata.event_len !=
+                (uint32_t)expected_event_length ||
+            record.metadata.metadata_len != sizeof(record.metadata) ||
+            record.metadata.vers != FANOTIFY_METADATA_VERSION ||
+            record.metadata.mask != mark_mask ||
+            record.metadata.pid != child || record.metadata.fd < 0) {
+            print_text("FAIL access-event-layout\n");
+            ++failures;
+        }
+        if (expect_range &&
+            (record.range.info_type != FAN_EVENT_INFO_TYPE_RANGE ||
+             record.range.len != sizeof(record.range) ||
+             record.range.offset != 0u || record.range.count != 4096u)) {
+            print_text("FAIL access-range-layout\n");
+            ++failures;
+        }
+        response.fd = record.metadata.fd;
+        response.response = response_value;
+        failures += expect_result(
+            "access-response",
+            raw_syscall6(SYS_write, group, (long)&response,
+                         sizeof(response), 0, 0, 0),
+            sizeof(response));
+        (void)raw_syscall6(
+            SYS_close, record.metadata.fd, 0, 0, 0, 0, 0);
+    }
+    result = raw_syscall6(
+        SYS_wait4, child, (long)&status, 0, 0, 0, 0);
+    failures += expect_result("access-wait", result, child);
+    failures += expect_result("access-child-status", status, 0);
+
+access_out:
+    failures += expect_result(
+        "access-remove-mark",
+        raw_syscall6(SYS_fanotify_mark, group, FAN_MARK_REMOVE,
+                     mark_mask, AT_FDCWD, (long)path, 0),
+        0);
+    (void)raw_syscall6(SYS_close, group, 0, 0, 0, 0, 0);
+    return failures;
+}
+
+static int run_exec_response_test(uint32_t response_value,
+                                  long expected_exec_result,
+                                  const char *label) {
+    static const char target[] = FANOTIFY_EXEC_TARGET_PATH;
+    struct fanotify_event_metadata event;
+    struct fanotify_response response;
+    long group;
+    long child;
+    long result;
+    int status = -1;
+    int failures = 0;
+
+    group = raw_syscall6(
+        SYS_fanotify_init,
+        FAN_CLOEXEC | FAN_NONBLOCK | FAN_CLASS_CONTENT,
+        O_CLOEXEC, 0, 0, 0, 0);
+    if (group < 0) return expect_result(label, group, 0);
+    failures += expect_result(
+        "exec-add-mark",
+        raw_syscall6(SYS_fanotify_mark, group, FAN_MARK_ADD,
+                     FAN_OPEN_EXEC_PERM, AT_FDCWD, (long)target, 0),
+        0);
+    if (failures) goto exec_out;
+
+    child = raw_syscall6(SYS_clone, SIGCHLD, 0, 0, 0, 0, 0);
+    if (child < 0) {
+        failures += expect_result("exec-clone", child, 0);
+        goto exec_out;
+    }
+    if (child == 0) {
+        char *arguments[2] = {(char *)target, 0};
+        char *environment[1] = {0};
+        long exec_result = raw_syscall6(
+            SYS_execve, (long)target, (long)arguments,
+            (long)environment, 0, 0, 0);
+        int child_failed = expected_exec_result < 0 ?
+            exec_result != expected_exec_result : 1;
+        (void)raw_syscall6(
+            SYS_exit, child_failed ? 1 : 0, 0, 0, 0, 0, 0);
+        for (;;) { }
+    }
+
+    result = read_permission_event(group, &event);
+    failures += expect_result("exec-event-read", result, sizeof(event));
+    if (result == (long)sizeof(event)) {
+        if (event.event_len != sizeof(event) ||
+            event.metadata_len != sizeof(event) ||
+            event.vers != FANOTIFY_METADATA_VERSION ||
+            event.mask != FAN_OPEN_EXEC_PERM ||
+            event.pid != child || event.fd < 0) {
+            print_text("FAIL exec-event-layout\n");
+            ++failures;
+        }
+        response.fd = event.fd;
+        response.response = response_value;
+        failures += expect_result(
+            "exec-response",
+            raw_syscall6(SYS_write, group, (long)&response,
+                         sizeof(response), 0, 0, 0),
+            sizeof(response));
+        (void)raw_syscall6(SYS_close, event.fd, 0, 0, 0, 0, 0);
+    }
+    result = raw_syscall6(
+        SYS_wait4, child, (long)&status, 0, 0, 0, 0);
+    failures += expect_result("exec-wait", result, child);
+    failures += expect_result("exec-child-status", status, 0);
+
+exec_out:
+    failures += expect_result(
+        "exec-remove-mark",
+        raw_syscall6(SYS_fanotify_mark, group, FAN_MARK_REMOVE,
+                     FAN_OPEN_EXEC_PERM, AT_FDCWD, (long)target, 0),
+        0);
+    (void)raw_syscall6(SYS_close, group, 0, 0, 0, 0, 0);
+    return failures;
+}
+
+static int run_area_permission_test(
+        const char *path, uint64_t mark_mask, int operation,
+        uint32_t response_value, long expected_result,
+        uint64_t expected_offset, uint64_t expected_count,
+        const char *label) {
+    struct fanotify_range_record record;
+    struct fanotify_response response;
+    long expected_event_length = expected_count == UINT64_MAX ?
+        (long)sizeof(record.metadata) : (long)sizeof(record);
+    long group;
+    long child;
+    long result;
+    int status = -1;
+    int failures = 0;
+
+    group = raw_syscall6(
+        SYS_fanotify_init,
+        FAN_CLOEXEC | FAN_NONBLOCK |
+            (mark_mask & FAN_PRE_ACCESS ?
+                FAN_CLASS_PRE_CONTENT : FAN_CLASS_CONTENT),
+        O_CLOEXEC, 0, 0, 0, 0);
+    if (group < 0) return expect_result(label, group, 0);
+    failures += expect_result(
+        "area-add-mark",
+        raw_syscall6(SYS_fanotify_mark, group, FAN_MARK_ADD,
+                     (long)mark_mask, AT_FDCWD, (long)path, 0),
+        0);
+    if (failures) goto area_out;
+
+    child = raw_syscall6(SYS_clone, SIGCHLD, 0, 0, 0, 0, 0);
+    if (child < 0) {
+        failures += expect_result("area-clone", child, 0);
+        goto area_out;
+    }
+    if (child == 0) {
+        unsigned char directory_buffer[256];
+        long open_flags = operation == PRE_OPERATION_TRUNCATE ?
+            O_RDWR | O_CLOEXEC : O_RDONLY | O_CLOEXEC;
+        long descriptor;
+        long operation_result;
+        int child_failed;
+
+        if (operation == PRE_OPERATION_GETDENTS)
+            open_flags |= O_DIRECTORY;
+        descriptor = raw_syscall6(
+            SYS_openat, AT_FDCWD, (long)path,
+            open_flags, 0, 0, 0);
+        if (descriptor < 0) {
+            operation_result = descriptor;
+        } else if (operation == PRE_OPERATION_MMAP) {
+            operation_result = raw_syscall6(
+                SYS_mmap, 0, 4096, PROT_READ, MAP_PRIVATE,
+                descriptor, 0);
+            if (operation_result >= 0)
+                (void)raw_syscall6(
+                    SYS_munmap, operation_result, 4096, 0, 0, 0, 0);
+        } else if (operation == PRE_OPERATION_TRUNCATE) {
+            operation_result = raw_syscall6(
+                SYS_ftruncate, descriptor, 123, 0, 0, 0, 0);
+        } else {
+            operation_result = raw_syscall6(
+                SYS_getdents64, descriptor,
+                (long)directory_buffer, sizeof(directory_buffer),
+                0, 0, 0);
+        }
+        child_failed = expected_result < 0 ?
+            operation_result != expected_result : operation_result < 0;
+        if (descriptor >= 0)
+            (void)raw_syscall6(
+                SYS_close, descriptor, 0, 0, 0, 0, 0);
+        (void)raw_syscall6(
+            SYS_exit, child_failed ? 1 : 0, 0, 0, 0, 0, 0);
+        for (;;) { }
+    }
+
+    for (unsigned long attempt = 0; attempt < 100000u; ++attempt) {
+        result = raw_syscall6(
+            SYS_read, group, (long)&record, sizeof(record), 0, 0, 0);
+        if (result != -EAGAIN) break;
+        (void)raw_syscall6(SYS_sched_yield, 0, 0, 0, 0, 0, 0);
+    }
+    failures += expect_result(
+        "area-event-read", result, expected_event_length);
+    if (result == expected_event_length) {
+        if (record.metadata.event_len !=
+                (uint32_t)expected_event_length ||
+            record.metadata.metadata_len != sizeof(record.metadata) ||
+            record.metadata.vers != FANOTIFY_METADATA_VERSION ||
+            record.metadata.mask != mark_mask ||
+            record.metadata.pid != child || record.metadata.fd < 0) {
+            print_text("FAIL area-event-layout\n");
+            print_text("AREA_EVENT event_len=");
+            print_number(record.metadata.event_len);
+            print_text(" metadata_len=");
+            print_number(record.metadata.metadata_len);
+            print_text(" version=");
+            print_number(record.metadata.vers);
+            print_text(" mask=");
+            print_number((long)record.metadata.mask);
+            print_text(" expected_mask=");
+            print_number((long)mark_mask);
+            print_text(" pid=");
+            print_number(record.metadata.pid);
+            print_text(" expected_pid=");
+            print_number(child);
+            print_text(" fd=");
+            print_number(record.metadata.fd);
+            print_text("\n");
+            ++failures;
+        }
+        if (expected_count != UINT64_MAX &&
+            (record.range.info_type != FAN_EVENT_INFO_TYPE_RANGE ||
+             record.range.len != sizeof(record.range) ||
+             record.range.offset != expected_offset ||
+             record.range.count != expected_count)) {
+            print_text("FAIL area-range-layout\n");
+            ++failures;
+        }
+        response.fd = record.metadata.fd;
+        response.response = response_value;
+        failures += expect_result(
+            "area-response",
+            raw_syscall6(SYS_write, group, (long)&response,
+                         sizeof(response), 0, 0, 0),
+            sizeof(response));
+        (void)raw_syscall6(
+            SYS_close, record.metadata.fd, 0, 0, 0, 0, 0);
+    }
+    result = raw_syscall6(
+        SYS_wait4, child, (long)&status, 0, 0, 0, 0);
+    failures += expect_result("area-wait", result, child);
+    failures += expect_result("area-child-status", status, 0);
+
+area_out:
+    failures += expect_result(
+        "area-remove-mark",
+        raw_syscall6(SYS_fanotify_mark, group, FAN_MARK_REMOVE,
+                     (long)mark_mask, AT_FDCWD, (long)path, 0),
+        0);
+    (void)raw_syscall6(SYS_close, group, 0, 0, 0, 0, 0);
+    return failures;
+}
+
 void _start(void) {
     static const char directory[] = "/tmp/edge-fanotify-probe";
     static const char path[] = "/tmp/edge-fanotify-probe/event";
@@ -410,12 +772,43 @@ void _start(void) {
         0);
     (void)raw_syscall6(SYS_close, group, 0, 0, 0, 0, 0);
 
+    print_text("FANOTIFY_STAGE open-allow\n");
     failures += run_permission_response_test(
         path, FAN_CLASS_CONTENT, FAN_ALLOW, 0,
         "permission-content-init");
+    print_text("FANOTIFY_STAGE open-deny\n");
     failures += run_permission_response_test(
         path, FAN_CLASS_CONTENT, FAN_DENY, -EPERM,
         "permission-deny-init");
+    print_text("FANOTIFY_STAGE pre-access\n");
+    failures += run_access_response_test(
+        "/probes/fanotify_abi_probe", FAN_CLASS_PRE_CONTENT,
+        FAN_PRE_ACCESS, FAN_ALLOW, 1, 1, "pre-access-init");
+    print_text("FANOTIFY_STAGE access-deny\n");
+    failures += run_access_response_test(
+        "/probes/fanotify_abi_probe", FAN_CLASS_CONTENT,
+        FAN_ACCESS_PERM, FAN_DENY, -EPERM, 0, "access-deny-init");
+    print_text("FANOTIFY_STAGE mmap-deny\n");
+    failures += run_area_permission_test(
+        "/probes/fanotify_abi_probe", FAN_PRE_ACCESS,
+        PRE_OPERATION_MMAP, FAN_DENY, -EPERM,
+        0u, 4096u, "mmap-deny-init");
+    print_text("FANOTIFY_STAGE truncate-allow\n");
+    failures += run_area_permission_test(
+        path, FAN_PRE_ACCESS, PRE_OPERATION_TRUNCATE,
+        FAN_ALLOW, 0, 0u, 4096u, "truncate-allow-init");
+    print_text("FANOTIFY_STAGE getdents-deny\n");
+    failures += run_area_permission_test(
+        directory, FAN_ACCESS_PERM | FAN_ONDIR,
+        PRE_OPERATION_GETDENTS, FAN_DENY, -EPERM,
+        0u, UINT64_MAX, "getdents-deny-init");
+    print_text("FANOTIFY_STAGE exec-allow\n");
+    failures += run_exec_response_test(
+        FAN_ALLOW, 0, "exec-allow-init");
+    print_text("FANOTIFY_STAGE exec-deny\n");
+    failures += run_exec_response_test(
+        FAN_DENY, -EPERM, "exec-deny-init");
+    print_text("FANOTIFY_STAGE notification-info\n");
     {
         struct fanotify_pidfd_record record;
         struct fanotify_event_metadata short_record;

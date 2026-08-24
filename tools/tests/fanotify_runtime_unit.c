@@ -22,6 +22,10 @@ static int g_permission_wake_count;
 static int g_permission_wait_count;
 static int g_permission_group = -1;
 static int g_permission_mode;
+static uint64_t g_permission_expected_mask = KERNEL_FAN_OPEN_PERM;
+static int g_permission_expected_range;
+static uint64_t g_permission_expected_range_offset = 4096u;
+static uint64_t g_permission_expected_range_count = 8192u;
 static int g_installed_descriptor = 40;
 static char g_last_resolved_path[64];
 
@@ -158,6 +162,7 @@ void arch_fanotify_permission_wait(uint64_t ticket) {
     fanotify_test_copy_t copy;
     kernel_fanotify_response_t response;
     const kernel_fanotify_event_metadata_t *event;
+    uint32_t expected_length = KERNEL_FANOTIFY_METADATA_LENGTH;
 
     assert(ticket != 0u);
     assert(g_permission_group >= 0);
@@ -169,13 +174,26 @@ void arch_fanotify_permission_wait(uint64_t ticket) {
         return;
     }
     memset(&copy, 0, sizeof(copy));
+    if (g_permission_expected_range)
+        expected_length += sizeof(kernel_fanotify_event_info_range_t);
     assert(kernel_fanotify_read(
                g_permission_group, copy_record, &copy,
-               sizeof(copy.records)) == KERNEL_FANOTIFY_METADATA_LENGTH);
+               sizeof(copy.records)) == expected_length);
     assert(copy.count == 1u);
     event = copied_event(&copy, 0u);
-    assert(event->mask == KERNEL_FAN_OPEN_PERM);
+    assert(event->event_length == expected_length);
+    assert(event->mask == g_permission_expected_mask);
     assert(event->descriptor >= 0);
+    if (g_permission_expected_range) {
+        const kernel_fanotify_event_info_range_t *range =
+            (const kernel_fanotify_event_info_range_t *)(const void *)
+                (copy.records[0] + KERNEL_FANOTIFY_METADATA_LENGTH);
+        assert(range->information_type ==
+               KERNEL_FANOTIFY_INFO_TYPE_RANGE);
+        assert(range->length == sizeof(*range));
+        assert(range->offset == g_permission_expected_range_offset);
+        assert(range->count == g_permission_expected_range_count);
+    }
     response.descriptor = event->descriptor;
     response.response = g_permission_mode == 1 ? KERNEL_FAN_DENY :
         g_permission_mode == 2 ?
@@ -205,7 +223,10 @@ int main(void) {
     int combined_group;
     int dfid_group;
     int permission_group;
+    int access_group;
+    int exec_group;
     int precontent_group;
+    int directory_group;
     int release_group;
 
     memset(&copy, 0, sizeof(copy));
@@ -246,6 +267,14 @@ int main(void) {
                group, KERNEL_FAN_MARK_ADD,
                KERNEL_FAN_OPEN | KERNEL_FAN_EVENT_ON_CHILD,
                "/watched", 1) == 0);
+    assert(kernel_fanotify_modify_mark(
+               group, KERNEL_FAN_MARK_ADD, KERNEL_FAN_ONDIR,
+               "/isolated/directory", 1) == 0);
+    kernel_fanotify_notify_path(
+        "/isolated/directory", KERNEL_FAN_OPEN | KERNEL_FAN_ONDIR);
+    assert(kernel_fanotify_read(
+               group, copy_record, &copy, sizeof(copy.records)) ==
+           -EDGE_LINUX_EAGAIN);
     kernel_fanotify_notify_path("/watched/child", KERNEL_FAN_OPEN);
     assert(kernel_fanotify_read(
                group, copy_record, &copy, sizeof(copy.records)) ==
@@ -443,6 +472,58 @@ int main(void) {
     assert(g_permission_wake_count == 3);
     kernel_fanotify_release(permission_group);
 
+    access_group = kernel_fanotify_create(
+        KERNEL_FAN_CLASS_PRE_CONTENT, 0u);
+    assert(access_group >= 0);
+    assert(kernel_fanotify_modify_mark(
+               access_group, KERNEL_FAN_MARK_ADD,
+               KERNEL_FAN_PRE_ACCESS, "/watched/access", 0) == 0);
+    assert(kernel_fanotify_modify_mark(
+               access_group, KERNEL_FAN_MARK_ADD,
+               KERNEL_FAN_PRE_ACCESS | KERNEL_FAN_ONDIR,
+               "/watched", 1) == -EDGE_LINUX_EINVAL);
+    g_permission_group = access_group;
+    g_permission_mode = 0;
+    g_permission_expected_mask = KERNEL_FAN_PRE_ACCESS;
+    g_permission_expected_range = 1;
+    g_permission_expected_range_offset = 4096u;
+    g_permission_expected_range_count = 8192u;
+    assert(kernel_fanotify_access_permission_check(
+               "/watched/access", 4097u, 4096u) == 0);
+    g_permission_expected_range_offset = 8192u;
+    g_permission_expected_range_count = 4096u;
+    assert(kernel_fanotify_pre_access_permission_check(
+               "/watched/access", 8193u, 0u) == 0);
+    kernel_fanotify_release(access_group);
+
+    directory_group = kernel_fanotify_create(
+        KERNEL_FAN_CLASS_CONTENT, 0u);
+    assert(directory_group >= 0);
+    assert(kernel_fanotify_modify_mark(
+               directory_group, KERNEL_FAN_MARK_ADD,
+               KERNEL_FAN_ACCESS_PERM | KERNEL_FAN_ONDIR,
+               "/watched", 1) == 0);
+    g_permission_group = directory_group;
+    g_permission_expected_mask =
+        KERNEL_FAN_ACCESS_PERM | KERNEL_FAN_ONDIR;
+    g_permission_expected_range = 0;
+    assert(kernel_fanotify_directory_access_permission_check(
+               "/watched") == 0);
+    kernel_fanotify_release(directory_group);
+
+    exec_group = kernel_fanotify_create(
+        KERNEL_FAN_CLASS_CONTENT, 0u);
+    assert(exec_group >= 0);
+    assert(kernel_fanotify_modify_mark(
+               exec_group, KERNEL_FAN_MARK_ADD,
+               KERNEL_FAN_OPEN_EXEC_PERM, "/watched/exec", 0) == 0);
+    g_permission_group = exec_group;
+    g_permission_expected_mask = KERNEL_FAN_OPEN_EXEC_PERM;
+    g_permission_expected_range = 0;
+    assert(kernel_fanotify_permission_check(
+               "/watched/exec", KERNEL_FAN_OPEN_EXEC_PERM) == 0);
+    kernel_fanotify_release(exec_group);
+
     precontent_group = kernel_fanotify_create(
         KERNEL_FAN_CLASS_PRE_CONTENT, 0u);
     assert(precontent_group >= 0);
@@ -451,6 +532,7 @@ int main(void) {
                KERNEL_FAN_OPEN_PERM, "/watched/precontent", 0) == 0);
     g_permission_group = precontent_group;
     g_permission_mode = 2;
+    g_permission_expected_mask = KERNEL_FAN_OPEN_PERM;
     assert(kernel_fanotify_permission_check(
                "/watched/precontent", KERNEL_FAN_OPEN_PERM) ==
            -EDGE_LINUX_EIO);

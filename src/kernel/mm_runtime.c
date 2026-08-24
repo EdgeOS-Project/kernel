@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 
+#include "kernel/fanotify.h"
 #include "kernel/linux_errno.h"
 #include "kernel/mm_runtime.h"
 #include "kernel/userfaultfd.h"
@@ -2013,6 +2014,12 @@ int64_t kernel_mm_map(const kernel_mm_map_request_t *request) {
             effective_request.flags |=
                 KERNEL_MM_MAP_LOCKED | KERNEL_MM_MAP_SECRET;
             secret_mapping = 1;
+        }
+        if (description.kind == KERNEL_VFS_DESCRIPTOR_REGULAR &&
+            description.path) {
+            status = kernel_fanotify_pre_access_permission_check(
+                description.path, request->offset, request->length);
+            if (status < 0) return status;
         }
     }
     rounded_length =

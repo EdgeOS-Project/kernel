@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "kernel/fanotify.h"
 #include "kernel/linux_errno.h"
 #include "kernel/linux_seek.h"
 #include "kernel/mm_runtime.h"
@@ -157,8 +158,19 @@ int kernel_vfs_fallocate_inode_transaction(
 }
 
 int kernel_vfs_truncate_descriptor(int32_t descriptor, uint32_t length) {
+    kernel_vfs_descriptor_t description;
+    int result;
+
     if (descriptor < 0)
         return -EDGE_LINUX_EBADF;
+    result = kernel_vfs_describe_descriptor(descriptor, &description);
+    if (result < 0) return result;
+    if (description.kind == KERNEL_VFS_DESCRIPTOR_REGULAR &&
+        description.path) {
+        result = kernel_fanotify_pre_access_permission_check(
+            description.path, length, 0u);
+        if (result < 0) return result;
+    }
     return arch_vfs_truncate_descriptor(descriptor, length);
 }
 

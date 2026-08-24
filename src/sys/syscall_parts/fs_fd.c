@@ -5906,6 +5906,13 @@ static uint64_t do_sys_fd_read_entry(int fd, edge_fd_t *e,
     if (e->kind != FD_VFS) return (uint64_t)-EBADF;
     if ((e->inode.mode & 0xF000) == VFS_INODE_DIR) return (uint64_t)-EISDIR;
 
+    if ((e->inode.mode & 0xF000u) == VFS_INODE_FILE) {
+        int permission_status = kernel_fanotify_access_permission_check(
+            e->path, fd_description_offset(e), len);
+        if (permission_status < 0)
+            return (uint64_t)(int64_t)permission_status;
+    }
+
     {
     kernel_io_buffer_t io_buffer;
     char *read_chunk = chunk;
@@ -6613,6 +6620,13 @@ static uint64_t do_sys_pread64_entry(
     if (e->kind != FD_VFS) return (uint64_t)-EBADF;
     if ((e->inode.mode & 0xF000) == VFS_INODE_DIR) return (uint64_t)-EISDIR;
     if (path_is_tty_device(e->path) || path_is_mouse_input(e->path)) return (uint64_t)-ESPIPE;
+
+    if ((e->inode.mode & 0xF000u) == VFS_INODE_FILE) {
+        int permission_status = kernel_fanotify_access_permission_check(
+            e->path, off, len);
+        if (permission_status < 0)
+            return (uint64_t)(int64_t)permission_status;
+    }
 
     {
         kernel_io_buffer_t io_buffer;

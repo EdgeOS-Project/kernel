@@ -69,6 +69,7 @@
 #define KERNEL_FANOTIFY_INFO_TYPE_DFID_NAME 2u
 #define KERNEL_FANOTIFY_INFO_TYPE_DFID 3u
 #define KERNEL_FANOTIFY_INFO_TYPE_PIDFD 4u
+#define KERNEL_FANOTIFY_INFO_TYPE_RANGE 6u
 #define KERNEL_FANOTIFY_NOFD (-1)
 #define KERNEL_FANOTIFY_EPIDFD (-2)
 
@@ -113,6 +114,15 @@ typedef struct kernel_fanotify_event_info_fid_prefix {
     int32_t handle_type;
 } kernel_fanotify_event_info_fid_prefix_t;
 
+typedef struct kernel_fanotify_event_info_range {
+    uint8_t information_type;
+    uint8_t padding8;
+    uint16_t length;
+    uint32_t padding32;
+    uint64_t offset;
+    uint64_t count;
+} kernel_fanotify_event_info_range_t;
+
 typedef struct kernel_fanotify_response {
     int32_t descriptor;
     uint32_t response;
@@ -133,6 +143,8 @@ _Static_assert(sizeof(kernel_fanotify_event_info_pidfd_t) ==
 _Static_assert(sizeof(kernel_fanotify_event_info_fid_prefix_t) ==
                KERNEL_FANOTIFY_FID_INFO_PREFIX_LENGTH,
                "fanotify FID prefix layout must match Linux UAPI");
+_Static_assert(sizeof(kernel_fanotify_event_info_range_t) == 24u,
+               "fanotify range information layout must match Linux UAPI");
 _Static_assert(sizeof(kernel_fanotify_response_t) == 8u,
                "fanotify response layout must match Linux UAPI");
 _Static_assert(sizeof(kernel_fanotify_response_info_audit_rule_t) == 16u,
@@ -157,6 +169,14 @@ int64_t kernel_fanotify_write(
     uint64_t length);
 int kernel_fanotify_permission_check(const char *canonical_path,
                                      uint64_t mask);
+int kernel_fanotify_access_permission_check(const char *canonical_path,
+                                            uint64_t offset,
+                                            uint64_t count);
+int kernel_fanotify_pre_access_permission_check(const char *canonical_path,
+                                                uint64_t offset,
+                                                uint64_t count);
+int kernel_fanotify_directory_access_permission_check(
+    const char *canonical_path);
 int kernel_fanotify_permission_pending(uint64_t ticket);
 void kernel_fanotify_notify_path(const char *canonical_path, uint32_t mask);
 void kernel_fanotify_notify_move(const char *old_canonical_path,

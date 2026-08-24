@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "kernel/fanotify.h"
 #include "kernel/fs_context.h"
 #include "kernel/inotify.h"
 #include "kernel/linux_errno.h"
@@ -306,6 +307,11 @@ static int kernel_vfs_truncate_resolved(
         return -EDGE_LINUX_EINVAL;
     if (path && (vfs_mount_flags_for_path(path) & VFS_MOUNT_READONLY))
         return -EDGE_LINUX_EROFS;
+    if (path && path[0]) {
+        result = kernel_fanotify_pre_access_permission_check(
+            path, length, 0u);
+        if (result < 0) return result;
+    }
     result = kernel_vfs_truncate_inode_transaction(
         target->superblock, target->inode, length);
     if (result < 0) return result;

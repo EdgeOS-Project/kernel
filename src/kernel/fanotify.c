@@ -69,12 +69,16 @@ typedef struct kernel_fanotify_event {
     uint8_t directory_entry;
     uint8_t permission;
     uint8_t delivered;
+    uint8_t range_valid;
+    uint8_t padding8[3];
     uint16_t next;
     uint16_t transaction_index;
     int32_t group_id;
     int32_t pid;
     int32_t response_descriptor;
     uint64_t mask;
+    uint64_t range_offset;
+    uint64_t range_count;
     char path[VFS_PATH_MAX];
 } kernel_fanotify_event_t;
 
@@ -307,7 +311,8 @@ static uint64_t fanotify_queue_locked(int group_id, uint64_t mask,
 
 static int fanotify_queue_permission_locked(
         int group_id, uint64_t mask, const char *path, int32_t pid,
-        int directory_entry, uint16_t transaction_index) {
+        int directory_entry, uint16_t transaction_index,
+        int range_valid, uint64_t range_offset, uint64_t range_count) {
     kernel_fanotify_group_t *group = fanotify_group_locked(group_id);
     kernel_fanotify_permission_transaction_t *transaction;
     kernel_fanotify_event_t *event;
@@ -330,6 +335,9 @@ static int fanotify_queue_permission_locked(
     event->pid = pid;
     event->mask = mask;
     event->directory_entry = directory_entry != 0;
+    event->range_valid = range_valid != 0;
+    event->range_offset = range_offset;
+    event->range_count = range_count;
     if (path) {
         uint32_t length = (uint32_t)strlen(path);
         if (length >= VFS_PATH_MAX) length = VFS_PATH_MAX - 1u;
@@ -654,6 +662,11 @@ int kernel_fanotify_modify_mark(int group_id, uint32_t flags,
         result = -EDGE_LINUX_EINVAL;
         goto out;
     }
+    if ((mask & KERNEL_FAN_PRE_ACCESS) &&
+        (mask & KERNEL_FAN_ONDIR)) {
+        result = -EDGE_LINUX_EINVAL;
+        goto out;
+    }
     if ((mask & ~(uint64_t)(KERNEL_FANOTIFY_PATH_EVENT_MASK |
                             KERNEL_FANOTIFY_EVENT_FLAG_MASK)) &&
         !(group->flags & KERNEL_FANOTIFY_FID_MODE_MASK)) {
@@ -745,6 +758,7 @@ int64_t kernel_fanotify_read(int group_id,
         uint32_t event_flags;
         uint32_t record_length;
         uint32_t information_offset = 0u;
+        uint32_t pidfd_offset = UINT32_MAX;
         uint16_t event_index;
         int permission;
         int descriptor = KERNEL_FANOTIFY_NOFD;
@@ -790,7 +804,19 @@ int64_t kernel_fanotify_read(int group_id,
                 KERNEL_FANOTIFY_INFO_TYPE_PIDFD;
             pidfd_information->length =
                 KERNEL_FANOTIFY_PIDFD_INFO_LENGTH;
+            pidfd_offset = information_offset;
             information_offset += KERNEL_FANOTIFY_PIDFD_INFO_LENGTH;
+        }
+        if (event->range_valid) {
+            kernel_fanotify_event_info_range_t *range_information =
+                (kernel_fanotify_event_info_range_t *)(void *)
+                    (record.information + information_offset);
+            range_information->information_type =
+                KERNEL_FANOTIFY_INFO_TYPE_RANGE;
+            range_information->length = sizeof(*range_information);
+            range_information->offset = event->range_offset;
+            range_information->count = event->range_count;
+            information_offset += sizeof(*range_information);
         }
         record_length = KERNEL_FANOTIFY_METADATA_LENGTH +
             information_offset;
@@ -838,8 +864,7 @@ int64_t kernel_fanotify_read(int group_id,
             (group_flags & KERNEL_FAN_REPORT_PIDFD)) {
             kernel_fanotify_event_info_pidfd_t *pidfd_information =
                 (kernel_fanotify_event_info_pidfd_t *)(void *)
-                    (record.information + information_offset -
-                     KERNEL_FANOTIFY_PIDFD_INFO_LENGTH);
+                    (record.information + pidfd_offset);
             pidfd = kernel_pidfd_open(event->pid, 0u);
             if (pidfd < 0)
                 pidfd = pidfd == -EDGE_LINUX_ESRCH ?
@@ -980,8 +1005,9 @@ int kernel_fanotify_permission_pending(uint64_t ticket) {
     return pending;
 }
 
-int kernel_fanotify_permission_check(const char *canonical_path,
-                                     uint64_t mask) {
+static int fanotify_permission_check_internal(
+        const char *canonical_path, uint64_t mask, int range_valid,
+        uint64_t range_offset, uint64_t range_count) {
     kernel_linux_identity_t identity;
     kernel_fanotify_permission_transaction_t *transaction;
     uint64_t replay_ticket = 0;
@@ -1040,11 +1066,14 @@ int kernel_fanotify_permission_check(const char *canonical_path,
                 (mark->mask & KERNEL_FAN_EVENT_ON_CHILD);
         if (!direct && !child) continue;
         event_mask = mask & mark->mask;
-        if (!event_mask || (event_mask & mark->ignored_mask)) continue;
+        if (!(event_mask & KERNEL_FANOTIFY_PERMISSION_MASK) ||
+            (event_mask & mark->ignored_mask))
+            continue;
         status = fanotify_queue_permission_locked(
             mark->group_id, event_mask, canonical_path,
             (group->flags & KERNEL_FAN_REPORT_TID) ? tid : tgid,
-            child, transaction_index);
+            child, transaction_index, range_valid,
+            range_offset, range_count);
         if (status < 0) {
             if (!transaction->result) transaction->result = status;
             continue;
@@ -1061,6 +1090,48 @@ int kernel_fanotify_permission_check(const char *canonical_path,
     fanotify_wake_groups(wake_groups);
     arch_fanotify_permission_wait(ticket);
     return fanotify_permission_complete(ticket);
+}
+
+int kernel_fanotify_permission_check(const char *canonical_path,
+                                     uint64_t mask) {
+    return fanotify_permission_check_internal(
+        canonical_path, mask, 0, 0u, 0u);
+}
+
+int kernel_fanotify_pre_access_permission_check(const char *canonical_path,
+                                                uint64_t offset,
+                                                uint64_t count) {
+    const uint64_t page_mask = 4095u;
+    uint64_t range_start = offset & ~page_mask;
+    uint64_t range_end;
+
+    if (count > UINT64_MAX - offset ||
+        offset + count > UINT64_MAX - page_mask)
+        range_end = UINT64_MAX & ~page_mask;
+    else
+        range_end = (offset + count + page_mask) & ~page_mask;
+    if (range_end < range_start) range_end = UINT64_MAX;
+    return fanotify_permission_check_internal(
+        canonical_path, KERNEL_FAN_PRE_ACCESS, 1,
+        range_start, range_end - range_start);
+}
+
+int kernel_fanotify_access_permission_check(const char *canonical_path,
+                                            uint64_t offset,
+                                            uint64_t count) {
+    int status = kernel_fanotify_pre_access_permission_check(
+        canonical_path, offset, count);
+
+    if (status < 0) return status;
+    return fanotify_permission_check_internal(
+        canonical_path, KERNEL_FAN_ACCESS_PERM, 0, 0u, 0u);
+}
+
+int kernel_fanotify_directory_access_permission_check(
+        const char *canonical_path) {
+    return fanotify_permission_check_internal(
+        canonical_path, KERNEL_FAN_ACCESS_PERM | KERNEL_FAN_ONDIR,
+        0, 0u, 0u);
 }
 
 static uint64_t fanotify_notify_path_locked(const char *canonical_path,
@@ -1093,7 +1164,9 @@ static uint64_t fanotify_notify_path_locked(const char *canonical_path,
         }
         event_mask &= mark->mask;
         event_mask &= ~(uint64_t)KERNEL_FAN_EVENT_ON_CHILD;
-        if (!event_mask) continue;
+        if (!(event_mask &
+              ~(uint64_t)KERNEL_FANOTIFY_EVENT_FLAG_MASK))
+            continue;
         if ((group->flags & KERNEL_FAN_REPORT_DIR_FID) && !child &&
             !(group->flags & KERNEL_FAN_REPORT_FID))
             continue;

@@ -5,6 +5,7 @@
  */
 
 #include "kernel/exec_runtime.h"
+#include "kernel/fanotify.h"
 #include "kernel/landlock_runtime.h"
 #include "kernel/linux_errno.h"
 #include "kernel/posix_timer_runtime.h"
@@ -193,8 +194,18 @@ static int exec_resolve(kernel_exec_state_t *state, int nofollow) {
     if (status < 0) return status;
     status = exec_file_validate(state, nofollow);
     if (status < 0) return status;
-    return kernel_landlock_check_path(
+    status = kernel_landlock_check_path(
         state->path, EDGE_LINUX_LANDLOCK_ACCESS_FS_EXECUTE);
+    if (status < 0) return status;
+    status = kernel_fanotify_permission_check(
+        state->path, KERNEL_FAN_OPEN_EXEC_PERM);
+    if (status < 0) return status;
+    status = kernel_fanotify_permission_check(
+        state->path, KERNEL_FAN_OPEN_PERM);
+    if (status < 0) return status;
+    kernel_fanotify_notify_path(
+        state->path, KERNEL_FAN_OPEN | KERNEL_FAN_OPEN_EXEC);
+    return 0;
 }
 
 static int exec_parse_shebang(kernel_exec_state_t *state,

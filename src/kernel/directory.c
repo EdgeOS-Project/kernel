@@ -9,7 +9,9 @@
 #include <string.h>
 
 #include "kernel/directory_runtime.h"
+#include "kernel/fanotify.h"
 #include "kernel/linux_errno.h"
+#include "kernel/vfs_runtime.h"
 #include "vfs/vfs.h"
 
 uint8_t kernel_vfs_mode_to_dtype(uint16_t mode) {
@@ -157,6 +159,7 @@ int kernel_vfs_dirent_emit(
 
 int64_t kernel_vfs_getdents(
     const kernel_vfs_getdents_request_t *request) {
+    kernel_vfs_descriptor_t description;
     kernel_vfs_directory_cursor_t cursor;
     kernel_vfs_directory_entry_t entry;
     uint64_t written = 0;
@@ -165,6 +168,15 @@ int64_t kernel_vfs_getdents(
     int status;
 
     if (!request || !request->copy_to_user) return -EDGE_LINUX_EIO;
+    status = kernel_vfs_describe_descriptor(
+        request->descriptor, &description);
+    if (status < 0) return status;
+    if (description.kind == KERNEL_VFS_DESCRIPTOR_DIRECTORY &&
+        description.path) {
+        status = kernel_fanotify_directory_access_permission_check(
+            description.path);
+        if (status < 0) return status;
+    }
     special_result = arch_vfs_special_getdents64(request, &handled);
     if (handled) return special_result;
     if (special_result < 0) return special_result;

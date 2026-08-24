@@ -4317,6 +4317,15 @@ static void task_vector_io_state_clear(kernel_task_t *task) {
 static void task_vector_io_complete(
         kernel_task_t *task, int64_t result) {
     if (!task || !task->vector_io_active) return;
+    /*
+     * A permission or filesystem wait may yield from below the retained
+     * vector backend. arch_runtime_yield() rewinds ELR so a plain syscall can
+     * be replayed, but this state machine completes that syscall directly.
+     * Skip the saved SVC exactly once before returning the completed result.
+     */
+    if (task->vector_io_replay_frame &&
+        task->frame.elr <= UINT64_MAX - 4u)
+        task->frame.elr += 4u;
     task->frame.x[0] = (uint64_t)result;
     task_vector_io_state_clear(task);
     task->fuse_wait_identity = 0;
@@ -24896,6 +24905,11 @@ static int64_t fd_read_user_internal(
     }
     if (!fd->sb || !fd->sb->ops || !fd->sb->ops->read)
         return -LINUX_EINVAL;
+    if ((fd->inode.mode & 0xf000u) == VFS_INODE_FILE) {
+        int permission_status = kernel_fanotify_access_permission_check(
+            fd->path, fd_description_offset(fd), length);
+        if (permission_status < 0) return permission_status;
+    }
     {
         kernel_io_buffer_t io_buffer;
         char *chunk = task->scratch->path_scratch[1];
@@ -25015,6 +25029,11 @@ static int64_t fd_positioned_user_retained(
 
         if (!fd->sb->ops->read || (fd->status_flags & 3u) == 1u)
             return -LINUX_EBADF;
+        if ((fd->inode.mode & 0xf000u) == VFS_INODE_FILE) {
+            int permission_status = kernel_fanotify_access_permission_check(
+                fd->path, offset, length);
+            if (permission_status < 0) return permission_status;
+        }
         if ((fd->inode.mode & 0xf000u) == VFS_INODE_FILE &&
             kernel_io_buffer_acquire(&io_buffer) == 0) {
             read_chunk = (char *)io_buffer.data;
