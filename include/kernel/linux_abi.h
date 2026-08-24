@@ -670,6 +670,26 @@ struct edge_linux_io_uring_probe {
     uint32_t reserved2[3];
 };
 
+struct edge_linux_io_uring_query_header {
+    uint64_t next_entry;
+    uint64_t query_data;
+    uint32_t query_opcode;
+    uint32_t size;
+    int32_t result;
+    uint32_t reserved[3];
+};
+
+struct edge_linux_io_uring_query_opcodes {
+    uint32_t request_opcode_count;
+    uint32_t register_opcode_count;
+    uint64_t feature_flags;
+    uint64_t setup_flags;
+    uint64_t enter_flags;
+    uint64_t sqe_flags;
+    uint32_t query_opcode_count;
+    uint32_t padding;
+};
+
 struct edge_linux_io_uring_getevents_arg {
     uint64_t signal_mask;
     uint32_t signal_mask_size;
@@ -821,6 +841,10 @@ _Static_assert(sizeof(struct edge_linux_io_uring_probe_op) == 8,
                "Linux io_uring probe operation size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_probe) == 16,
                "Linux io_uring probe header size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_uring_query_header) == 40,
+               "Linux io_uring query header size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_uring_query_opcodes) == 48,
+               "Linux io_uring opcode query size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_getevents_arg) == 24,
                "Linux io_uring getevents argument size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_region_desc) == 64,

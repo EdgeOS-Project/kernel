@@ -9113,7 +9113,13 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_REGISTER_PBUF_STATUS   26u
 #define EDGE_LINUX_IORING_REGISTER_CLOCK         29u
 #define EDGE_LINUX_IORING_REGISTER_MEM_REGION    34u
+#define EDGE_LINUX_IORING_REGISTER_QUERY         35u
+#define EDGE_LINUX_IORING_REGISTER_LAST          38u
 #define EDGE_LINUX_IORING_REGISTER_USE_REGISTERED_RING (1u << 31)
+
+#define EDGE_LINUX_IORING_QUERY_OPCODES           0u
+#define EDGE_LINUX_IORING_QUERY_OPCODE_COUNT      1u
+#define EDGE_LINUX_IORING_QUERY_MAX_ENTRIES       1000u
 
 #define EDGE_LINUX_IORING_MEM_REGION_TYPE_USER   (1u << 0)
 #define EDGE_LINUX_IORING_MEM_REGION_WAIT_ARG    (1u << 0)
@@ -11749,6 +11755,102 @@ static int64_t edge_linux_io_uring_pbuf_status(
     return 0;
 }
 
+static int edge_linux_io_uring_query_copy_data(
+        edge_linux_syscall_context_t *context, uint64_t destination,
+        uint32_t user_size, const void *data, uint32_t data_size) {
+    static const uint8_t zero[64];
+    uint32_t copied = 0u;
+
+    if (data_size > user_size) data_size = user_size;
+    if (data_size && edge_linux_copy_to_user(
+            context, destination, data, data_size) < 0)
+        return -EDGE_LINUX_EFAULT;
+    copied = data_size;
+    while (copied < user_size) {
+        uint32_t count = user_size - copied;
+
+        if (count > sizeof(zero)) count = sizeof(zero);
+        if (destination > UINT64_MAX - copied ||
+            edge_linux_copy_to_user(
+                context, destination + copied, zero, count) < 0)
+            return -EDGE_LINUX_EFAULT;
+        copied += count;
+    }
+    return 0;
+}
+
+static int64_t edge_linux_io_uring_query(
+        edge_linux_syscall_context_t *context, uint64_t argument,
+        uint32_t operation_count) {
+    uint64_t header_address = argument;
+    uint32_t entries = 0u;
+
+    if (operation_count) return -EDGE_LINUX_EINVAL;
+    while (header_address) {
+        struct edge_linux_io_uring_query_header header;
+        struct edge_linux_io_uring_query_opcodes data;
+        uint32_t input_size;
+        uint32_t result_size = 0u;
+        int32_t entry_result = -EDGE_LINUX_EINVAL;
+
+        if (edge_linux_copy_from_user(
+                context, &header, header_address,
+                sizeof(header)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        input_size = header.size;
+        memset(&data, 0, sizeof(data));
+        if (header.query_opcode >=
+                EDGE_LINUX_IORING_QUERY_OPCODE_COUNT) {
+            entry_result = -EDGE_LINUX_EOPNOTSUPP;
+        } else if (header.result || !header.size ||
+                   header.reserved[0] || header.reserved[1] ||
+                   header.reserved[2]) {
+            entry_result = -EDGE_LINUX_EINVAL;
+        } else {
+            uint32_t copy_size = header.size;
+
+            if (copy_size > sizeof(data)) copy_size = sizeof(data);
+            if (!header.query_data || edge_linux_copy_from_user(
+                    context, &data, header.query_data,
+                    copy_size) < 0)
+                return -EDGE_LINUX_EFAULT;
+            if (header.query_opcode ==
+                    EDGE_LINUX_IORING_QUERY_OPCODES) {
+                kernel_io_uring_capabilities(
+                    &data.feature_flags, &data.setup_flags);
+                data.request_opcode_count = EDGE_LINUX_IORING_OP_LAST;
+                data.register_opcode_count =
+                    EDGE_LINUX_IORING_REGISTER_LAST;
+                data.enter_flags = EDGE_LINUX_IORING_ENTER_SUPPORTED;
+                data.sqe_flags = EDGE_LINUX_IOSQE_KNOWN;
+                data.query_opcode_count =
+                    EDGE_LINUX_IORING_QUERY_OPCODE_COUNT;
+                data.padding = 0u;
+                entry_result = 0;
+                result_size = sizeof(data);
+            }
+        }
+        header.result = entry_result;
+        header.size = input_size < result_size ?
+                      input_size : result_size;
+        if (input_size && (!header.query_data ||
+            edge_linux_io_uring_query_copy_data(
+                context, header.query_data, input_size,
+                &data, header.size) < 0))
+            return -EDGE_LINUX_EFAULT;
+        if (edge_linux_copy_to_user(
+                context, header_address, &header,
+                sizeof(header)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        header_address = header.next_entry;
+        if (++entries >= EDGE_LINUX_IORING_QUERY_MAX_ENTRIES)
+            return -EDGE_LINUX_ERANGE;
+        if (kernel_current_signal_wake_pending())
+            return -EDGE_LINUX_EINTR;
+    }
+    return 0;
+}
+
 static int64_t edge_linux_sys_io_uring_register(
         edge_linux_syscall_context_t *context) {
     struct edge_linux_io_uring_probe probe;
@@ -11784,6 +11886,9 @@ static int64_t edge_linux_sys_io_uring_register(
     if (opcode == EDGE_LINUX_IORING_REGISTER_PBUF_STATUS)
         return edge_linux_io_uring_pbuf_status(
             context, ring_id, argument, operation_count);
+    if (opcode == EDGE_LINUX_IORING_REGISTER_QUERY)
+        return edge_linux_io_uring_query(
+            context, argument, operation_count);
     if (opcode == EDGE_LINUX_IORING_REGISTER_BUFFERS) {
         if (!argument) return -EDGE_LINUX_EFAULT;
         return edge_linux_io_uring_buffers_register_user(

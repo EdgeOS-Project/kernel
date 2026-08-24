@@ -99,6 +99,8 @@ void kernel_io_uring_task_release(int32_t task_id);
 int kernel_io_uring_enable(int32_t ring_id);
 int kernel_io_uring_disabled(int32_t ring_id);
 int kernel_io_uring_setup_flags(int32_t ring_id, uint32_t *setup_flags);
+void kernel_io_uring_capabilities(uint64_t *features,
+                                  uint64_t *setup_flags);
 int kernel_io_uring_eventfd_register(int32_t ring_id, int32_t event_id,
                                      int asynchronous_only);
 int kernel_io_uring_eventfd_unregister(int32_t ring_id);

@@ -353,6 +353,8 @@ int main(void) {
     uint32_t allocation_offset = UINT32_MAX;
     uint32_t allocation_length = UINT32_MAX;
     uint64_t selected_time = 0u;
+    uint64_t capability_features = 0u;
+    uint64_t capability_setup_flags = 0u;
 
     {
         uint64_t minimum_deadline;
@@ -378,6 +380,10 @@ int main(void) {
     }
     assert(kernel_io_uring_page_allocator_register(&allocator) == 0);
     assert(kernel_io_uring_create(8, &parameters, &ring_id) == 0);
+    kernel_io_uring_capabilities(
+        &capability_features, &capability_setup_flags);
+    assert(capability_features == parameters.features);
+    assert(capability_setup_flags == 0x1d3fd8u);
     assert(parameters.sq_entries == 8);
     assert(parameters.cq_entries == 16);
     assert(kernel_io_uring_completion_capacity(ring_id) == 16u);

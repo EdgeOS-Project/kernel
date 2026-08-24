@@ -745,6 +745,16 @@ int kernel_io_uring_setup_flags(int32_t ring_id, uint32_t *setup_flags) {
     return result;
 }
 
+void kernel_io_uring_capabilities(uint64_t *features,
+                                  uint64_t *setup_flags) {
+    if (features)
+        *features = IORING_FEAT_SUBMIT_STABLE |
+                    IORING_FEAT_RW_CUR_POS |
+                    IORING_FEAT_POLL_32BITS |
+                    IORING_FEAT_CQE_SKIP;
+    if (setup_flags) *setup_flags = IORING_SETUP_SUPPORTED;
+}
+
 int kernel_io_uring_eventfd_register(int32_t ring_id, int32_t event_id,
                                      int asynchronous_only) {
     kernel_io_uring_t *ring;
