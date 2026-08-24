@@ -5,6 +5,7 @@
  */
 
 #include "kernel/anonymous_fd.h"
+#include "kernel/bpf_runtime.h"
 #include "kernel/event_runtime.h"
 #include "kernel/eventfd.h"
 #include "kernel/fanotify.h"
@@ -104,6 +105,12 @@ static int anonymous_fd_object_is_live(
         kernel_posix_mq_state_t state;
         return kernel_posix_mq_query(object_id, &state) == 0;
     }
+    if (kind == KERNEL_ANONYMOUS_FD_BPF) {
+        int readable;
+        int writable;
+        return kernel_bpf_ringbuf_poll_state(
+                   object_id, &readable, &writable) == 0;
+    }
     return 0;
 }
 
@@ -151,6 +158,17 @@ void kernel_signalfd_state_changed(int signalfd_id) {
 void kernel_posix_mq_state_changed(int32_t queue_id) {
     anonymous_fd_state_changed(
         KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE, queue_id);
+}
+
+void kernel_bpf_ringbuf_state_changed(void) {
+    if (!g_backend_ops) return;
+    /*
+     * A program can publish to more than one ring during one invocation.
+     * Backends therefore wake BPF poll owners as a class and let the common
+     * readiness path identify the descriptors that became readable.
+     */
+    g_backend_ops->state_changed(
+        g_backend_context, KERNEL_ANONYMOUS_FD_BPF, -1);
 }
 
 int kernel_posix_mq_deliver_notification(int32_t target_tgid,

@@ -4678,6 +4678,9 @@ static int64_t edge_linux_bpf_map_element(
     if (status < 0) return status;
     status = kernel_bpf_map_info(object_id, &info);
     if (status < 0) return status;
+    if (info.type == KERNEL_BPF_MAP_TYPE_RINGBUF ||
+        info.type == KERNEL_BPF_MAP_TYPE_USER_RINGBUF)
+        return -EDGE_LINUX_ENOTSUPP;
     if (!info.key_size &&
         (command == EDGE_LINUX_BPF_MAP_DELETE_ELEM ||
          command == EDGE_LINUX_BPF_MAP_GET_NEXT_KEY))

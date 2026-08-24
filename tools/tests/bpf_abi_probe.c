@@ -9,8 +9,12 @@
 #define SYS_fcntl 72
 #define SYS_openat 257
 #define SYS_mkdirat 258
+#define SYS_mknodat 259
 #define SYS_unlinkat 263
 #define SYS_mount 165
+#define SYS_mmap 9
+#define SYS_munmap 11
+#define SYS_ppoll 271
 #define SYS_perf_event_open 298
 #define SYS_exit 60
 #define SYS_bpf 321
@@ -23,8 +27,12 @@
 #define SYS_bpf 280
 #define SYS_openat 56
 #define SYS_mkdirat 34
+#define SYS_mknodat 33
 #define SYS_unlinkat 35
 #define SYS_mount 40
+#define SYS_mmap 222
+#define SYS_munmap 215
+#define SYS_ppoll 73
 #define SYS_perf_event_open 241
 #define START_ATTRIBUTES __attribute__((noreturn))
 #else
@@ -75,7 +83,9 @@
 #define BPF_MAP_TYPE_HASH_OF_MAPS 13u
 #define BPF_MAP_TYPE_QUEUE 22u
 #define BPF_MAP_TYPE_STACK 23u
+#define BPF_MAP_TYPE_RINGBUF 27u
 #define BPF_MAP_TYPE_BLOOM_FILTER 30u
+#define BPF_MAP_TYPE_USER_RINGBUF 31u
 #define BPF_F_NO_PREALLOC (1u << 0)
 #define BPF_F_NO_COMMON_LRU (1u << 1)
 #define BPF_F_REPLACE (1u << 2)
@@ -83,6 +93,7 @@
 #define BPF_F_RDONLY (1u << 3)
 #define BPF_F_WRONLY (1u << 4)
 #define BPF_F_PRESERVE_ELEMS (1u << 11)
+#define BPF_F_RB_OVERWRITE (1u << 19)
 #define BPF_PROG_TYPE_CGROUP_DEVICE 15u
 #define BPF_CGROUP_DEVICE 6u
 #define BPF_ANY 0u
@@ -96,6 +107,14 @@
 #define AT_FDCWD -100
 #define O_RDONLY 0
 #define O_DIRECTORY 00200000
+#define S_IFCHR 0020000
+
+#define PROT_READ 1
+#define PROT_WRITE 2
+#define MAP_SHARED 1
+#define POLLIN 1
+#define POLLOUT 4
+#define POLLERR 8
 
 #define E2BIG 7
 #define EBADF 9
@@ -347,6 +366,17 @@ struct bpf_insn {
     int32_t immediate;
 };
 
+struct pollfd {
+    int32_t descriptor;
+    int16_t events;
+    int16_t returned_events;
+};
+
+struct timespec {
+    int64_t seconds;
+    int64_t nanoseconds;
+};
+
 _Static_assert(sizeof(union bpf_attr) == 144u,
                "bpf_attr probe layout mismatch");
 _Static_assert(sizeof(struct bpf_map_info) == 104u,
@@ -542,6 +572,20 @@ static long create_keyless_map(uint32_t type, uint32_t entries,
     attribute.map_create.map_type = type;
     attribute.map_create.value_size = 8u;
     attribute.map_create.max_entries = entries;
+    for (index = 0; name[index] && index + 1u < 16u; ++index)
+        attribute.map_create.map_name[index] = name[index];
+    return bpf_call(BPF_MAP_CREATE, &attribute);
+}
+
+static long create_ring_map(uint32_t type, uint32_t entries,
+                            uint32_t flags, const char *name) {
+    union bpf_attr attribute;
+    unsigned long index;
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.map_create.map_type = type;
+    attribute.map_create.max_entries = entries;
+    attribute.map_create.map_flags = flags;
     for (index = 0; name[index] && index + 1u < 16u; ++index)
         attribute.map_create.map_name[index] = name[index];
     return bpf_call(BPF_MAP_CREATE, &attribute);
@@ -1083,6 +1127,244 @@ static int test_bloom_filter_map(void) {
     attribute.map_create.map_extra = 16u;
     failures += expect("bloom filter invalid extra", bpf_call(
         BPF_MAP_CREATE, &attribute), -EINVAL);
+    return failures;
+}
+
+static int test_ring_buffer_maps(void) {
+    static const char license[] = "GPL";
+    union bpf_attr attribute;
+    struct bpf_map_info info;
+    struct pollfd poll_descriptor;
+    struct timespec timeout = {0, 0};
+    uint64_t value = 0u;
+    long kernel_ring;
+    long user_ring;
+    long consumer;
+    long cgroup_descriptor;
+    long program_descriptor;
+    long producer_and_data;
+    int failures = 0;
+
+    kernel_ring = create_ring_map(
+        BPF_MAP_TYPE_RINGBUF, 4096u, 0u, "kernel_ring");
+    failures += expect_true("ringbuf create", kernel_ring >= 0);
+    if (kernel_ring < 0) return failures + 1;
+    clear_bytes(&info, sizeof(info));
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.info.bpf_fd = (uint32_t)kernel_ring;
+    attribute.info.info_len = sizeof(info);
+    attribute.info.info = (uint64_t)(uintptr_t)&info;
+    failures += expect("ringbuf info", bpf_call(
+        BPF_OBJ_GET_INFO_BY_FD, &attribute), 0);
+    failures += expect_true(
+        "ringbuf info values",
+        info.type == BPF_MAP_TYPE_RINGBUF && info.key_size == 0u &&
+        info.value_size == 0u && info.max_entries == 4096u);
+    failures += expect("ringbuf element operation", map_element_raw(
+        BPF_MAP_LOOKUP_ELEM, kernel_ring, 0, &value, 0), -ENOTSUPP);
+    consumer = raw_syscall6(
+        SYS_mmap, 0, 4096u, PROT_READ | PROT_WRITE, MAP_SHARED,
+        kernel_ring, 0);
+    failures += expect_true("ringbuf consumer mmap", consumer > 0);
+    producer_and_data = raw_syscall6(
+        SYS_mmap, 0, 3u * 4096u, PROT_READ, MAP_SHARED,
+        kernel_ring, 4096u);
+    failures += expect_true(
+        "ringbuf producer data mmap", producer_and_data > 0);
+    failures += expect("ringbuf producer writable denied", raw_syscall6(
+        SYS_mmap, 0, 4096u, PROT_READ | PROT_WRITE, MAP_SHARED,
+        kernel_ring, 4096u), -EPERM);
+    clear_bytes(&poll_descriptor, sizeof(poll_descriptor));
+    poll_descriptor.descriptor = (int32_t)kernel_ring;
+    poll_descriptor.events = POLLIN | POLLOUT;
+    failures += expect("ringbuf empty poll", raw_syscall6(
+        SYS_ppoll, (long)&poll_descriptor, 1, (long)&timeout,
+        0, 0, 0), 0);
+    failures += expect("ringbuf empty events",
+                       poll_descriptor.returned_events, 0);
+    if (consumer > 0 && producer_and_data > 0) {
+        struct bpf_insn output_instructions[] = {
+            { .code = 0x61u, .registers = 0x16u, .offset = 0 },
+            { .code = 0x61u, .registers = 0x17u, .offset = 4 },
+            { .code = 0x61u, .registers = 0x18u, .offset = 8 },
+            { .code = 0x63u, .registers = 0x6au, .offset = -12 },
+            { .code = 0x63u, .registers = 0x7au, .offset = -8 },
+            { .code = 0x63u, .registers = 0x8au, .offset = -4 },
+            { .code = 0xbfu, .registers = 0xa2u },
+            { .code = 0x07u, .registers = 2u, .immediate = -12 },
+            { .code = 0x18u, .registers = 0x11u,
+              .immediate = (int32_t)kernel_ring },
+            { .code = 0u },
+            { .code = 0xb7u, .registers = 3u, .immediate = 12 },
+            { .code = 0xb7u, .registers = 4u, .immediate = 0 },
+            { .code = 0x85u, .immediate = 130 },
+            { .code = 0xb7u, .registers = 0u, .immediate = 1 },
+            { .code = 0x95u },
+        };
+        volatile uint64_t *consumer_position =
+            (volatile uint64_t *)(uintptr_t)consumer;
+        volatile uint64_t *producer_position =
+            (volatile uint64_t *)(uintptr_t)producer_and_data;
+        volatile uint32_t *record = (volatile uint32_t *)(uintptr_t)(
+            producer_and_data + 4096u);
+        static const char probe_path[] = "/ringbuf-device-probe";
+
+        clear_bytes(&attribute, sizeof(attribute));
+        attribute.prog_load.prog_type = BPF_PROG_TYPE_CGROUP_DEVICE;
+        attribute.prog_load.insn_count =
+            sizeof(output_instructions) / sizeof(output_instructions[0]);
+        attribute.prog_load.insns =
+            (uint64_t)(uintptr_t)output_instructions;
+        attribute.prog_load.license = (uint64_t)(uintptr_t)license;
+        attribute.prog_load.prog_name[0] = 'r';
+        attribute.prog_load.prog_name[1] = 'i';
+        attribute.prog_load.prog_name[2] = 'n';
+        attribute.prog_load.prog_name[3] = 'g';
+        program_descriptor = bpf_call(BPF_PROG_LOAD, &attribute);
+        failures += expect_true(
+            "ringbuf output program load", program_descriptor >= 0);
+
+        (void)raw_syscall6(
+            SYS_mkdirat, AT_FDCWD, (long)"/sys/fs", 0755, 0, 0, 0);
+        (void)raw_syscall6(
+            SYS_mkdirat, AT_FDCWD, (long)"/sys/fs/cgroup",
+            0755, 0, 0, 0);
+        (void)raw_syscall6(
+            SYS_mount, (long)"none", (long)"/sys/fs/cgroup",
+            (long)"cgroup2", 0, 0, 0);
+        cgroup_descriptor = raw_syscall6(
+            SYS_openat, AT_FDCWD, (long)"/sys/fs/cgroup",
+            O_RDONLY | O_DIRECTORY, 0, 0, 0);
+        failures += expect_true(
+            "ringbuf open cgroup", cgroup_descriptor >= 0);
+        if (program_descriptor >= 0 && cgroup_descriptor >= 0) {
+            clear_bytes(&attribute, sizeof(attribute));
+            attribute.prog_attach.target_fd =
+                (uint32_t)cgroup_descriptor;
+            attribute.prog_attach.attach_bpf_fd =
+                (uint32_t)program_descriptor;
+            attribute.prog_attach.attach_type = BPF_CGROUP_DEVICE;
+            failures += expect("ringbuf attach output program", bpf_call(
+                BPF_PROG_ATTACH, &attribute), 0);
+            (void)raw_syscall6(
+                SYS_unlinkat, AT_FDCWD, (long)probe_path, 0, 0, 0, 0);
+            failures += expect("ringbuf output trigger", raw_syscall6(
+                SYS_mknodat, AT_FDCWD, (long)probe_path,
+                S_IFCHR | 0600, (1u << 8u) | 3u, 0, 0), 0);
+            failures += expect_true(
+                "ringbuf output producer", *producer_position == 24u);
+            failures += expect("ringbuf output record length",
+                               record[0], 12u);
+            failures += expect("ringbuf output record page",
+                               record[1], 3u);
+            failures += expect_true(
+                "ringbuf output context",
+                record[2] == ((1u << 16u) | 2u) &&
+                record[3] == 1u && record[4] == 3u);
+            clear_bytes(&poll_descriptor, sizeof(poll_descriptor));
+            poll_descriptor.descriptor = (int32_t)kernel_ring;
+            poll_descriptor.events = POLLIN;
+            failures += expect("ringbuf readable poll", raw_syscall6(
+                SYS_ppoll, (long)&poll_descriptor, 1, (long)&timeout,
+                0, 0, 0), 1);
+            failures += expect_true(
+                "ringbuf readable event",
+                (poll_descriptor.returned_events & POLLIN) != 0);
+            *consumer_position = 24u;
+            clear_bytes(&poll_descriptor, sizeof(poll_descriptor));
+            poll_descriptor.descriptor = (int32_t)kernel_ring;
+            poll_descriptor.events = POLLIN;
+            failures += expect("ringbuf consumed poll", raw_syscall6(
+                SYS_ppoll, (long)&poll_descriptor, 1, (long)&timeout,
+                0, 0, 0), 0);
+            clear_bytes(&attribute, sizeof(attribute));
+            attribute.prog_attach.target_fd =
+                (uint32_t)cgroup_descriptor;
+            attribute.prog_attach.attach_bpf_fd =
+                (uint32_t)program_descriptor;
+            attribute.prog_attach.attach_type = BPF_CGROUP_DEVICE;
+            failures += expect("ringbuf detach output program", bpf_call(
+                BPF_PROG_DETACH, &attribute), 0);
+            (void)raw_syscall6(
+                SYS_unlinkat, AT_FDCWD, (long)probe_path, 0, 0, 0, 0);
+        }
+        if (cgroup_descriptor >= 0)
+            (void)raw_syscall6(
+                SYS_close, cgroup_descriptor, 0, 0, 0, 0, 0);
+        if (program_descriptor >= 0)
+            (void)raw_syscall6(
+                SYS_close, program_descriptor, 0, 0, 0, 0, 0);
+    }
+    if (consumer > 0)
+        (void)raw_syscall6(SYS_munmap, consumer, 4096u, 0, 0, 0, 0);
+    if (producer_and_data > 0)
+        (void)raw_syscall6(
+            SYS_munmap, producer_and_data, 3u * 4096u, 0, 0, 0, 0);
+    (void)raw_syscall6(SYS_close, kernel_ring, 0, 0, 0, 0, 0);
+
+    user_ring = create_ring_map(
+        BPF_MAP_TYPE_USER_RINGBUF, 4096u, 0u, "user_ring");
+    failures += expect_true("user ringbuf create", user_ring >= 0);
+    if (user_ring < 0) return failures + 1;
+    failures += expect("user ringbuf consumer writable denied", raw_syscall6(
+        SYS_mmap, 0, 4096u, PROT_READ | PROT_WRITE, MAP_SHARED,
+        user_ring, 0), -EPERM);
+    consumer = raw_syscall6(
+        SYS_mmap, 0, 4096u, PROT_READ, MAP_SHARED, user_ring, 0);
+    failures += expect_true("user ringbuf consumer mmap", consumer > 0);
+    producer_and_data = raw_syscall6(
+        SYS_mmap, 0, 3u * 4096u, PROT_READ | PROT_WRITE, MAP_SHARED,
+        user_ring, 4096u);
+    failures += expect_true(
+        "user ringbuf producer data mmap", producer_and_data > 0);
+    if (producer_and_data > 0) {
+        volatile uint64_t *producer =
+            (volatile uint64_t *)(uintptr_t)producer_and_data;
+        volatile uint64_t *data = (volatile uint64_t *)(uintptr_t)(
+            producer_and_data + 4096u);
+        volatile uint64_t *alias = (volatile uint64_t *)(uintptr_t)(
+            producer_and_data + 8192u);
+
+        *data = 0x1122334455667788ULL;
+        failures += expect_true(
+            "user ringbuf data alias",
+            *alias == 0x1122334455667788ULL);
+        clear_bytes(&poll_descriptor, sizeof(poll_descriptor));
+        poll_descriptor.descriptor = (int32_t)user_ring;
+        poll_descriptor.events = POLLIN | POLLOUT;
+        failures += expect("user ringbuf writable poll", raw_syscall6(
+            SYS_ppoll, (long)&poll_descriptor, 1, (long)&timeout,
+            0, 0, 0), 1);
+        failures += expect_true(
+            "user ringbuf writable event",
+            (poll_descriptor.returned_events & POLLOUT) != 0 &&
+            (poll_descriptor.returned_events & (POLLIN | POLLERR)) == 0);
+        *producer = 4096u;
+        clear_bytes(&poll_descriptor, sizeof(poll_descriptor));
+        poll_descriptor.descriptor = (int32_t)user_ring;
+        poll_descriptor.events = POLLIN | POLLOUT;
+        failures += expect("user ringbuf full poll", raw_syscall6(
+            SYS_ppoll, (long)&poll_descriptor, 1, (long)&timeout,
+            0, 0, 0), 0);
+        failures += expect("user ringbuf full events",
+                           poll_descriptor.returned_events, 0);
+    }
+    if (consumer > 0)
+        (void)raw_syscall6(SYS_munmap, consumer, 4096u, 0, 0, 0, 0);
+    if (producer_and_data > 0)
+        (void)raw_syscall6(
+            SYS_munmap, producer_and_data, 3u * 4096u, 0, 0, 0, 0);
+    (void)raw_syscall6(SYS_close, user_ring, 0, 0, 0, 0, 0);
+
+    failures += expect("ringbuf unaligned size", create_ring_map(
+        BPF_MAP_TYPE_RINGBUF, 4095u, 0u, "bad_ring"), -EINVAL);
+    failures += expect("ringbuf non-power size", create_ring_map(
+        BPF_MAP_TYPE_RINGBUF, 12288u, 0u, "bad_ring"), -EINVAL);
+    failures += expect("user ringbuf overwrite", create_ring_map(
+        BPF_MAP_TYPE_USER_RINGBUF, 4096u,
+        BPF_F_RB_OVERWRITE, "bad_ring"), -EINVAL);
+    print_text(failures ? "BPF_RINGBUF_ABI_FAIL\n" :
+                          "BPF_RINGBUF_ABI_PASS\n");
     return failures;
 }
 
@@ -2138,6 +2420,7 @@ START_ATTRIBUTES void _start(void) {
     failures += test_queue_stack_maps();
     failures += test_lpm_trie_map();
     failures += test_bloom_filter_map();
+    failures += test_ring_buffer_maps();
     failures += test_percpu_maps();
     failures += test_lru_percpu_hash_map();
     failures += test_no_common_lru();

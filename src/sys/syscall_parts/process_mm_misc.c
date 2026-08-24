@@ -7298,6 +7298,44 @@ static int64_t arch_mm_map_locked(
             }
             return base;
         }
+        if (e->kind == FD_BPF) {
+            uint32_t page_count = 0;
+            int result;
+
+            if (!(flags & LINUX_MAP_SHARED) || !sparse_mmap)
+                return (uint64_t)-EINVAL;
+            result = kernel_bpf_map_mmap_info(
+                e->pipe_id, off, len,
+                (prot & LINUX_PROT_WRITE) != 0, &page_count);
+            if (result < 0) return (uint64_t)(int64_t)result;
+            for (uint32_t page_index = 0;
+                 page_index < page_count; ++page_index) {
+                void *page_address = 0;
+                int backing_index;
+
+                result = kernel_bpf_map_mmap_page(
+                    e->pipe_id, off, page_index, &page_address);
+                backing_index = result == 0 && page_address ?
+                    process_user_mmap_backing_page_index(page_address) : -1;
+                if (backing_index < 0 ||
+                    process_user_mmap_map_backing_page(
+                        mm, base + (uint64_t)page_index * PAGE_SIZE,
+                        backing_index,
+                        (prot & LINUX_PROT_WRITE) != 0) < 0) {
+                    process_user_mmap_unmap(
+                        mm, base, (uint64_t)page_index * PAGE_SIZE);
+                    return (uint64_t)(int64_t)(
+                        result < 0 ? result : -ENOMEM);
+                }
+            }
+            if (user_vma_record_ex(
+                    mm, base, base + need, (uint32_t)prot,
+                    (uint32_t)flags, "[bpf-ringbuf]", off, len) < 0) {
+                process_user_mmap_unmap(mm, base, need);
+                return (uint64_t)-ENOMEM;
+            }
+            return base;
+        }
         if (e->kind == FD_SOCKET) {
             edge_socket_t *socket;
             uint32_t page_count = 0;
@@ -11410,7 +11448,8 @@ static void x86_anonymous_fd_state_changed(
         return;
     }
     if (kind != KERNEL_ANONYMOUS_FD_SIGNAL &&
-        kind != KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE)
+        kind != KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE &&
+        kind != KERNEL_ANONYMOUS_FD_BPF)
         return;
     current = process_current_task();
     fd_proc_registry_read_begin();
@@ -11423,15 +11462,18 @@ static void x86_anonymous_fd_state_changed(
             continue;
         for (int descriptor = 0; descriptor < EDGE_MAX_FD; ++descriptor) {
             edge_fd_t *entry = &process->fds[descriptor];
-            if (!entry->used ||
-                entry->kind != (kind == KERNEL_ANONYMOUS_FD_SIGNAL ?
-                    FD_SIGNALFD : FD_MQUEUE) ||
-                entry->pipe_id != object_id)
+            edge_fd_kind_t expected_kind =
+                kind == KERNEL_ANONYMOUS_FD_SIGNAL ?
+                FD_SIGNALFD : kind == KERNEL_ANONYMOUS_FD_BPF ?
+                FD_BPF : FD_MQUEUE;
+            if (!entry->used || entry->kind != expected_kind ||
+                (object_id >= 0 && entry->pipe_id != object_id))
                 continue;
             fd_wake_fd_owner_tasks(
                 process->pid, current,
                 kind == KERNEL_ANONYMOUS_FD_SIGNAL ?
-                    "signalfd" : "mqueue");
+                    "signalfd" : kind == KERNEL_ANONYMOUS_FD_BPF ?
+                    "bpf" : "mqueue");
             break;
         }
     }

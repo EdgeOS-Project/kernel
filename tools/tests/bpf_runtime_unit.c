@@ -9,16 +9,63 @@
 #include "kernel/bpf_runtime.h"
 #include "kernel/linux_errno.h"
 
-void *arch_vm_alloc_page(void) {
-    return calloc(1u, 4096u);
-}
+typedef struct test_page_region {
+    uint8_t *base;
+    uint32_t pages;
+    uint32_t released;
+} test_page_region_t;
+
+static test_page_region_t g_page_regions[256];
 
 void *arch_vm_alloc_pages(uint64_t page_count) {
-    return calloc((size_t)page_count, 4096u);
+    uint8_t *pages;
+
+    if (!page_count || page_count > UINT32_MAX ||
+        page_count > SIZE_MAX / 4096u)
+        return 0;
+    pages = calloc((size_t)page_count, 4096u);
+    if (!pages) return 0;
+    for (uint32_t index = 0;
+         index < sizeof(g_page_regions) / sizeof(g_page_regions[0]);
+         ++index) {
+        if (g_page_regions[index].base) continue;
+        g_page_regions[index].base = pages;
+        g_page_regions[index].pages = (uint32_t)page_count;
+        return pages;
+    }
+    free(pages);
+    return 0;
+}
+
+void *arch_vm_alloc_page(void) {
+    return arch_vm_alloc_pages(1u);
 }
 
 void arch_vm_free_page(void *page) {
-    free(page);
+    uint8_t *address = page;
+
+    for (uint32_t index = 0;
+         index < sizeof(g_page_regions) / sizeof(g_page_regions[0]);
+         ++index) {
+        test_page_region_t *region = &g_page_regions[index];
+        uint64_t length;
+
+        if (!region->base) continue;
+        length = (uint64_t)region->pages * 4096u;
+        uintptr_t address_value = (uintptr_t)address;
+        uintptr_t base_value = (uintptr_t)region->base;
+        if (address_value < base_value ||
+            address_value - base_value >= length ||
+            ((address_value - base_value) & 4095u))
+            continue;
+        assert(region->released < region->pages);
+        if (++region->released == region->pages) {
+            free(region->base);
+            memset(region, 0, sizeof(*region));
+        }
+        return;
+    }
+    assert(!"unknown page release");
 }
 
 uint32_t edge_smp_nr_cpu_ids(void) {
@@ -27,6 +74,11 @@ uint32_t edge_smp_nr_cpu_ids(void) {
 
 static uint32_t g_test_current_cpu;
 static uint32_t g_perf_event_references[8];
+static uint32_t g_ringbuf_notifications;
+
+void kernel_bpf_ringbuf_state_changed(void) {
+    ++g_ringbuf_notifications;
+}
 
 uint32_t edge_smp_current_cpu(void) {
     return g_test_current_cpu;
@@ -1118,6 +1170,155 @@ static void test_perf_event_array(void) {
     assert(g_perf_event_references[3] == 1u);
 }
 
+static void test_ring_buffer_maps(void) {
+    kernel_bpf_map_create_request_t request = {
+        .type = KERNEL_BPF_MAP_TYPE_RINGBUF,
+        .max_entries = 4096u,
+    };
+    kernel_bpf_map_info_t info;
+    void *consumer = 0;
+    void *producer = 0;
+    void *data = 0;
+    void *data_alias = 0;
+    uint32_t page_count = 0;
+    uint32_t result = 0u;
+    uint32_t record_header[2];
+    uint64_t position;
+    int readable;
+    int writable;
+    int object;
+    int program;
+
+    strcpy(request.name, "kernel_ring");
+    object = kernel_bpf_map_create(&request);
+    assert(object >= 0);
+    assert(kernel_bpf_map_info(object, &info) == 0);
+    assert(info.key_size == 0u && info.value_size == 0u);
+    assert(info.max_entries == 4096u);
+    assert(kernel_bpf_map_mmap_info(
+               object, 0u, 4096u, 1, &page_count) == 0);
+    assert(page_count == 1u);
+    assert(kernel_bpf_map_mmap_info(
+               object, 4096u, 3u * 4096u, 0, &page_count) == 0);
+    assert(page_count == 3u);
+    assert(kernel_bpf_map_mmap_info(
+               object, 4096u, 4096u, 1, &page_count) ==
+           -EDGE_LINUX_EPERM);
+    assert(kernel_bpf_map_mmap_info(
+               object, 0u, 8192u, 1, &page_count) ==
+           -EDGE_LINUX_EPERM);
+    assert(kernel_bpf_map_mmap_page(object, 0u, 0u, &consumer) == 0);
+    assert(kernel_bpf_map_mmap_page(object, 4096u, 0u, &producer) == 0);
+    assert(kernel_bpf_map_mmap_page(object, 4096u, 1u, &data) == 0);
+    assert(kernel_bpf_map_mmap_page(
+               object, 4096u, 2u, &data_alias) == 0);
+    assert(consumer != producer && producer != data && data == data_alias);
+    assert(kernel_bpf_ringbuf_poll_state(
+               object, &readable, &writable) == 0);
+    assert(!readable && !writable);
+    {
+        const kernel_bpf_cgroup_device_context_t context = {
+            .access_type = 3u,
+            .major = 8u,
+            .minor = 1u,
+        };
+        kernel_bpf_instruction_t instructions[] = {
+            { .code = 0x61u, .registers = 0x16u, .offset = 0 },
+            { .code = 0x61u, .registers = 0x17u, .offset = 4 },
+            { .code = 0x61u, .registers = 0x18u, .offset = 8 },
+            { .code = 0x63u, .registers = 0x6au, .offset = -12 },
+            { .code = 0x63u, .registers = 0x7au, .offset = -8 },
+            { .code = 0x63u, .registers = 0x8au, .offset = -4 },
+            { .code = 0xbfu, .registers = 0xa2u },
+            { .code = 0x07u, .registers = 2u, .immediate = -12 },
+            { .code = 0x18u, .registers = 0x11u,
+              .immediate = object },
+            { .code = 0u },
+            { .code = 0xb7u, .registers = 3u,
+              .immediate = sizeof(context) },
+            { .code = 0xb7u, .registers = 4u, .immediate = 0 },
+            { .code = 0x85u, .immediate = 130 },
+            { .code = 0xb7u, .registers = 0u, .immediate = 1 },
+            { .code = 0x95u },
+        };
+        kernel_bpf_program_create_request_t program_request = {
+            .type = KERNEL_BPF_PROG_TYPE_CGROUP_DEVICE,
+            .instruction_count =
+                sizeof(instructions) / sizeof(instructions[0]),
+            .expected_attach_type = KERNEL_BPF_CGROUP_DEVICE,
+            .created_by_uid = 1000u,
+            .map_references_resolved = 1u,
+        };
+
+        strcpy(program_request.name, "ring_output");
+        program = kernel_bpf_program_create(
+            &program_request, instructions);
+        assert(program >= 0);
+        g_ringbuf_notifications = 0u;
+        assert(kernel_bpf_program_run_cgroup_device(
+                   program, &context, &result) == 0);
+        assert(result == 1u);
+        assert(g_ringbuf_notifications == 1u);
+        memcpy(record_header, data, sizeof(record_header));
+        assert(record_header[0] == sizeof(context));
+        assert(record_header[1] == 3u);
+        assert(memcmp((uint8_t *)data + 8u,
+                      &context, sizeof(context)) == 0);
+        memcpy(&position, producer, sizeof(position));
+        assert(position == 24u);
+        kernel_bpf_object_release(program);
+    }
+    assert(kernel_bpf_ringbuf_poll_state(
+               object, &readable, &writable) == 0);
+    assert(readable && !writable);
+    position = 24u;
+    memcpy(consumer, &position, sizeof(position));
+    assert(kernel_bpf_ringbuf_poll_state(
+               object, &readable, &writable) == 0);
+    assert(!readable && !writable);
+    assert(kernel_bpf_map_lookup(object, 0, &position) ==
+           -EDGE_LINUX_ENOTSUPP);
+    kernel_bpf_object_release(object);
+
+    request.type = KERNEL_BPF_MAP_TYPE_USER_RINGBUF;
+    strcpy(request.name, "user_ring");
+    object = kernel_bpf_map_create(&request);
+    assert(object >= 0);
+    assert(kernel_bpf_map_mmap_info(
+               object, 0u, 4096u, 1, &page_count) ==
+           -EDGE_LINUX_EPERM);
+    assert(kernel_bpf_map_mmap_info(
+               object, 4096u, 3u * 4096u, 1, &page_count) == 0);
+    assert(kernel_bpf_map_mmap_page(object, 0u, 0u, &consumer) == 0);
+    assert(kernel_bpf_map_mmap_page(object, 4096u, 0u, &producer) == 0);
+    assert(kernel_bpf_ringbuf_poll_state(
+               object, &readable, &writable) == 0);
+    assert(!readable && writable);
+    position = 4096u;
+    memcpy(producer, &position, sizeof(position));
+    assert(kernel_bpf_ringbuf_poll_state(
+               object, &readable, &writable) == 0);
+    assert(!readable && !writable);
+    position = 8u;
+    memcpy(consumer, &position, sizeof(position));
+    assert(kernel_bpf_ringbuf_poll_state(
+               object, &readable, &writable) == 0);
+    assert(!readable && writable);
+    kernel_bpf_object_release(object);
+
+    request.type = KERNEL_BPF_MAP_TYPE_RINGBUF;
+    request.max_entries = 4095u;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+    request.max_entries = 8192u + 4096u;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+    request.max_entries = 4096u;
+    request.flags = KERNEL_BPF_MAP_NO_PREALLOC;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+    request.type = KERNEL_BPF_MAP_TYPE_USER_RINGBUF;
+    request.flags = KERNEL_BPF_MAP_RB_OVERWRITE;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+}
+
 static void test_btf_objects(void) {
     struct test_btf_blob {
         uint16_t magic;
@@ -1283,6 +1484,7 @@ int main(void) {
     test_program();
     test_program_array_tail_call();
     test_perf_event_array();
+    test_ring_buffer_maps();
     test_btf_objects();
     test_ids();
     test_pinned_object_lifetime();

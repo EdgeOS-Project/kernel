@@ -10453,6 +10453,8 @@ static void anonymous_fd_runtime_state_changed(
         signalfd_runtime_state_changed(object_id);
     } else if (kind == KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE) {
         /* Queue transitions only need the common poll/select wake pass. */
+    } else if (kind == KERNEL_ANONYMOUS_FD_BPF) {
+        /* Readiness is re-evaluated by the common poll/select wake pass. */
     } else {
         return;
     }
@@ -19854,6 +19856,18 @@ static uint32_t fd_anonymous_ready_mask(
         poll_state.kind = KERNEL_ANONYMOUS_FD_IO_URING;
         poll_state.pending =
             kernel_io_uring_completion_count(fd->event_index) != 0;
+    } else if (fd->kind == KERNEL_FD_BPF) {
+        int readable = 0;
+        int writable = 0;
+
+        poll_state.kind = KERNEL_ANONYMOUS_FD_BPF;
+        if (kernel_bpf_ringbuf_poll_state(
+                fd->event_index, &readable, &writable) < 0)
+            poll_state.error = 1;
+        else {
+            poll_state.pending = readable != 0;
+            poll_state.writable = writable != 0;
+        }
     } else if (fd->kind == KERNEL_FD_SECCOMP) {
         edge_seccomp_listener_state_t state;
         poll_state.kind = KERNEL_ANONYMOUS_FD_SECCOMP;
@@ -19918,6 +19932,7 @@ static uint32_t fd_ready_mask(kernel_task_t *task, bootstrap_fd_t *fd) {
                fd->kind == KERNEL_FD_SIGNALFD ||
                fd->kind == KERNEL_FD_MQUEUE ||
                fd->kind == KERNEL_FD_IO_URING ||
+               fd->kind == KERNEL_FD_BPF ||
                fd->kind == KERNEL_FD_SECCOMP) {
         ready |= fd_anonymous_ready_mask(task, fd);
     } else if (fd->kind == KERNEL_FD_INPUT) {
@@ -33102,6 +33117,43 @@ int64_t arch_mm_map(const kernel_mm_map_request_t *request) {
                         task->ttbr0, address,
                         (uint64_t)page_index * PAGE_SIZE);
                     return result < 0 ? result : -LINUX_ENOMEM;
+                }
+            }
+            map_result = 0;
+        } else if (fd->kind == KERNEL_FD_BPF) {
+            uint32_t page_count = 0;
+            int result;
+
+            if (!(a3 & LINUX_MAP_SHARED)) return -LINUX_EINVAL;
+            result = kernel_bpf_map_mmap_info(
+                fd->event_index, a5, a1,
+                (a2 & LINUX_PROT_WRITE) != 0, &page_count);
+            if (result < 0) return result;
+            for (uint32_t page_index = 0;
+                 page_index < page_count; ++page_index) {
+                void *page_address = 0;
+                uint64_t physical;
+
+                result = kernel_bpf_map_mmap_page(
+                    fd->event_index, a5, page_index, &page_address);
+                physical = (uint64_t)(uintptr_t)page_address;
+                if (result < 0 || !page_address ||
+                    (physical & (PAGE_SIZE - 1u)) ||
+                    arch_vm_retain_page(page_address) < 0) {
+                    (void)arch_vm_unmap_user_range(
+                        task->ttbr0, address,
+                        (uint64_t)page_index * PAGE_SIZE);
+                    return result < 0 ? result : -LINUX_ENOMEM;
+                }
+                if (arch_vm_map_user_page(
+                        task->ttbr0,
+                        address + (uint64_t)page_index * PAGE_SIZE,
+                        physical, vm_prot(a2) | ARCH_VM_PROT_SHARED) < 0) {
+                    arch_vm_free_page(page_address);
+                    (void)arch_vm_unmap_user_range(
+                        task->ttbr0, address,
+                        (uint64_t)page_index * PAGE_SIZE);
+                    return -LINUX_ENOMEM;
                 }
             }
             map_result = 0;

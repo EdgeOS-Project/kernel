@@ -34,10 +34,12 @@ typedef struct kernel_anonymous_fd_poll_state {
     uint8_t pending;
     uint8_t canceled;
     uint8_t writable;
+    uint8_t error;
 } kernel_anonymous_fd_poll_state_t;
 
 #define KERNEL_ANONYMOUS_FD_POLL_INPUT  0x0001u
 #define KERNEL_ANONYMOUS_FD_POLL_OUTPUT 0x0004u
+#define KERNEL_ANONYMOUS_FD_POLL_ERROR  0x0008u
 #define KERNEL_ANONYMOUS_FD_POLL_NVAL   0x0020u
 
 typedef struct kernel_anonymous_fd_backend_ops {
@@ -60,5 +62,6 @@ int kernel_anonymous_fd_descriptor_object_id(
     int32_t descriptor, kernel_anonymous_fd_kind_t kind);
 uint32_t kernel_anonymous_fd_poll_events(
     const kernel_anonymous_fd_poll_state_t *state);
+void kernel_bpf_ringbuf_state_changed(void);
 
 #endif

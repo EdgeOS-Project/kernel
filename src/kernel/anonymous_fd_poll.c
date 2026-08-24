@@ -36,6 +36,11 @@ uint32_t kernel_anonymous_fd_poll_events(
     case KERNEL_ANONYMOUS_FD_IO_URING:
         if (state->pending) events |= KERNEL_ANONYMOUS_FD_POLL_INPUT;
         break;
+    case KERNEL_ANONYMOUS_FD_BPF:
+        if (state->pending) events |= KERNEL_ANONYMOUS_FD_POLL_INPUT;
+        if (state->writable) events |= KERNEL_ANONYMOUS_FD_POLL_OUTPUT;
+        if (state->error) events |= KERNEL_ANONYMOUS_FD_POLL_ERROR;
+        break;
     case KERNEL_ANONYMOUS_FD_SECCOMP:
         if (state->pending) events |= KERNEL_ANONYMOUS_FD_POLL_INPUT;
         if (state->writable) events |= KERNEL_ANONYMOUS_FD_POLL_OUTPUT;

@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 
+#include "kernel/anonymous_fd.h"
 #include "kernel/bpf_runtime.h"
 #include "kernel/linux_errno.h"
 #include "kernel/perf_event.h"
@@ -26,6 +27,7 @@
 
 #define BPF_LD    0x00u
 #define BPF_LDX   0x01u
+#define BPF_STX   0x03u
 #define BPF_ALU64 0x07u
 #define BPF_JMP   0x05u
 #define BPF_W     0x00u
@@ -63,7 +65,13 @@
 #define BPF_EXIT  0x90u
 #define BPF_PSEUDO_MAP_FD 1u
 #define BPF_FUNC_TAIL_CALL 12u
+#define BPF_FUNC_RINGBUF_OUTPUT 130u
 #define BPF_MAX_TAIL_CALLS 33u
+#define BPF_RB_NO_WAKEUP (1ull << 0)
+#define BPF_RB_FORCE_WAKEUP (1ull << 1)
+#define BPF_RINGBUF_BUSY_BIT (1u << 31)
+#define BPF_RINGBUF_DISCARD_BIT (1u << 30)
+#define BPF_RINGBUF_HEADER_SIZE 8u
 
 typedef struct kernel_bpf_map {
     uint32_t type;
@@ -283,6 +291,15 @@ static int bpf_map_is_bloom_filter(const kernel_bpf_map_t *map) {
     return map && map->type == KERNEL_BPF_MAP_TYPE_BLOOM_FILTER;
 }
 
+static int bpf_map_type_is_ringbuf(uint32_t type) {
+    return type == KERNEL_BPF_MAP_TYPE_RINGBUF ||
+           type == KERNEL_BPF_MAP_TYPE_USER_RINGBUF;
+}
+
+static int bpf_map_is_ringbuf(const kernel_bpf_map_t *map) {
+    return map && bpf_map_type_is_ringbuf(map->type);
+}
+
 static int bpf_map_is_queue_stack(const kernel_bpf_map_t *map) {
     return map && bpf_map_type_is_queue_stack(map->type);
 }
@@ -412,7 +429,8 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
 
     if (!request || !bpf_name_valid(request->name) ||
         request->key_size > KERNEL_BPF_MAX_KEY_SIZE ||
-        !request->value_size ||
+        (!request->value_size &&
+         !bpf_map_type_is_ringbuf(request->type)) ||
         request->value_size > KERNEL_BPF_MAX_VALUE_SIZE ||
         !request->max_entries)
         return -EDGE_LINUX_EINVAL;
@@ -438,6 +456,7 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
         btf_retained = 1;
     }
     if (bpf_map_type_is_queue_stack(request->type) ||
+        bpf_map_type_is_ringbuf(request->type) ||
         request->type == KERNEL_BPF_MAP_TYPE_BLOOM_FILTER) {
         if (request->key_size) {
             status = -EDGE_LINUX_EINVAL;
@@ -538,6 +557,17 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
             goto invalid_btf;
         stride = bpf_align8(
             1u + request->key_size + request->value_size);
+    } else if (bpf_map_type_is_ringbuf(request->type)) {
+        if (request->value_size || request->btf_present ||
+            request->map_extra ||
+            (request->max_entries & (BPF_PAGE_SIZE - 1u)) ||
+            (request->max_entries & (request->max_entries - 1u)) ||
+            (validation_flags & ~(KERNEL_BPF_MAP_NUMA_NODE |
+                                  KERNEL_BPF_MAP_RB_OVERWRITE)) ||
+            (request->type == KERNEL_BPF_MAP_TYPE_USER_RINGBUF &&
+             (validation_flags & KERNEL_BPF_MAP_RB_OVERWRITE)))
+            goto invalid_btf;
+        stride = 1u;
     } else if (request->type == KERNEL_BPF_MAP_TYPE_BLOOM_FILTER) {
         uint64_t estimated_bits;
         uint64_t rounded_bits = 64u;
@@ -561,7 +591,9 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
         goto invalid_btf;
     }
     bytes = request->type == KERNEL_BPF_MAP_TYPE_BLOOM_FILTER ?
-        stride : (uint64_t)stride * actual_max_entries;
+        stride : bpf_map_type_is_ringbuf(request->type) ?
+        (uint64_t)actual_max_entries + 2u * BPF_PAGE_SIZE :
+        (uint64_t)stride * actual_max_entries;
     status = bpf_allocation_size(bytes, &pages);
     if (status < 0) goto fail_btf;
     storage = (uint8_t *)arch_vm_alloc_pages(pages);
@@ -835,8 +867,12 @@ static void bpf_program_tag(const kernel_bpf_instruction_t *instructions,
 static int bpf_program_validate(
     const kernel_bpf_program_create_request_t *request,
     const kernel_bpf_instruction_t *instructions) {
-    uint16_t initialized = 1u << 1;
+    uint16_t initialized = (1u << 1) | (1u << 10);
     uint16_t map_registers = 0u;
+    uint16_t program_array_registers = 0u;
+    uint16_t ringbuf_registers = 0u;
+    uint16_t context_registers = 1u << 1;
+    uint16_t stack_registers = 1u << 10;
     uint32_t pc;
 
     if (!request || !instructions ||
@@ -856,7 +892,8 @@ static int bpf_program_validate(
         uint32_t class = BPF_CLASS(instruction->code);
         uint32_t operation = BPF_OP(instruction->code);
 
-        if (destination >= 11u || source >= 11u || destination == 10u)
+        if (destination >= 11u || source >= 11u ||
+            (destination == 10u && class != BPF_STX))
             return -EDGE_LINUX_EINVAL;
         if (class == BPF_LD && instruction->code ==
                 (BPF_LD | BPF_DW | BPF_IMM)) {
@@ -875,10 +912,23 @@ static int bpf_program_validate(
                 kind != KERNEL_BPF_OBJECT_MAP ||
                 kernel_bpf_map_info(
                     instruction->immediate, &info) < 0 ||
-                info.type != KERNEL_BPF_MAP_TYPE_PROG_ARRAY)
+                (info.type != KERNEL_BPF_MAP_TYPE_PROG_ARRAY &&
+                 info.type != KERNEL_BPF_MAP_TYPE_RINGBUF))
                 return -EDGE_LINUX_EINVAL;
             initialized |= (uint16_t)(1u << destination);
             map_registers |= (uint16_t)(1u << destination);
+            if (info.type == KERNEL_BPF_MAP_TYPE_PROG_ARRAY) {
+                program_array_registers |=
+                    (uint16_t)(1u << destination);
+                ringbuf_registers &=
+                    (uint16_t)~(1u << destination);
+            } else {
+                ringbuf_registers |= (uint16_t)(1u << destination);
+                program_array_registers &=
+                    (uint16_t)~(1u << destination);
+            }
+            context_registers &= (uint16_t)~(1u << destination);
+            stack_registers &= (uint16_t)~(1u << destination);
             ++pc;
             continue;
         }
@@ -892,6 +942,34 @@ static int bpf_program_validate(
                     map_registers |= (uint16_t)(1u << destination);
                 else
                     map_registers &= (uint16_t)~(1u << destination);
+                if (BPF_SRC(instruction->code) == BPF_X &&
+                    (program_array_registers & (1u << source)))
+                    program_array_registers |=
+                        (uint16_t)(1u << destination);
+                else
+                    program_array_registers &=
+                        (uint16_t)~(1u << destination);
+                if (BPF_SRC(instruction->code) == BPF_X &&
+                    (ringbuf_registers & (1u << source)))
+                    ringbuf_registers |=
+                        (uint16_t)(1u << destination);
+                else
+                    ringbuf_registers &=
+                        (uint16_t)~(1u << destination);
+                if (BPF_SRC(instruction->code) == BPF_X &&
+                    (context_registers & (1u << source)))
+                    context_registers |=
+                        (uint16_t)(1u << destination);
+                else
+                    context_registers &=
+                        (uint16_t)~(1u << destination);
+                if (BPF_SRC(instruction->code) == BPF_X &&
+                    (stack_registers & (1u << source)))
+                    stack_registers |=
+                        (uint16_t)(1u << destination);
+                else
+                    stack_registers &=
+                        (uint16_t)~(1u << destination);
             } else {
                 if (!(initialized & (1u << destination)) ||
                     (BPF_SRC(instruction->code) == BPF_X &&
@@ -899,6 +977,11 @@ static int bpf_program_validate(
                     (map_registers & (1u << destination)) ||
                     (BPF_SRC(instruction->code) == BPF_X &&
                      (map_registers & (1u << source))) ||
+                    ((stack_registers & (1u << destination)) &&
+                     (operation != BPF_ADD ||
+                      BPF_SRC(instruction->code) != BPF_K)) ||
+                    (BPF_SRC(instruction->code) == BPF_X &&
+                     (stack_registers & (1u << source))) ||
                     (operation != BPF_ADD && operation != BPF_SUB &&
                      operation != BPF_MUL && operation != BPF_DIV &&
                      operation != BPF_OR && operation != BPF_AND &&
@@ -909,6 +992,14 @@ static int bpf_program_validate(
                      BPF_SRC(instruction->code) == BPF_K &&
                      instruction->immediate == 0))
                     return -EDGE_LINUX_EINVAL;
+                map_registers &= (uint16_t)~(1u << destination);
+                program_array_registers &=
+                    (uint16_t)~(1u << destination);
+                ringbuf_registers &= (uint16_t)~(1u << destination);
+                context_registers &= (uint16_t)~(1u << destination);
+                if (!(stack_registers & (1u << destination)))
+                    stack_registers &=
+                        (uint16_t)~(1u << destination);
             }
             initialized |= (uint16_t)(1u << destination);
             continue;
@@ -920,6 +1011,22 @@ static int bpf_program_validate(
             !(instruction->offset & 3)) {
             initialized |= (uint16_t)(1u << destination);
             map_registers &= (uint16_t)~(1u << destination);
+            program_array_registers &=
+                (uint16_t)~(1u << destination);
+            ringbuf_registers &= (uint16_t)~(1u << destination);
+            context_registers &= (uint16_t)~(1u << destination);
+            stack_registers &= (uint16_t)~(1u << destination);
+            continue;
+        }
+        if (class == BPF_STX &&
+            instruction->code == (BPF_STX | BPF_W | BPF_MEM) &&
+            (stack_registers & (1u << destination)) &&
+            (initialized & (1u << source)) &&
+            !(map_registers & (1u << source)) &&
+            !(context_registers & (1u << source)) &&
+            !(stack_registers & (1u << source)) &&
+            instruction->offset >= -512 && instruction->offset <= -4 &&
+            !(instruction->offset & 3)) {
             continue;
         }
         if (class == BPF_JMP && operation == BPF_EXIT) {
@@ -930,16 +1037,38 @@ static int bpf_program_validate(
             return 0;
         }
         if (class == BPF_JMP && operation == BPF_CALL) {
+            uint16_t required;
+
             if (instruction->code != (BPF_JMP | BPF_CALL) ||
-                instruction->offset || instruction->immediate !=
-                    (int32_t)BPF_FUNC_TAIL_CALL ||
-                (initialized & ((1u << 1) | (1u << 2) | (1u << 3))) !=
-                    ((1u << 1) | (1u << 2) | (1u << 3)) ||
-                !(map_registers & (1u << 2)))
+                instruction->offset)
                 return -EDGE_LINUX_EINVAL;
+            if (instruction->immediate ==
+                    (int32_t)BPF_FUNC_TAIL_CALL) {
+                required = (1u << 1) | (1u << 2) | (1u << 3);
+                if ((initialized & required) != required ||
+                    !(context_registers & (1u << 1)) ||
+                    !(program_array_registers & (1u << 2)))
+                    return -EDGE_LINUX_EINVAL;
+            } else if (instruction->immediate ==
+                           (int32_t)BPF_FUNC_RINGBUF_OUTPUT) {
+                required = (1u << 1) | (1u << 2) |
+                           (1u << 3) | (1u << 4);
+                if ((initialized & required) != required ||
+                    !(ringbuf_registers & (1u << 1)) ||
+                    !(stack_registers & (1u << 2)) ||
+                    (map_registers & ((1u << 2) | (1u << 3) |
+                                      (1u << 4))))
+                    return -EDGE_LINUX_EINVAL;
+            } else {
+                return -EDGE_LINUX_EINVAL;
+            }
             initialized &= (uint16_t)~0x3eu;
             initialized |= 1u;
             map_registers &= (uint16_t)~0x3fu;
+            program_array_registers &= (uint16_t)~0x3fu;
+            ringbuf_registers &= (uint16_t)~0x3fu;
+            context_registers &= (uint16_t)~0x3fu;
+            stack_registers &= (uint16_t)~0x3fu;
             continue;
         }
         if (class == BPF_JMP) {
@@ -1392,6 +1521,132 @@ int kernel_bpf_map_info(int object_id, kernel_bpf_map_info_t *info) {
     memcpy(info->name, object->value.map.name, sizeof(info->name));
     bpf_unlock();
     return 0;
+}
+
+int kernel_bpf_map_mmap_info(int object_id, uint64_t offset,
+                             uint64_t length, int writable,
+                             uint32_t *page_count) {
+    kernel_bpf_object_t *object;
+    kernel_bpf_map_t *map;
+    uint64_t data_pages;
+    uint64_t virtual_pages;
+    uint64_t first_page;
+    uint64_t requested_pages;
+    int status = 0;
+
+    if (!page_count || !length ||
+        (offset & (BPF_PAGE_SIZE - 1u)) ||
+        (length & (BPF_PAGE_SIZE - 1u)))
+        return -EDGE_LINUX_EINVAL;
+    bpf_lock();
+    object = bpf_object_locked(object_id);
+    if (!object || object->kind != KERNEL_BPF_OBJECT_MAP) {
+        status = -EDGE_LINUX_EBADF;
+        goto out;
+    }
+    map = &object->value.map;
+    if (!bpf_map_is_ringbuf(map)) {
+        status = -EDGE_LINUX_ENODEV;
+        goto out;
+    }
+    first_page = offset / BPF_PAGE_SIZE;
+    requested_pages = length / BPF_PAGE_SIZE;
+    data_pages = map->max_entries / BPF_PAGE_SIZE;
+    virtual_pages = 2u + 2u * data_pages;
+    if (first_page >= virtual_pages ||
+        requested_pages > virtual_pages - first_page) {
+        status = -EDGE_LINUX_EINVAL;
+        goto out;
+    }
+    if (writable) {
+        if (map->type == KERNEL_BPF_MAP_TYPE_RINGBUF) {
+            if (first_page != 0u || requested_pages != 1u)
+                status = -EDGE_LINUX_EPERM;
+        } else if (first_page == 0u) {
+            status = -EDGE_LINUX_EPERM;
+        }
+    }
+    if (status == 0) *page_count = (uint32_t)requested_pages;
+out:
+    bpf_unlock();
+    return status;
+}
+
+int kernel_bpf_map_mmap_page(int object_id, uint64_t offset,
+                             uint32_t page_index, void **page_address) {
+    kernel_bpf_object_t *object;
+    kernel_bpf_map_t *map;
+    uint64_t data_pages;
+    uint64_t virtual_page;
+    uint64_t storage_page;
+    int status = 0;
+
+    if (!page_address || (offset & (BPF_PAGE_SIZE - 1u)))
+        return -EDGE_LINUX_EINVAL;
+    *page_address = 0;
+    bpf_lock();
+    object = bpf_object_locked(object_id);
+    if (!object || object->kind != KERNEL_BPF_OBJECT_MAP) {
+        status = -EDGE_LINUX_EBADF;
+        goto out;
+    }
+    map = &object->value.map;
+    if (!bpf_map_is_ringbuf(map)) {
+        status = -EDGE_LINUX_ENODEV;
+        goto out;
+    }
+    data_pages = map->max_entries / BPF_PAGE_SIZE;
+    virtual_page = offset / BPF_PAGE_SIZE + page_index;
+    if (virtual_page >= 2u + 2u * data_pages) {
+        status = -EDGE_LINUX_EINVAL;
+        goto out;
+    }
+    storage_page = virtual_page < 2u ? virtual_page :
+        2u + (virtual_page - 2u) % data_pages;
+    if (storage_page >= map->storage_pages) {
+        status = -EDGE_LINUX_EINVAL;
+        goto out;
+    }
+    *page_address = map->storage + storage_page * BPF_PAGE_SIZE;
+out:
+    bpf_unlock();
+    return status;
+}
+
+int kernel_bpf_ringbuf_poll_state(int object_id, int *readable,
+                                  int *writable) {
+    kernel_bpf_object_t *object;
+    kernel_bpf_map_t *map;
+    uint64_t consumer;
+    uint64_t producer;
+    int status = 0;
+
+    if (!readable || !writable) return -EDGE_LINUX_EINVAL;
+    *readable = 0;
+    *writable = 0;
+    bpf_lock();
+    object = bpf_object_locked(object_id);
+    if (!object || object->kind != KERNEL_BPF_OBJECT_MAP) {
+        status = -EDGE_LINUX_EBADF;
+        goto out;
+    }
+    map = &object->value.map;
+    if (!bpf_map_is_ringbuf(map)) {
+        status = -EDGE_LINUX_ENODEV;
+        goto out;
+    }
+    consumer = __atomic_load_n(
+        (uint64_t *)(void *)map->storage, __ATOMIC_ACQUIRE);
+    producer = __atomic_load_n(
+        (uint64_t *)(void *)(map->storage + BPF_PAGE_SIZE),
+        __ATOMIC_ACQUIRE);
+    if (map->type == KERNEL_BPF_MAP_TYPE_RINGBUF)
+        *readable = producer != consumer;
+    else
+        *writable = producer - consumer < map->max_entries;
+out:
+    bpf_unlock();
+    return status;
 }
 
 int kernel_bpf_map_value_buffer_size(int object_id, uint64_t flags,
@@ -2074,6 +2329,10 @@ int kernel_bpf_map_lookup_flags(int object_id, const void *key, void *value,
         goto out;
     }
     map = &object->value.map;
+    if (bpf_map_is_ringbuf(map)) {
+        status = -EDGE_LINUX_ENOTSUPP;
+        goto out;
+    }
     if (bpf_map_is_perf_event_array(map)) {
         status = -EDGE_LINUX_ENOTSUPP;
         goto out;
@@ -2162,6 +2421,10 @@ int kernel_bpf_map_update(int object_id, const void *key, const void *value,
         goto out;
     }
     map = &object->value.map;
+    if (bpf_map_is_ringbuf(map)) {
+        status = -EDGE_LINUX_ENOTSUPP;
+        goto out;
+    }
     if (bpf_map_is_perf_event_array(map)) {
         status = -EDGE_LINUX_ENOTSUPP;
         goto out;
@@ -2793,13 +3056,138 @@ static int bpf_jump_taken(uint32_t operation, uint64_t left,
     }
 }
 
+static void bpf_ringbuf_copy(kernel_bpf_map_t *map, uint64_t position,
+                             const void *source, uint32_t length) {
+    uint8_t *data = map->storage + 2u * BPF_PAGE_SIZE;
+    uint32_t offset = (uint32_t)(position & (map->max_entries - 1u));
+    uint32_t first = map->max_entries - offset;
+
+    if (first > length) first = length;
+    if (first) memcpy(data + offset, source, first);
+    if (length > first)
+        memcpy(data, (const uint8_t *)source + first, length - first);
+}
+
+static void bpf_ringbuf_zero(kernel_bpf_map_t *map, uint64_t position,
+                             uint32_t length) {
+    static const uint8_t zeroes[8];
+
+    while (length) {
+        uint32_t chunk = length > sizeof(zeroes) ?
+            (uint32_t)sizeof(zeroes) : length;
+        bpf_ringbuf_copy(map, position, zeroes, chunk);
+        position += chunk;
+        length -= chunk;
+    }
+}
+
+static uint32_t bpf_ringbuf_record_size_locked(
+        const kernel_bpf_map_t *map, uint64_t position) {
+    const uint8_t *data = map->storage + 2u * BPF_PAGE_SIZE;
+    uint32_t offset = (uint32_t)(position & (map->max_entries - 1u));
+    uint32_t length;
+
+    memcpy(&length, data + offset, sizeof(length));
+    length &= ~(BPF_RINGBUF_BUSY_BIT | BPF_RINGBUF_DISCARD_BIT);
+    if (length > map->max_entries - BPF_RINGBUF_HEADER_SIZE)
+        return 0u;
+    return bpf_align8(length + BPF_RINGBUF_HEADER_SIZE);
+}
+
+static int bpf_ringbuf_output_locked(kernel_bpf_map_t *map,
+        const void *data, uint64_t size, uint64_t flags,
+        int *notify_waiters) {
+    uint64_t consumer;
+    uint64_t producer;
+    uint64_t pending;
+    uint64_t overwrite;
+    uint64_t new_producer;
+    uint32_t record_size;
+    uint32_t header[2];
+    uint32_t padding;
+
+    if (!map || map->type != KERNEL_BPF_MAP_TYPE_RINGBUF)
+        return -EDGE_LINUX_EINVAL;
+    if (flags & ~(BPF_RB_NO_WAKEUP | BPF_RB_FORCE_WAKEUP))
+        return -EDGE_LINUX_EINVAL;
+    if (size > UINT32_MAX / 4u ||
+        size > map->max_entries - BPF_RINGBUF_HEADER_SIZE)
+        return -EDGE_LINUX_EAGAIN;
+    record_size = bpf_align8((uint32_t)size + BPF_RINGBUF_HEADER_SIZE);
+    consumer = __atomic_load_n(
+        (uint64_t *)(void *)map->storage, __ATOMIC_ACQUIRE);
+    producer = __atomic_load_n(
+        (uint64_t *)(void *)(map->storage + BPF_PAGE_SIZE),
+        __ATOMIC_ACQUIRE);
+    pending = __atomic_load_n(
+        (uint64_t *)(void *)(map->storage + BPF_PAGE_SIZE + 8u),
+        __ATOMIC_ACQUIRE);
+    new_producer = producer + record_size;
+    if (new_producer < producer ||
+        new_producer - pending > map->max_entries - 1u)
+        return -EDGE_LINUX_EAGAIN;
+    if (!(map->flags & KERNEL_BPF_MAP_RB_OVERWRITE) &&
+        new_producer - consumer > map->max_entries - 1u)
+        return -EDGE_LINUX_EAGAIN;
+
+    if (map->flags & KERNEL_BPF_MAP_RB_OVERWRITE) {
+        overwrite = __atomic_load_n(
+            (uint64_t *)(void *)(map->storage + BPF_PAGE_SIZE + 16u),
+            __ATOMIC_ACQUIRE);
+        while (new_producer - overwrite > map->max_entries - 1u) {
+            uint32_t old_size = bpf_ringbuf_record_size_locked(
+                map, overwrite);
+            if (!old_size || old_size > map->max_entries)
+                return -EDGE_LINUX_EAGAIN;
+            overwrite += old_size;
+        }
+        __atomic_store_n(
+            (uint64_t *)(void *)(map->storage + BPF_PAGE_SIZE + 16u),
+            overwrite, __ATOMIC_RELEASE);
+    }
+
+    header[0] = (uint32_t)size | BPF_RINGBUF_BUSY_BIT;
+    /* Linux keeps one private metadata page before the two mmap pages. */
+    header[1] = 3u +
+        (uint32_t)((producer & (map->max_entries - 1u)) /
+                   BPF_PAGE_SIZE);
+    bpf_ringbuf_copy(map, producer, header, sizeof(header));
+    if (size)
+        bpf_ringbuf_copy(
+            map, producer + BPF_RINGBUF_HEADER_SIZE,
+            data, (uint32_t)size);
+    padding = record_size - (uint32_t)size - BPF_RINGBUF_HEADER_SIZE;
+    if (padding)
+        bpf_ringbuf_zero(map, producer + BPF_RINGBUF_HEADER_SIZE + size,
+                         padding);
+    header[0] = (uint32_t)size;
+    __atomic_store_n(
+        (uint32_t *)(void *)(map->storage + 2u * BPF_PAGE_SIZE +
+            (producer & (map->max_entries - 1u))),
+        header[0], __ATOMIC_RELEASE);
+    __atomic_store_n(
+        (uint64_t *)(void *)(map->storage + BPF_PAGE_SIZE + 8u),
+        new_producer, __ATOMIC_RELEASE);
+    __atomic_store_n(
+        (uint64_t *)(void *)(map->storage + BPF_PAGE_SIZE),
+        new_producer, __ATOMIC_RELEASE);
+    if (notify_waiters &&
+        ((flags & BPF_RB_FORCE_WAKEUP) ||
+         (!(flags & BPF_RB_NO_WAKEUP) &&
+          (consumer & (map->max_entries - 1u)) ==
+              (producer & (map->max_entries - 1u)))))
+        *notify_waiters = 1;
+    return 0;
+}
+
 static int bpf_program_run_cgroup_device_locked(
         kernel_bpf_object_t *object,
         const kernel_bpf_cgroup_device_context_t *context,
-        uint32_t *result) {
+        uint32_t *result, int *notify_waiters) {
     kernel_bpf_instruction_t *instructions;
     uint32_t count;
     uint64_t registers[11] = {0};
+    uint8_t stack[512] = {0};
     uint32_t tail_call_count = 0u;
     uint32_t pc;
 
@@ -2809,6 +3197,7 @@ static int bpf_program_run_cgroup_device_locked(
     instructions = object->value.program.instructions;
     count = object->value.program.instruction_count;
     registers[1] = (uint64_t)(uintptr_t)context;
+    registers[10] = (uint64_t)(uintptr_t)(stack + sizeof(stack));
     for (pc = 0; pc < count; ++pc) {
         const kernel_bpf_instruction_t *instruction = &instructions[pc];
         uint32_t destination = bpf_program_destination(instruction);
@@ -2829,6 +3218,16 @@ static int bpf_program_run_cgroup_device_locked(
             memcpy(&value, (const uint8_t *)context + instruction->offset,
                    sizeof(value));
             registers[destination] = value;
+        } else if (BPF_CLASS(instruction->code) == BPF_STX) {
+            uintptr_t address = (uintptr_t)registers[destination] +
+                instruction->offset;
+            uint32_t value = (uint32_t)registers[source];
+
+            if (address < (uintptr_t)stack ||
+                address > (uintptr_t)(stack + sizeof(stack) -
+                                       sizeof(value)))
+                return -EDGE_LINUX_EFAULT;
+            memcpy((void *)address, &value, sizeof(value));
         } else if (BPF_CLASS(instruction->code) == BPF_JMP &&
                    operation == BPF_CALL &&
                    instruction->immediate == (int32_t)BPF_FUNC_TAIL_CALL) {
@@ -2866,7 +3265,36 @@ static int bpf_program_run_cgroup_device_locked(
             count = object->value.program.instruction_count;
             memset(registers, 0, sizeof(registers));
             registers[1] = (uint64_t)(uintptr_t)context;
+            registers[10] =
+                (uint64_t)(uintptr_t)(stack + sizeof(stack));
             pc = UINT32_MAX;
+        } else if (BPF_CLASS(instruction->code) == BPF_JMP &&
+                   operation == BPF_CALL &&
+                   instruction->immediate ==
+                       (int32_t)BPF_FUNC_RINGBUF_OUTPUT) {
+            kernel_bpf_object_t *map_object =
+                bpf_object_locked((int32_t)registers[1]);
+            uintptr_t stack_start = (uintptr_t)stack;
+            uintptr_t data_start = (uintptr_t)registers[2];
+            uint64_t data_size = registers[3];
+            int helper_status;
+
+            if (!map_object ||
+                map_object->kind != KERNEL_BPF_OBJECT_MAP ||
+                map_object->value.map.type !=
+                    KERNEL_BPF_MAP_TYPE_RINGBUF) {
+                helper_status = -EDGE_LINUX_EINVAL;
+            } else if (data_start < stack_start ||
+                       data_size > sizeof(stack) ||
+                       data_start - stack_start >
+                           sizeof(stack) - data_size) {
+                helper_status = -EDGE_LINUX_EFAULT;
+            } else {
+                helper_status = bpf_ringbuf_output_locked(
+                    &map_object->value.map, (const void *)data_start,
+                    data_size, registers[4], notify_waiters);
+            }
+            registers[0] = (uint64_t)(int64_t)helper_status;
         } else if (operation == BPF_EXIT) {
             *result = (uint32_t)registers[0];
             ++object->value.program.run_count;
@@ -2882,13 +3310,16 @@ int kernel_bpf_program_run_cgroup_device(
     int object_id, const kernel_bpf_cgroup_device_context_t *context,
     uint32_t *result) {
     kernel_bpf_object_t *object;
+    int notify_waiters = 0;
     int status;
 
     if (!context || !result) return -EDGE_LINUX_EINVAL;
     bpf_lock();
     object = bpf_object_locked(object_id);
-    status = bpf_program_run_cgroup_device_locked(object, context, result);
+    status = bpf_program_run_cgroup_device_locked(
+        object, context, result, &notify_waiters);
     bpf_unlock();
+    if (notify_waiters) kernel_bpf_ringbuf_state_changed();
     return status;
 }
 
@@ -3263,6 +3694,7 @@ int kernel_bpf_cgroup_device_run(
     uint32_t *result) {
     uint32_t aggregate = 1u;
     uint64_t previous_sequence = 0u;
+    int notify_waiters = 0;
     int status = 0;
 
     if (!context || !result) return -EDGE_LINUX_EINVAL;
@@ -3290,13 +3722,14 @@ int kernel_bpf_cgroup_device_run(
         previous_sequence = attachment->sequence;
         object = bpf_object_locked(attachment->object_id);
         status = bpf_program_run_cgroup_device_locked(
-            object, context, &program_result);
+            object, context, &program_result, &notify_waiters);
         if (status < 0) goto out;
         if (!program_result) aggregate = 0u;
     }
     *result = aggregate;
 out:
     bpf_unlock();
+    if (notify_waiters) kernel_bpf_ringbuf_state_changed();
     return status;
 }
 

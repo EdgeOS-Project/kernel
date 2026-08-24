@@ -30,14 +30,18 @@
 #define KERNEL_BPF_MAP_TYPE_HASH_OF_MAPS 13u
 #define KERNEL_BPF_MAP_TYPE_QUEUE 22u
 #define KERNEL_BPF_MAP_TYPE_STACK 23u
+#define KERNEL_BPF_MAP_TYPE_RINGBUF 27u
 #define KERNEL_BPF_MAP_TYPE_BLOOM_FILTER 30u
+#define KERNEL_BPF_MAP_TYPE_USER_RINGBUF 31u
 
 #define KERNEL_BPF_MAP_NO_PREALLOC (1u << 0)
 #define KERNEL_BPF_MAP_NO_COMMON_LRU (1u << 1)
+#define KERNEL_BPF_MAP_NUMA_NODE (1u << 2)
 #define KERNEL_BPF_MAP_RDONLY (1u << 3)
 #define KERNEL_BPF_MAP_WRONLY (1u << 4)
 #define KERNEL_BPF_MAP_ZERO_SEED (1u << 6)
 #define KERNEL_BPF_MAP_PRESERVE_ELEMS (1u << 11)
+#define KERNEL_BPF_MAP_RB_OVERWRITE (1u << 19)
 
 #define KERNEL_BPF_ANY     0u
 #define KERNEL_BPF_NOEXIST 1u
@@ -206,6 +210,13 @@ int kernel_bpf_map_batch_next_flags(int object_id, uint32_t *cursor,
                                     uint64_t flags, int delete_element,
                                     int *has_more);
 int kernel_bpf_map_freeze(int object_id);
+int kernel_bpf_map_mmap_info(int object_id, uint64_t offset,
+                             uint64_t length, int writable,
+                             uint32_t *page_count);
+int kernel_bpf_map_mmap_page(int object_id, uint64_t offset,
+                             uint32_t page_index, void **page_address);
+int kernel_bpf_ringbuf_poll_state(int object_id, int *readable,
+                                  int *writable);
 
 int kernel_bpf_program_run_cgroup_device(
     int object_id, const kernel_bpf_cgroup_device_context_t *context,
