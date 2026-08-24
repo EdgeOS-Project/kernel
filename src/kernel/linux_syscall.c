@@ -12136,6 +12136,9 @@ static int64_t edge_linux_sys_io_uring_register(
         opcode == EDGE_LINUX_IORING_REGISTER_SEND_MSG_RING)
         return edge_linux_io_uring_send_msg_ring(
             context, argument, operation_count);
+    if (descriptor == -1 && opcode == EDGE_LINUX_IORING_REGISTER_QUERY)
+        return edge_linux_io_uring_query(
+            context, argument, operation_count);
     result = edge_linux_io_uring_resolve_ring_descriptor(
         descriptor, registered, &ring_id);
     if (result < 0) return result;

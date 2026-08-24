@@ -164,7 +164,7 @@ EDGEOS_ASSESSMENTS = [
             "FUTEX_WAIT and FUTEX_WAITV asynchronous completion through the shared futex2 wait registry",
             "WAITID immediate and asynchronous child-state completion with retained submitter identity",
             "READ_MULTISHOT pipe reads with retained descriptions, legacy provided buffers and normal buffer rings",
-            "linked capability queries for supported request, registration, setup, enter, SQE and feature flags",
+            "blind linked capability queries for supported request, registration, setup, enter, SQE and feature flags",
             "synchronous and asynchronous cancellation by user data, file description, opcode or any request, including all-match counts",
             "disabled-ring restrictions for register operations, SQE opcodes and allowed or required SQE flags",
             "registered credential personalities with scoped SQE execution and submitter credential restoration",
@@ -256,7 +256,7 @@ EDGEOS_ASSESSMENTS = [
                 "vector indexes and cancellation lifetime, plus READ_MULTISHOT "
                 "pipe reads, provided-buffer IDs, ENOBUFS termination, "
                 "cancellation and descriptor validation, plus frozen-source "
-                "linked capability-query layouts, per-entry results and "
+                "blind linked capability-query layouts, per-entry results and "
                 "zero-filled extension bytes, plus synchronous and asynchronous "
                 "cancel matching, all-match counts, target completions and "
                 "reserved-field validation, plus disabled-ring restriction "

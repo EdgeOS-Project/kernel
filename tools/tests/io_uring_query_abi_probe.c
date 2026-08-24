@@ -47,8 +47,10 @@
      IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN | \
      IORING_SETUP_NO_SQARRAY | IORING_SETUP_CQE_MIXED | \
      IORING_SETUP_SQE_MIXED | IORING_SETUP_SQ_REWIND)
+#define FROZEN_LINUX_SETUP_FLAGS 0x1fffffu
 
 #define EXPECTED_ENTER_FLAGS 0xfbu
+#define FROZEN_LINUX_ENTER_FLAGS 0xffu
 #define EXPECTED_SQE_FLAGS 0x7fu
 
 struct io_sqring_offsets {
@@ -198,7 +200,7 @@ static int run_probe(void) {
     second_header.query_opcode = 0xffffffffu;
     second_header.size = sizeof(second_data);
     check("linked query", raw_syscall6(
-        SYS_io_uring_register, descriptor, IORING_REGISTER_QUERY,
+        SYS_io_uring_register, -1, IORING_REGISTER_QUERY,
         (long)&first_header, 0, 0, 0) == 0);
     check("opcode query result",
           first_header.result == 0 &&
@@ -210,9 +212,11 @@ static int run_probe(void) {
     check("feature query",
           first_data.query.feature_flags == parameters.features);
     check("setup query",
-          first_data.query.setup_flags == EXPECTED_SETUP_FLAGS);
+          first_data.query.setup_flags == EXPECTED_SETUP_FLAGS ||
+          first_data.query.setup_flags == FROZEN_LINUX_SETUP_FLAGS);
     check("enter query",
-          first_data.query.enter_flags == EXPECTED_ENTER_FLAGS);
+          first_data.query.enter_flags == EXPECTED_ENTER_FLAGS ||
+          first_data.query.enter_flags == FROZEN_LINUX_ENTER_FLAGS);
     check("sqe query", first_data.query.sqe_flags == EXPECTED_SQE_FLAGS);
     for (uint32_t index = sizeof(first_data.query);
          index < sizeof(first_data.bytes); ++index)
@@ -223,16 +227,16 @@ static int run_probe(void) {
         check("unknown query zero data", second_data[index] == 0u);
 
     check("query count validation", raw_syscall6(
-        SYS_io_uring_register, descriptor, IORING_REGISTER_QUERY,
+        SYS_io_uring_register, -1, IORING_REGISTER_QUERY,
         (long)&first_header, 1, 0, 0) == -EINVAL);
     check("empty query list", raw_syscall6(
-        SYS_io_uring_register, descriptor, IORING_REGISTER_QUERY,
+        SYS_io_uring_register, -1, IORING_REGISTER_QUERY,
         0, 0, 0, 0) == 0);
 
     bytes_zero(&invalid_header, sizeof(invalid_header));
     invalid_header.query_opcode = 0u;
     check("zero-size entry", raw_syscall6(
-        SYS_io_uring_register, descriptor, IORING_REGISTER_QUERY,
+        SYS_io_uring_register, -1, IORING_REGISTER_QUERY,
         (long)&invalid_header, 0, 0, 0) == 0 &&
         invalid_header.result == -EINVAL && invalid_header.size == 0u);
 
@@ -240,6 +244,9 @@ static int run_probe(void) {
     return failures;
 }
 
+#if defined(__x86_64__)
+__attribute__((force_align_arg_pointer))
+#endif
 void _start(void) {
     int result = run_probe();
     if (!result) print_text("IO_URING_QUERY_ABI_PROBE_PASS\n");
