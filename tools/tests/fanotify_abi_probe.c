@@ -7,8 +7,11 @@
 #define SYS_read 0
 #define SYS_write 1
 #define SYS_close 3
+#define SYS_sched_yield 24
 #define SYS_getpid 39
+#define SYS_clone 56
 #define SYS_gettid 186
+#define SYS_wait4 61
 #define SYS_exit 60
 #define SYS_openat 257
 #define SYS_mkdirat 258
@@ -19,8 +22,11 @@
 #define SYS_read 63
 #define SYS_write 64
 #define SYS_close 57
+#define SYS_sched_yield 124
 #define SYS_getpid 172
+#define SYS_clone 220
 #define SYS_gettid 178
+#define SYS_wait4 260
 #define SYS_exit 93
 #define SYS_openat 56
 #define SYS_mkdirat 34
@@ -39,6 +45,7 @@
 #define O_CLOEXEC 0x80000
 #define FAN_CLOEXEC 0x1
 #define FAN_NONBLOCK 0x2
+#define FAN_CLASS_CONTENT 0x4
 #define FAN_REPORT_PIDFD 0x80
 #define FAN_REPORT_TID 0x100
 #define FAN_REPORT_FID 0x200
@@ -48,14 +55,20 @@
 #define FAN_MARK_REMOVE 0x2
 #define FAN_MARK_FLUSH 0x80
 #define FAN_OPEN 0x20
+#define FAN_OPEN_PERM 0x10000
 #define FAN_CREATE 0x100
 #define FAN_EVENT_ON_CHILD 0x08000000u
 #define FANOTIFY_METADATA_VERSION 3
 #define FAN_EVENT_INFO_TYPE_FID 1
 #define FAN_EVENT_INFO_TYPE_DFID_NAME 2
 #define FAN_EVENT_INFO_TYPE_PIDFD 4
+#define FAN_ALLOW 0x1
+#define FAN_DENY 0x2
+#define SIGCHLD 17
+#define EPERM 1
 #define EAGAIN 11
 #define EBADF 9
+#define ENOENT 2
 #define EINVAL 22
 #define EEXIST 17
 
@@ -96,6 +109,11 @@ struct fanotify_event_info_fid_prefix {
     int32_t handle_type;
 };
 
+struct fanotify_response {
+    int32_t fd;
+    uint32_t response;
+};
+
 _Static_assert(sizeof(struct fanotify_event_metadata) == 24,
                "fanotify metadata layout mismatch");
 _Static_assert(sizeof(struct fanotify_event_info_pidfd) == 8,
@@ -104,6 +122,8 @@ _Static_assert(sizeof(struct fanotify_pidfd_record) == 32,
                "fanotify pidfd record layout mismatch");
 _Static_assert(sizeof(struct fanotify_event_info_fid_prefix) == 20,
                "fanotify FID prefix layout mismatch");
+_Static_assert(sizeof(struct fanotify_response) == 8,
+               "fanotify response layout mismatch");
 
 static long raw_syscall6(long number, long a0, long a1, long a2,
                          long a3, long a4, long a5) {
@@ -180,6 +200,114 @@ static int expect_result(const char *name, long actual, long expected) {
     print_number(actual);
     print_text("\n");
     return 1;
+}
+
+static long read_permission_event(
+        long group, struct fanotify_event_metadata *event) {
+    for (unsigned long attempt = 0; attempt < 100000u; ++attempt) {
+        long result = raw_syscall6(
+            SYS_read, group, (long)event, sizeof(*event), 0, 0, 0);
+        if (result != -EAGAIN) return result;
+        (void)raw_syscall6(SYS_sched_yield, 0, 0, 0, 0, 0, 0);
+    }
+    return -EAGAIN;
+}
+
+static int run_permission_response_test(
+        const char *path, uint32_t class_flag, uint32_t response_value,
+        long expected_open_result, const char *label) {
+    struct fanotify_event_metadata event;
+    struct fanotify_response response;
+    struct fanotify_response unknown;
+    long group;
+    long child;
+    long result;
+    int status = -1;
+    int failures = 0;
+
+    group = raw_syscall6(
+        SYS_fanotify_init,
+        FAN_CLOEXEC | FAN_NONBLOCK | class_flag,
+        O_CLOEXEC, 0, 0, 0, 0);
+    if (group < 0)
+        return expect_result(label, group, 0);
+    failures += expect_result(
+        "permission-add-mark",
+        raw_syscall6(SYS_fanotify_mark, group, FAN_MARK_ADD,
+                     FAN_OPEN_PERM, AT_FDCWD, (long)path, 0),
+        0);
+    if (failures) goto permission_out;
+
+    child = raw_syscall6(SYS_clone, SIGCHLD, 0, 0, 0, 0, 0);
+    if (child < 0) {
+        failures += expect_result("permission-clone", child, 0);
+        goto permission_out;
+    }
+    if (child == 0) {
+        long descriptor = raw_syscall6(
+            SYS_openat, AT_FDCWD, (long)path,
+            O_RDONLY | O_CLOEXEC, 0, 0, 0);
+        int child_failed = expected_open_result < 0 ?
+            descriptor != expected_open_result : descriptor < 0;
+        if (descriptor >= 0)
+            (void)raw_syscall6(
+                SYS_close, descriptor, 0, 0, 0, 0, 0);
+        (void)raw_syscall6(
+            SYS_exit, child_failed ? 1 : 0, 0, 0, 0, 0, 0);
+        for (;;) { }
+    }
+
+    result = read_permission_event(group, &event);
+    failures += expect_result(
+        "permission-event-read", result, sizeof(event));
+    if (result == (long)sizeof(event)) {
+        if (event.event_len != sizeof(event) ||
+            event.metadata_len != sizeof(event) ||
+            event.vers != FANOTIFY_METADATA_VERSION ||
+            !(event.mask & FAN_OPEN_PERM) ||
+            event.pid != child || event.fd < 0) {
+            print_text("FAIL permission-event-layout\n");
+            ++failures;
+        }
+        response.fd = event.fd;
+        response.response = response_value;
+        failures += expect_result(
+            "permission-short-response",
+            raw_syscall6(
+                SYS_write, group, (long)&response,
+                sizeof(response) - 1u, 0, 0, 0),
+            -EINVAL);
+        unknown = response;
+        unknown.fd += 100000;
+        failures += expect_result(
+            "permission-unknown-response",
+            raw_syscall6(
+                SYS_write, group, (long)&unknown,
+                sizeof(unknown), 0, 0, 0),
+            -ENOENT);
+        failures += expect_result(
+            "permission-response",
+            raw_syscall6(
+                SYS_write, group, (long)&response,
+                sizeof(response), 0, 0, 0),
+            sizeof(response));
+        if (event.fd >= 0)
+            (void)raw_syscall6(
+                SYS_close, event.fd, 0, 0, 0, 0, 0);
+    }
+    result = raw_syscall6(
+        SYS_wait4, child, (long)&status, 0, 0, 0, 0);
+    failures += expect_result("permission-wait", result, child);
+    failures += expect_result("permission-child-status", status, 0);
+
+permission_out:
+    failures += expect_result(
+        "permission-remove-mark",
+        raw_syscall6(SYS_fanotify_mark, group, FAN_MARK_REMOVE,
+                     FAN_OPEN_PERM, AT_FDCWD, (long)path, 0),
+        0);
+    (void)raw_syscall6(SYS_close, group, 0, 0, 0, 0, 0);
+    return failures;
 }
 
 void _start(void) {
@@ -282,6 +410,12 @@ void _start(void) {
         0);
     (void)raw_syscall6(SYS_close, group, 0, 0, 0, 0, 0);
 
+    failures += run_permission_response_test(
+        path, FAN_CLASS_CONTENT, FAN_ALLOW, 0,
+        "permission-content-init");
+    failures += run_permission_response_test(
+        path, FAN_CLASS_CONTENT, FAN_DENY, -EPERM,
+        "permission-deny-init");
     {
         struct fanotify_pidfd_record record;
         struct fanotify_event_metadata short_record;

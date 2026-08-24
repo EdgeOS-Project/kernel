@@ -18,6 +18,10 @@ typedef struct fanotify_test_copy {
 } fanotify_test_copy_t;
 
 static int g_wake_count;
+static int g_permission_wake_count;
+static int g_permission_wait_count;
+static int g_permission_group = -1;
+static int g_permission_mode;
 static int g_installed_descriptor = 40;
 static char g_last_resolved_path[64];
 
@@ -40,6 +44,16 @@ int kernel_current_pid(void) {
 void kernel_fanotify_state_changed(int group_id) {
     assert(group_id >= 0);
     ++g_wake_count;
+}
+
+void arch_fanotify_permission_state_changed(uint64_t ticket) {
+    assert(ticket != 0u);
+    ++g_permission_wake_count;
+}
+
+int arch_fanotify_consume_completed_permission(uint64_t *ticket) {
+    (void)ticket;
+    return 0;
 }
 
 int kernel_vfs_resolve_path(const char *path, int nofollow,
@@ -140,6 +154,46 @@ static void assert_event(const kernel_fanotify_event_metadata_t *event,
     assert(event->pid == 100);
 }
 
+void arch_fanotify_permission_wait(uint64_t ticket) {
+    fanotify_test_copy_t copy;
+    kernel_fanotify_response_t response;
+    const kernel_fanotify_event_metadata_t *event;
+
+    assert(ticket != 0u);
+    assert(g_permission_group >= 0);
+    assert(kernel_fanotify_permission_pending(ticket));
+    ++g_permission_wait_count;
+    if (g_permission_mode == 3) {
+        kernel_fanotify_release(g_permission_group);
+        assert(!kernel_fanotify_permission_pending(ticket));
+        return;
+    }
+    memset(&copy, 0, sizeof(copy));
+    assert(kernel_fanotify_read(
+               g_permission_group, copy_record, &copy,
+               sizeof(copy.records)) == KERNEL_FANOTIFY_METADATA_LENGTH);
+    assert(copy.count == 1u);
+    event = copied_event(&copy, 0u);
+    assert(event->mask == KERNEL_FAN_OPEN_PERM);
+    assert(event->descriptor >= 0);
+    response.descriptor = event->descriptor;
+    response.response = g_permission_mode == 1 ? KERNEL_FAN_DENY :
+        g_permission_mode == 2 ?
+            KERNEL_FAN_DENY | ((uint32_t)EDGE_LINUX_EIO << 24u) :
+            KERNEL_FAN_ALLOW;
+    if (g_permission_mode == 4) {
+        response.response = KERNEL_FAN_ALLOW | KERNEL_FAN_AUDIT;
+        assert(kernel_fanotify_write(
+                   g_permission_group, &response, 0,
+                   sizeof(response)) == -EDGE_LINUX_EINVAL);
+        response.response = KERNEL_FAN_ALLOW;
+    }
+    assert(kernel_fanotify_write(
+               g_permission_group, &response, 0,
+               sizeof(response)) == sizeof(response));
+    assert(!kernel_fanotify_permission_pending(ticket));
+}
+
 int main(void) {
     fanotify_test_copy_t copy;
     kernel_fanotify_state_t state;
@@ -150,6 +204,9 @@ int main(void) {
     int fid_group;
     int combined_group;
     int dfid_group;
+    int permission_group;
+    int precontent_group;
+    int release_group;
 
     memset(&copy, 0, sizeof(copy));
     group = kernel_fanotify_create(KERNEL_FAN_NONBLOCK, 0u);
@@ -165,6 +222,9 @@ int main(void) {
     assert(kernel_fanotify_modify_mark(
                group, KERNEL_FAN_MARK_ADD, KERNEL_FAN_CREATE,
                "/watched", 1) == -EDGE_LINUX_EINVAL);
+    assert(kernel_fanotify_modify_mark(
+               group, KERNEL_FAN_MARK_ADD, KERNEL_FAN_OPEN_PERM,
+               "/watched/file", 0) == -EDGE_LINUX_EINVAL);
 
     kernel_fanotify_notify_path("/watched/file", KERNEL_FAN_OPEN);
     kernel_fanotify_notify_path("/watched/file", KERNEL_FAN_OPEN);
@@ -361,6 +421,53 @@ int main(void) {
         assert(strcmp(g_last_resolved_path, "/watched") == 0);
     }
     kernel_fanotify_release(dfid_group);
+
+    permission_group = kernel_fanotify_create(
+        KERNEL_FAN_CLASS_CONTENT, 0u);
+    assert(permission_group >= 0);
+    assert(kernel_fanotify_modify_mark(
+               permission_group, KERNEL_FAN_MARK_ADD,
+               KERNEL_FAN_OPEN_PERM, "/watched/permission", 0) == 0);
+    g_permission_group = permission_group;
+    g_permission_mode = 0;
+    assert(kernel_fanotify_permission_check(
+               "/watched/permission", KERNEL_FAN_OPEN_PERM) == 0);
+    g_permission_mode = 1;
+    assert(kernel_fanotify_permission_check(
+               "/watched/permission", KERNEL_FAN_OPEN_PERM) ==
+           -EDGE_LINUX_EPERM);
+    g_permission_mode = 4;
+    assert(kernel_fanotify_permission_check(
+               "/watched/permission", KERNEL_FAN_OPEN_PERM) == 0);
+    assert(g_permission_wait_count == 3);
+    assert(g_permission_wake_count == 3);
+    kernel_fanotify_release(permission_group);
+
+    precontent_group = kernel_fanotify_create(
+        KERNEL_FAN_CLASS_PRE_CONTENT, 0u);
+    assert(precontent_group >= 0);
+    assert(kernel_fanotify_modify_mark(
+               precontent_group, KERNEL_FAN_MARK_ADD,
+               KERNEL_FAN_OPEN_PERM, "/watched/precontent", 0) == 0);
+    g_permission_group = precontent_group;
+    g_permission_mode = 2;
+    assert(kernel_fanotify_permission_check(
+               "/watched/precontent", KERNEL_FAN_OPEN_PERM) ==
+           -EDGE_LINUX_EIO);
+    kernel_fanotify_release(precontent_group);
+
+    release_group = kernel_fanotify_create(
+        KERNEL_FAN_CLASS_CONTENT, 0u);
+    assert(release_group >= 0);
+    assert(kernel_fanotify_modify_mark(
+               release_group, KERNEL_FAN_MARK_ADD,
+               KERNEL_FAN_OPEN_PERM, "/watched/release", 0) == 0);
+    g_permission_group = release_group;
+    g_permission_mode = 3;
+    assert(kernel_fanotify_permission_check(
+               "/watched/release", KERNEL_FAN_OPEN_PERM) == 0);
+    assert(kernel_fanotify_query(release_group, &state) ==
+           -EDGE_LINUX_EBADF);
 
     assert(kernel_fanotify_modify_mark(
                group, KERNEL_FAN_MARK_FLUSH, 0u, 0, 0) == 0);

@@ -345,6 +345,8 @@ typedef struct task_struct {
     uint8_t userfaultfd_wait_active;
     int32_t userfaultfd_wait_context;
     uint64_t userfaultfd_wait_ticket;
+    uint8_t fanotify_permission_wait_active;
+    uint64_t fanotify_permission_wait_ticket;
 } task_t;
 
 typedef void (*process_task_exit_hook_t)(task_t *t);

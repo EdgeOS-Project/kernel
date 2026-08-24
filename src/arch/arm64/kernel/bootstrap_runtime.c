@@ -727,6 +727,7 @@ typedef enum {
     KERNEL_TASK_WAITING_PTY_READ,
     KERNEL_TASK_WAITING_INOTIFY,
     KERNEL_TASK_WAITING_USERFAULTFD,
+    KERNEL_TASK_WAITING_FANOTIFY_PERMISSION,
     KERNEL_TASK_WAITING_INPUT,
     KERNEL_TASK_WAITING_DRM,
     KERNEL_TASK_WAITING_AUDIO_READ,
@@ -1116,6 +1117,8 @@ typedef struct {
     uint8_t userfaultfd_wait_replay;
     uint64_t userfaultfd_wait_ticket;
     int64_t userfaultfd_wait_result;
+    uint8_t fanotify_permission_wait_replay;
+    uint64_t fanotify_permission_wait_ticket;
     uint8_t file_lock_wait_active;
     int64_t file_lock_wait_result;
     edge_linux_signal_action_t signal_actions[EDGE_LINUX_SIGNAL_MAX];
@@ -5226,6 +5229,11 @@ static void task_interrupt_wait_for_signal(kernel_task_t *task,
             task->userfaultfd_wait_result = 0;
             task_state_set(task, KERNEL_TASK_RUNNABLE);
             return;
+        case KERNEL_TASK_WAITING_FANOTIFY_PERMISSION:
+            task->fanotify_permission_wait_replay = 0u;
+            task->fanotify_permission_wait_ticket = 0u;
+            task_state_set(task, KERNEL_TASK_RUNNABLE);
+            return;
         case KERNEL_TASK_WAITING_INPUT:
             release_fd_operation_lease = 1;
             break;
@@ -5504,7 +5512,9 @@ int arch_runtime_yield(void) {
     if (task_state_shadow_at((uint32_t)(task - g_tasks)) !=
             KERNEL_TASK_WAITING_FUSE_REPLY &&
         task_state_shadow_at((uint32_t)(task - g_tasks)) !=
-            KERNEL_TASK_WAITING_USERFAULTFD)
+            KERNEL_TASK_WAITING_USERFAULTFD &&
+        task_state_shadow_at((uint32_t)(task - g_tasks)) !=
+            KERNEL_TASK_WAITING_FANOTIFY_PERMISSION)
         task_state_set(task, KERNEL_TASK_RUNNABLE);
     if (g_fuse_reschedule_target_plus_one) {
         uint16_t target_plus_one =
@@ -10569,6 +10579,53 @@ void arch_fanotify_state_changed(int group_id) {
         task_fd_operation_lease_release(task, 0);
     }
     poll_wake_waiters();
+}
+
+void arch_fanotify_permission_state_changed(uint64_t ticket) {
+    if (!ticket) return;
+    for (uint32_t index = 0; index < g_task_high_water; ++index) {
+        kernel_task_t *task = &g_tasks[index];
+        if (task_state_shadow_at(index) !=
+                KERNEL_TASK_WAITING_FANOTIFY_PERMISSION ||
+            task->fanotify_permission_wait_ticket != ticket ||
+            kernel_fanotify_permission_pending(ticket))
+            continue;
+        task_state_set(task, KERNEL_TASK_RUNNABLE);
+    }
+}
+
+void arch_fanotify_permission_wait(uint64_t ticket) {
+    kernel_task_t *task;
+
+    while (kernel_fanotify_permission_pending(ticket)) {
+        task = current_task();
+        if (!task) return;
+        task->fanotify_permission_wait_replay = 1u;
+        task->fanotify_permission_wait_ticket = ticket;
+        task_state_set(task, KERNEL_TASK_WAITING_FANOTIFY_PERMISSION);
+        if (!kernel_fanotify_permission_pending(ticket))
+            task_state_set(task, KERNEL_TASK_RUNNABLE);
+        scheduler_yield();
+    }
+    task = current_task();
+    if (task) {
+        task->fanotify_permission_wait_replay = 0u;
+        task->fanotify_permission_wait_ticket = 0u;
+    }
+}
+
+int arch_fanotify_consume_completed_permission(uint64_t *ticket) {
+    kernel_task_t *task = current_task();
+
+    if (!ticket || !task || !task->fanotify_permission_wait_replay ||
+        !task->fanotify_permission_wait_ticket ||
+        kernel_fanotify_permission_pending(
+            task->fanotify_permission_wait_ticket))
+        return 0;
+    *ticket = task->fanotify_permission_wait_ticket;
+    task->fanotify_permission_wait_replay = 0u;
+    task->fanotify_permission_wait_ticket = 0u;
+    return 1;
 }
 
 void arch_userfaultfd_state_changed(int context_id) {
@@ -23675,6 +23732,26 @@ static int64_t fd_write_user_internal(
     }
     if (fd->secret_memory) return -LINUX_EINVAL;
     if (fd->kind == KERNEL_FD_NULL) return (int64_t)length;
+    if (fd->kind == KERNEL_FD_FANOTIFY) {
+        kernel_fanotify_response_t response;
+        kernel_fanotify_response_info_audit_rule_t information;
+        const kernel_fanotify_response_info_audit_rule_t *information_ptr = 0;
+
+        if (length < sizeof(response)) return -LINUX_EINVAL;
+        if (arch_copy_from_user(task->ttbr0, &response, buffer,
+                                sizeof(response)) < 0)
+            return -LINUX_EFAULT;
+        if ((response.response & KERNEL_FAN_INFO) &&
+            length == sizeof(response) + sizeof(information)) {
+            if (arch_copy_from_user(
+                    task->ttbr0, &information, buffer + sizeof(response),
+                    sizeof(information)) < 0)
+                return -LINUX_EFAULT;
+            information_ptr = &information;
+        }
+        return kernel_fanotify_write(
+            fd->event_index, &response, information_ptr, length);
+    }
     if (fd->kind == KERNEL_FD_TUN) {
         if (length > UINT32_MAX) return -LINUX_EINVAL;
         return edge_linux_tun_write(

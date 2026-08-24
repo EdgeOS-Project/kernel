@@ -1119,6 +1119,52 @@ void arch_fanotify_state_changed(int id) {
     }
 }
 
+void arch_fanotify_permission_state_changed(uint64_t ticket) {
+    if (!ticket) return;
+    for (int index = 0; index < PROC_MAX_TASKS; ++index) {
+        const task_t *view = process_task_by_index(index);
+        task_t *task;
+        if (!view || view->state == TASK_UNUSED) continue;
+        task = process_task_by_pid(view->pid);
+        if (!task || !task->fanotify_permission_wait_active ||
+            task->fanotify_permission_wait_ticket != ticket ||
+            kernel_fanotify_permission_pending(ticket))
+            continue;
+        task->fanotify_permission_wait_active = 0u;
+        task->fanotify_permission_wait_ticket = 0u;
+        if (task->state == TASK_BLOCKED)
+            scheduler_task_make_runnable(task, scheduler_cpu_id());
+    }
+}
+
+void arch_fanotify_permission_wait(uint64_t ticket) {
+    task_t *task;
+
+    while (kernel_fanotify_permission_pending(ticket)) {
+        task = process_current_task();
+        if (!task || task->is_idle) {
+            wait_blocking_step();
+            continue;
+        }
+        task->fanotify_permission_wait_active = 1u;
+        task->fanotify_permission_wait_ticket = ticket;
+        scheduler_task_set_blocked(task);
+        if (!kernel_fanotify_permission_pending(ticket))
+            scheduler_task_make_runnable(task, scheduler_cpu_id());
+        scheduler_yield();
+    }
+    task = process_current_task();
+    if (task && !task->is_idle) {
+        task->fanotify_permission_wait_active = 0u;
+        task->fanotify_permission_wait_ticket = 0u;
+    }
+}
+
+int arch_fanotify_consume_completed_permission(uint64_t *ticket) {
+    (void)ticket;
+    return 0;
+}
+
 void arch_userfaultfd_state_changed(int id) {
     task_t *cur = process_current_task();
     if (id < 0) return;
@@ -6028,6 +6074,24 @@ static uint64_t do_sys_fd_write_entry(int fd, edge_fd_t *e,
         e->kind != FD_SIGNALFD) {
         if (len == 0) return 0;
         if (!buf_u) return (uint64_t)-EFAULT;
+    }
+    if (e->kind == FD_FANOTIFY) {
+        kernel_fanotify_response_t response;
+        kernel_fanotify_response_info_audit_rule_t information;
+        const kernel_fanotify_response_info_audit_rule_t *information_ptr = 0;
+
+        if (len < sizeof(response)) return (uint64_t)-EINVAL;
+        if (copy_from_user(&response, buf_u, sizeof(response)) < 0)
+            return (uint64_t)-EFAULT;
+        if ((response.response & KERNEL_FAN_INFO) &&
+            len == sizeof(response) + sizeof(information)) {
+            if (copy_from_user(&information, buf_u + sizeof(response),
+                               sizeof(information)) < 0)
+                return (uint64_t)-EFAULT;
+            information_ptr = &information;
+        }
+        return (uint64_t)kernel_fanotify_write(
+            e->pipe_id, &response, information_ptr, len);
     }
     if (e->kind == FD_TUN) {
         int64_t result;

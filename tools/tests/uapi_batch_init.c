@@ -104,6 +104,30 @@ static void print_text(const char *text) {
                        (long)text_length(text));
 }
 
+static void print_number(long value) {
+    char output[24];
+    unsigned long magnitude;
+    unsigned long count = 0;
+
+    if (value < 0) {
+        print_text("-");
+        magnitude = (unsigned long)(-(value + 1)) + 1u;
+    } else {
+        magnitude = (unsigned long)value;
+    }
+    do {
+        output[count++] = (char)('0' + magnitude % 10u);
+        magnitude /= 10u;
+    } while (magnitude);
+    for (unsigned long left = 0, right = count - 1u; left < right;
+         ++left, --right) {
+        char temporary = output[left];
+        output[left] = output[right];
+        output[right] = temporary;
+    }
+    (void)raw_syscall3(SYS_write, 1, (long)output, (long)count);
+}
+
 static long spawn(void) {
 #if defined(__x86_64__)
     return raw_syscall1(SYS_fork, 0);
@@ -127,15 +151,28 @@ static int run_probe(const char *name) {
     child = spawn();
     if (child < 0) return 1;
     if (child == 0) {
+        long exec_result;
         arguments[0] = path;
         arguments[1] = 0;
-        (void)raw_syscall3(
+        exec_result = raw_syscall3(
             SYS_execve, (long)path, (long)arguments, (long)environment);
+        print_text("UAPI_BATCH_EXEC_ERROR ");
+        print_text(name);
+        print_text(" result=");
+        print_number(exec_result);
+        print_text("\n");
         (void)raw_syscall1(SYS_exit, 127);
         for (;;) { }
     }
     if (raw_syscall4(SYS_wait4, child, (long)&status, 0, 0) != child)
         return 1;
+    if (status != 0) {
+        print_text("UAPI_BATCH_CHILD_STATUS ");
+        print_text(name);
+        print_text(" status=");
+        print_number(status);
+        print_text("\n");
+    }
     return status != 0;
 }
 
@@ -143,6 +180,8 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
     static const char *const probes[] = {
 #ifdef UAPI_BATCH_USERFAULTFD_ONLY
         "userfaultfd_abi_probe",
+#elif defined(UAPI_BATCH_FANOTIFY_ONLY)
+        "fanotify_abi_probe",
 #else
 #ifndef UAPI_BATCH_FREESTANDING_ONLY
         "restart_syscall_abi_probe",

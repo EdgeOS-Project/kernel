@@ -14,5 +14,9 @@ int kernel_fanotify_create_descriptor(uint32_t flags,
 int kernel_fanotify_descriptor_id(int32_t descriptor);
 void kernel_fanotify_state_changed(int group_id);
 void arch_fanotify_state_changed(int group_id);
+void kernel_fanotify_permission_state_changed(uint64_t ticket);
+void arch_fanotify_permission_state_changed(uint64_t ticket);
+void arch_fanotify_permission_wait(uint64_t ticket);
+int arch_fanotify_consume_completed_permission(uint64_t *ticket);
 
 #endif

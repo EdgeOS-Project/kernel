@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "fs/cgroupfs.h"
+#include "kernel/fanotify.h"
 #include "kernel/file_metadata.h"
 #include "kernel/inotify.h"
 #include "kernel/landlock_runtime.h"
@@ -638,6 +639,13 @@ int64_t kernel_vfs_open_at(const kernel_vfs_open_request_t *request) {
         kernel_landlock_check_path(
             path, EDGE_LINUX_LANDLOCK_ACCESS_FS_TRUNCATE) == 0 ?
         EDGE_LINUX_LANDLOCK_ACCESS_FS_TRUNCATE : 0;
+    if (!created && !(request->flags & KERNEL_VFS_OPEN_PATH)) {
+        uint64_t fanotify_mask = KERNEL_FAN_OPEN_PERM;
+        if ((target.inode->mode & 0xf000u) == VFS_INODE_DIR)
+            fanotify_mask |= KERNEL_FAN_ONDIR;
+        status = kernel_fanotify_permission_check(path, fanotify_mask);
+        if (status < 0) return status;
+    }
     if (!(request->flags & KERNEL_VFS_OPEN_PATH) &&
         (request->flags & KERNEL_VFS_OPEN_TRUNCATE) &&
         (target.inode->mode & 0xf000u) == VFS_INODE_FILE) {

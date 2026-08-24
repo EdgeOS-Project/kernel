@@ -14300,10 +14300,8 @@ static int64_t edge_linux_sys_fanotify(
                 return -EDGE_LINUX_EPERM;
             return -EDGE_LINUX_EOPNOTSUPP;
         }
-        if ((flags & class_mask) != KERNEL_FAN_CLASS_NOTIF ||
-            (flags & (KERNEL_FAN_UNLIMITED_QUEUE |
-                      KERNEL_FAN_UNLIMITED_MARKS |
-                      KERNEL_FAN_ENABLE_AUDIT)) ||
+        if ((flags & (KERNEL_FAN_UNLIMITED_QUEUE |
+                      KERNEL_FAN_UNLIMITED_MARKS)) ||
             (flags & (report_mask &
                       ~(KERNEL_FAN_REPORT_FD_ERROR |
                         KERNEL_FAN_REPORT_PIDFD |

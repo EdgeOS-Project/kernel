@@ -22,14 +22,17 @@
      KERNEL_FAN_CLOSE_WRITE | KERNEL_FAN_CLOSE_NOWRITE | KERNEL_FAN_OPEN | \
      KERNEL_FAN_MOVED_FROM | KERNEL_FAN_MOVED_TO | KERNEL_FAN_CREATE | \
      KERNEL_FAN_DELETE | KERNEL_FAN_DELETE_SELF | KERNEL_FAN_MOVE_SELF | \
-     KERNEL_FAN_OPEN_EXEC | KERNEL_FAN_EVENT_ON_CHILD | \
+     KERNEL_FAN_OPEN_EXEC | KERNEL_FAN_OPEN_PERM | \
+     KERNEL_FAN_ACCESS_PERM | KERNEL_FAN_OPEN_EXEC_PERM | \
+     KERNEL_FAN_PRE_ACCESS | KERNEL_FAN_EVENT_ON_CHILD | \
      KERNEL_FAN_RENAME | KERNEL_FAN_ONDIR)
 #define KERNEL_FANOTIFY_PERMISSION_MASK \
     (KERNEL_FAN_OPEN_PERM | KERNEL_FAN_ACCESS_PERM | \
      KERNEL_FAN_OPEN_EXEC_PERM | KERNEL_FAN_PRE_ACCESS)
 #define KERNEL_FANOTIFY_PATH_EVENT_MASK \
     (KERNEL_FAN_ACCESS | KERNEL_FAN_MODIFY | KERNEL_FAN_CLOSE_WRITE | \
-     KERNEL_FAN_CLOSE_NOWRITE | KERNEL_FAN_OPEN | KERNEL_FAN_OPEN_EXEC)
+     KERNEL_FAN_CLOSE_NOWRITE | KERNEL_FAN_OPEN | KERNEL_FAN_OPEN_EXEC | \
+     KERNEL_FANOTIFY_PERMISSION_MASK)
 #define KERNEL_FANOTIFY_EVENT_FLAG_MASK \
     (KERNEL_FAN_EVENT_ON_CHILD | KERNEL_FAN_ONDIR)
 #define KERNEL_FANOTIFY_FID_MODE_MASK \
@@ -64,12 +67,25 @@ typedef struct kernel_fanotify_mark {
 typedef struct kernel_fanotify_event {
     uint8_t used;
     uint8_t directory_entry;
+    uint8_t permission;
+    uint8_t delivered;
     uint16_t next;
+    uint16_t transaction_index;
     int32_t group_id;
     int32_t pid;
+    int32_t response_descriptor;
     uint64_t mask;
     char path[VFS_PATH_MAX];
 } kernel_fanotify_event_t;
+
+typedef struct kernel_fanotify_permission_transaction {
+    uint8_t used;
+    uint8_t padding8[3];
+    uint32_t pending;
+    int32_t result;
+    uint32_t padding32;
+    uint64_t ticket;
+} kernel_fanotify_permission_transaction_t;
 
 static kernel_fanotify_group_t
     g_fanotify_groups[EDGE_RUNTIME_MAX_FANOTIFY_GROUPS];
@@ -77,10 +93,13 @@ static kernel_fanotify_mark_t
     g_fanotify_marks[EDGE_RUNTIME_MAX_FANOTIFY_MARKS];
 static kernel_fanotify_event_t
     g_fanotify_events[EDGE_RUNTIME_FANOTIFY_EVENT_POOL];
+static kernel_fanotify_permission_transaction_t
+    g_fanotify_permission_transactions[EDGE_RUNTIME_FANOTIFY_EVENT_POOL];
 static char g_fanotify_path_scratch[3][VFS_PATH_MAX];
 static char g_fanotify_read_path[VFS_PATH_MAX];
 static volatile uint32_t g_fanotify_lock;
 static volatile uint32_t g_fanotify_read_path_lock;
+static uint64_t g_fanotify_next_permission_ticket = 1u;
 
 static void fanotify_lock(void) {
     while (__sync_lock_test_and_set(&g_fanotify_lock, 1u)) { }
@@ -151,6 +170,79 @@ static uint16_t fanotify_event_allocate_locked(void) {
     return KERNEL_FANOTIFY_EVENT_NONE;
 }
 
+static uint16_t fanotify_permission_transaction_allocate_locked(
+        uint64_t *ticket) {
+    uint64_t candidate;
+
+    if (!ticket) return KERNEL_FANOTIFY_EVENT_NONE;
+    for (uint16_t index = 0;
+         index < EDGE_RUNTIME_FANOTIFY_EVENT_POOL; ++index) {
+        kernel_fanotify_permission_transaction_t *transaction =
+            &g_fanotify_permission_transactions[index];
+        if (transaction->used) continue;
+        candidate = g_fanotify_next_permission_ticket++;
+        if (!candidate) candidate = g_fanotify_next_permission_ticket++;
+        memset(transaction, 0, sizeof(*transaction));
+        transaction->used = 1u;
+        transaction->ticket = candidate;
+        *ticket = candidate;
+        return index;
+    }
+    return KERNEL_FANOTIFY_EVENT_NONE;
+}
+
+static kernel_fanotify_permission_transaction_t *
+fanotify_permission_transaction_locked(uint64_t ticket) {
+    if (!ticket) return 0;
+    for (uint16_t index = 0;
+         index < EDGE_RUNTIME_FANOTIFY_EVENT_POOL; ++index) {
+        kernel_fanotify_permission_transaction_t *transaction =
+            &g_fanotify_permission_transactions[index];
+        if (transaction->used && transaction->ticket == ticket)
+            return transaction;
+    }
+    return 0;
+}
+
+static uint64_t fanotify_permission_resolve_event_locked(
+        uint16_t event_index, int result) {
+    kernel_fanotify_event_t *event;
+    kernel_fanotify_permission_transaction_t *transaction;
+    uint64_t ticket = 0;
+
+    if (event_index >= EDGE_RUNTIME_FANOTIFY_EVENT_POOL) return 0;
+    event = &g_fanotify_events[event_index];
+    if (!event->used || !event->permission ||
+        event->transaction_index >= EDGE_RUNTIME_FANOTIFY_EVENT_POOL)
+        return 0;
+    transaction = &g_fanotify_permission_transactions[
+        event->transaction_index];
+    if (transaction->used && transaction->pending) {
+        if (result < 0 && transaction->result == 0)
+            transaction->result = result;
+        --transaction->pending;
+        if (!transaction->pending) ticket = transaction->ticket;
+    }
+    fanotify_event_free_locked(event_index);
+    return ticket;
+}
+
+static int fanotify_permission_complete(uint64_t ticket) {
+    kernel_fanotify_permission_transaction_t *transaction;
+    int result;
+
+    fanotify_lock();
+    transaction = fanotify_permission_transaction_locked(ticket);
+    if (!transaction || transaction->pending) {
+        fanotify_unlock();
+        return -EDGE_LINUX_EAGAIN;
+    }
+    result = transaction->result;
+    memset(transaction, 0, sizeof(*transaction));
+    fanotify_unlock();
+    return result;
+}
+
 static uint64_t fanotify_queue_locked(int group_id, uint64_t mask,
                                       const char *path, int32_t pid,
                                       int directory_entry) {
@@ -213,11 +305,57 @@ static uint64_t fanotify_queue_locked(int group_id, uint64_t mask,
     return 1ULL << (uint32_t)group_id;
 }
 
+static int fanotify_queue_permission_locked(
+        int group_id, uint64_t mask, const char *path, int32_t pid,
+        int directory_entry, uint16_t transaction_index) {
+    kernel_fanotify_group_t *group = fanotify_group_locked(group_id);
+    kernel_fanotify_permission_transaction_t *transaction;
+    kernel_fanotify_event_t *event;
+    uint16_t index;
+
+    if (!group || transaction_index >= EDGE_RUNTIME_FANOTIFY_EVENT_POOL)
+        return -EDGE_LINUX_EINVAL;
+    transaction = &g_fanotify_permission_transactions[transaction_index];
+    if (!transaction->used) return -EDGE_LINUX_EINVAL;
+    if (group->count >= EDGE_RUNTIME_FANOTIFY_GROUP_QUEUE)
+        return -EDGE_LINUX_ENOSPC;
+    index = fanotify_event_allocate_locked();
+    if (index == KERNEL_FANOTIFY_EVENT_NONE)
+        return -EDGE_LINUX_ENOSPC;
+    event = &g_fanotify_events[index];
+    event->permission = 1u;
+    event->transaction_index = transaction_index;
+    event->response_descriptor = KERNEL_FANOTIFY_NOFD;
+    event->group_id = group_id;
+    event->pid = pid;
+    event->mask = mask;
+    event->directory_entry = directory_entry != 0;
+    if (path) {
+        uint32_t length = (uint32_t)strlen(path);
+        if (length >= VFS_PATH_MAX) length = VFS_PATH_MAX - 1u;
+        memcpy(event->path, path, length);
+        event->path[length] = 0;
+    }
+    if (group->tail == KERNEL_FANOTIFY_EVENT_NONE)
+        group->head = index;
+    else
+        g_fanotify_events[group->tail].next = index;
+    group->tail = index;
+    ++group->count;
+    ++transaction->pending;
+    fanotify_sequence_advance(group);
+    return 0;
+}
+
 static void fanotify_wake_groups(uint64_t groups) {
     for (int group_id = 0;
          group_id < EDGE_RUNTIME_MAX_FANOTIFY_GROUPS; ++group_id)
         if (groups & (1ULL << (uint32_t)group_id))
             kernel_fanotify_state_changed(group_id);
+}
+
+void kernel_fanotify_permission_state_changed(uint64_t ticket) {
+    if (ticket) arch_fanotify_permission_state_changed(ticket);
 }
 
 static void fanotify_read_finish(int group_id) {
@@ -373,14 +511,28 @@ int kernel_fanotify_retain(int group_id) {
 
 void kernel_fanotify_release(int group_id) {
     kernel_fanotify_group_t *group;
+    uint64_t completed[EDGE_RUNTIME_FANOTIFY_EVENT_POOL];
+    uint32_t completed_count = 0;
+
     fanotify_lock();
     group = fanotify_group_locked(group_id);
     if (group && group->references && --group->references == 0u) {
-        uint16_t event_index = group->head;
-        while (event_index != KERNEL_FANOTIFY_EVENT_NONE) {
-            uint16_t next = g_fanotify_events[event_index].next;
-            fanotify_event_free_locked(event_index);
-            event_index = next;
+        for (uint16_t event_index = 0;
+             event_index < EDGE_RUNTIME_FANOTIFY_EVENT_POOL;
+             ++event_index) {
+            kernel_fanotify_event_t *event =
+                &g_fanotify_events[event_index];
+            uint64_t ticket;
+            if (!event->used || event->group_id != group_id) continue;
+            if (!event->permission) {
+                fanotify_event_free_locked(event_index);
+                continue;
+            }
+            ticket = fanotify_permission_resolve_event_locked(
+                event_index, 0);
+            if (ticket && completed_count <
+                              EDGE_RUNTIME_FANOTIFY_EVENT_POOL)
+                completed[completed_count++] = ticket;
         }
         for (uint32_t index = 0;
              index < EDGE_RUNTIME_MAX_FANOTIFY_MARKS; ++index)
@@ -391,6 +543,8 @@ void kernel_fanotify_release(int group_id) {
         memset(group, 0, sizeof(*group));
     }
     fanotify_unlock();
+    for (uint32_t index = 0; index < completed_count; ++index)
+        kernel_fanotify_permission_state_changed(completed[index]);
 }
 
 int kernel_fanotify_query(int group_id, kernel_fanotify_state_t *state) {
@@ -456,8 +610,7 @@ int kernel_fanotify_modify_mark(int group_id, uint32_t flags,
         return -EDGE_LINUX_EINVAL;
     if (type != 0u) return -EDGE_LINUX_EOPNOTSUPP;
     if (mask & ~(uint64_t)KERNEL_FANOTIFY_EVENT_MASK)
-        return (mask & KERNEL_FANOTIFY_PERMISSION_MASK) ?
-            -EDGE_LINUX_EOPNOTSUPP : -EDGE_LINUX_EINVAL;
+        return -EDGE_LINUX_EINVAL;
     if (operation == KERNEL_FAN_MARK_FLUSH) {
         if (mask || canonical_path) return -EDGE_LINUX_EINVAL;
         fanotify_lock();
@@ -488,6 +641,17 @@ int kernel_fanotify_modify_mark(int group_id, uint32_t flags,
     group = fanotify_group_locked(group_id);
     if (!group) {
         result = -EDGE_LINUX_EBADF;
+        goto out;
+    }
+    if ((mask & KERNEL_FANOTIFY_PERMISSION_MASK) &&
+        !(group->flags & (KERNEL_FAN_CLASS_CONTENT |
+                          KERNEL_FAN_CLASS_PRE_CONTENT))) {
+        result = -EDGE_LINUX_EINVAL;
+        goto out;
+    }
+    if ((mask & KERNEL_FAN_PRE_ACCESS) &&
+        !(group->flags & KERNEL_FAN_CLASS_PRE_CONTENT)) {
+        result = -EDGE_LINUX_EINVAL;
         goto out;
     }
     if ((mask & ~(uint64_t)(KERNEL_FANOTIFY_PATH_EVENT_MASK |
@@ -582,6 +746,7 @@ int64_t kernel_fanotify_read(int group_id,
         uint32_t record_length;
         uint32_t information_offset = 0u;
         uint16_t event_index;
+        int permission;
         int descriptor = KERNEL_FANOTIFY_NOFD;
         int pidfd = KERNEL_FANOTIFY_NOFD;
         int prepare_status = 0;
@@ -601,6 +766,7 @@ int64_t kernel_fanotify_read(int group_id,
         }
         event_index = group->head;
         event = &g_fanotify_events[event_index];
+        permission = event->permission != 0;
         group_flags = group->flags;
         event_flags = group->event_flags;
         fanotify_unlock();
@@ -680,21 +846,221 @@ int64_t kernel_fanotify_read(int group_id,
                     KERNEL_FANOTIFY_NOFD : KERNEL_FANOTIFY_EPIDFD;
             pidfd_information->descriptor = pidfd;
         }
-        fanotify_lock();
-        fanotify_event_free_locked(event_index);
-        fanotify_unlock();
         copy_status = copy_record ? copy_record(
             copy_context, done, &record, record_length) : -1;
         if (copy_status < 0) {
             if (descriptor >= 0) (void)kernel_fd_close(descriptor);
             if (pidfd >= 0) (void)kernel_fd_close(pidfd);
+            fanotify_lock();
+            group = fanotify_group_locked(group_id);
+            event = &g_fanotify_events[event_index];
+            if (permission && group && event->used) {
+                event->next = group->head;
+                group->head = event_index;
+                if (group->tail == KERNEL_FANOTIFY_EVENT_NONE)
+                    group->tail = event_index;
+                ++group->count;
+                fanotify_sequence_advance(group);
+            } else if (event->used) {
+                fanotify_event_free_locked(event_index);
+            }
+            fanotify_unlock();
             fanotify_read_finish(group_id);
             return done ? (int64_t)done : -EDGE_LINUX_EFAULT;
         }
+        fanotify_lock();
+        event = &g_fanotify_events[event_index];
+        if (permission && event->used) {
+            event->delivered = 1u;
+            event->response_descriptor = descriptor;
+            event->next = KERNEL_FANOTIFY_EVENT_NONE;
+        } else if (event->used) {
+            fanotify_event_free_locked(event_index);
+        }
+        fanotify_unlock();
         done += record_length;
     }
     fanotify_read_finish(group_id);
     return done ? (int64_t)done : -EDGE_LINUX_EINVAL;
+}
+
+static int fanotify_response_errno_allowed(uint32_t error) {
+    return error == 0u || error == EDGE_LINUX_EIO ||
+           error == EDGE_LINUX_EPERM || error == EDGE_LINUX_EBUSY ||
+           error == EDGE_LINUX_ETXTBSY || error == EDGE_LINUX_EAGAIN ||
+           error == EDGE_LINUX_ENOSPC || error == EDGE_LINUX_EDQUOT;
+}
+
+int64_t kernel_fanotify_write(
+        int group_id, const kernel_fanotify_response_t *response,
+        const kernel_fanotify_response_info_audit_rule_t *information,
+        uint64_t length) {
+    const uint32_t error_mask = 0xff000000u;
+    const uint32_t valid_mask = error_mask | KERNEL_FAN_ALLOW |
+        KERNEL_FAN_DENY | KERNEL_FAN_AUDIT | KERNEL_FAN_INFO;
+    kernel_fanotify_group_t *group;
+    uint64_t completed_ticket = 0;
+    uint32_t decision;
+    uint32_t error;
+    int result;
+
+    if (!response || length < sizeof(*response))
+        return -EDGE_LINUX_EINVAL;
+    if (response->response & ~valid_mask)
+        return -EDGE_LINUX_EINVAL;
+    decision = response->response &
+        (KERNEL_FAN_ALLOW | KERNEL_FAN_DENY);
+    error = (response->response >> 24u) & 0xffu;
+    if (decision != KERNEL_FAN_ALLOW && decision != KERNEL_FAN_DENY)
+        return -EDGE_LINUX_EINVAL;
+    if (decision == KERNEL_FAN_ALLOW && error)
+        return -EDGE_LINUX_EINVAL;
+    if (!fanotify_response_errno_allowed(error))
+        return -EDGE_LINUX_EINVAL;
+    if (response->response & KERNEL_FAN_INFO) {
+        if (!information ||
+            length - sizeof(*response) != sizeof(*information) ||
+            information->information_type !=
+                KERNEL_FAN_RESPONSE_INFO_AUDIT_RULE ||
+            information->padding != 0u ||
+            information->length != sizeof(*information))
+            return -EDGE_LINUX_EINVAL;
+        if (response->descriptor == KERNEL_FANOTIFY_NOFD)
+            return (int64_t)length;
+    }
+    if (response->descriptor < 0) return -EDGE_LINUX_EINVAL;
+
+    fanotify_lock();
+    group = fanotify_group_locked(group_id);
+    if (!group) {
+        fanotify_unlock();
+        return -EDGE_LINUX_EBADF;
+    }
+    if ((response->response & KERNEL_FAN_AUDIT) &&
+        !(group->flags & KERNEL_FAN_ENABLE_AUDIT)) {
+        fanotify_unlock();
+        return -EDGE_LINUX_EINVAL;
+    }
+    if (error && !(group->flags & KERNEL_FAN_CLASS_PRE_CONTENT)) {
+        fanotify_unlock();
+        return -EDGE_LINUX_EINVAL;
+    }
+    result = -EDGE_LINUX_ENOENT;
+    for (uint16_t event_index = 0;
+         event_index < EDGE_RUNTIME_FANOTIFY_EVENT_POOL; ++event_index) {
+        kernel_fanotify_event_t *event =
+            &g_fanotify_events[event_index];
+        if (!event->used || !event->permission || !event->delivered ||
+            event->group_id != group_id ||
+            event->response_descriptor != response->descriptor)
+            continue;
+        result = decision == KERNEL_FAN_ALLOW ? 0 :
+            -(int)(error ? error : EDGE_LINUX_EPERM);
+        completed_ticket = fanotify_permission_resolve_event_locked(
+            event_index, result);
+        result = 0;
+        break;
+    }
+    fanotify_unlock();
+    if (completed_ticket)
+        kernel_fanotify_permission_state_changed(completed_ticket);
+    if (result < 0) return result;
+    return (response->response & KERNEL_FAN_INFO) ?
+        (int64_t)length : (int64_t)sizeof(*response);
+}
+
+int kernel_fanotify_permission_pending(uint64_t ticket) {
+    kernel_fanotify_permission_transaction_t *transaction;
+    int pending;
+
+    fanotify_lock();
+    transaction = fanotify_permission_transaction_locked(ticket);
+    pending = transaction && transaction->pending;
+    fanotify_unlock();
+    return pending;
+}
+
+int kernel_fanotify_permission_check(const char *canonical_path,
+                                     uint64_t mask) {
+    kernel_linux_identity_t identity;
+    kernel_fanotify_permission_transaction_t *transaction;
+    uint64_t replay_ticket = 0;
+    uint64_t ticket = 0;
+    uint64_t wake_groups = 0;
+    uint16_t transaction_index;
+    int32_t tid;
+    int32_t tgid;
+    int has_parent;
+    char *parent;
+
+    if (arch_fanotify_consume_completed_permission(&replay_ticket))
+        return fanotify_permission_complete(replay_ticket);
+    if (!canonical_path || canonical_path[0] != '/' ||
+        !(mask & KERNEL_FANOTIFY_PERMISSION_MASK) ||
+        (mask & ~((uint64_t)KERNEL_FANOTIFY_PERMISSION_MASK |
+                  KERNEL_FAN_ONDIR)))
+        return -EDGE_LINUX_EINVAL;
+    if (kernel_current_linux_identity(&identity) == 0) {
+        tid = identity.tid;
+        tgid = identity.tgid;
+    } else {
+        tid = kernel_current_pid();
+        tgid = tid;
+    }
+    if (tid <= 0) tid = 0;
+    if (tgid <= 0) tgid = tid;
+
+    fanotify_lock();
+    transaction_index = fanotify_permission_transaction_allocate_locked(
+        &ticket);
+    if (transaction_index == KERNEL_FANOTIFY_EVENT_NONE) {
+        fanotify_unlock();
+        return -EDGE_LINUX_ENOSPC;
+    }
+    transaction = &g_fanotify_permission_transactions[transaction_index];
+    parent = g_fanotify_path_scratch[1];
+    has_parent = fanotify_parent_path(canonical_path, parent) == 0;
+    for (uint32_t index = 0;
+         index < EDGE_RUNTIME_MAX_FANOTIFY_MARKS; ++index) {
+        kernel_fanotify_mark_t *mark = &g_fanotify_marks[index];
+        kernel_fanotify_group_t *group;
+        uint64_t event_mask;
+        int direct;
+        int child;
+        int status;
+
+        if (!mark->used) continue;
+        group = fanotify_group_locked(mark->group_id);
+        if (!group ||
+            !(group->flags & (KERNEL_FAN_CLASS_CONTENT |
+                              KERNEL_FAN_CLASS_PRE_CONTENT)))
+            continue;
+        direct = fanotify_path_equal(mark->path, canonical_path);
+        child = has_parent && fanotify_path_equal(mark->path, parent) &&
+                (mark->mask & KERNEL_FAN_EVENT_ON_CHILD);
+        if (!direct && !child) continue;
+        event_mask = mask & mark->mask;
+        if (!event_mask || (event_mask & mark->ignored_mask)) continue;
+        status = fanotify_queue_permission_locked(
+            mark->group_id, event_mask, canonical_path,
+            (group->flags & KERNEL_FAN_REPORT_TID) ? tid : tgid,
+            child, transaction_index);
+        if (status < 0) {
+            if (!transaction->result) transaction->result = status;
+            continue;
+        }
+        wake_groups |= 1ULL << (uint32_t)mark->group_id;
+    }
+    if (!transaction->pending) {
+        int result = transaction->result;
+        memset(transaction, 0, sizeof(*transaction));
+        fanotify_unlock();
+        return result;
+    }
+    fanotify_unlock();
+    fanotify_wake_groups(wake_groups);
+    arch_fanotify_permission_wait(ticket);
+    return fanotify_permission_complete(ticket);
 }
 
 static uint64_t fanotify_notify_path_locked(const char *canonical_path,
