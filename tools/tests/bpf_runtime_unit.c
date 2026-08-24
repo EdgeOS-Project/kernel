@@ -75,6 +75,11 @@ uint32_t edge_smp_nr_cpu_ids(void) {
 static uint32_t g_test_current_cpu;
 static uint32_t g_perf_event_references[8];
 static uint32_t g_ringbuf_notifications;
+static uint64_t g_monotonic_time_us;
+
+uint64_t boottime_monotonic_us(void) {
+    return ++g_monotonic_time_us;
+}
 
 void kernel_bpf_ringbuf_state_changed(void) {
     ++g_ringbuf_notifications;
@@ -1072,6 +1077,55 @@ static void test_program_bind_map(void) {
     }
 }
 
+static void test_program_runtime_stats(void) {
+    const kernel_bpf_instruction_t instructions[] = {
+        { .code = 0xb7u, .registers = 0u,
+          .offset = 0, .immediate = 1 },
+        { .code = 0x95u, .registers = 0u,
+          .offset = 0, .immediate = 0 },
+    };
+    kernel_bpf_program_create_request_t request = {
+        .type = KERNEL_BPF_PROG_TYPE_CGROUP_DEVICE,
+        .instruction_count = 2u,
+        .expected_attach_type = KERNEL_BPF_CGROUP_DEVICE,
+        .created_by_uid = 1000u,
+    };
+    kernel_bpf_cgroup_device_context_t context = {
+        .access_type = 1u,
+        .major = 1u,
+        .minor = 3u,
+    };
+    kernel_bpf_program_info_t info;
+    uint32_t result = 0u;
+    uint64_t recorded_time;
+    uint64_t recorded_count;
+    int program;
+    int stats;
+
+    strcpy(request.name, "runtime_stats");
+    program = kernel_bpf_program_create(&request, instructions);
+    assert(program >= 0);
+    assert(kernel_bpf_program_run_cgroup_device(
+               program, &context, &result) == 0);
+    assert(kernel_bpf_program_info(program, &info) == 0);
+    assert(info.run_count == 0u && info.run_time_ns == 0u);
+    stats = kernel_bpf_runtime_stats_enable();
+    assert(stats >= 0);
+    assert(kernel_bpf_program_run_cgroup_device(
+               program, &context, &result) == 0);
+    assert(kernel_bpf_program_info(program, &info) == 0);
+    assert(info.run_count == 1u && info.run_time_ns >= 1000u);
+    recorded_count = info.run_count;
+    recorded_time = info.run_time_ns;
+    kernel_bpf_object_release(stats);
+    assert(kernel_bpf_program_run_cgroup_device(
+               program, &context, &result) == 0);
+    assert(kernel_bpf_program_info(program, &info) == 0);
+    assert(info.run_count == recorded_count &&
+           info.run_time_ns == recorded_time);
+    kernel_bpf_object_release(program);
+}
+
 static void test_program_array_tail_call(void) {
     const kernel_bpf_instruction_t callee_instructions[] = {
         { .code = 0xb7u, .registers = 0u,
@@ -1572,6 +1626,7 @@ int main(void) {
     test_batch_and_freeze();
     test_program();
     test_program_bind_map();
+    test_program_runtime_stats();
     test_program_array_tail_call();
     test_perf_event_array();
     test_ring_buffer_maps();

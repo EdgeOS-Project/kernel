@@ -49,6 +49,7 @@
 #define BPF_OBJ_GET 7u
 #define BPF_PROG_ATTACH 8u
 #define BPF_PROG_DETACH 9u
+#define BPF_PROG_TEST_RUN 10u
 #define BPF_PROG_GET_NEXT_ID 11u
 #define BPF_MAP_GET_NEXT_ID 12u
 #define BPF_PROG_GET_FD_BY_ID 13u
@@ -68,6 +69,7 @@
 #define BPF_LINK_UPDATE 29u
 #define BPF_LINK_GET_FD_BY_ID 30u
 #define BPF_LINK_GET_NEXT_ID 31u
+#define BPF_ENABLE_STATS 32u
 #define BPF_LINK_DETACH 34u
 #define BPF_PROG_BIND_MAP 35u
 
@@ -279,6 +281,26 @@ union bpf_attr {
         uint32_t map_fd;
         uint32_t flags;
     } prog_bind_map;
+    struct {
+        uint32_t prog_fd;
+        uint32_t retval;
+        uint32_t data_size_in;
+        uint32_t data_size_out;
+        uint64_t data_in;
+        uint64_t data_out;
+        uint32_t repeat;
+        uint32_t duration;
+        uint32_t ctx_size_in;
+        uint32_t ctx_size_out;
+        uint64_t ctx_in;
+        uint64_t ctx_out;
+        uint32_t flags;
+        uint32_t cpu;
+        uint32_t batch_size;
+    } program_test;
+    struct {
+        uint32_t type;
+    } enable_stats;
     uint8_t padding[144];
 };
 
@@ -2440,6 +2462,198 @@ static int test_program_bind_map(void) {
     return failures;
 }
 
+static long load_allow_device_program(const char *name) {
+    static const struct bpf_insn instructions[] = {
+        { .code = 0xb7u, .registers = 0u,
+          .offset = 0, .immediate = 1 },
+        { .code = 0x95u, .registers = 0u,
+          .offset = 0, .immediate = 0 },
+    };
+    static const char license[] = "GPL";
+    union bpf_attr attribute;
+    unsigned long index;
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.prog_load.prog_type = BPF_PROG_TYPE_CGROUP_DEVICE;
+    attribute.prog_load.insn_count = 2u;
+    attribute.prog_load.insns = (uint64_t)(uintptr_t)instructions;
+    attribute.prog_load.license = (uint64_t)(uintptr_t)license;
+    for (index = 0; name[index] && index + 1u < 16u; ++index)
+        attribute.prog_load.prog_name[index] = name[index];
+    return bpf_call(BPF_PROG_LOAD, &attribute);
+}
+
+static int test_program_test_run_errors(void) {
+    union bpf_attr attribute;
+    long program_descriptor;
+    int failures = 0;
+
+    program_descriptor = load_allow_device_program("test_errors");
+    failures += expect_true(
+        "test run program load", program_descriptor >= 0);
+    if (program_descriptor < 0) return failures + 1;
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.program_test.prog_fd = UINT32_MAX;
+    attribute.program_test.ctx_size_in = 4u;
+    failures += expect("test run context pair first", bpf_call(
+        BPF_PROG_TEST_RUN, &attribute), -EINVAL);
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.program_test.prog_fd = UINT32_MAX;
+    failures += expect("test run bad program", bpf_call(
+        BPF_PROG_TEST_RUN, &attribute), -EBADF);
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.program_test.prog_fd = (uint32_t)program_descriptor;
+    failures += expect("test run unsupported program type", bpf_call(
+        BPF_PROG_TEST_RUN, &attribute), -ENOTSUPP);
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.program_test.prog_fd = (uint32_t)program_descriptor;
+    attribute.program_test.data_size_in = 4u;
+    failures += expect("test run data ignored without callback", bpf_call(
+        BPF_PROG_TEST_RUN, &attribute), -ENOTSUPP);
+
+    clear_bytes(&attribute, sizeof(attribute));
+    failures += expect("unknown BPF command", bpf_call(
+        UINT32_MAX, &attribute), -EINVAL);
+    (void)raw_syscall6(
+        SYS_close, program_descriptor, 0, 0, 0, 0, 0);
+    if (!failures) print_text("BPF_PROG_TEST_RUN_ERRORS_PASS\n");
+    return failures;
+}
+
+static int test_runtime_statistics(void) {
+    static const char first_path[] = "/bpf-stats-device-first";
+    static const char second_path[] = "/bpf-stats-device-second";
+    union bpf_attr attribute;
+    struct bpf_prog_info first_info;
+    struct bpf_prog_info second_info;
+    struct pollfd poll_descriptor;
+    struct timespec timeout = {0, 0};
+    long program_descriptor;
+    long stats_descriptor;
+    long cgroup_descriptor;
+    int attached = 0;
+    int failures = 0;
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.enable_stats.type = 1u;
+    failures += expect("enable stats invalid type", bpf_call(
+        BPF_ENABLE_STATS, &attribute), -EINVAL);
+
+    program_descriptor = load_allow_device_program("runtime_stats");
+    failures += expect_true(
+        "stats program load", program_descriptor >= 0);
+    if (program_descriptor < 0) return failures + 1;
+
+    clear_bytes(&attribute, sizeof(attribute));
+    stats_descriptor = bpf_call(BPF_ENABLE_STATS, &attribute);
+    failures += expect_true("enable runtime stats", stats_descriptor >= 0);
+    if (stats_descriptor >= 0)
+        failures += expect("stats descriptor cloexec", raw_syscall6(
+            SYS_fcntl, stats_descriptor, F_GETFD, 0, 0, 0, 0),
+            FD_CLOEXEC);
+    if (stats_descriptor >= 0) {
+        clear_bytes(&poll_descriptor, sizeof(poll_descriptor));
+        poll_descriptor.descriptor = (int32_t)stats_descriptor;
+        poll_descriptor.events = POLLIN | POLLOUT;
+        failures += expect("stats descriptor poll", raw_syscall6(
+            SYS_ppoll, (long)&poll_descriptor, 1, (long)&timeout,
+            0, 0, 0), 1);
+        failures += expect_true(
+            "stats descriptor poll events",
+            (poll_descriptor.returned_events & (POLLIN | POLLOUT)) ==
+                (POLLIN | POLLOUT));
+    }
+
+    (void)raw_syscall6(
+        SYS_mkdirat, AT_FDCWD, (long)"/sys/fs", 0755, 0, 0, 0);
+    (void)raw_syscall6(
+        SYS_mkdirat, AT_FDCWD, (long)"/sys/fs/cgroup",
+        0755, 0, 0, 0);
+    (void)raw_syscall6(
+        SYS_mount, (long)"none", (long)"/sys/fs/cgroup",
+        (long)"cgroup2", 0, 0, 0);
+    cgroup_descriptor = raw_syscall6(
+        SYS_openat, AT_FDCWD, (long)"/sys/fs/cgroup",
+        O_RDONLY | O_DIRECTORY, 0, 0, 0);
+    failures += expect_true("stats open cgroup", cgroup_descriptor >= 0);
+
+    if (stats_descriptor >= 0 && cgroup_descriptor >= 0) {
+        clear_bytes(&attribute, sizeof(attribute));
+        attribute.prog_attach.target_fd = (uint32_t)cgroup_descriptor;
+        attribute.prog_attach.attach_bpf_fd =
+            (uint32_t)program_descriptor;
+        attribute.prog_attach.attach_type = BPF_CGROUP_DEVICE;
+        failures += expect("stats attach program", bpf_call(
+            BPF_PROG_ATTACH, &attribute), 0);
+        attached = 1;
+
+        (void)raw_syscall6(
+            SYS_unlinkat, AT_FDCWD, (long)first_path, 0, 0, 0, 0);
+        failures += expect("stats first trigger", raw_syscall6(
+            SYS_mknodat, AT_FDCWD, (long)first_path,
+            S_IFCHR | 0600, (1u << 8u) | 3u, 0, 0), 0);
+
+        clear_bytes(&first_info, sizeof(first_info));
+        clear_bytes(&attribute, sizeof(attribute));
+        attribute.info.bpf_fd = (uint32_t)program_descriptor;
+        attribute.info.info_len = sizeof(first_info);
+        attribute.info.info = (uint64_t)(uintptr_t)&first_info;
+        failures += expect("stats first program info", bpf_call(
+            BPF_OBJ_GET_INFO_BY_FD, &attribute), 0);
+        failures += expect_true(
+            "stats execution counted", first_info.run_cnt >= 1u);
+
+        (void)raw_syscall6(
+            SYS_close, stats_descriptor, 0, 0, 0, 0, 0);
+        stats_descriptor = -1;
+        (void)raw_syscall6(
+            SYS_unlinkat, AT_FDCWD, (long)second_path, 0, 0, 0, 0);
+        failures += expect("stats second trigger", raw_syscall6(
+            SYS_mknodat, AT_FDCWD, (long)second_path,
+            S_IFCHR | 0600, (1u << 8u) | 4u, 0, 0), 0);
+
+        clear_bytes(&second_info, sizeof(second_info));
+        clear_bytes(&attribute, sizeof(attribute));
+        attribute.info.bpf_fd = (uint32_t)program_descriptor;
+        attribute.info.info_len = sizeof(second_info);
+        attribute.info.info = (uint64_t)(uintptr_t)&second_info;
+        failures += expect("stats second program info", bpf_call(
+            BPF_OBJ_GET_INFO_BY_FD, &attribute), 0);
+        failures += expect_true(
+            "stats disabled after close",
+            second_info.run_cnt == first_info.run_cnt &&
+            second_info.run_time_ns == first_info.run_time_ns);
+    }
+
+    if (attached) {
+        clear_bytes(&attribute, sizeof(attribute));
+        attribute.prog_attach.target_fd = (uint32_t)cgroup_descriptor;
+        attribute.prog_attach.attach_bpf_fd =
+            (uint32_t)program_descriptor;
+        attribute.prog_attach.attach_type = BPF_CGROUP_DEVICE;
+        failures += expect("stats detach program", bpf_call(
+            BPF_PROG_DETACH, &attribute), 0);
+    }
+    (void)raw_syscall6(
+        SYS_unlinkat, AT_FDCWD, (long)first_path, 0, 0, 0, 0);
+    (void)raw_syscall6(
+        SYS_unlinkat, AT_FDCWD, (long)second_path, 0, 0, 0, 0);
+    if (cgroup_descriptor >= 0)
+        (void)raw_syscall6(
+            SYS_close, cgroup_descriptor, 0, 0, 0, 0, 0);
+    if (stats_descriptor >= 0)
+        (void)raw_syscall6(
+            SYS_close, stats_descriptor, 0, 0, 0, 0, 0);
+    (void)raw_syscall6(
+        SYS_close, program_descriptor, 0, 0, 0, 0, 0);
+    if (!failures) print_text("BPF_ENABLE_STATS_PASS\n");
+    return failures;
+}
+
 static int test_btf_objects(void) {
     struct test_btf_blob {
         uint16_t magic;
@@ -2590,6 +2804,8 @@ START_ATTRIBUTES void _start(void) {
     failures += test_perf_event_array();
     failures += test_program();
     failures += test_program_bind_map();
+    failures += test_program_test_run_errors();
+    failures += test_runtime_statistics();
     failures += test_btf_objects();
     failures += test_attribute_tail();
     print_text(failures ? "BPF_ABI_PROBE_FAIL\n" :

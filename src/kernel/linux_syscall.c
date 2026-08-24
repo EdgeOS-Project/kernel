@@ -4163,6 +4163,7 @@ static int64_t edge_linux_sys_memfd_secret(
 #define EDGE_LINUX_BPF_OBJ_GET            7u
 #define EDGE_LINUX_BPF_PROG_ATTACH        8u
 #define EDGE_LINUX_BPF_PROG_DETACH        9u
+#define EDGE_LINUX_BPF_PROG_TEST_RUN      10u
 #define EDGE_LINUX_BPF_PROG_GET_NEXT_ID  11u
 #define EDGE_LINUX_BPF_MAP_GET_NEXT_ID   12u
 #define EDGE_LINUX_BPF_PROG_GET_FD_BY_ID 13u
@@ -4182,6 +4183,7 @@ static int64_t edge_linux_sys_memfd_secret(
 #define EDGE_LINUX_BPF_LINK_UPDATE       29u
 #define EDGE_LINUX_BPF_LINK_GET_FD_BY_ID 30u
 #define EDGE_LINUX_BPF_LINK_GET_NEXT_ID  31u
+#define EDGE_LINUX_BPF_ENABLE_STATS      32u
 #define EDGE_LINUX_BPF_LINK_DETACH       34u
 #define EDGE_LINUX_BPF_PROG_BIND_MAP     35u
 
@@ -4294,6 +4296,25 @@ typedef struct edge_linux_bpf_program_attach_attribute {
     uint64_t expected_revision;
 } edge_linux_bpf_program_attach_attribute_t;
 
+typedef struct __attribute__((packed))
+        edge_linux_bpf_program_test_attribute {
+    uint32_t program_descriptor;
+    uint32_t return_value;
+    uint32_t input_data_size;
+    uint32_t output_data_size;
+    uint64_t input_data;
+    uint64_t output_data;
+    uint32_t repeat;
+    uint32_t duration;
+    uint32_t input_context_size;
+    uint32_t output_context_size;
+    uint64_t input_context;
+    uint64_t output_context;
+    uint32_t flags;
+    uint32_t cpu;
+    uint32_t batch_size;
+} edge_linux_bpf_program_test_attribute_t;
+
 typedef struct edge_linux_bpf_program_query_attribute {
     uint32_t target_descriptor;
     uint32_t attach_type;
@@ -4335,8 +4356,14 @@ typedef struct edge_linux_bpf_program_bind_map_attribute {
     uint32_t flags;
 } edge_linux_bpf_program_bind_map_attribute_t;
 
+typedef struct edge_linux_bpf_enable_stats_attribute {
+    uint32_t type;
+} edge_linux_bpf_enable_stats_attribute_t;
+
 _Static_assert(sizeof(edge_linux_bpf_program_attach_attribute_t) == 32u,
                "Linux BPF attach attribute layout changed");
+_Static_assert(sizeof(edge_linux_bpf_program_test_attribute_t) == 76u,
+               "Linux BPF program test attribute layout changed");
 _Static_assert(sizeof(edge_linux_bpf_program_query_attribute_t) == 64u,
                "Linux BPF query attribute layout changed");
 _Static_assert(sizeof(edge_linux_bpf_link_create_attribute_t) == 32u,
@@ -4345,6 +4372,8 @@ _Static_assert(sizeof(edge_linux_bpf_link_update_attribute_t) == 16u,
                "Linux BPF link update attribute layout changed");
 _Static_assert(sizeof(edge_linux_bpf_program_bind_map_attribute_t) == 12u,
                "Linux BPF program bind-map attribute layout changed");
+_Static_assert(sizeof(edge_linux_bpf_enable_stats_attribute_t) == 4u,
+               "Linux BPF enable-stats attribute layout changed");
 
 typedef struct edge_linux_bpf_map_info {
     uint32_t type;
@@ -5523,6 +5552,45 @@ static int64_t edge_linux_bpf_program_bind_map(
         program_object_id, map_object_id);
 }
 
+static int64_t edge_linux_bpf_program_test_run(
+        edge_linux_syscall_context_t *context, uint64_t user_attribute,
+        uint32_t attribute_size) {
+    edge_linux_bpf_program_test_attribute_t attribute;
+    int program_object_id;
+    int status;
+
+    status = edge_linux_bpf_copy_attribute(
+        context, &attribute, sizeof(attribute), sizeof(attribute),
+        user_attribute, attribute_size);
+    if (status < 0) return status;
+    if ((!attribute.input_context_size) != (!attribute.input_context) ||
+        (!attribute.output_context_size) != (!attribute.output_context))
+        return -EDGE_LINUX_EINVAL;
+    program_object_id = kernel_bpf_descriptor_object(
+        (int32_t)attribute.program_descriptor,
+        KERNEL_BPF_OBJECT_PROGRAM);
+    if (program_object_id < 0) return program_object_id;
+    return -EDGE_LINUX_ENOTSUPP;
+}
+
+static int64_t edge_linux_bpf_enable_stats(
+        edge_linux_syscall_context_t *context, uint64_t user_attribute,
+        uint32_t attribute_size, int privileged) {
+    edge_linux_bpf_enable_stats_attribute_t attribute;
+    int object_id;
+    int status;
+
+    status = edge_linux_bpf_copy_attribute(
+        context, &attribute, sizeof(attribute), sizeof(attribute),
+        user_attribute, attribute_size);
+    if (status < 0) return status;
+    if (!privileged) return -EDGE_LINUX_EPERM;
+    if (attribute.type) return -EDGE_LINUX_EINVAL;
+    object_id = kernel_bpf_runtime_stats_enable();
+    if (object_id < 0) return object_id;
+    return kernel_bpf_create_descriptor(object_id);
+}
+
 static int64_t edge_linux_bpf_program_query(
         edge_linux_syscall_context_t *context, uint64_t user_attribute,
         uint32_t attribute_size) {
@@ -5665,6 +5733,9 @@ static int64_t edge_linux_sys_bpf(
         return edge_linux_bpf_program_load(
             context, &identity, user_attribute, attribute_size);
     }
+    if (command == EDGE_LINUX_BPF_PROG_TEST_RUN)
+        return edge_linux_bpf_program_test_run(
+            context, user_attribute, attribute_size);
     if (command == EDGE_LINUX_BPF_OBJ_PIN ||
         command == EDGE_LINUX_BPF_OBJ_GET)
         return edge_linux_bpf_object_path(
@@ -5712,7 +5783,10 @@ static int64_t edge_linux_sys_bpf(
     if (command == EDGE_LINUX_BPF_PROG_BIND_MAP)
         return edge_linux_bpf_program_bind_map(
             context, user_attribute, attribute_size);
-    return -EDGE_LINUX_ENOSYS;
+    if (command == EDGE_LINUX_BPF_ENABLE_STATS)
+        return edge_linux_bpf_enable_stats(
+            context, user_attribute, attribute_size, privileged);
+    return -EDGE_LINUX_EINVAL;
 }
 
 static int64_t edge_linux_sys_mincore(

@@ -13,6 +13,7 @@
 #include "kernel/runtime_limits.h"
 #include "kernel/smp.h"
 #include "mm/arch_vm.h"
+#include "sys/boottime.h"
 #include "string.h"
 
 #define BPF_OBJECT_CAPACITY EDGE_RUNTIME_MAX_BPF_OBJECTS
@@ -186,6 +187,7 @@ typedef struct kernel_bpf_pin {
 #define BPF_PIN_CAPACITY (BPF_OBJECT_CAPACITY * 4u)
 
 static kernel_bpf_object_t g_bpf_objects[BPF_OBJECT_CAPACITY];
+static uint32_t g_bpf_runtime_stats_users;
 static kernel_bpf_attachment_t
     g_bpf_attachments[EDGE_RUNTIME_MAX_BPF_ATTACHMENTS];
 static kernel_bpf_pin_t g_bpf_pins[BPF_PIN_CAPACITY];
@@ -1263,6 +1265,9 @@ void kernel_bpf_object_release(int object_id) {
                     break;
                 }
             }
+        } else if (object->kind == KERNEL_BPF_OBJECT_STATS &&
+                   g_bpf_runtime_stats_users) {
+            --g_bpf_runtime_stats_users;
         }
         memset(object, 0, sizeof(*object));
     }
@@ -1638,7 +1643,16 @@ int kernel_bpf_ringbuf_poll_state(int object_id, int *readable,
     *writable = 0;
     bpf_lock();
     object = bpf_object_locked(object_id);
-    if (!object || object->kind != KERNEL_BPF_OBJECT_MAP) {
+    if (!object) {
+        status = -EDGE_LINUX_EBADF;
+        goto out;
+    }
+    if (object->kind == KERNEL_BPF_OBJECT_STATS) {
+        *readable = 1;
+        *writable = 1;
+        goto out;
+    }
+    if (object->kind != KERNEL_BPF_OBJECT_MAP) {
         status = -EDGE_LINUX_EBADF;
         goto out;
     }
@@ -1767,6 +1781,22 @@ int kernel_bpf_program_bind_map(int program_object_id, int map_object_id) {
 out:
     bpf_unlock();
     return status;
+}
+
+int kernel_bpf_runtime_stats_enable(void) {
+    kernel_bpf_object_t *object;
+    int object_id;
+
+    bpf_lock();
+    if (g_bpf_runtime_stats_users > (uint32_t)INT32_MAX / 2u) {
+        bpf_unlock();
+        return -EDGE_LINUX_EBUSY;
+    }
+    object_id = bpf_allocate_object_locked(
+        KERNEL_BPF_OBJECT_STATS, &object);
+    if (object_id >= 0) ++g_bpf_runtime_stats_users;
+    bpf_unlock();
+    return object_id;
 }
 
 int kernel_bpf_program_map_ids(int program_object_id, uint32_t *map_ids,
@@ -3312,6 +3342,7 @@ static int bpf_program_run_cgroup_device_locked(
     uint64_t registers[11] = {0};
     uint8_t stack[512] = {0};
     uint32_t tail_call_count = 0u;
+    uint64_t invocation_start_us = 0u;
     uint32_t pc;
 
     if (!object || object->kind != KERNEL_BPF_OBJECT_PROGRAM ||
@@ -3319,6 +3350,8 @@ static int bpf_program_run_cgroup_device_locked(
         return -EDGE_LINUX_EBADF;
     instructions = object->value.program.instructions;
     count = object->value.program.instruction_count;
+    if (g_bpf_runtime_stats_users)
+        invocation_start_us = boottime_monotonic_us();
     registers[1] = (uint64_t)(uintptr_t)context;
     registers[10] = (uint64_t)(uintptr_t)(stack + sizeof(stack));
     for (pc = 0; pc < count; ++pc) {
@@ -3381,7 +3414,14 @@ static int bpf_program_run_cgroup_device_locked(
                 registers[0] = 0u;
                 continue;
             }
-            ++object->value.program.run_count;
+            if (g_bpf_runtime_stats_users) {
+                uint64_t now = boottime_monotonic_us();
+
+                ++object->value.program.run_count;
+                object->value.program.run_time_ns +=
+                    (now - invocation_start_us) * 1000u;
+                invocation_start_us = now;
+            }
             ++tail_call_count;
             object = next_program;
             instructions = object->value.program.instructions;
@@ -3420,7 +3460,12 @@ static int bpf_program_run_cgroup_device_locked(
             registers[0] = (uint64_t)(int64_t)helper_status;
         } else if (operation == BPF_EXIT) {
             *result = (uint32_t)registers[0];
-            ++object->value.program.run_count;
+            if (g_bpf_runtime_stats_users) {
+                ++object->value.program.run_count;
+                object->value.program.run_time_ns +=
+                    (boottime_monotonic_us() - invocation_start_us) *
+                    1000u;
+            }
             return 0;
         } else if (bpf_jump_taken(operation, registers[destination], operand)) {
             pc += (uint32_t)instruction->offset;

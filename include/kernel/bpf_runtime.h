@@ -68,6 +68,7 @@ typedef enum kernel_bpf_object_kind {
     KERNEL_BPF_OBJECT_PROGRAM = 2,
     KERNEL_BPF_OBJECT_BTF = 3,
     KERNEL_BPF_OBJECT_LINK = 4,
+    KERNEL_BPF_OBJECT_STATS = 5,
 } kernel_bpf_object_kind_t;
 
 typedef struct kernel_bpf_instruction {
@@ -187,6 +188,7 @@ int kernel_bpf_program_info(int object_id, kernel_bpf_program_info_t *info);
 int kernel_bpf_program_bind_map(int program_object_id, int map_object_id);
 int kernel_bpf_program_map_ids(int program_object_id, uint32_t *map_ids,
                                uint32_t capacity, uint32_t *actual_count);
+int kernel_bpf_runtime_stats_enable(void);
 int kernel_bpf_program_copy_instructions(int object_id, void *buffer,
                                          uint32_t capacity,
                                          uint32_t *actual_size);
