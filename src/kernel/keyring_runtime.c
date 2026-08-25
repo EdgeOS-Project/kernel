@@ -10,7 +10,9 @@
 #include "kernel/keyring_runtime.h"
 #include "kernel/linux_errno.h"
 #include "kernel/pipe_runtime.h"
+#include "kernel/sha1_runtime.h"
 #include "kernel/sha256_runtime.h"
+#include "kernel/sha512_runtime.h"
 #include "kernel/vfs_runtime.h"
 #include "string.h"
 #include "sys/boottime.h"
@@ -795,7 +797,7 @@ static int64_t keyctl_dh_compute(
     uint32_t base_limbs;
     uint32_t exponent_bits;
     uint32_t digest_length = 32u;
-    int use_sha224 = 0;
+    uint32_t digest_algorithm = 256u;
     int use_kdf = arguments[3] != 0u;
     int result;
 
@@ -837,10 +839,21 @@ static int64_t keyctl_dh_compute(
         result = key_copy_user_string(
             access, kdf.hash_name, hash_name, sizeof(hash_name), 0);
         if (result < 0) return result;
-        if (!strcmp(hash_name, "sha224")) {
-            use_sha224 = 1;
+        if (!strcmp(hash_name, "sha1")) {
+            digest_algorithm = 1u;
+            digest_length = 20u;
+        } else if (!strcmp(hash_name, "sha224")) {
+            digest_algorithm = 224u;
             digest_length = 28u;
-        } else if (strcmp(hash_name, "sha256")) {
+        } else if (!strcmp(hash_name, "sha256")) {
+            digest_algorithm = 256u;
+        } else if (!strcmp(hash_name, "sha384")) {
+            digest_algorithm = 384u;
+            digest_length = 48u;
+        } else if (!strcmp(hash_name, "sha512")) {
+            digest_algorithm = 512u;
+            digest_length = 64u;
+        } else {
             return -EDGE_LINUX_ENOENT;
         }
     }
@@ -928,8 +941,7 @@ static int64_t keyctl_dh_compute(
             goto out_unlock_copy;
         }
         while (produced < arguments[2]) {
-            kernel_sha256_context_t hash;
-            uint8_t digest[32];
+            uint8_t digest[64];
             uint8_t encoded_counter[4] = {
                 (uint8_t)(counter >> 24u),
                 (uint8_t)(counter >> 16u),
@@ -939,15 +951,56 @@ static int64_t keyctl_dh_compute(
             uint32_t copy = (uint32_t)arguments[2] - produced;
 
             if (copy > digest_length) copy = digest_length;
-            if (use_sha224) kernel_sha224_init(&hash);
-            else kernel_sha256_init(&hash);
-            kernel_sha256_update(
-                &hash, encoded_counter, sizeof(encoded_counter));
-            kernel_sha256_update(&hash, g_key_dh_secret, prime_length);
-            kernel_sha256_update(
-                &hash, g_key_kdf_otherinfo, kdf.other_info_length);
-            if (use_sha224) kernel_sha224_final(&hash, digest);
-            else kernel_sha256_final(&hash, digest);
+            if (digest_algorithm == 1u) {
+                kernel_sha1_context_t hash;
+
+                kernel_sha1_init(&hash);
+                kernel_sha1_update(
+                    &hash, encoded_counter, sizeof(encoded_counter));
+                kernel_sha1_update(
+                    &hash, g_key_dh_secret, prime_length);
+                kernel_sha1_update(
+                    &hash, g_key_kdf_otherinfo,
+                    kdf.other_info_length);
+                kernel_sha1_final(&hash, digest);
+            } else if (digest_algorithm == 224u ||
+                       digest_algorithm == 256u) {
+                kernel_sha256_context_t hash;
+
+                if (digest_algorithm == 224u)
+                    kernel_sha224_init(&hash);
+                else
+                    kernel_sha256_init(&hash);
+                kernel_sha256_update(
+                    &hash, encoded_counter, sizeof(encoded_counter));
+                kernel_sha256_update(
+                    &hash, g_key_dh_secret, prime_length);
+                kernel_sha256_update(
+                    &hash, g_key_kdf_otherinfo,
+                    kdf.other_info_length);
+                if (digest_algorithm == 224u)
+                    kernel_sha224_final(&hash, digest);
+                else
+                    kernel_sha256_final(&hash, digest);
+            } else {
+                kernel_sha512_context_t hash;
+
+                if (digest_algorithm == 384u)
+                    kernel_sha384_init(&hash);
+                else
+                    kernel_sha512_init(&hash);
+                kernel_sha512_update(
+                    &hash, encoded_counter, sizeof(encoded_counter));
+                kernel_sha512_update(
+                    &hash, g_key_dh_secret, prime_length);
+                kernel_sha512_update(
+                    &hash, g_key_kdf_otherinfo,
+                    kdf.other_info_length);
+                if (digest_algorithm == 384u)
+                    kernel_sha384_final(&hash, digest);
+                else
+                    kernel_sha512_final(&hash, digest);
+            }
             memcpy(g_key_kdf_output + produced, digest, copy);
             memset(digest, 0, sizeof(digest));
             produced += copy;

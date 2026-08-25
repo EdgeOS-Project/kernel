@@ -174,6 +174,13 @@ struct keyctl_dh_params {
     int32_t base;
 };
 
+struct keyctl_kdf_params {
+    uint64_t hash_name;
+    uint64_t other_info;
+    uint32_t other_info_length;
+    uint32_t spare[8];
+};
+
 START_ATTRIBUTES void _start(void) {
     static const char payload[] = "edge-key-payload";
     static const char replacement[] = "updated";
@@ -220,8 +227,35 @@ START_ATTRIBUTES void _start(void) {
             "\xc5\x8e\xf1\x83\x7d\x16\x83\xb2\xc6\xf3\x4a\x26\xc1\xb2\xef\xfa"
             "\x88\x6b\x42\x38\x61\x28\x5c\x97\xff\xff\xff\xff\xff\xff\xff\xff";
         static const unsigned char base_value[] = {2u};
+        static const unsigned char kdf_sha1_expected[48] = {
+            0x3a, 0x26, 0xe3, 0x07, 0xb3, 0x0a, 0xb3, 0xef,
+            0x18, 0x5d, 0x98, 0xf9, 0x56, 0xf9, 0x1e, 0x0d,
+            0x2c, 0x79, 0x76, 0x52, 0x8c, 0x54, 0xff, 0xb6,
+            0x00, 0xa2, 0xe9, 0x2f, 0x58, 0xb7, 0x35, 0xf4,
+            0xb8, 0x24, 0x2c, 0x4e, 0x33, 0x77, 0x2d, 0x85,
+            0xf6, 0x60, 0x0b, 0xf4, 0xf4, 0xc9, 0x15, 0x78,
+        };
+        static const unsigned char kdf_sha384_expected[48] = {
+            0x0c, 0xb6, 0xab, 0x22, 0xb8, 0xc9, 0xc3, 0x10,
+            0x83, 0x83, 0x2d, 0xe8, 0x10, 0x68, 0x43, 0x2d,
+            0x52, 0x28, 0x71, 0x08, 0x3e, 0x7b, 0x0f, 0xe5,
+            0x2d, 0xd7, 0x86, 0x68, 0x88, 0x2d, 0xf2, 0x92,
+            0x38, 0x44, 0x9c, 0x24, 0xe3, 0x3e, 0x2e, 0x5c,
+            0xaf, 0x16, 0xaf, 0x6f, 0x5d, 0x10, 0x18, 0x85,
+        };
+        static const unsigned char kdf_sha512_expected[48] = {
+            0x9a, 0x81, 0x10, 0x88, 0x73, 0x6b, 0xa1, 0x6d,
+            0x9e, 0xc6, 0x5b, 0xd6, 0x97, 0x69, 0xf3, 0x7f,
+            0x4d, 0xa2, 0xcb, 0xa8, 0x60, 0xee, 0x1d, 0x76,
+            0xea, 0xee, 0x9d, 0x92, 0xfd, 0x2a, 0x07, 0x03,
+            0x59, 0xf9, 0x0d, 0xb8, 0x7c, 0x1e, 0x84, 0x3f,
+            0xb3, 0xed, 0x1d, 0x7c, 0xe5, 0xc3, 0x1e, 0x5c,
+        };
+        static const char kdf_other_info[] = "edge-kdf";
         struct keyctl_dh_params parameters;
+        struct keyctl_kdf_params kdf = {0};
         unsigned char shared_value[sizeof(prime_value) - 1u];
+        unsigned char derived_value[48];
 
         dh_private = raw_syscall6(
             SYS_add_key, (long)"user", (long)"edge-dh-private",
@@ -269,8 +303,55 @@ START_ATTRIBUTES void _start(void) {
                 print_text("FAIL dh-value\n");
                 ++failures;
             }
+            kdf.other_info = (uint64_t)(uintptr_t)kdf_other_info;
+            kdf.other_info_length = sizeof(kdf_other_info) - 1u;
+            kdf.hash_name = (uint64_t)(uintptr_t)"sha1";
+            failures += expect_result(
+                "dh-kdf-sha1",
+                raw_syscall6(
+                    SYS_keyctl, KEYCTL_DH_COMPUTE,
+                    (long)&parameters, (long)derived_value,
+                    sizeof(derived_value), (long)&kdf, 0),
+                sizeof(derived_value));
+            if (!bytes_equal(derived_value, kdf_sha1_expected,
+                             sizeof(derived_value))) {
+                print_text("FAIL dh-kdf-sha1-value\n");
+                ++failures;
+            }
+            kdf.hash_name = (uint64_t)(uintptr_t)"sha384";
+            failures += expect_result(
+                "dh-kdf-sha384",
+                raw_syscall6(
+                    SYS_keyctl, KEYCTL_DH_COMPUTE,
+                    (long)&parameters, (long)derived_value,
+                    sizeof(derived_value), (long)&kdf, 0),
+                sizeof(derived_value));
+            if (!bytes_equal(derived_value, kdf_sha384_expected,
+                             sizeof(derived_value))) {
+                print_text("FAIL dh-kdf-sha384-value\n");
+                ++failures;
+            }
+            kdf.hash_name = (uint64_t)(uintptr_t)"sha512";
+            failures += expect_result(
+                "dh-kdf-sha512",
+                raw_syscall6(
+                    SYS_keyctl, KEYCTL_DH_COMPUTE,
+                    (long)&parameters, (long)derived_value,
+                    sizeof(derived_value), (long)&kdf, 0),
+                sizeof(derived_value));
+            if (!bytes_equal(derived_value, kdf_sha512_expected,
+                             sizeof(derived_value))) {
+                print_text("FAIL dh-kdf-sha512-value\n");
+                ++failures;
+            }
         }
     }
+
+#ifdef KEYRING_KDF_ONLY
+    if (!failures) print_text("KEYRING_ABI_PROBE_PASS\n");
+    (void)raw_syscall6(SYS_exit, failures ? 1 : 0, 0, 0, 0, 0, 0);
+    for (;;) { }
+#endif
 
     failures += expect_result(
         "notification-pipe",

@@ -4319,17 +4319,32 @@ rseq-slice-runtime-unit: tools/tests/rseq_slice_runtime_unit.c \
 		-o $(OUT)/tests/rseq_slice_runtime_unit
 	@$(OUT)/tests/rseq_slice_runtime_unit
 
-.PHONY: keyring-runtime-unit watch-queue-runtime-unit
+.PHONY: keyring-runtime-unit sha-runtime-unit watch-queue-runtime-unit
+sha-runtime-unit: tools/tests/sha_runtime_unit.c \
+		$(SRC)/kernel/sha1_runtime.c $(SRC)/kernel/sha256_runtime.c \
+		$(SRC)/kernel/sha512_runtime.c include/kernel/sha1_runtime.h \
+		include/kernel/sha256_runtime.h include/kernel/sha512_runtime.h
+	@mkdir -p $(OUT)/tests
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fno-builtin \
+		-iquote $(INC) tools/tests/sha_runtime_unit.c \
+		$(SRC)/kernel/sha1_runtime.c $(SRC)/kernel/sha256_runtime.c \
+		$(SRC)/kernel/sha512_runtime.c \
+		-o $(OUT)/tests/sha_runtime_unit
+	@$(OUT)/tests/sha_runtime_unit
+
 keyring-runtime-unit: tools/tests/keyring_runtime_unit.c \
-		$(SRC)/kernel/keyring_runtime.c $(SRC)/kernel/sha256_runtime.c \
+		$(SRC)/kernel/keyring_runtime.c $(SRC)/kernel/sha1_runtime.c \
+		$(SRC)/kernel/sha256_runtime.c $(SRC)/kernel/sha512_runtime.c \
 		$(SRC)/kernel/pipe_runtime.c \
 		include/kernel/keyring_runtime.h include/kernel/pipe_runtime.h \
-		include/kernel/sha256_runtime.h
+		include/kernel/sha1_runtime.h include/kernel/sha256_runtime.h \
+		include/kernel/sha512_runtime.h
 	@mkdir -p $(OUT)/tests
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fno-builtin \
 		-DCONFIG_WATCH_QUEUE -DCONFIG_KEY_NOTIFICATIONS \
 		-iquote $(INC) tools/tests/keyring_runtime_unit.c \
-		$(SRC)/kernel/keyring_runtime.c $(SRC)/kernel/sha256_runtime.c \
+		$(SRC)/kernel/keyring_runtime.c $(SRC)/kernel/sha1_runtime.c \
+		$(SRC)/kernel/sha256_runtime.c $(SRC)/kernel/sha512_runtime.c \
 		$(SRC)/kernel/pipe_runtime.c \
 		-o $(OUT)/tests/keyring_runtime_unit
 	@$(OUT)/tests/keyring_runtime_unit

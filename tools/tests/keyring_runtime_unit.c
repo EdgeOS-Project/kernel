@@ -188,6 +188,30 @@ int main(void) {
             0xe8u, 0x12u, 0x59u, 0xe5u, 0xa7u, 0xf5u, 0xd8u, 0x62u,
             0x46u, 0xbdu, 0x5bu, 0xb7u,
         };
+        static const uint8_t kdf_sha1_expected[48] = {
+            0x3au, 0x26u, 0xe3u, 0x07u, 0xb3u, 0x0au, 0xb3u, 0xefu,
+            0x18u, 0x5du, 0x98u, 0xf9u, 0x56u, 0xf9u, 0x1eu, 0x0du,
+            0x2cu, 0x79u, 0x76u, 0x52u, 0x8cu, 0x54u, 0xffu, 0xb6u,
+            0x00u, 0xa2u, 0xe9u, 0x2fu, 0x58u, 0xb7u, 0x35u, 0xf4u,
+            0xb8u, 0x24u, 0x2cu, 0x4eu, 0x33u, 0x77u, 0x2du, 0x85u,
+            0xf6u, 0x60u, 0x0bu, 0xf4u, 0xf4u, 0xc9u, 0x15u, 0x78u,
+        };
+        static const uint8_t kdf_sha384_expected[48] = {
+            0x0cu, 0xb6u, 0xabu, 0x22u, 0xb8u, 0xc9u, 0xc3u, 0x10u,
+            0x83u, 0x83u, 0x2du, 0xe8u, 0x10u, 0x68u, 0x43u, 0x2du,
+            0x52u, 0x28u, 0x71u, 0x08u, 0x3eu, 0x7bu, 0x0fu, 0xe5u,
+            0x2du, 0xd7u, 0x86u, 0x68u, 0x88u, 0x2du, 0xf2u, 0x92u,
+            0x38u, 0x44u, 0x9cu, 0x24u, 0xe3u, 0x3eu, 0x2eu, 0x5cu,
+            0xafu, 0x16u, 0xafu, 0x6fu, 0x5du, 0x10u, 0x18u, 0x85u,
+        };
+        static const uint8_t kdf_sha512_expected[48] = {
+            0x9au, 0x81u, 0x10u, 0x88u, 0x73u, 0x6bu, 0xa1u, 0x6du,
+            0x9eu, 0xc6u, 0x5bu, 0xd6u, 0x97u, 0x69u, 0xf3u, 0x7fu,
+            0x4du, 0xa2u, 0xcbu, 0xa8u, 0x60u, 0xeeu, 0x1du, 0x76u,
+            0xeau, 0xeeu, 0x9du, 0x92u, 0xfdu, 0x2au, 0x07u, 0x03u,
+            0x59u, 0xf9u, 0x0du, 0xb8u, 0x7cu, 0x1eu, 0x84u, 0x3fu,
+            0xb3u, 0xedu, 0x1du, 0x7cu, 0xe5u, 0xc3u, 0x1eu, 0x5cu,
+        };
         static const char other_info[] = "edge-kdf";
         test_keyctl_dh_params_t parameters;
         test_keyctl_kdf_params_t kdf;
@@ -249,6 +273,30 @@ int main(void) {
                    arguments) == (int64_t)sizeof(kdf_sha224_expected));
         assert(memcmp(derived_value, kdf_sha224_expected,
                       sizeof(kdf_sha224_expected)) == 0);
+        kdf.hash_name = (uint64_t)(uintptr_t)"sha1";
+        memset(derived_value, 0, sizeof(derived_value));
+        arguments[2] = sizeof(kdf_sha1_expected);
+        assert(kernel_keyring_keyctl(
+                   &parent, &access, EDGE_LINUX_KEYCTL_DH_COMPUTE,
+                   arguments) == (int64_t)sizeof(kdf_sha1_expected));
+        assert(memcmp(derived_value, kdf_sha1_expected,
+                      sizeof(kdf_sha1_expected)) == 0);
+        kdf.hash_name = (uint64_t)(uintptr_t)"sha384";
+        memset(derived_value, 0, sizeof(derived_value));
+        arguments[2] = sizeof(kdf_sha384_expected);
+        assert(kernel_keyring_keyctl(
+                   &parent, &access, EDGE_LINUX_KEYCTL_DH_COMPUTE,
+                   arguments) == (int64_t)sizeof(kdf_sha384_expected));
+        assert(memcmp(derived_value, kdf_sha384_expected,
+                      sizeof(kdf_sha384_expected)) == 0);
+        kdf.hash_name = (uint64_t)(uintptr_t)"sha512";
+        memset(derived_value, 0, sizeof(derived_value));
+        arguments[2] = sizeof(kdf_sha512_expected);
+        assert(kernel_keyring_keyctl(
+                   &parent, &access, EDGE_LINUX_KEYCTL_DH_COMPUTE,
+                   arguments) == (int64_t)sizeof(kdf_sha512_expected));
+        assert(memcmp(derived_value, kdf_sha512_expected,
+                      sizeof(kdf_sha512_expected)) == 0);
         kdf.spare[0] = 1u;
         assert(kernel_keyring_keyctl(
                    &parent, &access, EDGE_LINUX_KEYCTL_DH_COMPUTE,
