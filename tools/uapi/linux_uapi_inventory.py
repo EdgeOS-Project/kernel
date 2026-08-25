@@ -31,15 +31,18 @@ EDGEOS_ASSESSMENTS = [
             "add, request, update, revoke, invalidate, search, read, link, unlink and move operations",
             "ownership, permissions, timeout, restriction and session-to-parent policy",
             "Linux capability discovery with zero-filled extension bytes",
+            "key notification watches with removal records and notification-pipe lifetime",
+            "namespace-tagged named keyrings and same-description key isolation",
+            "raw finite-field key agreement through user-key payloads",
         ],
         "missing": [
             "request-key construction authorization, instantiate, negate and reject operations",
-            "Diffie-Hellman and asymmetric key operations",
-            "key notification watches and namespace-tagged indexing",
+            "key-derivation mode, larger raw parameters and asymmetric key operations",
             "ia32 and x32 compatibility layouts",
         ],
         "runtime_tests": [
             "tools/tests/keyring_abi_probe.c",
+            "tools/tests/keyring_dh_abi_probe.c",
             "tools/tests/keyring_runtime_unit.c",
         ],
         "linux_oracle": {
@@ -48,7 +51,9 @@ EDGEOS_ASSESSMENTS = [
             "scope": (
                 "capability byte layout, session keyring creation, object add, "
                 "search, read, update, revoke, links and named keyring "
-                "user-namespace isolation"
+                "user-namespace isolation, plus notification watch setup, "
+                "delivery and removal records, plus raw finite-field result "
+                "layout and size negotiation"
             ),
         },
     },

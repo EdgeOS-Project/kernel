@@ -168,6 +168,12 @@ struct removal_notification {
     uint64_t key_id;
 };
 
+struct keyctl_dh_params {
+    int32_t private_key;
+    int32_t prime;
+    int32_t base;
+};
+
 START_ATTRIBUTES void _start(void) {
     static const char payload[] = "edge-key-payload";
     static const char replacement[] = "updated";
@@ -177,6 +183,9 @@ START_ATTRIBUTES void _start(void) {
     long key;
     long ring;
     long found;
+    long dh_private;
+    long dh_prime;
+    long dh_base;
     int notification_pipe[2] = {-1, -1};
     int failures = 0;
 
@@ -190,6 +199,78 @@ START_ATTRIBUTES void _start(void) {
         (long)payload, sizeof(payload) - 1u,
         KEY_SPEC_SESSION_KEYRING, 0);
     if (key <= 0) failures += expect_result("add_key", key, 1);
+
+    {
+        static const unsigned char private_value[] = {1u};
+        static const unsigned char prime_value[] =
+            "\xff\xff\xff\xff\xff\xff\xff\xff\xad\xf8\x54\x58\xa2\xbb\x4a\x9a"
+            "\xaf\xdc\x56\x20\x27\x3d\x3c\xf1\xd8\xb9\xc5\x83\xce\x2d\x36\x95"
+            "\xa9\xe1\x36\x41\x14\x64\x33\xfb\xcc\x93\x9d\xce\x24\x9b\x3e\xf9"
+            "\x7d\x2f\xe3\x63\x63\x0c\x75\xd8\xf6\x81\xb2\x02\xae\xc4\x61\x7a"
+            "\xd3\xdf\x1e\xd5\xd5\xfd\x65\x61\x24\x33\xf5\x1f\x5f\x06\x6e\xd0"
+            "\x85\x63\x65\x55\x3d\xed\x1a\xf3\xb5\x57\x13\x5e\x7f\x57\xc9\x35"
+            "\x98\x4f\x0c\x70\xe0\xe6\x8b\x77\xe2\xa6\x89\xda\xf3\xef\xe8\x72"
+            "\x1d\xf1\x58\xa1\x36\xad\xe7\x35\x30\xac\xca\x4f\x48\x3a\x79\x7a"
+            "\xbc\x0a\xb1\x82\xb3\x24\xfb\x61\xd1\x08\xa9\x4b\xb2\xc8\xe3\xfb"
+            "\xb9\x6a\xda\xb7\x60\xd7\xf4\x68\x1d\x4f\x42\xa3\xde\x39\x4d\xf4"
+            "\xae\x56\xed\xe7\x63\x72\xbb\x19\x0b\x07\xa7\xc8\xee\x0a\x6d\x70"
+            "\x9e\x02\xfc\xe1\xcd\xf7\xe2\xec\xc0\x34\x04\xcd\x28\x34\x2f\x61"
+            "\x91\x72\xfe\x9c\xe9\x85\x83\xff\x8e\x4f\x12\x32\xee\xf2\x81\x83"
+            "\xc3\xfe\x3b\x1b\x4c\x6f\xad\x73\x3b\xb5\xfc\xbc\x2e\xc2\x20\x05"
+            "\xc5\x8e\xf1\x83\x7d\x16\x83\xb2\xc6\xf3\x4a\x26\xc1\xb2\xef\xfa"
+            "\x88\x6b\x42\x38\x61\x28\x5c\x97\xff\xff\xff\xff\xff\xff\xff\xff";
+        static const unsigned char base_value[] = {2u};
+        struct keyctl_dh_params parameters;
+        unsigned char shared_value[sizeof(prime_value) - 1u];
+
+        dh_private = raw_syscall6(
+            SYS_add_key, (long)"user", (long)"edge-dh-private",
+            (long)private_value, sizeof(private_value),
+            KEY_SPEC_SESSION_KEYRING, 0);
+        dh_prime = raw_syscall6(
+            SYS_add_key, (long)"user", (long)"edge-dh-prime",
+            (long)prime_value, sizeof(prime_value) - 1u,
+            KEY_SPEC_SESSION_KEYRING, 0);
+        dh_base = raw_syscall6(
+            SYS_add_key, (long)"user", (long)"edge-dh-base",
+            (long)base_value, sizeof(base_value),
+            KEY_SPEC_SESSION_KEYRING, 0);
+        if (dh_private <= 0 || dh_prime <= 0 || dh_base <= 0) {
+            print_text("FAIL dh-add-keys\n");
+            ++failures;
+        } else {
+            parameters.private_key = (int32_t)dh_private;
+            parameters.prime = (int32_t)dh_prime;
+            parameters.base = (int32_t)dh_base;
+            failures += expect_result(
+                "dh-size",
+                raw_syscall6(
+                    SYS_keyctl, KEYCTL_DH_COMPUTE,
+                    (long)&parameters, 0, 0, 0, 0),
+                sizeof(shared_value));
+            for (unsigned long index = 0; index < sizeof(shared_value);
+                 ++index)
+                shared_value[index] = 0xffu;
+            failures += expect_result(
+                "dh-compute",
+                raw_syscall6(
+                    SYS_keyctl, KEYCTL_DH_COMPUTE,
+                    (long)&parameters, (long)&shared_value,
+                    sizeof(shared_value), 0, 0),
+                sizeof(shared_value));
+            for (unsigned long index = 0;
+                 index + 1u < sizeof(shared_value); ++index) {
+                if (shared_value[index] == 0u) continue;
+                print_text("FAIL dh-leading-zero\n");
+                ++failures;
+                break;
+            }
+            if (shared_value[sizeof(shared_value) - 1u] != 2u) {
+                print_text("FAIL dh-value\n");
+                ++failures;
+            }
+        }
+    }
 
     failures += expect_result(
         "notification-pipe",
@@ -435,10 +516,10 @@ START_ATTRIBUTES void _start(void) {
                 SYS_keyctl, KEYCTL_REJECT, key, 0, ENOKEY, 0, 0),
             -EPERM);
         failures += expect_result(
-            "dh-disabled",
+            "dh-parameter-fault",
             raw_syscall6(
                 SYS_keyctl, KEYCTL_DH_COMPUTE, 1, 1, 1, 0, 0),
-            -EOPNOTSUPP);
+            -EFAULT);
         failures += expect_result(
             "pkey-disabled",
             raw_syscall6(

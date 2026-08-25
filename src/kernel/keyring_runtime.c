@@ -23,6 +23,8 @@
 #define KERNEL_KEY_SEARCH_DEPTH_MAX 8u
 #define KERNEL_KEY_WATCH_MAX 16u
 #define KERNEL_KEY_IOV_MAX 1024u
+#define KERNEL_KEY_DH_MAX_BYTES 256u
+#define KERNEL_KEY_DH_MAX_LIMBS (KERNEL_KEY_DH_MAX_BYTES / 4u)
 
 enum kernel_key_notification_subtype {
     KERNEL_KEY_NOTIFY_INSTANTIATED = 0,
@@ -116,6 +118,15 @@ static char g_key_type_scratch[KERNEL_KEY_TYPE_MAX];
 static char g_key_description_scratch[KERNEL_KEY_DESCRIPTION_MAX];
 static char g_key_callout_scratch[4096u];
 static uint8_t g_key_payload_scratch[KERNEL_KEY_PAYLOAD_MAX];
+static uint8_t g_key_dh_private[KERNEL_KEY_DH_MAX_BYTES];
+static uint8_t g_key_dh_prime[KERNEL_KEY_DH_MAX_BYTES];
+static uint8_t g_key_dh_base[KERNEL_KEY_DH_MAX_BYTES];
+static uint32_t g_key_dh_left[KERNEL_KEY_DH_MAX_LIMBS];
+static uint32_t g_key_dh_right[KERNEL_KEY_DH_MAX_LIMBS];
+static uint32_t g_key_dh_modulus[KERNEL_KEY_DH_MAX_LIMBS];
+static uint32_t g_key_dh_result[KERNEL_KEY_DH_MAX_LIMBS];
+static uint32_t g_key_dh_product[KERNEL_KEY_DH_MAX_LIMBS * 2u];
+static uint32_t g_key_dh_remainder[KERNEL_KEY_DH_MAX_LIMBS + 1u];
 static volatile uint32_t g_key_lock;
 static volatile uint32_t g_key_copy_lock;
 static int32_t g_next_key_serial = 1;
@@ -618,6 +629,238 @@ static int key_permission_locked(
     return (granted & need) == need ? 0 : -EDGE_LINUX_EACCES;
 }
 
+typedef struct kernel_keyctl_dh_params {
+    int32_t private_key;
+    int32_t prime;
+    int32_t base;
+} kernel_keyctl_dh_params_t;
+
+static int key_dh_compare(const uint32_t *left, const uint32_t *right,
+                          uint32_t limbs) {
+    while (limbs) {
+        --limbs;
+        if (left[limbs] < right[limbs]) return -1;
+        if (left[limbs] > right[limbs]) return 1;
+    }
+    return 0;
+}
+
+static void key_dh_subtract(uint32_t *left, const uint32_t *right,
+                            uint32_t limbs) {
+    uint64_t borrow = 0u;
+
+    for (uint32_t index = 0; index < limbs; ++index) {
+        uint64_t value = (uint64_t)right[index] + borrow;
+        uint64_t original = left[index];
+
+        left[index] = (uint32_t)(original - value);
+        borrow = original < value;
+    }
+}
+
+static void key_dh_load(const uint8_t *bytes, uint32_t length,
+                        uint32_t *limbs, uint32_t count) {
+    memset(limbs, 0, count * sizeof(limbs[0]));
+    for (uint32_t offset = 0; offset < length; ++offset) {
+        uint32_t reverse = length - 1u - offset;
+        limbs[offset / 4u] |=
+            (uint32_t)bytes[reverse] << ((offset % 4u) * 8u);
+    }
+}
+
+static void key_dh_reduce_product(const uint32_t *product,
+                                  uint32_t product_limbs,
+                                  const uint32_t *modulus,
+                                  uint32_t modulus_limbs,
+                                  uint32_t *result) {
+    uint32_t bits = product_limbs * 32u;
+
+    memset(g_key_dh_remainder, 0, sizeof(g_key_dh_remainder));
+    while (bits) {
+        uint32_t carry = 0u;
+
+        --bits;
+        for (uint32_t index = 0; index <= modulus_limbs; ++index) {
+            uint32_t next = g_key_dh_remainder[index] >> 31u;
+            g_key_dh_remainder[index] =
+                (g_key_dh_remainder[index] << 1u) | carry;
+            carry = next;
+        }
+        g_key_dh_remainder[0] |=
+            (product[bits / 32u] >> (bits % 32u)) & 1u;
+        if (g_key_dh_remainder[modulus_limbs] ||
+            key_dh_compare(g_key_dh_remainder, modulus,
+                           modulus_limbs) >= 0) {
+            key_dh_subtract(g_key_dh_remainder, modulus,
+                            modulus_limbs);
+            g_key_dh_remainder[modulus_limbs] = 0u;
+        }
+    }
+    memcpy(result, g_key_dh_remainder,
+           modulus_limbs * sizeof(result[0]));
+}
+
+static void key_dh_multiply_mod(const uint32_t *left,
+                                const uint32_t *right,
+                                const uint32_t *modulus,
+                                uint32_t limbs, uint32_t *result) {
+    memset(g_key_dh_product, 0, sizeof(g_key_dh_product));
+    for (uint32_t left_index = 0; left_index < limbs; ++left_index) {
+        uint64_t carry = 0u;
+
+        for (uint32_t right_index = 0; right_index < limbs;
+             ++right_index) {
+            uint32_t target = left_index + right_index;
+            uint64_t value = (uint64_t)left[left_index] *
+                                 right[right_index] +
+                             g_key_dh_product[target] + carry;
+
+            g_key_dh_product[target] = (uint32_t)value;
+            carry = value >> 32u;
+        }
+        for (uint32_t target = left_index + limbs;
+             carry && target < limbs * 2u; ++target) {
+            uint64_t value = (uint64_t)g_key_dh_product[target] + carry;
+            g_key_dh_product[target] = (uint32_t)value;
+            carry = value >> 32u;
+        }
+    }
+    key_dh_reduce_product(g_key_dh_product, limbs * 2u, modulus,
+                          limbs, result);
+}
+
+static int key_dh_payload_locked(
+        const kernel_linux_identity_t *identity,
+        kernel_key_task_state_t *state, int32_t serial,
+        uint8_t *destination, uint32_t *length) {
+    kernel_key_object_t *key = key_find_locked(serial);
+
+    if (!key || key_permission_locked(identity, state, key, 2u) < 0)
+        return -EDGE_LINUX_ENOKEY;
+    if (key_validate(key) < 0) return -EDGE_LINUX_ENOKEY;
+    if (key->kind != KERNEL_KEY_KIND_USER)
+        return -EDGE_LINUX_EOPNOTSUPP;
+    if (!key->payload_length) return -EDGE_LINUX_EINVAL;
+    if (key->payload_length > KERNEL_KEY_DH_MAX_BYTES)
+        return -EDGE_LINUX_EMSGSIZE;
+    memcpy(destination, key->payload, key->payload_length);
+    *length = key->payload_length;
+    return 0;
+}
+
+static int64_t keyctl_dh_compute(
+        const kernel_linux_identity_t *identity,
+        const kernel_keyring_user_access_t *access,
+        const uint64_t arguments[4]) {
+    kernel_keyctl_dh_params_t parameters;
+    kernel_key_task_state_t *state;
+    uint32_t private_length = 0u;
+    uint32_t prime_length = 0u;
+    uint32_t base_length = 0u;
+    uint32_t limbs;
+    uint32_t base_limbs;
+    uint32_t exponent_bits;
+    int result;
+
+    if (!arguments[0] || (!arguments[1] && arguments[2]))
+        return -EDGE_LINUX_EINVAL;
+    if (arguments[3]) return -EDGE_LINUX_EOPNOTSUPP;
+    if (!access->copy_from_user ||
+        access->copy_from_user(access->context, &parameters,
+                               arguments[0], sizeof(parameters)) < 0)
+        return -EDGE_LINUX_EFAULT;
+
+    key_lock(&g_key_copy_lock);
+    key_lock(&g_key_lock);
+    state = key_task_get_locked(identity);
+    if (!state) {
+        result = -EDGE_LINUX_ENFILE;
+        goto out_unlock_keys;
+    }
+    result = key_dh_payload_locked(
+        identity, state, parameters.private_key, g_key_dh_private,
+        &private_length);
+    if (result < 0) goto out_unlock_keys;
+    result = key_dh_payload_locked(
+        identity, state, parameters.prime, g_key_dh_prime,
+        &prime_length);
+    if (result < 0) goto out_unlock_keys;
+    result = key_dh_payload_locked(
+        identity, state, parameters.base, g_key_dh_base,
+        &base_length);
+    if (result < 0) goto out_unlock_keys;
+    key_unlock(&g_key_lock);
+
+    limbs = (prime_length + 3u) / 4u;
+    key_dh_load(g_key_dh_prime, prime_length, g_key_dh_modulus, limbs);
+    if (!limbs ||
+        (limbs == 1u && g_key_dh_modulus[0] <= 1u)) {
+        result = -EDGE_LINUX_EINVAL;
+        goto out_unlock_copy;
+    }
+    if (!arguments[2]) {
+        result = (int)prime_length;
+        goto out_unlock_copy;
+    }
+    if (arguments[2] < prime_length) {
+        result = -EDGE_LINUX_EOVERFLOW;
+        goto out_unlock_copy;
+    }
+
+    base_limbs = (base_length + 3u) / 4u;
+    key_dh_load(g_key_dh_base, base_length, g_key_dh_product,
+                KERNEL_KEY_DH_MAX_LIMBS * 2u);
+    key_dh_reduce_product(g_key_dh_product, base_limbs,
+                          g_key_dh_modulus, limbs, g_key_dh_right);
+    memset(g_key_dh_left, 0, limbs * sizeof(g_key_dh_left[0]));
+    g_key_dh_left[0] = 1u;
+    if (key_dh_compare(g_key_dh_left, g_key_dh_modulus, limbs) >= 0)
+        key_dh_subtract(g_key_dh_left, g_key_dh_modulus, limbs);
+
+    exponent_bits = private_length * 8u;
+    for (uint32_t bit = 0; bit < exponent_bits; ++bit) {
+        key_dh_multiply_mod(g_key_dh_left, g_key_dh_left,
+                            g_key_dh_modulus, limbs, g_key_dh_result);
+        memcpy(g_key_dh_left, g_key_dh_result,
+               limbs * sizeof(g_key_dh_left[0]));
+        if ((g_key_dh_private[bit / 8u] >>
+             (7u - bit % 8u)) & 1u) {
+            key_dh_multiply_mod(g_key_dh_left, g_key_dh_right,
+                                g_key_dh_modulus, limbs,
+                                g_key_dh_result);
+            memcpy(g_key_dh_left, g_key_dh_result,
+                   limbs * sizeof(g_key_dh_left[0]));
+        }
+    }
+
+    memset(g_key_payload_scratch, 0, prime_length);
+    for (uint32_t offset = 0; offset < prime_length; ++offset) {
+        uint32_t reverse = prime_length - 1u - offset;
+        g_key_payload_scratch[reverse] =
+            (uint8_t)(g_key_dh_left[offset / 4u] >>
+                      ((offset % 4u) * 8u));
+    }
+    if (!access->copy_to_user ||
+        access->copy_to_user(access->context, arguments[1],
+                             g_key_payload_scratch, prime_length) < 0)
+        result = -EDGE_LINUX_EFAULT;
+    else
+        result = (int)prime_length;
+    goto out_unlock_copy;
+
+out_unlock_keys:
+    key_unlock(&g_key_lock);
+out_unlock_copy:
+    memset(g_key_dh_private, 0, private_length);
+    memset(g_key_dh_left, 0, sizeof(g_key_dh_left));
+    memset(g_key_dh_right, 0, sizeof(g_key_dh_right));
+    memset(g_key_dh_result, 0, sizeof(g_key_dh_result));
+    memset(g_key_dh_product, 0, sizeof(g_key_dh_product));
+    memset(g_key_dh_remainder, 0, sizeof(g_key_dh_remainder));
+    key_unlock(&g_key_copy_lock);
+    return result;
+}
+
 static int key_link_locked(
     const kernel_linux_identity_t *identity,
     kernel_key_task_state_t *state, kernel_key_object_t *key,
@@ -1096,8 +1339,9 @@ int64_t kernel_keyring_keyctl(
             return -EDGE_LINUX_EINVAL;
         return -EDGE_LINUX_EPERM;
     }
-    if (command == EDGE_LINUX_KEYCTL_DH_COMPUTE ||
-        command == EDGE_LINUX_KEYCTL_PKEY_QUERY ||
+    if (command == EDGE_LINUX_KEYCTL_DH_COMPUTE)
+        return keyctl_dh_compute(identity, access, arguments);
+    if (command == EDGE_LINUX_KEYCTL_PKEY_QUERY ||
         command == EDGE_LINUX_KEYCTL_PKEY_ENCRYPT ||
         command == EDGE_LINUX_KEYCTL_PKEY_DECRYPT ||
         command == EDGE_LINUX_KEYCTL_PKEY_SIGN ||
@@ -1157,7 +1401,7 @@ int64_t kernel_keyring_keyctl(
     }
     if (command == EDGE_LINUX_KEYCTL_CAPABILITIES) {
         const uint8_t capabilities[2] = {
-            0x01u | 0x02u | 0x10u | 0x20u | 0x40u | 0x80u,
+            0x01u | 0x02u | 0x04u | 0x10u | 0x20u | 0x40u | 0x80u,
 #ifdef CONFIG_KEY_NOTIFICATIONS
             0x01u | 0x04u,
 #else

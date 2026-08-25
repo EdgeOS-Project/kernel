@@ -28,6 +28,12 @@ typedef struct test_removal_notification {
     uint64_t key_id;
 } test_removal_notification_t;
 
+typedef struct test_keyctl_dh_params {
+    int32_t private_key;
+    int32_t prime;
+    int32_t base;
+} test_keyctl_dh_params_t;
+
 uint64_t boottime_monotonic_us(void) {
     return test_time_us;
 }
@@ -135,6 +141,64 @@ int main(void) {
         (uint64_t)(uintptr_t)payload, sizeof(payload) - 1u,
         EDGE_LINUX_KEY_SPEC_SESSION_KEYRING);
     assert(key > 0);
+
+    {
+        static const uint8_t private_value[] = {1u};
+        static const uint8_t prime_value[] =
+            "\xff\xff\xff\xff\xff\xff\xff\xff\xad\xf8\x54\x58\xa2\xbb\x4a\x9a"
+            "\xaf\xdc\x56\x20\x27\x3d\x3c\xf1\xd8\xb9\xc5\x83\xce\x2d\x36\x95"
+            "\xa9\xe1\x36\x41\x14\x64\x33\xfb\xcc\x93\x9d\xce\x24\x9b\x3e\xf9"
+            "\x7d\x2f\xe3\x63\x63\x0c\x75\xd8\xf6\x81\xb2\x02\xae\xc4\x61\x7a"
+            "\xd3\xdf\x1e\xd5\xd5\xfd\x65\x61\x24\x33\xf5\x1f\x5f\x06\x6e\xd0"
+            "\x85\x63\x65\x55\x3d\xed\x1a\xf3\xb5\x57\x13\x5e\x7f\x57\xc9\x35"
+            "\x98\x4f\x0c\x70\xe0\xe6\x8b\x77\xe2\xa6\x89\xda\xf3\xef\xe8\x72"
+            "\x1d\xf1\x58\xa1\x36\xad\xe7\x35\x30\xac\xca\x4f\x48\x3a\x79\x7a"
+            "\xbc\x0a\xb1\x82\xb3\x24\xfb\x61\xd1\x08\xa9\x4b\xb2\xc8\xe3\xfb"
+            "\xb9\x6a\xda\xb7\x60\xd7\xf4\x68\x1d\x4f\x42\xa3\xde\x39\x4d\xf4"
+            "\xae\x56\xed\xe7\x63\x72\xbb\x19\x0b\x07\xa7\xc8\xee\x0a\x6d\x70"
+            "\x9e\x02\xfc\xe1\xcd\xf7\xe2\xec\xc0\x34\x04\xcd\x28\x34\x2f\x61"
+            "\x91\x72\xfe\x9c\xe9\x85\x83\xff\x8e\x4f\x12\x32\xee\xf2\x81\x83"
+            "\xc3\xfe\x3b\x1b\x4c\x6f\xad\x73\x3b\xb5\xfc\xbc\x2e\xc2\x20\x05"
+            "\xc5\x8e\xf1\x83\x7d\x16\x83\xb2\xc6\xf3\x4a\x26\xc1\xb2\xef\xfa"
+            "\x88\x6b\x42\x38\x61\x28\x5c\x97\xff\xff\xff\xff\xff\xff\xff\xff";
+        static const uint8_t base_value[] = {2u};
+        test_keyctl_dh_params_t parameters;
+        uint8_t shared_value[sizeof(prime_value) - 1u];
+
+        parameters.private_key = (int32_t)kernel_keyring_add_key(
+            &parent, &access, (uint64_t)(uintptr_t)"user",
+            (uint64_t)(uintptr_t)"dh-private",
+            (uint64_t)(uintptr_t)private_value, sizeof(private_value),
+            EDGE_LINUX_KEY_SPEC_SESSION_KEYRING);
+        parameters.prime = (int32_t)kernel_keyring_add_key(
+            &parent, &access, (uint64_t)(uintptr_t)"user",
+            (uint64_t)(uintptr_t)"dh-prime",
+            (uint64_t)(uintptr_t)prime_value, sizeof(prime_value) - 1u,
+            EDGE_LINUX_KEY_SPEC_SESSION_KEYRING);
+        parameters.base = (int32_t)kernel_keyring_add_key(
+            &parent, &access, (uint64_t)(uintptr_t)"user",
+            (uint64_t)(uintptr_t)"dh-base",
+            (uint64_t)(uintptr_t)base_value, sizeof(base_value),
+            EDGE_LINUX_KEY_SPEC_SESSION_KEYRING);
+        assert(parameters.private_key > 0 && parameters.prime > 0 &&
+               parameters.base > 0);
+
+        memset(arguments, 0, sizeof(arguments));
+        arguments[0] = (uint64_t)(uintptr_t)&parameters;
+        assert(kernel_keyring_keyctl(
+                   &parent, &access, EDGE_LINUX_KEYCTL_DH_COMPUTE,
+                   arguments) == (int64_t)sizeof(shared_value));
+        memset(shared_value, 0xff, sizeof(shared_value));
+        arguments[1] = (uint64_t)(uintptr_t)&shared_value;
+        arguments[2] = sizeof(shared_value);
+        assert(kernel_keyring_keyctl(
+                   &parent, &access, EDGE_LINUX_KEYCTL_DH_COMPUTE,
+                   arguments) == (int64_t)sizeof(shared_value));
+        for (uint32_t index = 0; index + 1u < sizeof(shared_value);
+             ++index)
+            assert(shared_value[index] == 0u);
+        assert(shared_value[sizeof(shared_value) - 1u] == 2u);
+    }
 
     memset(arguments, 0, sizeof(arguments));
     arguments[0] = (uint64_t)key;
@@ -295,7 +359,7 @@ int main(void) {
     memset(arguments, 0, sizeof(arguments));
     assert(kernel_keyring_keyctl(
                &parent, &access, EDGE_LINUX_KEYCTL_DH_COMPUTE,
-               arguments) == -EDGE_LINUX_EOPNOTSUPP);
+               arguments) == -EDGE_LINUX_EINVAL);
     assert(kernel_keyring_keyctl(
                &parent, &access, EDGE_LINUX_KEYCTL_PKEY_QUERY,
                arguments) == -EDGE_LINUX_EOPNOTSUPP);
@@ -385,6 +449,8 @@ int main(void) {
             identity_in_user_namespace(301, 301, 1, 1000, 18u);
         int64_t first;
         int64_t second;
+        int64_t first_key;
+        int64_t second_key;
 
         memset(arguments, 0, sizeof(arguments));
         arguments[0] = (uint64_t)(uintptr_t)"namespace-session";
@@ -395,6 +461,31 @@ int main(void) {
             &namespace_peer, &access,
             EDGE_LINUX_KEYCTL_JOIN_SESSION_KEYRING, arguments);
         assert(first > 0 && second > 0 && first != second);
+
+        first_key = kernel_keyring_add_key(
+            &namespace_parent, &access,
+            (uint64_t)(uintptr_t)"user",
+            (uint64_t)(uintptr_t)"namespace-key",
+            (uint64_t)(uintptr_t)payload, sizeof(payload) - 1u,
+            EDGE_LINUX_KEY_SPEC_SESSION_KEYRING);
+        second_key = kernel_keyring_add_key(
+            &namespace_peer, &access,
+            (uint64_t)(uintptr_t)"user",
+            (uint64_t)(uintptr_t)"namespace-key",
+            (uint64_t)(uintptr_t)replacement,
+            sizeof(replacement) - 1u,
+            EDGE_LINUX_KEY_SPEC_SESSION_KEYRING);
+        assert(first_key > 0 && second_key > 0 && first_key != second_key);
+        assert(kernel_keyring_request_key(
+                   &namespace_parent, &access,
+                   (uint64_t)(uintptr_t)"user",
+                   (uint64_t)(uintptr_t)"namespace-key", 0, 0) ==
+               first_key);
+        assert(kernel_keyring_request_key(
+                   &namespace_peer, &access,
+                   (uint64_t)(uintptr_t)"user",
+                   (uint64_t)(uintptr_t)"namespace-key", 0, 0) ==
+               second_key);
         kernel_keyring_task_exit(300, 300, 1);
         kernel_keyring_task_exit(301, 301, 1);
     }
