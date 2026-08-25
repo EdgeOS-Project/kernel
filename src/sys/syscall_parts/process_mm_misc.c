@@ -8206,22 +8206,35 @@ int kernel_sysv_shm_arch_unmap(uintptr_t address_space,
 int64_t arch_current_sleep_until(uint64_t deadline_microseconds,
                                  uint64_t remaining_user,
                                  int write_remaining,
+                                 int remaining_time32,
                                  void *user_registers) {
     uint64_t result;
     (void)user_registers;
     result = do_sys_sleep_until_us(deadline_microseconds);
     if ((int64_t)result == -EINTR && write_remaining && remaining_user) {
-        struct edge_timespec remaining = {0, 0};
         uint64_t now = boottime_monotonic_us();
+        struct edge_timespec remaining = {0, 0};
         if (deadline_microseconds > now) {
             uint64_t usec = deadline_microseconds - now;
             remaining.tv_sec = (int64_t)(usec / 1000000u);
             remaining.tv_nsec =
                 (int64_t)((usec % 1000000u) * 1000u);
         }
-        if (copy_to_user(remaining_user, &remaining,
-                         sizeof(remaining)) < 0)
+        if (remaining_time32) {
+            struct {
+                int32_t tv_sec;
+                int32_t tv_nsec;
+            } compat_remaining = {
+                (int32_t)remaining.tv_sec,
+                (int32_t)remaining.tv_nsec,
+            };
+            if (copy_to_user(remaining_user, &compat_remaining,
+                             sizeof(compat_remaining)) < 0)
+                return -EFAULT;
+        } else if (copy_to_user(remaining_user, &remaining,
+                                sizeof(remaining)) < 0) {
             return -EFAULT;
+        }
     }
     return (int64_t)result;
 }

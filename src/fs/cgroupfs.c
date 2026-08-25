@@ -1601,7 +1601,7 @@ void cgroupfs_io_begin(uint32_t major, uint32_t minor, int write,
         uint64_t wake_us;
         uint64_t stall_us;
 
-        (void)kernel_current_sleep_until(deadline_us, 0, 0, 0);
+        (void)kernel_current_sleep_until(deadline_us, 0, 0, 0, 0);
         wake_us = boottime_monotonic_us();
         stall_us = wake_us > now_us ? wake_us - now_us : 0u;
         if (!stall_us) return;

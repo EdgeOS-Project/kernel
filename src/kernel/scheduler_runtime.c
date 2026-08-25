@@ -421,9 +421,10 @@ int64_t kernel_scheduler_yield(void *user_registers) {
 int64_t kernel_current_sleep_until(uint64_t deadline_microseconds,
                                    uint64_t remaining_user,
                                    int write_remaining,
+                                   int remaining_time32,
                                    void *user_registers) {
     if (boottime_monotonic_us() >= deadline_microseconds) return 0;
     return arch_current_sleep_until(
         deadline_microseconds, remaining_user,
-        write_remaining, user_registers);
+        write_remaining, remaining_time32, user_registers);
 }

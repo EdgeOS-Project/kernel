@@ -61,7 +61,9 @@ IA32_SHARED_SYSCALLS = {
     "access",
     "accept4",
     "acct",
+    "adjtimex",
     "add_key",
+    "alarm",
     "bind",
     "brk",
     "bpf",
@@ -75,6 +77,7 @@ IA32_SHARED_SYSCALLS = {
     "clock_getres_time64",
     "clock_gettime64",
     "clock_nanosleep_time64",
+    "clock_adjtime64",
     "clone",
     "clone3",
     "close",
@@ -240,6 +243,8 @@ IA32_SHARED_SYSCALLS = {
     "rt_sigpending",
     "rt_sigprocmask",
     "rt_sigsuspend",
+    "rt_sigtimedwait",
+    "rt_sigtimedwait_time64",
     "rseq_slice_yield",
     "rt_sigqueueinfo",
     "rt_tgsigqueueinfo",
@@ -341,6 +346,38 @@ IA32_SHARED_SYSCALLS = {
     "ftruncate",
     "reboot",
     "delete_module",
+    "clock_getres",
+    "clock_gettime",
+    "clock_nanosleep",
+    "clock_settime",
+    "clock_settime64",
+    "futex",
+    "getitimer",
+    "gettimeofday",
+    "nanosleep",
+    "pause",
+    "ppoll",
+    "pselect6",
+    "pselect6_time64",
+    "sched_rr_get_interval",
+    "sched_rr_get_interval_time64",
+    "setitimer",
+    "settimeofday",
+    "time",
+    "timer_create",
+    "timer_gettime",
+    "timer_gettime64",
+    "timer_settime",
+    "timer_settime64",
+    "timerfd_gettime",
+    "timerfd_gettime64",
+    "timerfd_settime",
+    "timerfd_settime64",
+    "futimesat",
+    "utime",
+    "utimensat",
+    "utimensat_time64",
+    "utimes",
 }
 
 IA32_ARCH_SYSCALLS = {
@@ -371,6 +408,9 @@ IA32_CANONICAL_ALIASES = {
     "lchown32": "lchown",
     "mmap2": "mmap",
     "ppoll_time64": "ppoll",
+    "pselect6_time64": "pselect6",
+    "rt_sigtimedwait_time64": "rt_sigtimedwait",
+    "sched_rr_get_interval_time64": "sched_rr_get_interval",
     "setgid32": "setgid",
     "setfsgid32": "setfsgid",
     "setfsuid32": "setfsuid",
@@ -381,6 +421,11 @@ IA32_CANONICAL_ALIASES = {
     "setreuid32": "setreuid",
     "setuid32": "setuid",
     "stat64": "stat",
+    "timer_gettime64": "timer_gettime",
+    "timer_settime64": "timer_settime",
+    "timerfd_gettime64": "timerfd_gettime",
+    "timerfd_settime64": "timerfd_settime",
+    "utimensat_time64": "utimensat",
 }
 
 
@@ -508,8 +553,8 @@ def render_tables(syscalls: list[dict[str, object]]) -> str:
         )
         status = (
             "implemented"
-            if native_implemented and
-            (name in IA32_SHARED_SYSCALLS or name in IA32_ARCH_SYSCALLS)
+            if name in IA32_ARCH_SYSCALLS or
+            (native_implemented and name in IA32_SHARED_SYSCALLS)
             else "enosys"
         )
         by_architecture["ia32"].append(

@@ -8,16 +8,18 @@ void kernel_restart_block_reset(kernel_restart_block_t *block) {
     if (!block) return;
     block->operation = KERNEL_RESTART_BLOCK_NONE;
     block->write_remaining = 0;
+    block->remaining_time32 = 0;
     block->deadline_microseconds = 0;
     block->remaining_user = 0;
 }
 
 void kernel_restart_block_prepare_nanosleep(
     kernel_restart_block_t *block, uint64_t deadline_microseconds,
-    uint64_t remaining_user, int write_remaining) {
+    uint64_t remaining_user, int write_remaining, int remaining_time32) {
     if (!block) return;
     block->operation = KERNEL_RESTART_BLOCK_NANOSLEEP;
     block->write_remaining = write_remaining != 0;
+    block->remaining_time32 = write_remaining && remaining_time32;
     block->deadline_microseconds = deadline_microseconds;
     block->remaining_user = write_remaining ? remaining_user : 0;
 }
@@ -40,7 +42,8 @@ int64_t kernel_restart_block_execute(
     }
     result = sleep_until(
         block->deadline_microseconds, block->remaining_user,
-        block->write_remaining != 0, user_registers);
+        block->write_remaining != 0, block->remaining_time32 != 0,
+        user_registers);
     if (result != -EDGE_LINUX_EINTR)
         kernel_restart_block_reset(block);
     return result;

@@ -125,11 +125,13 @@ int64_t arch_scheduler_yield(void *user_registers) {
 int64_t arch_current_sleep_until(uint64_t deadline_microseconds,
                                  uint64_t remaining_user,
                                  int write_remaining,
+                                 int remaining_time32,
                                  void *user_registers) {
     ++g_sleep_calls;
     g_deadline = deadline_microseconds;
     g_remaining_user = remaining_user;
     g_write_remaining = write_remaining;
+    (void)remaining_time32;
     g_user_registers = user_registers;
     return 19;
 }
@@ -160,12 +162,12 @@ int main(void) {
     g_now = 100;
     g_sleep_calls = 0;
     expect_true("expired sleep fast path",
-                kernel_current_sleep_until(100, 11, 1, registers) == 0 &&
+                kernel_current_sleep_until(100, 11, 1, 0, registers) == 0 &&
                 g_sleep_calls == 0);
 
     g_now = 99;
     expect_true("pending sleep dispatch",
-                kernel_current_sleep_until(100, 11, 1, registers) == 19 &&
+                kernel_current_sleep_until(100, 11, 1, 0, registers) == 19 &&
                 g_sleep_calls == 1 && g_deadline == 100 &&
                 g_remaining_user == 11 && g_write_remaining == 1 &&
                 g_user_registers == registers);

@@ -231,8 +231,35 @@ typedef struct edge_linux_timex {
     uint32_t padding3[11];
 } edge_linux_timex_t;
 
+typedef struct edge_linux_timex32 {
+    uint32_t modes;
+    int32_t offset;
+    int32_t frequency;
+    int32_t maximum_error;
+    int32_t estimated_error;
+    int32_t status;
+    int32_t constant;
+    int32_t precision;
+    int32_t tolerance;
+    int32_t time_seconds;
+    int32_t time_microseconds;
+    int32_t tick;
+    int32_t pps_frequency;
+    int32_t jitter;
+    int32_t shift;
+    int32_t stability;
+    int32_t jitter_count;
+    int32_t calibration_count;
+    int32_t error_count;
+    int32_t stability_count;
+    int32_t tai;
+    int32_t padding[11];
+} edge_linux_timex32_t;
+
 _Static_assert(sizeof(edge_linux_timex_t) == 208u,
                "Linux timex ABI size mismatch");
+_Static_assert(sizeof(edge_linux_timex32_t) == 128u,
+               "Linux i386 timex ABI size mismatch");
 
 #define EDGE_LINUX_EXT_SUPER_MAGIC 0x0000ef53u
 #define EDGE_LINUX_PROC_SUPER_MAGIC 0x00009fa0u

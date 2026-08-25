@@ -4298,6 +4298,26 @@ static int select_write_remaining_timeout(uint64_t user_timeout,
         return copy_to_user(user_timeout, &remaining, sizeof(remaining)) < 0 ?
                -EFAULT : 0;
     }
+    if (timeout_format == KERNEL_WAIT_TIMEOUT_TIMESPEC32) {
+        linux_timespec64_t remaining;
+        linux_timespec32_t compat_remaining;
+        linux_timespec_from_microseconds(remaining_microseconds, &remaining);
+        if (remaining.tv_sec > INT32_MAX) return -EOVERFLOW;
+        compat_remaining.tv_sec = (int32_t)remaining.tv_sec;
+        compat_remaining.tv_nsec = (int32_t)remaining.tv_nsec;
+        return copy_to_user(user_timeout, &compat_remaining,
+                            sizeof(compat_remaining)) < 0 ? -EFAULT : 0;
+    }
+    if (timeout_format == KERNEL_WAIT_TIMEOUT_TIMEVAL32) {
+        linux_timeval64_t remaining;
+        linux_timeval32_t compat_remaining;
+        linux_timeval_from_microseconds(remaining_microseconds, &remaining);
+        if (remaining.tv_sec > INT32_MAX) return -EOVERFLOW;
+        compat_remaining.tv_sec = (int32_t)remaining.tv_sec;
+        compat_remaining.tv_usec = (int32_t)remaining.tv_usec;
+        return copy_to_user(user_timeout, &compat_remaining,
+                            sizeof(compat_remaining)) < 0 ? -EFAULT : 0;
+    }
     return -EINVAL;
 }
 

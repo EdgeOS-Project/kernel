@@ -6150,10 +6150,12 @@ int64_t kernel_arch_signal_wait_block(
 int64_t arch_current_sleep_until(uint64_t deadline_microseconds,
                                  uint64_t remaining_user,
                                  int write_remaining,
+                                 int remaining_time32,
                                  void *user_registers) {
     kernel_task_t *task = current_task();
     arch_user_frame_t *frame = (arch_user_frame_t *)user_registers;
     if (!task || !frame) return -LINUX_EINVAL;
+    (void)remaining_time32;
     if (boottime_monotonic_us() >= deadline_microseconds) return 0;
     arch_copy_frame(&task->frame, frame);
     task->sleep_deadline_us = deadline_microseconds;
@@ -19744,6 +19746,9 @@ static int select_write_remaining_timeout(kernel_task_t *task,
                                  sizeof(remaining)) < 0 ?
                -LINUX_EFAULT : 0;
     }
+    if (timeout_format == KERNEL_WAIT_TIMEOUT_TIMESPEC32 ||
+        timeout_format == KERNEL_WAIT_TIMEOUT_TIMEVAL32)
+        return -LINUX_EINVAL;
     return -LINUX_EINVAL;
 }
 

@@ -537,6 +537,7 @@ int edge_process_runtime_current_rseq_binding(
 int64_t kernel_current_sleep_until(uint64_t deadline_microseconds,
                                    uint64_t remaining_user,
                                    int write_remaining,
+                                   int remaining_time32,
                                    void *user_registers);
 int kernel_process_credentials_get(
     int32_t tid, linux_credential_state_t *credentials);
@@ -577,6 +578,7 @@ int64_t arch_scheduler_yield(void *user_registers);
 int64_t arch_current_sleep_until(uint64_t deadline_microseconds,
                                  uint64_t remaining_user,
                                  int write_remaining,
+                                 int remaining_time32,
                                  void *user_registers);
 int arch_runtime_yield(void);
 int arch_runtime_contention_begin(void);

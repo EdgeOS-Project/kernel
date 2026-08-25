@@ -584,6 +584,136 @@ static int64_t edge_linux_sys_set_uts_name(
     return result < 0 ? -EDGE_LINUX_EINVAL : 0;
 }
 
+static int edge_linux_ia32_time32(
+    const edge_linux_syscall_context_t *context) {
+    return context && context->architecture == EDGE_LINUX_ARCH_IA32 &&
+           context->raw_number < 403u;
+}
+
+static int edge_linux_import_timespec(
+    edge_linux_syscall_context_t *context, uint64_t source,
+    linux_timespec64_t *value) {
+    if (!context || !value || !source) return -EDGE_LINUX_EFAULT;
+    if (edge_linux_ia32_time32(context)) {
+        linux_timespec32_t compat_value;
+        if (edge_linux_copy_from_user(context, &compat_value, source,
+                                      sizeof(compat_value)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        value->tv_sec = compat_value.tv_sec;
+        value->tv_nsec = compat_value.tv_nsec;
+        return 0;
+    }
+    return edge_linux_copy_from_user(context, value, source,
+                                     sizeof(*value)) < 0 ?
+        -EDGE_LINUX_EFAULT : 0;
+}
+
+static int edge_linux_export_timespec(
+    edge_linux_syscall_context_t *context, uint64_t destination,
+    const linux_timespec64_t *value) {
+    if (!context || !value || !destination) return -EDGE_LINUX_EFAULT;
+    if (edge_linux_ia32_time32(context)) {
+        linux_timespec32_t compat_value;
+        if (value->tv_sec < INT32_MIN || value->tv_sec > INT32_MAX)
+            return -EDGE_LINUX_EOVERFLOW;
+        compat_value.tv_sec = (int32_t)value->tv_sec;
+        compat_value.tv_nsec = (int32_t)value->tv_nsec;
+        return edge_linux_copy_to_user(
+            context, destination, &compat_value,
+            sizeof(compat_value)) < 0 ? -EDGE_LINUX_EFAULT : 0;
+    }
+    return edge_linux_copy_to_user(context, destination, value,
+                                   sizeof(*value)) < 0 ?
+        -EDGE_LINUX_EFAULT : 0;
+}
+
+static int edge_linux_import_timeval(
+    edge_linux_syscall_context_t *context, uint64_t source,
+    linux_timeval64_t *value) {
+    if (!context || !value || !source) return -EDGE_LINUX_EFAULT;
+    if (edge_linux_ia32_time32(context)) {
+        linux_timeval32_t compat_value;
+        if (edge_linux_copy_from_user(context, &compat_value, source,
+                                      sizeof(compat_value)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        value->tv_sec = compat_value.tv_sec;
+        value->tv_usec = compat_value.tv_usec;
+        return 0;
+    }
+    return edge_linux_copy_from_user(context, value, source,
+                                     sizeof(*value)) < 0 ?
+        -EDGE_LINUX_EFAULT : 0;
+}
+
+static int edge_linux_export_timeval(
+    edge_linux_syscall_context_t *context, uint64_t destination,
+    const linux_timeval64_t *value) {
+    if (!context || !value || !destination) return -EDGE_LINUX_EFAULT;
+    if (edge_linux_ia32_time32(context)) {
+        linux_timeval32_t compat_value;
+        if (value->tv_sec < INT32_MIN || value->tv_sec > INT32_MAX)
+            return -EDGE_LINUX_EOVERFLOW;
+        compat_value.tv_sec = (int32_t)value->tv_sec;
+        compat_value.tv_usec = (int32_t)value->tv_usec;
+        return edge_linux_copy_to_user(
+            context, destination, &compat_value,
+            sizeof(compat_value)) < 0 ? -EDGE_LINUX_EFAULT : 0;
+    }
+    return edge_linux_copy_to_user(context, destination, value,
+                                   sizeof(*value)) < 0 ?
+        -EDGE_LINUX_EFAULT : 0;
+}
+
+static int edge_linux_import_itimerspec(
+    edge_linux_syscall_context_t *context, uint64_t source,
+    linux_itimerspec64_t *value) {
+    if (!context || !value || !source) return -EDGE_LINUX_EFAULT;
+    if (edge_linux_ia32_time32(context)) {
+        linux_itimerspec32_t compat_value;
+        if (edge_linux_copy_from_user(context, &compat_value, source,
+                                      sizeof(compat_value)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        value->it_interval.tv_sec = compat_value.it_interval.tv_sec;
+        value->it_interval.tv_nsec = compat_value.it_interval.tv_nsec;
+        value->it_value.tv_sec = compat_value.it_value.tv_sec;
+        value->it_value.tv_nsec = compat_value.it_value.tv_nsec;
+        return 0;
+    }
+    return edge_linux_copy_from_user(context, value, source,
+                                     sizeof(*value)) < 0 ?
+        -EDGE_LINUX_EFAULT : 0;
+}
+
+static int edge_linux_export_itimerspec(
+    edge_linux_syscall_context_t *context, uint64_t destination,
+    const linux_itimerspec64_t *value) {
+    int status;
+    if (!context || !value || !destination) return -EDGE_LINUX_EFAULT;
+    if (!edge_linux_ia32_time32(context))
+        return edge_linux_copy_to_user(context, destination, value,
+                                       sizeof(*value)) < 0 ?
+            -EDGE_LINUX_EFAULT : 0;
+    {
+        linux_itimerspec32_t compat_value;
+        linux_timespec64_t fields[2] = {
+            value->it_interval, value->it_value,
+        };
+        linux_timespec32_t *compat_fields[2] = {
+            &compat_value.it_interval, &compat_value.it_value,
+        };
+        for (uint32_t index = 0; index < 2u; ++index) {
+            if (fields[index].tv_sec < INT32_MIN ||
+                fields[index].tv_sec > INT32_MAX)
+                return -EDGE_LINUX_EOVERFLOW;
+            compat_fields[index]->tv_sec = (int32_t)fields[index].tv_sec;
+            compat_fields[index]->tv_nsec = (int32_t)fields[index].tv_nsec;
+        }
+        status = edge_linux_copy_to_user(
+            context, destination, &compat_value, sizeof(compat_value));
+    }
+    return status < 0 ? -EDGE_LINUX_EFAULT : 0;
+}
+
 static int64_t edge_linux_sys_clock(edge_linux_syscall_context_t *context) {
     linux_timespec64_t value;
     int clock_id = (int)context->arguments[0];
@@ -597,9 +727,7 @@ static int64_t edge_linux_sys_clock(edge_linux_syscall_context_t *context) {
         if (!destination && result == 0) return 0;
     }
     if (result < 0) return -EDGE_LINUX_EINVAL;
-    return edge_linux_copy_to_user(context, destination, &value,
-                                   sizeof(value)) < 0 ?
-        -EDGE_LINUX_EFAULT : 0;
+    return edge_linux_export_timespec(context, destination, &value);
 }
 
 #define EDGE_LINUX_TIMER_ABSTIME 1u
@@ -674,9 +802,8 @@ static int64_t edge_linux_sys_nanosleep(
     }
 
     if (!request_user) return -EDGE_LINUX_EFAULT;
-    if (edge_linux_copy_from_user(context, &request, request_user,
-                                  sizeof(request)) < 0)
-        return -EDGE_LINUX_EFAULT;
+    status = edge_linux_import_timespec(context, request_user, &request);
+    if (status < 0) return status;
     status = edge_linux_timespec_microseconds(
         &request, &requested_microseconds);
     if (status < 0) return status;
@@ -698,7 +825,7 @@ static int64_t edge_linux_sys_nanosleep(
         thread_state) {
         kernel_restart_block_prepare_nanosleep(
             &thread_state->restart_block, deadline, remaining_user,
-            remaining_user != 0);
+            remaining_user != 0, edge_linux_ia32_time32(context));
         result = kernel_restart_block_execute(
             &thread_state->restart_block, monotonic_now,
             kernel_current_sleep_until, context->user_registers);
@@ -716,6 +843,7 @@ static int64_t edge_linux_sys_nanosleep(
     }
     result = kernel_current_sleep_until(
         deadline, remaining_user, !absolute && remaining_user != 0,
+        edge_linux_ia32_time32(context),
         context->user_registers);
     return result;
 }
@@ -856,17 +984,15 @@ static int64_t edge_linux_sys_posix_timer(
     if (context->id == EDGE_LINUX_SYS_timer_gettime) {
         if (!context->arguments[1]) return -EDGE_LINUX_EFAULT;
         edge_linux_posix_timer_state_to_uapi(&state, &value);
-        return edge_linux_copy_to_user(
-            context, context->arguments[1], &value,
-            sizeof(value)) < 0 ? -EDGE_LINUX_EFAULT : 0;
+        return edge_linux_export_itimerspec(
+            context, context->arguments[1], &value);
     }
     if (context->id != EDGE_LINUX_SYS_timer_settime)
         return -EDGE_LINUX_ENOSYS;
     if (!context->arguments[2]) return -EDGE_LINUX_EINVAL;
-    if (edge_linux_copy_from_user(
-            context, &replacement, context->arguments[2],
-            sizeof(replacement)) < 0)
-        return -EDGE_LINUX_EFAULT;
+    status = edge_linux_import_itimerspec(
+        context, context->arguments[2], &replacement);
+    if (status < 0) return status;
     status = edge_linux_timespec_microseconds(
         &replacement.it_value, &initial);
     if (status < 0) return status;
@@ -881,10 +1007,9 @@ static int64_t edge_linux_sys_posix_timer(
     if (status < 0) return status;
     if (context->arguments[3]) {
         edge_linux_posix_timer_state_to_uapi(&previous, &value);
-        if (edge_linux_copy_to_user(
-                context, context->arguments[3], &value,
-                sizeof(value)) < 0)
-            return -EDGE_LINUX_EFAULT;
+        status = edge_linux_export_itimerspec(
+            context, context->arguments[3], &value);
+        if (status < 0) return status;
     }
     return 0;
 }
@@ -1054,6 +1179,54 @@ static int edge_linux_timeval_valid(const linux_timeval64_t *value) {
     return seconds <= (UINT64_MAX - (uint64_t)value->tv_usec) / 1000000u;
 }
 
+static int edge_linux_import_itimerval(
+    edge_linux_syscall_context_t *context, uint64_t source,
+    linux_itimerval64_t *value) {
+    if (!context || !value || !source) return -EDGE_LINUX_EFAULT;
+    if (edge_linux_ia32_time32(context)) {
+        linux_itimerval32_t compat_value;
+        if (edge_linux_copy_from_user(context, &compat_value, source,
+                                      sizeof(compat_value)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        value->it_interval.tv_sec = compat_value.it_interval.tv_sec;
+        value->it_interval.tv_usec = compat_value.it_interval.tv_usec;
+        value->it_value.tv_sec = compat_value.it_value.tv_sec;
+        value->it_value.tv_usec = compat_value.it_value.tv_usec;
+        return 0;
+    }
+    return edge_linux_copy_from_user(context, value, source,
+                                     sizeof(*value)) < 0 ?
+        -EDGE_LINUX_EFAULT : 0;
+}
+
+static int edge_linux_export_itimerval(
+    edge_linux_syscall_context_t *context, uint64_t destination,
+    const linux_itimerval64_t *value) {
+    if (!context || !value || !destination) return -EDGE_LINUX_EFAULT;
+    if (edge_linux_ia32_time32(context)) {
+        linux_itimerval32_t compat_value;
+        const linux_timeval64_t fields[2] = {
+            value->it_interval, value->it_value,
+        };
+        linux_timeval32_t *compat_fields[2] = {
+            &compat_value.it_interval, &compat_value.it_value,
+        };
+        for (uint32_t index = 0; index < 2u; ++index) {
+            if (fields[index].tv_sec < INT32_MIN ||
+                fields[index].tv_sec > INT32_MAX)
+                return -EDGE_LINUX_EOVERFLOW;
+            compat_fields[index]->tv_sec = (int32_t)fields[index].tv_sec;
+            compat_fields[index]->tv_usec = (int32_t)fields[index].tv_usec;
+        }
+        return edge_linux_copy_to_user(
+            context, destination, &compat_value,
+            sizeof(compat_value)) < 0 ? -EDGE_LINUX_EFAULT : 0;
+    }
+    return edge_linux_copy_to_user(context, destination, value,
+                                   sizeof(*value)) < 0 ?
+        -EDGE_LINUX_EFAULT : 0;
+}
+
 static int64_t edge_linux_sys_itimer(
     edge_linux_syscall_context_t *context) {
     linux_itimerval64_t replacement = {{0, 0}, {0, 0}};
@@ -1073,26 +1246,27 @@ static int64_t edge_linux_sys_itimer(
         if (!context->arguments[1]) return -EDGE_LINUX_EFAULT;
         status = kernel_itimer_real_get(&previous);
         if (status < 0) return status;
-        return edge_linux_copy_to_user(
-            context, context->arguments[1], &previous,
-            sizeof(previous)) < 0 ? -EDGE_LINUX_EFAULT : 0;
+        return edge_linux_export_itimerval(
+            context, context->arguments[1], &previous);
     }
     if (context->id != EDGE_LINUX_SYS_setitimer)
         return -EDGE_LINUX_ENOSYS;
-    if (context->arguments[1] && edge_linux_copy_from_user(
-            context, &replacement, context->arguments[1],
-            sizeof(replacement)) < 0)
-        return -EDGE_LINUX_EFAULT;
+    if (context->arguments[1]) {
+        status = edge_linux_import_itimerval(
+            context, context->arguments[1], &replacement);
+        if (status < 0) return status;
+    }
     if (context->arguments[0] != 0u) return -EDGE_LINUX_EINVAL;
     if (!edge_linux_timeval_valid(&replacement.it_interval) ||
         !edge_linux_timeval_valid(&replacement.it_value))
         return -EDGE_LINUX_EINVAL;
     status = kernel_itimer_real_exchange(&replacement, &previous);
     if (status < 0) return status;
-    if (context->arguments[2] && edge_linux_copy_to_user(
-            context, context->arguments[2], &previous,
-            sizeof(previous)) < 0)
-        return -EDGE_LINUX_EFAULT;
+    if (context->arguments[2]) {
+        status = edge_linux_export_itimerval(
+            context, context->arguments[2], &previous);
+        if (status < 0) return status;
+    }
     return 0;
 }
 
@@ -1103,17 +1277,29 @@ static int64_t edge_linux_sys_wall_time(
     linux_gettimeofday_value(&value);
     linux_get_timezone_value(&timezone);
     if (context->id == EDGE_LINUX_SYS_time) {
-        if (context->arguments[0] &&
-            edge_linux_copy_to_user(context, context->arguments[0],
-                                    &value.tv_sec,
-                                    sizeof(value.tv_sec)) < 0)
-            return -EDGE_LINUX_EFAULT;
+        if (context->arguments[0]) {
+            if (edge_linux_ia32_time32(context)) {
+                int32_t compat_seconds;
+                if (value.tv_sec < INT32_MIN || value.tv_sec > INT32_MAX)
+                    return -EDGE_LINUX_EOVERFLOW;
+                compat_seconds = (int32_t)value.tv_sec;
+                if (edge_linux_copy_to_user(
+                        context, context->arguments[0], &compat_seconds,
+                        sizeof(compat_seconds)) < 0)
+                    return -EDGE_LINUX_EFAULT;
+            } else if (edge_linux_copy_to_user(
+                           context, context->arguments[0], &value.tv_sec,
+                           sizeof(value.tv_sec)) < 0) {
+                return -EDGE_LINUX_EFAULT;
+            }
+        }
         return value.tv_sec;
     }
-    if (context->arguments[0] &&
-        edge_linux_copy_to_user(context, context->arguments[0], &value,
-                                sizeof(value)) < 0)
-        return -EDGE_LINUX_EFAULT;
+    if (context->arguments[0]) {
+        int status = edge_linux_export_timeval(
+            context, context->arguments[0], &value);
+        if (status < 0) return status;
+    }
     if (context->arguments[1] &&
         edge_linux_copy_to_user(context, context->arguments[1], &timezone,
                                 sizeof(timezone)) < 0)
@@ -1139,9 +1325,8 @@ static int64_t edge_linux_sys_set_wall_time(
         if ((int32_t)context->arguments[0] != LINUX_CLOCK_REALTIME)
             return -EDGE_LINUX_EINVAL;
         if (!context->arguments[1]) return -EDGE_LINUX_EFAULT;
-        if (edge_linux_copy_from_user(context, &timespec,
-                                      context->arguments[1],
-                                      sizeof(timespec)) < 0)
+        if (edge_linux_import_timespec(
+                context, context->arguments[1], &timespec) < 0)
             return -EDGE_LINUX_EFAULT;
         if (timespec.tv_sec < 0 || timespec.tv_nsec < 0 ||
             timespec.tv_nsec >= 1000000000LL ||
@@ -1158,9 +1343,8 @@ static int64_t edge_linux_sys_set_wall_time(
     if (context->id != EDGE_LINUX_SYS_settimeofday)
         return -EDGE_LINUX_ENOSYS;
     if (context->arguments[0]) {
-        if (edge_linux_copy_from_user(context, &timeval,
-                                      context->arguments[0],
-                                      sizeof(timeval)) < 0)
+        if (edge_linux_import_timeval(
+                context, context->arguments[0], &timeval) < 0)
             return -EDGE_LINUX_EFAULT;
         if (timeval.tv_sec < 0 || timeval.tv_usec < 0 ||
             timeval.tv_usec >= 1000000LL ||
@@ -1395,9 +1579,39 @@ static int64_t edge_linux_sys_clock_adjust(
         timex_user = context->arguments[0];
     }
     if (!timex_user) return -EDGE_LINUX_EFAULT;
-    if (edge_linux_copy_from_user(
-            context, &timex, timex_user, sizeof(timex)) < 0)
+    if (edge_linux_ia32_time32(context)) {
+        edge_linux_timex32_t compat_timex;
+
+        if (edge_linux_copy_from_user(
+                context, &compat_timex, timex_user,
+                sizeof(compat_timex)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        memset(&timex, 0, sizeof(timex));
+        timex.modes = compat_timex.modes;
+        timex.offset = compat_timex.offset;
+        timex.frequency = compat_timex.frequency;
+        timex.maximum_error = compat_timex.maximum_error;
+        timex.estimated_error = compat_timex.estimated_error;
+        timex.status = compat_timex.status;
+        timex.constant = compat_timex.constant;
+        timex.precision = compat_timex.precision;
+        timex.tolerance = compat_timex.tolerance;
+        timex.time.tv_sec = compat_timex.time_seconds;
+        timex.time.tv_usec = compat_timex.time_microseconds;
+        timex.tick = compat_timex.tick;
+        timex.pps_frequency = compat_timex.pps_frequency;
+        timex.jitter = compat_timex.jitter;
+        timex.shift = compat_timex.shift;
+        timex.stability = compat_timex.stability;
+        timex.jitter_count = compat_timex.jitter_count;
+        timex.calibration_count = compat_timex.calibration_count;
+        timex.error_count = compat_timex.error_count;
+        timex.stability_count = compat_timex.stability_count;
+        timex.tai = compat_timex.tai;
+    } else if (edge_linux_copy_from_user(
+            context, &timex, timex_user, sizeof(timex)) < 0) {
         return -EDGE_LINUX_EFAULT;
+    }
     if (kernel_current_linux_identity(&identity) < 0)
         return -EDGE_LINUX_ESRCH;
     privileged = (identity.effective_capabilities &
@@ -1406,9 +1620,53 @@ static int64_t edge_linux_sys_clock_adjust(
         clock_id, &timex, privileged);
     if (result < 0 && context->id == EDGE_LINUX_SYS_clock_adjtime)
         return result;
-    if (edge_linux_copy_to_user(
-            context, timex_user, &timex, sizeof(timex)) < 0)
+    if (edge_linux_ia32_time32(context)) {
+        edge_linux_timex32_t compat_timex;
+        const int64_t values[] = {
+            timex.offset, timex.frequency, timex.maximum_error,
+            timex.estimated_error, timex.constant, timex.precision,
+            timex.tolerance, timex.time.tv_sec, timex.time.tv_usec,
+            timex.tick, timex.pps_frequency, timex.jitter,
+            timex.stability, timex.jitter_count, timex.calibration_count,
+            timex.error_count, timex.stability_count,
+        };
+
+        for (uint32_t index = 0;
+             index < sizeof(values) / sizeof(values[0]); ++index) {
+            if (values[index] < INT32_MIN || values[index] > INT32_MAX)
+                return -EDGE_LINUX_EOVERFLOW;
+        }
+        memset(&compat_timex, 0, sizeof(compat_timex));
+        compat_timex.modes = timex.modes;
+        compat_timex.offset = (int32_t)timex.offset;
+        compat_timex.frequency = (int32_t)timex.frequency;
+        compat_timex.maximum_error = (int32_t)timex.maximum_error;
+        compat_timex.estimated_error = (int32_t)timex.estimated_error;
+        compat_timex.status = timex.status;
+        compat_timex.constant = (int32_t)timex.constant;
+        compat_timex.precision = (int32_t)timex.precision;
+        compat_timex.tolerance = (int32_t)timex.tolerance;
+        compat_timex.time_seconds = (int32_t)timex.time.tv_sec;
+        compat_timex.time_microseconds = (int32_t)timex.time.tv_usec;
+        compat_timex.tick = (int32_t)timex.tick;
+        compat_timex.pps_frequency = (int32_t)timex.pps_frequency;
+        compat_timex.jitter = (int32_t)timex.jitter;
+        compat_timex.shift = timex.shift;
+        compat_timex.stability = (int32_t)timex.stability;
+        compat_timex.jitter_count = (int32_t)timex.jitter_count;
+        compat_timex.calibration_count =
+            (int32_t)timex.calibration_count;
+        compat_timex.error_count = (int32_t)timex.error_count;
+        compat_timex.stability_count = (int32_t)timex.stability_count;
+        compat_timex.tai = timex.tai;
+        if (edge_linux_copy_to_user(
+                context, timex_user, &compat_timex,
+                sizeof(compat_timex)) < 0)
+            return -EDGE_LINUX_EFAULT;
+    } else if (edge_linux_copy_to_user(
+            context, timex_user, &timex, sizeof(timex)) < 0) {
         return -EDGE_LINUX_EFAULT;
+    }
     return result;
 }
 
@@ -7912,9 +8170,8 @@ static int64_t edge_linux_sys_sched_rr_interval(
     if (!context->arguments[1]) return -EDGE_LINUX_EFAULT;
     if (target.state.policy == EDGE_LINUX_SCHED_RR)
         interval.tv_nsec = 10000000;
-    return edge_linux_copy_to_user(context, context->arguments[1], &interval,
-                                   sizeof(interval)) < 0 ?
-        -EDGE_LINUX_EFAULT : 0;
+    return edge_linux_export_timespec(
+        context, context->arguments[1], &interval);
 }
 
 static int64_t edge_linux_sys_sched_getattr(
@@ -13991,9 +14248,7 @@ static int edge_linux_timespec_timeout(
         *timeout_microseconds = -1;
         return 0;
     }
-    if (edge_linux_copy_from_user(context, &timeout,
-                                  user_timeout,
-                                  sizeof(timeout)) < 0)
+    if (edge_linux_import_timespec(context, user_timeout, &timeout) < 0)
         return -EDGE_LINUX_EFAULT;
     if (timeout.tv_sec < 0 || timeout.tv_nsec < 0 ||
         timeout.tv_nsec >= 1000000000LL)
@@ -14146,8 +14401,7 @@ static int edge_linux_timeval_timeout(
         *timeout_microseconds = -1;
         return 0;
     }
-    if (edge_linux_copy_from_user(context, &timeout, user_timeout,
-                                  sizeof(timeout)) < 0)
+    if (edge_linux_import_timeval(context, user_timeout, &timeout) < 0)
         return -EDGE_LINUX_EFAULT;
     if (timeout.tv_sec < 0 || timeout.tv_usec < 0)
         return -EDGE_LINUX_EINVAL;
@@ -14308,10 +14562,24 @@ static int64_t edge_linux_sys_select(
         signal_argument.sigmask_u = 0;
         signal_argument.sigsetsize = 0;
         if (context->arguments[5]) {
-            if (edge_linux_copy_from_user(context, &signal_argument,
-                                          context->arguments[5],
-                                          sizeof(signal_argument)) < 0)
+            if (edge_linux_architecture_is_compat32(
+                    context->architecture)) {
+                struct {
+                    uint32_t sigmask_u;
+                    uint32_t sigsetsize;
+                } compat_argument;
+                if (edge_linux_copy_from_user(
+                        context, &compat_argument, context->arguments[5],
+                        sizeof(compat_argument)) < 0)
+                    return -EDGE_LINUX_EFAULT;
+                signal_argument.sigmask_u = compat_argument.sigmask_u;
+                signal_argument.sigsetsize = compat_argument.sigsetsize;
+            } else if (edge_linux_copy_from_user(
+                           context, &signal_argument,
+                           context->arguments[5],
+                           sizeof(signal_argument)) < 0) {
                 return -EDGE_LINUX_EFAULT;
+            }
             if (signal_argument.sigmask_u &&
                 signal_argument.sigsetsize != sizeof(signal_mask))
                 return -EDGE_LINUX_EINVAL;
@@ -14326,14 +14594,18 @@ static int64_t edge_linux_sys_select(
                 return -EDGE_LINUX_EFAULT;
             replace_signal_mask = 1;
         }
-        timeout_format = user_timeout ? KERNEL_WAIT_TIMEOUT_TIMESPEC :
-                                        KERNEL_WAIT_TIMEOUT_NONE;
+        timeout_format = !user_timeout ? KERNEL_WAIT_TIMEOUT_NONE :
+            edge_linux_ia32_time32(context) ?
+                KERNEL_WAIT_TIMEOUT_TIMESPEC32 :
+                KERNEL_WAIT_TIMEOUT_TIMESPEC;
     } else {
         status = edge_linux_timeval_timeout(
             context, user_timeout, &timeout_microseconds);
         if (status < 0) return status;
-        timeout_format = user_timeout ? KERNEL_WAIT_TIMEOUT_TIMEVAL :
-                                        KERNEL_WAIT_TIMEOUT_NONE;
+        timeout_format = !user_timeout ? KERNEL_WAIT_TIMEOUT_NONE :
+            edge_linux_ia32_time32(context) ?
+                KERNEL_WAIT_TIMEOUT_TIMEVAL32 :
+                KERNEL_WAIT_TIMEOUT_TIMEVAL;
     }
     if (context->arguments[0] > INT32_MAX)
         return -EDGE_LINUX_EINVAL;
@@ -15866,11 +16138,10 @@ static int64_t edge_linux_sys_timerfd(
     }
 
     if (context->id == EDGE_LINUX_SYS_timerfd_settime) {
-        if (!context->arguments[2] ||
-            edge_linux_copy_from_user(context, &replacement,
-                                      context->arguments[2],
-                                      sizeof(replacement)) < 0)
-            return -EDGE_LINUX_EFAULT;
+        if (!context->arguments[2]) return -EDGE_LINUX_EFAULT;
+        result = edge_linux_import_itimerspec(
+            context, context->arguments[2], &replacement);
+        if (result < 0) return result;
         timer_id = kernel_timerfd_descriptor_id(
             (int32_t)context->arguments[0]);
         if (timer_id < 0) return timer_id;
@@ -15879,10 +16150,11 @@ static int64_t edge_linux_sys_timerfd(
             context->arguments[3] ? &previous : 0);
         if (result < 0) return result;
         kernel_timerfd_state_changed(timer_id);
-        if (context->arguments[3] &&
-            edge_linux_copy_to_user(context, context->arguments[3],
-                                    &previous, sizeof(previous)) < 0)
-            return -EDGE_LINUX_EFAULT;
+        if (context->arguments[3]) {
+            result = edge_linux_export_itimerspec(
+                context, context->arguments[3], &previous);
+            if (result < 0) return result;
+        }
         return 0;
     }
 
@@ -15893,11 +16165,9 @@ static int64_t edge_linux_sys_timerfd(
     if (timer_id < 0) return timer_id;
     result = kernel_timerfd_gettime(timer_id, &current);
     if (result < 0) return result;
-    if (!context->arguments[1] ||
-        edge_linux_copy_to_user(context, context->arguments[1], &current,
-                                sizeof(current)) < 0)
-        return -EDGE_LINUX_EFAULT;
-    return 0;
+    if (!context->arguments[1]) return -EDGE_LINUX_EFAULT;
+    return edge_linux_export_itimerspec(
+        context, context->arguments[1], &current);
 }
 
 static int64_t edge_linux_sys_inotify(
@@ -17479,8 +17749,7 @@ static int edge_linux_futex_timeout(
     if (clock_id != LINUX_CLOCK_MONOTONIC &&
         clock_id != LINUX_CLOCK_REALTIME)
         return -EDGE_LINUX_EINVAL;
-    if (edge_linux_copy_from_user(
-            context, &timeout, user_timeout, sizeof(timeout)) < 0)
+    if (edge_linux_import_timespec(context, user_timeout, &timeout) < 0)
         return -EDGE_LINUX_EFAULT;
     status = edge_linux_timespec_microseconds(&timeout, &timeout_us);
     if (status < 0) return status;
@@ -18863,6 +19132,11 @@ typedef struct edge_linux_utimbuf64 {
     int64_t modtime;
 } edge_linux_utimbuf64_t;
 
+typedef struct edge_linux_utimbuf32 {
+    int32_t actime;
+    int32_t modtime;
+} edge_linux_utimbuf32_t;
+
 static int edge_linux_timestamp_seconds(int64_t seconds, uint32_t *result) {
     if (!result) return -EDGE_LINUX_EINVAL;
     if (seconds < 0 || (uint64_t)seconds > UINT32_MAX)
@@ -18903,9 +19177,18 @@ static int edge_linux_timestamp_update_parse(
     if (utimbuf_form) {
         edge_linux_utimbuf64_t value;
         int status;
-        if (edge_linux_copy_from_user(
-                context, &value, user_times, sizeof(value)) < 0)
+        if (edge_linux_ia32_time32(context)) {
+            edge_linux_utimbuf32_t compat_value;
+            if (edge_linux_copy_from_user(
+                    context, &compat_value, user_times,
+                    sizeof(compat_value)) < 0)
+                return -EDGE_LINUX_EFAULT;
+            value.actime = compat_value.actime;
+            value.modtime = compat_value.modtime;
+        } else if (edge_linux_copy_from_user(
+                       context, &value, user_times, sizeof(value)) < 0) {
             return -EDGE_LINUX_EFAULT;
+        }
         status = edge_linux_timestamp_seconds(value.actime, &update->atime);
         if (status < 0) return status;
         status = edge_linux_timestamp_seconds(value.modtime, &update->mtime);
@@ -18915,9 +19198,20 @@ static int edge_linux_timestamp_update_parse(
     }
     if (timeval_form) {
         linux_timeval64_t values[2];
-        if (edge_linux_copy_from_user(
-                context, values, user_times, sizeof(values)) < 0)
+        if (edge_linux_ia32_time32(context)) {
+            linux_timeval32_t compat_values[2];
+            if (edge_linux_copy_from_user(
+                    context, compat_values, user_times,
+                    sizeof(compat_values)) < 0)
+                return -EDGE_LINUX_EFAULT;
+            for (uint32_t index = 0; index < 2u; ++index) {
+                values[index].tv_sec = compat_values[index].tv_sec;
+                values[index].tv_usec = compat_values[index].tv_usec;
+            }
+        } else if (edge_linux_copy_from_user(
+                       context, values, user_times, sizeof(values)) < 0) {
             return -EDGE_LINUX_EFAULT;
+        }
         for (uint32_t index = 0; index < 2u; ++index)
             if (values[index].tv_usec < 0 ||
                 values[index].tv_usec >= 1000000LL)
@@ -18933,9 +19227,20 @@ static int edge_linux_timestamp_update_parse(
     {
         linux_timespec64_t values[2];
         int status;
-        if (edge_linux_copy_from_user(
-                context, values, user_times, sizeof(values)) < 0)
+        if (edge_linux_ia32_time32(context)) {
+            linux_timespec32_t compat_values[2];
+            if (edge_linux_copy_from_user(
+                    context, compat_values, user_times,
+                    sizeof(compat_values)) < 0)
+                return -EDGE_LINUX_EFAULT;
+            for (uint32_t index = 0; index < 2u; ++index) {
+                values[index].tv_sec = compat_values[index].tv_sec;
+                values[index].tv_nsec = compat_values[index].tv_nsec;
+            }
+        } else if (edge_linux_copy_from_user(
+                       context, values, user_times, sizeof(values)) < 0) {
             return -EDGE_LINUX_EFAULT;
+        }
         status = edge_linux_timestamp_from_timespec(
             &values[0], update->atime, &update->atime,
             &update->set_atime, &update->explicit_value);

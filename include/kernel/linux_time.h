@@ -32,15 +32,30 @@ typedef struct linux_timeval64 {
     int64_t tv_usec;
 } linux_timeval64_t;
 
+typedef struct linux_timeval32 {
+    int32_t tv_sec;
+    int32_t tv_usec;
+} linux_timeval32_t;
+
 typedef struct linux_itimerspec64 {
     linux_timespec64_t it_interval;
     linux_timespec64_t it_value;
 } linux_itimerspec64_t;
 
+typedef struct linux_itimerspec32 {
+    linux_timespec32_t it_interval;
+    linux_timespec32_t it_value;
+} linux_itimerspec32_t;
+
 typedef struct linux_itimerval64 {
     linux_timeval64_t it_interval;
     linux_timeval64_t it_value;
 } linux_itimerval64_t;
+
+typedef struct linux_itimerval32 {
+    linux_timeval32_t it_interval;
+    linux_timeval32_t it_value;
+} linux_itimerval32_t;
 
 typedef struct linux_sigevent64 {
     uint64_t sigev_value;
@@ -73,10 +88,16 @@ _Static_assert(sizeof(linux_timespec32_t) == 8,
                "Linux 32-bit timespec ABI layout");
 _Static_assert(sizeof(linux_timeval64_t) == 16,
                "Linux 64-bit timeval ABI layout");
+_Static_assert(sizeof(linux_timeval32_t) == 8,
+               "Linux 32-bit timeval ABI layout");
 _Static_assert(sizeof(linux_itimerspec64_t) == 32,
                "Linux 64-bit itimerspec ABI layout");
+_Static_assert(sizeof(linux_itimerspec32_t) == 16,
+               "Linux 32-bit itimerspec ABI layout");
 _Static_assert(sizeof(linux_itimerval64_t) == 32,
                "Linux 64-bit itimerval ABI layout");
+_Static_assert(sizeof(linux_itimerval32_t) == 16,
+               "Linux 32-bit itimerval ABI layout");
 _Static_assert(sizeof(linux_sigevent64_t) == 64,
                "Linux 64-bit sigevent ABI layout");
 _Static_assert(sizeof(linux_sigevent32_t) == 64,
