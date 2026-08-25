@@ -22,7 +22,7 @@
 #define KERNEL_IO_URING_MAX_PENDING 128u
 #define KERNEL_IO_URING_MAX_FIXED_FILES 256u
 #define KERNEL_IO_URING_MAX_FIXED_BUFFERS 256u
-#define KERNEL_IO_URING_MAX_FIXED_BUFFER_PAGES 64u
+#define KERNEL_IO_URING_INLINE_FIXED_BUFFER_PAGES 64u
 #define KERNEL_IO_URING_MAX_PROVIDED_BUFFERS 256u
 #define KERNEL_IO_URING_MAX_BUFFER_GROUPS 256u
 #define KERNEL_IO_URING_MAX_PBUF_PAGES 256u
@@ -53,6 +53,9 @@ typedef struct kernel_io_uring_page_allocator {
                     uint64_t user_address,
                     kernel_io_uring_page_t *page);
     void (*release)(void *context, const kernel_io_uring_page_t *page);
+    void *(*allocate_metadata_pages)(void *context, uint32_t page_count);
+    void (*release_metadata_pages)(void *context, void *address,
+                                   uint32_t page_count);
     void *context;
 } kernel_io_uring_page_allocator_t;
 

@@ -140,9 +140,10 @@ typedef struct kernel_io_uring_fixed_buffer {
     uint64_t tag;
     uint64_t address_space;
     uint32_t page_count;
-    uint32_t reserved;
-    kernel_io_uring_page_t pages[
-        KERNEL_IO_URING_MAX_FIXED_BUFFER_PAGES];
+    uint32_t overflow_page_count;
+    kernel_io_uring_page_t *overflow_pages;
+    kernel_io_uring_page_t inline_pages[
+        KERNEL_IO_URING_INLINE_FIXED_BUFFER_PAGES];
 } kernel_io_uring_fixed_buffer_t;
 
 typedef struct kernel_io_uring_provided_buffer {
@@ -563,10 +564,79 @@ static void io_uring_release_pages(kernel_io_uring_page_t *pages,
     }
 }
 
+static kernel_io_uring_page_t *io_uring_fixed_buffer_page(
+        kernel_io_uring_fixed_buffer_t *buffer, uint32_t index) {
+    if (!buffer || index >= buffer->page_count) return 0;
+    if (index < KERNEL_IO_URING_INLINE_FIXED_BUFFER_PAGES)
+        return &buffer->inline_pages[index];
+    if (!buffer->overflow_pages) return 0;
+    return &buffer->overflow_pages[
+        index - KERNEL_IO_URING_INLINE_FIXED_BUFFER_PAGES];
+}
+
+static const kernel_io_uring_page_t *io_uring_fixed_buffer_page_const(
+        const kernel_io_uring_fixed_buffer_t *buffer, uint32_t index) {
+    if (!buffer || index >= buffer->page_count) return 0;
+    if (index < KERNEL_IO_URING_INLINE_FIXED_BUFFER_PAGES)
+        return &buffer->inline_pages[index];
+    if (!buffer->overflow_pages) return 0;
+    return &buffer->overflow_pages[
+        index - KERNEL_IO_URING_INLINE_FIXED_BUFFER_PAGES];
+}
+
+static void io_uring_fixed_buffer_release_overflow(
+        kernel_io_uring_fixed_buffer_t *buffer) {
+    if (!buffer || !buffer->overflow_pages) return;
+    g_io_uring_allocator.release_metadata_pages(
+        g_io_uring_allocator.context, buffer->overflow_pages,
+        buffer->overflow_page_count);
+    buffer->overflow_pages = 0;
+    buffer->overflow_page_count = 0u;
+}
+
+static int io_uring_fixed_buffer_allocate_overflow(
+        kernel_io_uring_fixed_buffer_t *buffer, uint32_t page_count) {
+    uint64_t bytes;
+    uint64_t metadata_pages;
+
+    if (!buffer) return -EDGE_LINUX_EINVAL;
+    if (page_count <= KERNEL_IO_URING_INLINE_FIXED_BUFFER_PAGES)
+        return 0;
+    if (!g_io_uring_allocator.allocate_metadata_pages ||
+        !g_io_uring_allocator.release_metadata_pages)
+        return -EDGE_LINUX_ENOMEM;
+    bytes = (uint64_t)(page_count -
+        KERNEL_IO_URING_INLINE_FIXED_BUFFER_PAGES) *
+        sizeof(kernel_io_uring_page_t);
+    metadata_pages = (bytes + KERNEL_IO_URING_PAGE_SIZE - 1u) /
+        KERNEL_IO_URING_PAGE_SIZE;
+    if (!metadata_pages || metadata_pages > UINT32_MAX)
+        return -EDGE_LINUX_E2BIG;
+    buffer->overflow_pages =
+        (kernel_io_uring_page_t *)
+        g_io_uring_allocator.allocate_metadata_pages(
+            g_io_uring_allocator.context, (uint32_t)metadata_pages);
+    if (!buffer->overflow_pages) return -EDGE_LINUX_ENOMEM;
+    buffer->overflow_page_count = (uint32_t)metadata_pages;
+    memset(buffer->overflow_pages, 0,
+           (size_t)metadata_pages * KERNEL_IO_URING_PAGE_SIZE);
+    return 0;
+}
+
 static void io_uring_fixed_buffer_release(
         kernel_io_uring_fixed_buffer_t *buffer) {
+    uint32_t page;
+
     if (!buffer) return;
-    io_uring_release_pages(buffer->pages, buffer->page_count);
+    for (page = 0; page < buffer->page_count; ++page) {
+        kernel_io_uring_page_t *entry =
+            io_uring_fixed_buffer_page(buffer, page);
+        if (entry && entry->address)
+            g_io_uring_allocator.release(
+                g_io_uring_allocator.context, entry);
+        if (entry) memset(entry, 0, sizeof(*entry));
+    }
+    io_uring_fixed_buffer_release_overflow(buffer);
     memset(buffer, 0, sizeof(*buffer));
 }
 
@@ -597,23 +667,38 @@ static int io_uring_fixed_buffer_pin(
     required_pages =
         (page_bytes + KERNEL_IO_URING_PAGE_SIZE - 1u) /
         KERNEL_IO_URING_PAGE_SIZE;
-    if (required_pages > KERNEL_IO_URING_MAX_FIXED_BUFFER_PAGES)
+    if (required_pages > UINT32_MAX)
         return -EDGE_LINUX_E2BIG;
     page_count = (uint32_t)required_pages;
-    result = io_uring_pin_user_pages(
-        destination->pages, address_space, page_address, page_count);
-    if (result < 0) {
-        memset(destination, 0, sizeof(*destination));
-        return result;
-    }
+    result = io_uring_fixed_buffer_allocate_overflow(
+        destination, page_count);
+    if (result < 0) goto fail;
     destination->page_count = page_count;
+    for (uint32_t page = 0; page < page_count; ++page) {
+        kernel_io_uring_page_t *entry =
+            io_uring_fixed_buffer_page(destination, page);
+
+        result = g_io_uring_allocator.pin_user(
+            g_io_uring_allocator.context, address_space,
+            page_address + (uint64_t)page * KERNEL_IO_URING_PAGE_SIZE,
+            entry);
+        if (result < 0 || !entry->address) {
+            if (result >= 0) result = -EDGE_LINUX_EFAULT;
+            goto fail;
+        }
+    }
     return 0;
+
+fail:
+    io_uring_fixed_buffer_release(destination);
+    return result;
 }
 
 static int io_uring_fixed_buffer_retain(
         kernel_io_uring_fixed_buffer_t *destination,
         const kernel_io_uring_fixed_buffer_t *source) {
     uint32_t page;
+    int result;
 
     if (!destination || !source) return -EDGE_LINUX_EINVAL;
     memset(destination, 0, sizeof(*destination));
@@ -621,17 +706,25 @@ static int io_uring_fixed_buffer_retain(
     destination->length = source->length;
     destination->tag = source->tag;
     destination->address_space = source->address_space;
+    result = io_uring_fixed_buffer_allocate_overflow(
+        destination, source->page_count);
+    if (result < 0) return result;
+    destination->page_count = source->page_count;
     for (page = 0; page < source->page_count; ++page) {
-        int result = g_io_uring_allocator.retain(
-            g_io_uring_allocator.context, &source->pages[page]);
+        const kernel_io_uring_page_t *source_page =
+            io_uring_fixed_buffer_page_const(source, page);
+        kernel_io_uring_page_t *destination_page =
+            io_uring_fixed_buffer_page(destination, page);
+
+        result = g_io_uring_allocator.retain(
+            g_io_uring_allocator.context, source_page);
         if (result < 0) {
-            io_uring_release_pages(destination->pages, page);
-            memset(destination, 0, sizeof(*destination));
+            destination->page_count = page;
+            io_uring_fixed_buffer_release(destination);
             return result;
         }
-        destination->pages[page] = source->pages[page];
+        *destination_page = *source_page;
     }
-    destination->page_count = source->page_count;
     return 0;
 }
 
@@ -2353,8 +2446,7 @@ int64_t kernel_io_uring_fixed_buffer_transfer(
         uint64_t length, int32_t descriptor, uint64_t offset,
         kernel_io_operation_t operation, uint32_t flags,
         void *user_registers) {
-    kernel_io_uring_page_t pages[
-        KERNEL_IO_URING_MAX_FIXED_BUFFER_PAGES] = {{0}};
+    kernel_io_uring_fixed_buffer_t snapshot;
     kernel_io_file_range_info_t information;
     kernel_io_uring_fixed_buffer_t *buffer;
     kernel_io_uring_t *ring;
@@ -2363,7 +2455,6 @@ int64_t kernel_io_uring_fixed_buffer_transfer(
     uint64_t transferred = 0u;
     uint64_t lock_flags;
     uint32_t first_page_offset;
-    uint32_t page_count = 0u;
     int positional;
     int writing;
     int64_t result;
@@ -2378,6 +2469,7 @@ int64_t kernel_io_uring_fixed_buffer_transfer(
          operation != KERNEL_IO_READ_POSITIONAL) ||
         flags)
         return KERNEL_IO_VECTOR_SCALAR_FALLBACK;
+    memset(&snapshot, 0, sizeof(snapshot));
 
     lock_flags = spin_lock_irqsave(&g_io_uring_lock);
     ring = io_uring_lookup_locked(ring_id);
@@ -2400,18 +2492,8 @@ int64_t kernel_io_uring_fixed_buffer_transfer(
         result = KERNEL_IO_VECTOR_SCALAR_FALLBACK;
         goto unlock_snapshot;
     }
-    for (page_count = 0;
-         page_count < buffer->page_count; ++page_count) {
-        result = g_io_uring_allocator.retain(
-            g_io_uring_allocator.context,
-            &buffer->pages[page_count]);
-        if (result < 0) {
-            io_uring_release_pages(pages, page_count);
-            page_count = 0u;
-            goto unlock_snapshot;
-        }
-        pages[page_count] = buffer->pages[page_count];
-    }
+    result = io_uring_fixed_buffer_retain(&snapshot, buffer);
+    if (result < 0) goto unlock_snapshot;
     buffer_offset = address - buffer->address;
     first_page_offset = (uint32_t)(buffer->address &
         (KERNEL_IO_URING_PAGE_SIZE - 1u));
@@ -2453,7 +2535,10 @@ unlock_snapshot:
         uint32_t chunk = KERNEL_IO_URING_PAGE_SIZE - within;
         int64_t completed;
 
-        if (page >= page_count || !pages[page].address) {
+        kernel_io_uring_page_t *entry =
+            io_uring_fixed_buffer_page(&snapshot, page);
+
+        if (!entry || !entry->address) {
             result = transferred ? (int)transferred :
                 -EDGE_LINUX_EFAULT;
             goto complete_transfer;
@@ -2462,16 +2547,16 @@ unlock_snapshot:
             chunk = (uint32_t)(length - transferred);
         if (information.kind == KERNEL_IO_FILE_PIPE && writing)
             completed = kernel_io_kernel_write_current(
-                descriptor, (uint8_t *)pages[page].address + within,
+                descriptor, (uint8_t *)entry->address + within,
                 chunk, user_registers);
         else if (writing)
             completed = kernel_io_file_range_write(
                 descriptor, current_offset,
-                (uint8_t *)pages[page].address + within, chunk);
+                (uint8_t *)entry->address + within, chunk);
         else
             completed = kernel_io_file_range_read(
                 descriptor, current_offset,
-                (uint8_t *)pages[page].address + within, chunk);
+                (uint8_t *)entry->address + within, chunk);
         if (completed < 0) {
             result = transferred ? (int)transferred : (int)completed;
             goto complete_transfer;
@@ -2491,7 +2576,7 @@ complete_transfer:
         kernel_io_file_range_complete_write(descriptor);
 
 release_snapshot:
-    io_uring_release_pages(pages, page_count);
+    io_uring_fixed_buffer_release(&snapshot);
     return result;
 }
 

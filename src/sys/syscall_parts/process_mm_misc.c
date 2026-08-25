@@ -12006,12 +12006,30 @@ static void x86_io_uring_page_release(
     process_user_mmap_release_backing_page((int)page->cookie);
 }
 
+static void *x86_io_uring_metadata_allocate(
+        void *context, uint32_t page_count) {
+    (void)context;
+    return arch_vm_alloc_pages(page_count);
+}
+
+static void x86_io_uring_metadata_release(
+        void *context, void *address, uint32_t page_count) {
+    uint8_t *base = (uint8_t *)address;
+
+    (void)context;
+    for (uint32_t page = 0; base && page < page_count; ++page)
+        arch_vm_free_page(base +
+            (uint64_t)page * KERNEL_IO_URING_PAGE_SIZE);
+}
+
 static const kernel_io_uring_page_allocator_t
     x86_io_uring_page_allocator = {
         .allocate = x86_io_uring_page_allocate,
         .retain = x86_io_uring_page_retain,
         .pin_user = x86_io_uring_page_pin_user,
         .release = x86_io_uring_page_release,
+        .allocate_metadata_pages = x86_io_uring_metadata_allocate,
+        .release_metadata_pages = x86_io_uring_metadata_release,
     };
 
 static int x86_posix_timer_current_identity(

@@ -33,6 +33,10 @@
 #define MAP_PRIVATE 2u
 #define MAP_ANONYMOUS 0x20u
 #define PAGE_SIZE 4096u
+#define FIXED_BUFFER_PAGES 66u
+#define FIXED_BUFFER_SIZE (FIXED_BUFFER_PAGES * PAGE_SIZE)
+#define FIRST_OFFSET (64u * PAGE_SIZE - 8u)
+#define SECOND_OFFSET (65u * PAGE_SIZE + 128u)
 #define IORING_ENTER_GETEVENTS 1u
 #define IORING_REGISTER_BUFFERS 0u
 #define IORING_UNREGISTER_BUFFERS 1u
@@ -239,7 +243,7 @@ static int run_probe(void) {
         goto cleanup;
     }
     page = (void *)(uintptr_t)raw_syscall6(
-        SYS_mmap, 0, PAGE_SIZE, PROT_READ | PROT_WRITE,
+        SYS_mmap, 0, FIXED_BUFFER_SIZE, PROT_READ | PROT_WRITE,
         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if ((long)(uintptr_t)page < 0 &&
         (long)(uintptr_t)page >= -4095) {
@@ -247,11 +251,11 @@ static int run_probe(void) {
         failures = 1;
         goto cleanup;
     }
-    bytes_zero(page, PAGE_SIZE);
+    bytes_zero(page, FIXED_BUFFER_SIZE);
     for (uint32_t index = 0; index < sizeof(first); ++index)
-        ((uint8_t *)page)[128u + index] = (uint8_t)first[index];
+        ((uint8_t *)page)[FIRST_OFFSET + index] = (uint8_t)first[index];
     buffer.base = (uint64_t)(uintptr_t)page;
-    buffer.length = PAGE_SIZE;
+    buffer.length = FIXED_BUFFER_SIZE;
     if (raw_syscall6(
             SYS_io_uring_register, ring, IORING_REGISTER_BUFFERS,
             (long)&buffer, 1, 0, 0) != 0) {
@@ -259,7 +263,7 @@ static int run_probe(void) {
         goto cleanup;
     }
     if (raw_syscall6(
-            SYS_munmap, (long)page, PAGE_SIZE, 0, 0, 0, 0) != 0) {
+            SYS_munmap, (long)page, FIXED_BUFFER_SIZE, 0, 0, 0, 0) != 0) {
         failures = 1;
         goto cleanup;
     }
@@ -275,7 +279,7 @@ static int run_probe(void) {
     failures += submit(
         ring, &parameters, sq_ring, cq_ring, sqes,
         IORING_OP_WRITE_FIXED, output_pipe[1],
-        buffer.base + 128u, sizeof(first), 0x5752495445ull) !=
+        buffer.base + FIRST_OFFSET, sizeof(first), 0x5752495445ull) !=
         (int)sizeof(first);
     bytes_zero(observed, sizeof(observed));
     failures += raw_syscall6(
@@ -289,12 +293,12 @@ static int run_probe(void) {
     failures += submit(
         ring, &parameters, sq_ring, cq_ring, sqes,
         IORING_OP_READ_FIXED, input_pipe[0],
-        buffer.base + 256u, sizeof(second), 0x52454144ull) !=
+        buffer.base + SECOND_OFFSET, sizeof(second), 0x52454144ull) !=
         (int)sizeof(second);
     failures += submit(
         ring, &parameters, sq_ring, cq_ring, sqes,
         IORING_OP_WRITE_FIXED, output_pipe[1],
-        buffer.base + 256u, sizeof(second), 0x564552494659ull) !=
+        buffer.base + SECOND_OFFSET, sizeof(second), 0x564552494659ull) !=
         (int)sizeof(second);
     bytes_zero(observed, sizeof(observed));
     failures += raw_syscall6(
@@ -316,7 +320,7 @@ cleanup:
         (void)raw_syscall6(SYS_close, output_pipe[1], 0, 0, 0, 0, 0);
     if (page)
         (void)raw_syscall6(
-            SYS_munmap, (long)page, PAGE_SIZE, 0, 0, 0, 0);
+            SYS_munmap, (long)page, FIXED_BUFFER_SIZE, 0, 0, 0, 0);
     if (sq_ring)
         (void)raw_syscall6(
             SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);

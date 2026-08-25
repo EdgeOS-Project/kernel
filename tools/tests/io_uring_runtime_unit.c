@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "kernel/io_uring_runtime.h"
@@ -425,6 +426,18 @@ static void test_page_release(void *context,
     --g_references[page->cookie];
 }
 
+static void *test_metadata_allocate(void *context, uint32_t page_count) {
+    (void)context;
+    return calloc(page_count, KERNEL_IO_URING_PAGE_SIZE);
+}
+
+static void test_metadata_release(
+        void *context, void *address, uint32_t page_count) {
+    (void)context;
+    (void)page_count;
+    free(address);
+}
+
 static uint32_t *page_u32(const kernel_io_uring_page_t *page,
                           uint32_t offset) {
     return (uint32_t *)((uint8_t *)page->address + offset);
@@ -436,6 +449,8 @@ int main(void) {
         .retain = test_page_retain,
         .pin_user = test_page_pin_user,
         .release = test_page_release,
+        .allocate_metadata_pages = test_metadata_allocate,
+        .release_metadata_pages = test_metadata_release,
     };
     struct edge_linux_io_uring_params parameters = {0};
     struct edge_linux_io_uring_sqe *mapped_sqe;

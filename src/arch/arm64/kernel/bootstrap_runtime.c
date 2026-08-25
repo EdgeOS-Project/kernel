@@ -11818,12 +11818,30 @@ static void arm64_io_uring_page_release(
     if (page && page->address) arch_vm_free_page(page->address);
 }
 
+static void *arm64_io_uring_metadata_allocate(
+        void *context, uint32_t page_count) {
+    (void)context;
+    return arch_vm_alloc_pages(page_count);
+}
+
+static void arm64_io_uring_metadata_release(
+        void *context, void *address, uint32_t page_count) {
+    uint8_t *base = (uint8_t *)address;
+
+    (void)context;
+    for (uint32_t page = 0; base && page < page_count; ++page)
+        arch_vm_free_page(base +
+            (uint64_t)page * KERNEL_IO_URING_PAGE_SIZE);
+}
+
 static const kernel_io_uring_page_allocator_t
     arm64_io_uring_page_allocator = {
         .allocate = arm64_io_uring_page_allocate,
         .retain = arm64_io_uring_page_retain,
         .pin_user = arm64_io_uring_page_pin_user,
         .release = arm64_io_uring_page_release,
+        .allocate_metadata_pages = arm64_io_uring_metadata_allocate,
+        .release_metadata_pages = arm64_io_uring_metadata_release,
     };
 
 static err_t socket_tcp_accept(void *argument, struct tcp_pcb *new_pcb, err_t error) {

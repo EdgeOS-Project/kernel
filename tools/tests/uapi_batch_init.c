@@ -205,6 +205,8 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "io_uring_pbuf_ring_abi_probe",
 #elif defined(UAPI_BATCH_IO_URING_READ_MULTISHOT_ONLY)
         "io_uring_read_multishot_abi_probe",
+#elif defined(UAPI_BATCH_IO_URING_FIXED_BUFFER_ONLY)
+        "io_uring_fixed_buffer_pin_abi_probe",
 #elif defined(UAPI_BATCH_BPF_COMPAT_ONLY)
         "ia32_bpf_uapi_probe",
         "x32_bpf_uapi_probe",

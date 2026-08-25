@@ -192,10 +192,11 @@ EDGEOS_ASSESSMENTS = [
             "scheduler-native enter suspension without an initial busy-poll window",
             "user-provided pinned parameter regions with writable-page validation, retained lifetime and registered wait arguments",
             "IORING_SETUP_NO_MMAP user-backed shared SQ/CQ storage and SQE storage with retained page lifetime",
+            "dynamically sized fixed-buffer page lists with retained transfer after the original mapping is removed",
         ],
         "missing": [
             "asynchronous worker execution",
-            "large fixed-buffer pin lists and pinned transfer for remaining descriptor families",
+            "pinned transfer for remaining descriptor families",
             "SQPOLL wait control",
             "remaining supported VFS and socket operations",
             "remaining ia32 and x32 semantic coverage across supported operations",
