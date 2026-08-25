@@ -344,6 +344,49 @@ START_ATTRIBUTES void _start(void) {
                 print_text("FAIL dh-kdf-sha512-value\n");
                 ++failures;
             }
+            {
+                unsigned char large_prime[384];
+                unsigned char large_shared[384];
+                long large_prime_key;
+
+                for (unsigned long index = 0;
+                     index < sizeof(large_prime); ++index)
+                    large_prime[index] = 0xffu;
+                large_prime_key = raw_syscall6(
+                    SYS_add_key, (long)"user",
+                    (long)"edge-dh-prime-3072", (long)large_prime,
+                    sizeof(large_prime), KEY_SPEC_SESSION_KEYRING, 0);
+                if (large_prime_key <= 0) {
+                    print_text("FAIL dh-large-add-prime\n");
+                    ++failures;
+                } else {
+                    parameters.prime = (int32_t)large_prime_key;
+                    failures += expect_result(
+                        "dh-large-size",
+                        raw_syscall6(
+                            SYS_keyctl, KEYCTL_DH_COMPUTE,
+                            (long)&parameters, 0, 0, 0, 0),
+                        sizeof(large_shared));
+                    failures += expect_result(
+                        "dh-large-compute",
+                        raw_syscall6(
+                            SYS_keyctl, KEYCTL_DH_COMPUTE,
+                            (long)&parameters, (long)large_shared,
+                            sizeof(large_shared), 0, 0),
+                        sizeof(large_shared));
+                    for (unsigned long index = 0;
+                         index + 1u < sizeof(large_shared); ++index) {
+                        if (large_shared[index] == 0u) continue;
+                        print_text("FAIL dh-large-leading-zero\n");
+                        ++failures;
+                        break;
+                    }
+                    if (large_shared[sizeof(large_shared) - 1u] != 2u) {
+                        print_text("FAIL dh-large-value\n");
+                        ++failures;
+                    }
+                }
+            }
         }
     }
 

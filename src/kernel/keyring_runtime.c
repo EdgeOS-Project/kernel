@@ -26,7 +26,7 @@
 #define KERNEL_KEY_SEARCH_DEPTH_MAX 8u
 #define KERNEL_KEY_WATCH_MAX 16u
 #define KERNEL_KEY_IOV_MAX 1024u
-#define KERNEL_KEY_DH_MAX_BYTES 256u
+#define KERNEL_KEY_DH_MAX_BYTES 1024u
 #define KERNEL_KEY_DH_MAX_LIMBS (KERNEL_KEY_DH_MAX_BYTES / 4u)
 #define KERNEL_KEY_KDF_MAX_OUTPUT 1024u
 #define KERNEL_KEY_KDF_MAX_OTHERINFO 64u
@@ -878,6 +878,11 @@ static int64_t keyctl_dh_compute(
         &base_length);
     if (result < 0) goto out_unlock_keys;
     key_unlock(&g_key_lock);
+
+    if (private_length > prime_length || base_length > prime_length) {
+        result = -EDGE_LINUX_EINVAL;
+        goto out_unlock_copy;
+    }
 
     limbs = (prime_length + 3u) / 4u;
     key_dh_load(g_key_dh_prime, prime_length, g_key_dh_modulus, limbs);

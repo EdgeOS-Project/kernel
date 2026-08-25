@@ -33,14 +33,14 @@ EDGEOS_ASSESSMENTS = [
             "Linux capability discovery with zero-filled extension bytes",
             "key notification watches with removal records and notification-pipe lifetime",
             "namespace-tagged named keyrings and same-description key isolation",
-            "raw finite-field key agreement through user-key payloads",
+            "raw finite-field key agreement through user-key payloads for standard groups through 8192 bits",
             "SP800-108 counter-mode SHA-224 and SHA-256 derivation with Linux output and other-info limits",
             "SP800-108 counter-mode SHA-1, SHA-384 and SHA-512 derivation when those digest algorithms are configured",
             "ia32 and x32 iovec and key-derivation parameter layouts",
         ],
         "missing": [
             "positive request-key construction authorization and successful instantiate, negate and reject operations",
-            "larger raw finite-field parameters and asymmetric key operations",
+            "nonstandard raw finite-field parameters above 8192 bits and asymmetric key operations",
         ],
         "runtime_tests": [
             "tools/tests/keyring_abi_probe.c",
@@ -56,8 +56,9 @@ EDGEOS_ASSESSMENTS = [
                 "capability byte layout, session keyring creation, object add, "
                 "search, read, update, revoke, links and named keyring "
                 "user-namespace isolation, plus notification watch setup, "
-                "delivery and removal records, plus raw finite-field result "
-                "layout, size negotiation and SHA-1, SHA-224, SHA-256, "
+                "delivery and removal records, plus raw finite-field results "
+                "through 8192-bit parameters, "
+                "size negotiation and SHA-1, SHA-224, SHA-256, "
                 "SHA-384 or SHA-512 KDF output, "
                 "plus ia32 and x32 boundary-checked iovec and KDF layouts"
             ),
