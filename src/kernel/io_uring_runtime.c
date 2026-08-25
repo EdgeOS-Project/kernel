@@ -28,6 +28,7 @@
 #define IORING_SETUP_CQE32           (1u << 11)
 #define IORING_SETUP_SINGLE_ISSUER   (1u << 12)
 #define IORING_SETUP_DEFER_TASKRUN   (1u << 13)
+#define IORING_SETUP_NO_MMAP         (1u << 14)
 #define IORING_SETUP_NO_SQARRAY      (1u << 16)
 #define IORING_SETUP_CQE_MIXED       (1u << 18)
 #define IORING_SETUP_SQE_MIXED       (1u << 19)
@@ -56,7 +57,8 @@
      IORING_SETUP_COOP_TASKRUN | IORING_SETUP_TASKRUN_FLAG | \
      IORING_SETUP_SQE128 | IORING_SETUP_CQE32 | \
      IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN | \
-     IORING_SETUP_NO_SQARRAY | IORING_SETUP_CQE_MIXED | \
+     IORING_SETUP_NO_MMAP | IORING_SETUP_NO_SQARRAY | \
+     IORING_SETUP_CQE_MIXED | \
      IORING_SETUP_SQE_MIXED | IORING_SETUP_SQ_REWIND)
 
 #define IORING_SQ_HEAD_OFFSET        0u
@@ -74,6 +76,20 @@
 #define IORING_CQ_OVERFLOW_OFFSET    16u
 #define IORING_CQ_FLAGS_OFFSET       20u
 #define IORING_CQ_CQES_OFFSET        64u
+
+#define IORING_SHARED_SQ_HEAD_OFFSET         0u
+#define IORING_SHARED_SQ_TAIL_OFFSET         4u
+#define IORING_SHARED_CQ_HEAD_OFFSET         8u
+#define IORING_SHARED_CQ_TAIL_OFFSET         12u
+#define IORING_SHARED_SQ_RING_MASK_OFFSET    16u
+#define IORING_SHARED_CQ_RING_MASK_OFFSET    20u
+#define IORING_SHARED_SQ_ENTRIES_OFFSET      24u
+#define IORING_SHARED_CQ_ENTRIES_OFFSET      28u
+#define IORING_SHARED_SQ_DROPPED_OFFSET      32u
+#define IORING_SHARED_SQ_FLAGS_OFFSET        36u
+#define IORING_SHARED_CQ_FLAGS_OFFSET        40u
+#define IORING_SHARED_CQ_OVERFLOW_OFFSET     44u
+#define IORING_SHARED_CQES_OFFSET            64u
 
 #define IO_URING_FIXED_FILES_PER_PAGE \
     (KERNEL_IO_URING_PAGE_SIZE / sizeof(kernel_fd_operation_lease_t))
@@ -187,6 +203,8 @@ typedef struct kernel_io_uring {
     uint32_t sq_ring_pages;
     uint32_t cq_ring_pages;
     uint32_t sqe_pages;
+    struct edge_linux_io_sqring_offsets sq_off;
+    struct edge_linux_io_cqring_offsets cq_off;
     int32_t event_id;
     uint8_t event_async_only;
     uint64_t next_pending_sequence;
@@ -349,6 +367,100 @@ static uint32_t io_uring_round_entries(uint32_t entries) {
     while (rounded < entries && rounded < KERNEL_IO_URING_MAX_CQ_ENTRIES)
         rounded <<= 1;
     return rounded;
+}
+
+static uint32_t io_uring_align_cacheline(uint64_t size) {
+    return (uint32_t)((size + 63u) & ~UINT64_C(63));
+}
+
+static void io_uring_layout_fill(
+        uint32_t setup_flags, uint32_t sq_entries, uint32_t cq_entries,
+        struct edge_linux_io_sqring_offsets *sq_off,
+        struct edge_linux_io_cqring_offsets *cq_off) {
+    uint64_t cq_bytes;
+
+    memset(sq_off, 0, sizeof(*sq_off));
+    memset(cq_off, 0, sizeof(*cq_off));
+    if (setup_flags & IORING_SETUP_NO_MMAP) {
+        sq_off->head = IORING_SHARED_SQ_HEAD_OFFSET;
+        sq_off->tail = IORING_SHARED_SQ_TAIL_OFFSET;
+        sq_off->ring_mask = IORING_SHARED_SQ_RING_MASK_OFFSET;
+        sq_off->ring_entries = IORING_SHARED_SQ_ENTRIES_OFFSET;
+        sq_off->flags = IORING_SHARED_SQ_FLAGS_OFFSET;
+        sq_off->dropped = IORING_SHARED_SQ_DROPPED_OFFSET;
+        cq_off->head = IORING_SHARED_CQ_HEAD_OFFSET;
+        cq_off->tail = IORING_SHARED_CQ_TAIL_OFFSET;
+        cq_off->ring_mask = IORING_SHARED_CQ_RING_MASK_OFFSET;
+        cq_off->ring_entries = IORING_SHARED_CQ_ENTRIES_OFFSET;
+        cq_off->overflow = IORING_SHARED_CQ_OVERFLOW_OFFSET;
+        cq_off->cqes = IORING_SHARED_CQES_OFFSET;
+        cq_off->flags = IORING_SHARED_CQ_FLAGS_OFFSET;
+        if (!(setup_flags & IORING_SETUP_NO_SQARRAY)) {
+            cq_bytes = (uint64_t)cq_off->cqes +
+                (uint64_t)cq_entries *
+                ((setup_flags & IORING_SETUP_CQE32) ? 32u : 16u);
+            sq_off->array = io_uring_align_cacheline(cq_bytes);
+        }
+        return;
+    }
+
+    sq_off->head = IORING_SQ_HEAD_OFFSET;
+    sq_off->tail = IORING_SQ_TAIL_OFFSET;
+    sq_off->ring_mask = IORING_SQ_RING_MASK_OFFSET;
+    sq_off->ring_entries = IORING_SQ_RING_ENTRIES_OFFSET;
+    sq_off->flags = IORING_SQ_FLAGS_OFFSET;
+    sq_off->dropped = IORING_SQ_DROPPED_OFFSET;
+    if (!(setup_flags & IORING_SETUP_NO_SQARRAY))
+        sq_off->array = IORING_SQ_ARRAY_OFFSET;
+    cq_off->head = IORING_CQ_HEAD_OFFSET;
+    cq_off->tail = IORING_CQ_TAIL_OFFSET;
+    cq_off->ring_mask = IORING_CQ_RING_MASK_OFFSET;
+    cq_off->ring_entries = IORING_CQ_RING_ENTRIES_OFFSET;
+    cq_off->overflow = IORING_CQ_OVERFLOW_OFFSET;
+    cq_off->cqes = IORING_CQ_CQES_OFFSET;
+    cq_off->flags = IORING_CQ_FLAGS_OFFSET;
+    (void)sq_entries;
+}
+
+static uint32_t io_uring_sq_ring_pages(
+        uint32_t setup_flags, uint32_t sq_entries, uint32_t cq_entries,
+        const struct edge_linux_io_sqring_offsets *sq_off,
+        const struct edge_linux_io_cqring_offsets *cq_off) {
+    uint64_t bytes;
+
+    if (setup_flags & IORING_SETUP_NO_MMAP) {
+        bytes = (uint64_t)cq_off->cqes +
+            (uint64_t)cq_entries *
+            ((setup_flags & IORING_SETUP_CQE32) ? 32u : 16u);
+        if (!(setup_flags & IORING_SETUP_NO_SQARRAY))
+            bytes = (uint64_t)sq_off->array +
+                (uint64_t)sq_entries * sizeof(uint32_t);
+        return io_uring_page_count(bytes);
+    }
+    bytes = (setup_flags & IORING_SETUP_NO_SQARRAY) ?
+        IORING_SQ_ARRAY_OFFSET :
+        IORING_SQ_ARRAY_OFFSET +
+            (uint64_t)sq_entries * sizeof(uint32_t);
+    return io_uring_page_count(bytes);
+}
+
+static uint32_t io_uring_cq_ring_pages(
+        uint32_t setup_flags, uint32_t cq_entries,
+        uint32_t shared_ring_pages,
+        const struct edge_linux_io_cqring_offsets *cq_off) {
+    if (setup_flags & IORING_SETUP_NO_MMAP)
+        return shared_ring_pages;
+    return io_uring_page_count(
+        (uint64_t)cq_off->cqes +
+        (uint64_t)cq_entries *
+            ((setup_flags & IORING_SETUP_CQE32) ? 32u : 16u));
+}
+
+static int io_uring_user_region_overflows(
+        uint64_t user_address, uint32_t page_count) {
+    uint64_t size = (uint64_t)page_count * KERNEL_IO_URING_PAGE_SIZE;
+
+    return user_address > UINT64_MAX - size;
 }
 
 static volatile uint32_t *io_uring_u32(kernel_io_uring_page_t *pages,
@@ -629,6 +741,8 @@ int kernel_io_uring_create_for_task(
     kernel_io_uring_task_registry_t *task_registry;
     uint32_t cq_entries;
     uint32_t slot;
+    uint64_t ring_user_address;
+    uint64_t sqe_user_address;
     uint64_t flags;
     int result;
 
@@ -678,6 +792,16 @@ int kernel_io_uring_create_for_task(
     if ((parameters->flags & IORING_SETUP_CQE_MIXED) && cq_entries < 2u)
         return -EDGE_LINUX_EOVERFLOW;
 
+    ring_user_address = parameters->cq_off.user_address;
+    sqe_user_address = parameters->sq_off.user_address;
+    if (parameters->flags & IORING_SETUP_NO_MMAP) {
+        if (!ring_user_address || !sqe_user_address)
+            return -EDGE_LINUX_EFAULT;
+        if ((ring_user_address | sqe_user_address) &
+            (KERNEL_IO_URING_PAGE_SIZE - 1u))
+            return -EDGE_LINUX_EINVAL;
+    }
+
     flags = spin_lock_irqsave(&g_io_uring_lock);
     if (!g_io_uring_allocator.allocate) {
         spin_unlock_irqrestore(&g_io_uring_lock, flags);
@@ -718,24 +842,49 @@ int kernel_io_uring_create_for_task(
     }
     ring->sq_entries = entries;
     ring->cq_entries = cq_entries;
-    ring->sq_ring_pages = io_uring_page_count(
-        (parameters->flags & IORING_SETUP_NO_SQARRAY) ?
-            IORING_SQ_ARRAY_OFFSET :
-            IORING_SQ_ARRAY_OFFSET +
-                (uint64_t)entries * sizeof(uint32_t));
-    ring->cq_ring_pages = io_uring_page_count(
-        IORING_CQ_CQES_OFFSET +
-        (uint64_t)cq_entries *
-            ((parameters->flags & IORING_SETUP_CQE32) ? 32u : 16u));
+    io_uring_layout_fill(
+        parameters->flags, entries, cq_entries,
+        &ring->sq_off, &ring->cq_off);
+    ring->sq_ring_pages = io_uring_sq_ring_pages(
+        parameters->flags, entries, cq_entries,
+        &ring->sq_off, &ring->cq_off);
+    ring->cq_ring_pages = io_uring_cq_ring_pages(
+        parameters->flags, cq_entries, ring->sq_ring_pages,
+        &ring->cq_off);
     ring->sqe_pages = io_uring_page_count(
         (uint64_t)entries *
             ((parameters->flags & IORING_SETUP_SQE128) ? 128u : 64u));
-    result = io_uring_allocate_pages(ring->sq_ring, ring->sq_ring_pages);
-    if (result == 0)
+    if ((parameters->flags & IORING_SETUP_NO_MMAP) &&
+        (io_uring_user_region_overflows(
+             ring_user_address, ring->sq_ring_pages) ||
+         io_uring_user_region_overflows(
+             sqe_user_address, ring->sqe_pages))) {
+        memset(ring, 0, sizeof(*ring));
+        spin_unlock_irqrestore(&g_io_uring_lock, flags);
+        return -EDGE_LINUX_EOVERFLOW;
+    }
+    if (parameters->flags & IORING_SETUP_NO_MMAP) {
+        result = io_uring_pin_user_pages(
+            ring->sq_ring, ring->owner_address_space,
+            ring_user_address, ring->sq_ring_pages);
+        if (result == 0)
+            result = io_uring_pin_user_pages(
+                ring->cq_ring, ring->owner_address_space,
+                ring_user_address, ring->cq_ring_pages);
+        if (result == 0)
+            result = io_uring_pin_user_pages(
+                ring->sqes, ring->owner_address_space,
+                sqe_user_address, ring->sqe_pages);
+    } else {
         result = io_uring_allocate_pages(
-            ring->cq_ring, ring->cq_ring_pages);
-    if (result == 0)
-        result = io_uring_allocate_pages(ring->sqes, ring->sqe_pages);
+            ring->sq_ring, ring->sq_ring_pages);
+        if (result == 0)
+            result = io_uring_allocate_pages(
+                ring->cq_ring, ring->cq_ring_pages);
+        if (result == 0)
+            result = io_uring_allocate_pages(
+                ring->sqes, ring->sqe_pages);
+    }
     if (result < 0) {
         io_uring_release_storage(ring);
         memset(ring, 0, sizeof(*ring));
@@ -743,12 +892,16 @@ int kernel_io_uring_create_for_task(
         return result;
     }
 
-    *io_uring_u32(ring->sq_ring, IORING_SQ_RING_MASK_OFFSET) =
+    if (parameters->flags & IORING_SETUP_NO_MMAP)
+        memset(io_uring_region_pointer(ring->sq_ring, 0u), 0,
+               IORING_SHARED_CQES_OFFSET);
+
+    *io_uring_u32(ring->sq_ring, ring->sq_off.ring_mask) =
         entries - 1u;
-    *io_uring_u32(ring->sq_ring, IORING_SQ_RING_ENTRIES_OFFSET) = entries;
-    *io_uring_u32(ring->cq_ring, IORING_CQ_RING_MASK_OFFSET) =
+    *io_uring_u32(ring->sq_ring, ring->sq_off.ring_entries) = entries;
+    *io_uring_u32(ring->cq_ring, ring->cq_off.ring_mask) =
         cq_entries - 1u;
-    *io_uring_u32(ring->cq_ring, IORING_CQ_RING_ENTRIES_OFFSET) = cq_entries;
+    *io_uring_u32(ring->cq_ring, ring->cq_off.ring_entries) = cq_entries;
 
     parameters->sq_entries = entries;
     parameters->cq_entries = cq_entries;
@@ -756,23 +909,12 @@ int kernel_io_uring_create_for_task(
                            IORING_FEAT_RW_CUR_POS |
                            IORING_FEAT_POLL_32BITS |
                            IORING_FEAT_CQE_SKIP;
-    memset(&parameters->sq_off, 0, sizeof(parameters->sq_off));
-    memset(&parameters->cq_off, 0, sizeof(parameters->cq_off));
-    parameters->sq_off.head = IORING_SQ_HEAD_OFFSET;
-    parameters->sq_off.tail = IORING_SQ_TAIL_OFFSET;
-    parameters->sq_off.ring_mask = IORING_SQ_RING_MASK_OFFSET;
-    parameters->sq_off.ring_entries = IORING_SQ_RING_ENTRIES_OFFSET;
-    parameters->sq_off.flags = IORING_SQ_FLAGS_OFFSET;
-    parameters->sq_off.dropped = IORING_SQ_DROPPED_OFFSET;
-    if (!(parameters->flags & IORING_SETUP_NO_SQARRAY))
-        parameters->sq_off.array = IORING_SQ_ARRAY_OFFSET;
-    parameters->cq_off.head = IORING_CQ_HEAD_OFFSET;
-    parameters->cq_off.tail = IORING_CQ_TAIL_OFFSET;
-    parameters->cq_off.ring_mask = IORING_CQ_RING_MASK_OFFSET;
-    parameters->cq_off.ring_entries = IORING_CQ_RING_ENTRIES_OFFSET;
-    parameters->cq_off.overflow = IORING_CQ_OVERFLOW_OFFSET;
-    parameters->cq_off.cqes = IORING_CQ_CQES_OFFSET;
-    parameters->cq_off.flags = IORING_CQ_FLAGS_OFFSET;
+    parameters->sq_off = ring->sq_off;
+    parameters->cq_off = ring->cq_off;
+    if (parameters->flags & IORING_SETUP_NO_MMAP) {
+        parameters->sq_off.user_address = sqe_user_address;
+        parameters->cq_off.user_address = ring_user_address;
+    }
     *ring_id = (int32_t)slot;
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     return 0;
@@ -4293,8 +4435,8 @@ uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us) {
             continue;
         }
         completion_count = *io_uring_u32(
-            ring->cq_ring, IORING_CQ_TAIL_OFFSET) -
-            *io_uring_u32(ring->cq_ring, IORING_CQ_HEAD_OFFSET);
+            ring->cq_ring, ring->cq_off.tail) -
+            *io_uring_u32(ring->cq_ring, ring->cq_off.head);
         completion_user_data = pending.user_data;
         if (pending.kind == IO_URING_PENDING_LINK_TIMEOUT) {
             spin_unlock_irqrestore(&g_io_uring_lock, flags);
@@ -4604,6 +4746,8 @@ uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us) {
 static int io_uring_region(kernel_io_uring_t *ring, uint64_t offset,
                            kernel_io_uring_page_t **pages,
                            uint32_t *page_count) {
+    if (ring->setup_flags & IORING_SETUP_NO_MMAP)
+        return -EDGE_LINUX_EINVAL;
     if (offset == KERNEL_IO_URING_OFF_SQ_RING) {
         *pages = ring->sq_ring;
         *page_count = ring->sq_ring_pages;
@@ -4757,6 +4901,8 @@ int kernel_io_uring_resize(
     kernel_io_uring_page_t
         old_sqes[KERNEL_IO_URING_MAX_SQE_PAGES];
     struct edge_linux_io_uring_params output;
+    struct edge_linux_io_sqring_offsets new_sq_off;
+    struct edge_linux_io_cqring_offsets new_cq_off;
     kernel_io_uring_t *ring;
     uint32_t entries;
     uint32_t cq_entries;
@@ -4769,6 +4915,8 @@ int kernel_io_uring_resize(
     uint32_t inherited_flags;
     uint32_t head;
     uint32_t tail;
+    uint64_t ring_user_address;
+    uint64_t sqe_user_address;
     uint64_t lock_flags;
     int result = 0;
 
@@ -4790,7 +4938,8 @@ int kernel_io_uring_resize(
 
     inherited_flags = ring->setup_flags &
         (IORING_SETUP_NO_SQARRAY | IORING_SETUP_SQE128 |
-         IORING_SETUP_CQE32 | IORING_SETUP_CQE_MIXED |
+         IORING_SETUP_CQE32 | IORING_SETUP_NO_MMAP |
+         IORING_SETUP_CQE_MIXED |
          IORING_SETUP_SQE_MIXED);
     entries = parameters->sq_entries;
     if (entries > KERNEL_IO_URING_MAX_SQ_ENTRIES) {
@@ -4832,15 +4981,28 @@ int kernel_io_uring_resize(
         goto unlock;
     }
 
-    sq_ring_pages = io_uring_page_count(
-        (inherited_flags & IORING_SETUP_NO_SQARRAY) ?
-            IORING_SQ_ARRAY_OFFSET :
-            IORING_SQ_ARRAY_OFFSET +
-                (uint64_t)entries * sizeof(uint32_t));
-    cq_ring_pages = io_uring_page_count(
-        IORING_CQ_CQES_OFFSET +
-        (uint64_t)cq_entries *
-            ((inherited_flags & IORING_SETUP_CQE32) ? 32u : 16u));
+    ring_user_address = parameters->cq_off.user_address;
+    sqe_user_address = parameters->sq_off.user_address;
+    if (inherited_flags & IORING_SETUP_NO_MMAP) {
+        if (!ring_user_address || !sqe_user_address) {
+            result = -EDGE_LINUX_EFAULT;
+            goto unlock;
+        }
+        if ((ring_user_address | sqe_user_address) &
+            (KERNEL_IO_URING_PAGE_SIZE - 1u)) {
+            result = -EDGE_LINUX_EINVAL;
+            goto unlock;
+        }
+    }
+
+    io_uring_layout_fill(
+        inherited_flags, entries, cq_entries,
+        &new_sq_off, &new_cq_off);
+    sq_ring_pages = io_uring_sq_ring_pages(
+        inherited_flags, entries, cq_entries,
+        &new_sq_off, &new_cq_off);
+    cq_ring_pages = io_uring_cq_ring_pages(
+        inherited_flags, cq_entries, sq_ring_pages, &new_cq_off);
     sqe_pages = io_uring_page_count(
         (uint64_t)entries *
             ((inherited_flags & IORING_SETUP_SQE128) ? 128u : 64u));
@@ -4850,12 +5012,20 @@ int kernel_io_uring_resize(
         result = -EDGE_LINUX_ENOMEM;
         goto unlock;
     }
+    if ((inherited_flags & IORING_SETUP_NO_MMAP) &&
+        (io_uring_user_region_overflows(
+             ring_user_address, sq_ring_pages) ||
+         io_uring_user_region_overflows(
+             sqe_user_address, sqe_pages))) {
+        result = -EDGE_LINUX_EOVERFLOW;
+        goto unlock;
+    }
 
     head = __atomic_load_n(
-        io_uring_u32(ring->sq_ring, IORING_SQ_HEAD_OFFSET),
+        io_uring_u32(ring->sq_ring, ring->sq_off.head),
         __ATOMIC_ACQUIRE);
     tail = __atomic_load_n(
-        io_uring_u32(ring->sq_ring, IORING_SQ_TAIL_OFFSET),
+        io_uring_u32(ring->sq_ring, ring->sq_off.tail),
         __ATOMIC_ACQUIRE);
     if (tail - head > entries) {
         result = -EDGE_LINUX_EOVERFLOW;
@@ -4863,10 +5033,10 @@ int kernel_io_uring_resize(
     }
     {
         uint32_t cq_head = __atomic_load_n(
-            io_uring_u32(ring->cq_ring, IORING_CQ_HEAD_OFFSET),
+            io_uring_u32(ring->cq_ring, ring->cq_off.head),
             __ATOMIC_ACQUIRE);
         uint32_t cq_tail = __atomic_load_n(
-            io_uring_u32(ring->cq_ring, IORING_CQ_TAIL_OFFSET),
+            io_uring_u32(ring->cq_ring, ring->cq_off.tail),
             __ATOMIC_ACQUIRE);
         if (cq_tail - cq_head > cq_entries) {
             result = -EDGE_LINUX_EOVERFLOW;
@@ -4874,18 +5044,32 @@ int kernel_io_uring_resize(
         }
     }
 
-    result = io_uring_allocate_pages(new_sq_ring, sq_ring_pages);
-    if (result == 0)
-        result = io_uring_allocate_pages(new_cq_ring, cq_ring_pages);
-    if (result == 0)
-        result = io_uring_allocate_pages(new_sqes, sqe_pages);
+    if (inherited_flags & IORING_SETUP_NO_MMAP) {
+        result = io_uring_pin_user_pages(
+            new_sq_ring, ring->owner_address_space,
+            ring_user_address, sq_ring_pages);
+        if (result == 0)
+            result = io_uring_pin_user_pages(
+                new_cq_ring, ring->owner_address_space,
+                ring_user_address, cq_ring_pages);
+        if (result == 0)
+            result = io_uring_pin_user_pages(
+                new_sqes, ring->owner_address_space,
+                sqe_user_address, sqe_pages);
+    } else {
+        result = io_uring_allocate_pages(new_sq_ring, sq_ring_pages);
+        if (result == 0)
+            result = io_uring_allocate_pages(new_cq_ring, cq_ring_pages);
+        if (result == 0)
+            result = io_uring_allocate_pages(new_sqes, sqe_pages);
+    }
     if (result < 0) goto release_new;
 
-    *io_uring_u32(new_sq_ring, IORING_SQ_RING_MASK_OFFSET) = entries - 1u;
-    *io_uring_u32(new_sq_ring, IORING_SQ_RING_ENTRIES_OFFSET) = entries;
-    *io_uring_u32(new_cq_ring, IORING_CQ_RING_MASK_OFFSET) =
+    *io_uring_u32(new_sq_ring, new_sq_off.ring_mask) = entries - 1u;
+    *io_uring_u32(new_sq_ring, new_sq_off.ring_entries) = entries;
+    *io_uring_u32(new_cq_ring, new_cq_off.ring_mask) =
         cq_entries - 1u;
-    *io_uring_u32(new_cq_ring, IORING_CQ_RING_ENTRIES_OFFSET) = cq_entries;
+    *io_uring_u32(new_cq_ring, new_cq_off.ring_entries) = cq_entries;
 
     for (uint32_t sequence = head; sequence != tail; ++sequence) {
         uint32_t destination = sequence & (entries - 1u);
@@ -4894,52 +5078,52 @@ int kernel_io_uring_resize(
             (inherited_flags & IORING_SETUP_SQE128) ? 128u : 64u;
         if (!(inherited_flags & IORING_SETUP_NO_SQARRAY)) {
             source = *io_uring_u32(
-                ring->sq_ring, IORING_SQ_ARRAY_OFFSET +
+                ring->sq_ring, ring->sq_off.array +
                 source * sizeof(uint32_t));
             if (source >= ring->sq_entries) {
                 *io_uring_u32(
-                    new_sq_ring, IORING_SQ_ARRAY_OFFSET +
+                    new_sq_ring, new_sq_off.array +
                     destination * sizeof(uint32_t)) = UINT32_MAX;
                 continue;
             }
             *io_uring_u32(
-                new_sq_ring, IORING_SQ_ARRAY_OFFSET +
+                new_sq_ring, new_sq_off.array +
                 destination * sizeof(uint32_t)) = destination;
         }
         io_uring_region_copy(
             new_sqes, destination * stride,
             ring->sqes, source * stride, stride);
     }
-    *io_uring_u32(new_sq_ring, IORING_SQ_HEAD_OFFSET) = head;
-    *io_uring_u32(new_sq_ring, IORING_SQ_TAIL_OFFSET) = tail;
+    *io_uring_u32(new_sq_ring, new_sq_off.head) = head;
+    *io_uring_u32(new_sq_ring, new_sq_off.tail) = tail;
 
     {
         uint32_t cq_head = *io_uring_u32(
-            ring->cq_ring, IORING_CQ_HEAD_OFFSET);
+            ring->cq_ring, ring->cq_off.head);
         uint32_t cq_tail = *io_uring_u32(
-            ring->cq_ring, IORING_CQ_TAIL_OFFSET);
+            ring->cq_ring, ring->cq_off.tail);
         uint32_t stride =
             (inherited_flags & IORING_SETUP_CQE32) ? 32u : 16u;
         for (uint32_t sequence = cq_head;
              sequence != cq_tail; ++sequence)
             io_uring_region_copy(
-                new_cq_ring, IORING_CQ_CQES_OFFSET +
+                new_cq_ring, new_cq_off.cqes +
                     (sequence & (cq_entries - 1u)) * stride,
-                ring->cq_ring, IORING_CQ_CQES_OFFSET +
+                ring->cq_ring, ring->cq_off.cqes +
                     (sequence & (ring->cq_entries - 1u)) * stride,
                 stride);
-        *io_uring_u32(new_cq_ring, IORING_CQ_HEAD_OFFSET) = cq_head;
-        *io_uring_u32(new_cq_ring, IORING_CQ_TAIL_OFFSET) = cq_tail;
+        *io_uring_u32(new_cq_ring, new_cq_off.head) = cq_head;
+        *io_uring_u32(new_cq_ring, new_cq_off.tail) = cq_tail;
     }
-    *io_uring_u32(new_sq_ring, IORING_SQ_DROPPED_OFFSET) =
-        *io_uring_u32(ring->sq_ring, IORING_SQ_DROPPED_OFFSET);
-    *io_uring_u32(new_sq_ring, IORING_SQ_FLAGS_OFFSET) =
-        *io_uring_u32(ring->sq_ring, IORING_SQ_FLAGS_OFFSET) |
+    *io_uring_u32(new_sq_ring, new_sq_off.dropped) =
+        *io_uring_u32(ring->sq_ring, ring->sq_off.dropped);
+    *io_uring_u32(new_sq_ring, new_sq_off.flags) =
+        *io_uring_u32(ring->sq_ring, ring->sq_off.flags) |
         IORING_SQ_NEED_WAKEUP | IORING_SQ_TASKRUN;
-    *io_uring_u32(new_cq_ring, IORING_CQ_OVERFLOW_OFFSET) =
-        *io_uring_u32(ring->cq_ring, IORING_CQ_OVERFLOW_OFFSET);
-    *io_uring_u32(new_cq_ring, IORING_CQ_FLAGS_OFFSET) =
-        *io_uring_u32(ring->cq_ring, IORING_CQ_FLAGS_OFFSET);
+    *io_uring_u32(new_cq_ring, new_cq_off.overflow) =
+        *io_uring_u32(ring->cq_ring, ring->cq_off.overflow);
+    *io_uring_u32(new_cq_ring, new_cq_off.flags) =
+        *io_uring_u32(ring->cq_ring, ring->cq_off.flags);
 
     old_sq_ring_pages = ring->sq_ring_pages;
     old_cq_ring_pages = ring->cq_ring_pages;
@@ -4961,6 +5145,8 @@ int kernel_io_uring_resize(
     ring->sq_ring_pages = sq_ring_pages;
     ring->cq_ring_pages = cq_ring_pages;
     ring->sqe_pages = sqe_pages;
+    ring->sq_off = new_sq_off;
+    ring->cq_off = new_cq_off;
     io_uring_release_pages(old_sq_ring, old_sq_ring_pages);
     io_uring_release_pages(old_cq_ring, old_cq_ring_pages);
     io_uring_release_pages(old_sqes, old_sqe_pages);
@@ -4969,23 +5155,12 @@ int kernel_io_uring_resize(
     output.sq_entries = entries;
     output.cq_entries = cq_entries;
     output.flags |= inherited_flags;
-    memset(&output.sq_off, 0, sizeof(output.sq_off));
-    memset(&output.cq_off, 0, sizeof(output.cq_off));
-    output.sq_off.head = IORING_SQ_HEAD_OFFSET;
-    output.sq_off.tail = IORING_SQ_TAIL_OFFSET;
-    output.sq_off.ring_mask = IORING_SQ_RING_MASK_OFFSET;
-    output.sq_off.ring_entries = IORING_SQ_RING_ENTRIES_OFFSET;
-    output.sq_off.flags = IORING_SQ_FLAGS_OFFSET;
-    output.sq_off.dropped = IORING_SQ_DROPPED_OFFSET;
-    if (!(inherited_flags & IORING_SETUP_NO_SQARRAY))
-        output.sq_off.array = IORING_SQ_ARRAY_OFFSET;
-    output.cq_off.head = IORING_CQ_HEAD_OFFSET;
-    output.cq_off.tail = IORING_CQ_TAIL_OFFSET;
-    output.cq_off.ring_mask = IORING_CQ_RING_MASK_OFFSET;
-    output.cq_off.ring_entries = IORING_CQ_RING_ENTRIES_OFFSET;
-    output.cq_off.overflow = IORING_CQ_OVERFLOW_OFFSET;
-    output.cq_off.cqes = IORING_CQ_CQES_OFFSET;
-    output.cq_off.flags = IORING_CQ_FLAGS_OFFSET;
+    output.sq_off = new_sq_off;
+    output.cq_off = new_cq_off;
+    if (inherited_flags & IORING_SETUP_NO_MMAP) {
+        output.sq_off.user_address = sqe_user_address;
+        output.cq_off.user_address = ring_user_address;
+    }
     *parameters = output;
     result = 0;
     goto unlock;
@@ -5028,8 +5203,8 @@ int kernel_io_uring_take_submission(
         spin_unlock_irqrestore(&g_io_uring_lock, flags);
         return -EDGE_LINUX_EBADFD;
     }
-    head_pointer = io_uring_u32(ring->sq_ring, IORING_SQ_HEAD_OFFSET);
-    tail_pointer = io_uring_u32(ring->sq_ring, IORING_SQ_TAIL_OFFSET);
+    head_pointer = io_uring_u32(ring->sq_ring, ring->sq_off.head);
+    tail_pointer = io_uring_u32(ring->sq_ring, ring->sq_off.tail);
     if (ring->setup_flags & IORING_SETUP_SQ_REWIND) {
         if (submission_offset >= ring->sq_entries) {
             spin_unlock_irqrestore(&g_io_uring_lock, flags);
@@ -5046,7 +5221,7 @@ int kernel_io_uring_take_submission(
         }
         if (tail - head > ring->sq_entries) {
             dropped_pointer = io_uring_u32(
-                ring->sq_ring, IORING_SQ_DROPPED_OFFSET);
+                ring->sq_ring, ring->sq_off.dropped);
             __atomic_add_fetch(dropped_pointer, 1u, __ATOMIC_RELAXED);
             __atomic_store_n(head_pointer, tail, __ATOMIC_RELEASE);
             spin_unlock_irqrestore(&g_io_uring_lock, flags);
@@ -5058,12 +5233,12 @@ int kernel_io_uring_take_submission(
     } else {
         sqe_index = __atomic_load_n(
             io_uring_u32(ring->sq_ring,
-                IORING_SQ_ARRAY_OFFSET +
+                ring->sq_off.array +
                 (head & (ring->sq_entries - 1u)) * sizeof(uint32_t)),
             __ATOMIC_RELAXED);
         if (sqe_index >= ring->sq_entries) {
             dropped_pointer = io_uring_u32(
-                ring->sq_ring, IORING_SQ_DROPPED_OFFSET);
+                ring->sq_ring, ring->sq_off.dropped);
             __atomic_add_fetch(dropped_pointer, 1u, __ATOMIC_RELAXED);
             __atomic_store_n(head_pointer, head + 1u, __ATOMIC_RELEASE);
             spin_unlock_irqrestore(&g_io_uring_lock, flags);
@@ -5121,8 +5296,8 @@ static int io_uring_completion_publish_locked(
     uint32_t stride;
     int mixed_extended;
     if (!ring) return -EDGE_LINUX_EBADF;
-    head_pointer = io_uring_u32(ring->cq_ring, IORING_CQ_HEAD_OFFSET);
-    tail_pointer = io_uring_u32(ring->cq_ring, IORING_CQ_TAIL_OFFSET);
+    head_pointer = io_uring_u32(ring->cq_ring, ring->cq_off.head);
+    tail_pointer = io_uring_u32(ring->cq_ring, ring->cq_off.tail);
     head = __atomic_load_n(head_pointer, __ATOMIC_ACQUIRE);
     tail = __atomic_load_n(tail_pointer, __ATOMIC_RELAXED);
     mixed_extended =
@@ -5135,7 +5310,7 @@ static int io_uring_completion_publish_locked(
         (tail & (ring->cq_entries - 1u)) == ring->cq_entries - 1u) {
         completion = io_uring_region_pointer(
             ring->cq_ring,
-            IORING_CQ_CQES_OFFSET +
+            ring->cq_off.cqes +
                 (ring->cq_entries - 1u) * 16u);
         memset(completion, 0, sizeof(*completion));
         completion->flags = IORING_CQE_F_SKIP;
@@ -5145,7 +5320,7 @@ static int io_uring_completion_publish_locked(
     if (tail - head + required > ring->cq_entries)
         return -EDGE_LINUX_EBUSY;
     stride = (ring->setup_flags & IORING_SETUP_CQE32) ? 32u : 16u;
-    offset = IORING_CQ_CQES_OFFSET +
+    offset = ring->cq_off.cqes +
              (tail & (ring->cq_entries - 1u)) * stride;
     completion = io_uring_region_pointer(ring->cq_ring, offset);
     memset(completion, 0, stride);
@@ -5187,12 +5362,12 @@ static int io_uring_completion_add_extended_locked(
         ring->completion_overflow[slot].extra2 = extra2;
         ++ring->completion_overflow_count;
         __atomic_or_fetch(
-            io_uring_u32(ring->sq_ring, IORING_SQ_FLAGS_OFFSET),
+            io_uring_u32(ring->sq_ring, ring->sq_off.flags),
             IORING_SQ_CQ_OVERFLOW, __ATOMIC_RELEASE);
         return 0;
     }
     overflow_pointer = io_uring_u32(
-        ring->cq_ring, IORING_CQ_OVERFLOW_OFFSET);
+        ring->cq_ring, ring->cq_off.overflow);
     __atomic_add_fetch(overflow_pointer, 1u, __ATOMIC_RELAXED);
     return -EDGE_LINUX_EBUSY;
 }
@@ -5225,7 +5400,7 @@ static uint32_t io_uring_completion_overflow_flush_locked(
     }
     if (ring && !ring->completion_overflow_count)
         __atomic_and_fetch(
-            io_uring_u32(ring->sq_ring, IORING_SQ_FLAGS_OFFSET),
+            io_uring_u32(ring->sq_ring, ring->sq_off.flags),
             ~IORING_SQ_CQ_OVERFLOW, __ATOMIC_RELEASE);
     return flushed;
 }
@@ -5321,8 +5496,8 @@ uint32_t kernel_io_uring_completion_count(int32_t ring_id) {
     uint32_t result = 0;
     ring = io_uring_lookup_locked(ring_id);
     if (ring) {
-        head_pointer = io_uring_u32(ring->cq_ring, IORING_CQ_HEAD_OFFSET);
-        tail_pointer = io_uring_u32(ring->cq_ring, IORING_CQ_TAIL_OFFSET);
+        head_pointer = io_uring_u32(ring->cq_ring, ring->cq_off.head);
+        tail_pointer = io_uring_u32(ring->cq_ring, ring->cq_off.tail);
         result = __atomic_load_n(tail_pointer, __ATOMIC_ACQUIRE) -
                  __atomic_load_n(head_pointer, __ATOMIC_RELAXED);
     }

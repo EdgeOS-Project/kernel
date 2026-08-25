@@ -488,12 +488,90 @@ int main(void) {
     kernel_io_uring_capabilities(
         &capability_features, &capability_setup_flags);
     assert(capability_features == parameters.features);
-    assert(capability_setup_flags == 0x1d3fd8u);
+    assert(capability_setup_flags == 0x1d7fd8u);
     assert(parameters.sq_entries == 8);
     assert(parameters.cq_entries == 16);
     assert(kernel_io_uring_completion_capacity(ring_id) == 16u);
     assert(parameters.sq_off.array == 64);
     assert(parameters.cq_off.cqes == 64);
+
+    {
+        struct edge_linux_io_uring_params no_mmap = {
+            .flags = 1u << 14,
+            .sq_off.user_address = 0x701000u,
+            .cq_off.user_address = 0x700000u,
+        };
+        struct edge_linux_io_uring_params missing = {
+            .flags = 1u << 14,
+            .sq_off.user_address = 0x701000u,
+        };
+        struct edge_linux_io_uring_params misaligned = {
+            .flags = 1u << 14,
+            .sq_off.user_address = 0x701000u,
+            .cq_off.user_address = 0x700001u,
+        };
+        struct edge_linux_io_uring_sqe *user_sqes =
+            (struct edge_linux_io_uring_sqe *)(void *)g_pages[15];
+        struct edge_linux_io_uring_cqe *user_cqes;
+        struct edge_linux_io_uring_sqe taken;
+        uint32_t consumed = 0u;
+        int32_t layout_result = -1;
+        int32_t no_mmap_ring = -1;
+
+        assert(kernel_io_uring_create(
+                   8, &missing, &no_mmap_ring) == -EDGE_LINUX_EFAULT);
+        assert(kernel_io_uring_create(
+                   8, &misaligned, &no_mmap_ring) == -EDGE_LINUX_EINVAL);
+        assert(kernel_io_uring_create(
+                   8, &no_mmap, &no_mmap_ring) == 0);
+        assert(no_mmap.sq_off.user_address == 0x701000u);
+        assert(no_mmap.cq_off.user_address == 0x700000u);
+        assert(no_mmap.sq_off.head == 0u);
+        assert(no_mmap.sq_off.tail == 4u);
+        assert(no_mmap.cq_off.head == 8u);
+        assert(no_mmap.cq_off.tail == 12u);
+        assert(no_mmap.sq_off.ring_mask == 16u);
+        assert(no_mmap.cq_off.ring_mask == 20u);
+        assert(no_mmap.sq_off.ring_entries == 24u);
+        assert(no_mmap.cq_off.ring_entries == 28u);
+        assert(no_mmap.sq_off.dropped == 32u);
+        assert(no_mmap.sq_off.flags == 36u);
+        assert(no_mmap.cq_off.flags == 40u);
+        assert(no_mmap.cq_off.overflow == 44u);
+        assert(no_mmap.cq_off.cqes == 64u);
+        assert(no_mmap.sq_off.array == 320u);
+        assert(*page_u32(&(kernel_io_uring_page_t){
+                   .address = g_pages[14]}, no_mmap.sq_off.ring_mask) == 7u);
+        assert(*page_u32(&(kernel_io_uring_page_t){
+                   .address = g_pages[14]}, no_mmap.cq_off.ring_mask) == 15u);
+        assert(kernel_io_uring_mmap_info(
+                   no_mmap_ring, KERNEL_IO_URING_OFF_SQ_RING,
+                   KERNEL_IO_URING_PAGE_SIZE, &pages) ==
+               -EDGE_LINUX_EINVAL);
+
+        memset(user_sqes, 0, sizeof(*user_sqes));
+        user_sqes[0].opcode = 0u;
+        user_sqes[0].descriptor = -1;
+        user_sqes[0].user_data = 0x4e4f4d4d4150ull;
+        *page_u32(&(kernel_io_uring_page_t){
+            .address = g_pages[14]}, no_mmap.sq_off.array) = 0u;
+        *page_u32(&(kernel_io_uring_page_t){
+            .address = g_pages[14]}, no_mmap.sq_off.tail) = 1u;
+        assert(kernel_io_uring_take_submission(
+                   no_mmap_ring, 0u, 1u, &taken,
+                   &consumed, &layout_result) == 0);
+        assert(consumed == 1u && layout_result == 0);
+        assert(taken.user_data == 0x4e4f4d4d4150ull);
+        assert(kernel_io_uring_completion_add(
+                   no_mmap_ring, taken.user_data, 0, 0u) == 0);
+        user_cqes = (struct edge_linux_io_uring_cqe *)(void *)(
+            g_pages[14] + no_mmap.cq_off.cqes);
+        assert(*page_u32(&(kernel_io_uring_page_t){
+                   .address = g_pages[14]}, no_mmap.cq_off.tail) == 1u);
+        assert(user_cqes[0].user_data == 0x4e4f4d4d4150ull);
+        assert(user_cqes[0].result == 0);
+        kernel_io_uring_release(no_mmap_ring);
+    }
     assert(kernel_io_uring_clock_now(
                ring_id, 100u, 200u, &selected_time) == 0);
     assert(selected_time == 100u);

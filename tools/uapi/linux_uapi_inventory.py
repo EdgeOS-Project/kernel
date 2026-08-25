@@ -191,12 +191,12 @@ EDGEOS_ASSESSMENTS = [
             "NAPI busy-poll configuration, state handback, static receive-context IDs and bounded enter polling",
             "scheduler-native enter suspension without an initial busy-poll window",
             "user-provided pinned parameter regions with writable-page validation, retained lifetime and registered wait arguments",
+            "IORING_SETUP_NO_MMAP user-backed shared SQ/CQ storage and SQE storage with retained page lifetime",
         ],
         "missing": [
             "asynchronous worker execution",
             "large fixed-buffer pin lists and pinned transfer for remaining descriptor families",
             "SQPOLL wait control",
-            "application-provided ring memory",
             "provided-buffer page pinning and owner-mm-independent lifetime across unmap and exit",
             "incremental buffer-ring READ_MULTISHOT with partial-buffer BUF_MORE lifetime",
             "remaining supported VFS and socket operations",
@@ -229,6 +229,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/io_uring_resize_abi_probe.c",
             "tools/tests/io_uring_napi_abi_probe.c",
             "tools/tests/io_uring_user_region_abi_probe.c",
+            "tools/tests/io_uring_no_mmap_abi_probe.c",
             "tools/tests/compat_io_uring_iovec_uapi_probe.c",
             "tools/tests/io_uring_runtime_unit.c",
         ],
@@ -302,6 +303,8 @@ EDGEOS_ASSESSMENTS = [
                 "busy-poll state and enter behavior verified on EdgeOS, plus "
                 "user-provided pinned parameter regions, handback, duplicate "
                 "registration, mmap rejection and registered wait arguments, "
+                "plus IORING_SETUP_NO_MMAP shared-ring and SQE user memory, "
+                "page-alignment errors, direct NOP submission and CQE layout, "
                 "plus ia32 and x32 fixed-buffer registration, setup and mapped "
                 "ring layouts, NOP SQE/CQE completion and READV iovec boundary "
                 "handling"
