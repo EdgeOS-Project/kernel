@@ -31,8 +31,10 @@
 #define KERNEL_BPF_MAP_TYPE_ARRAY_OF_MAPS 12u
 #define KERNEL_BPF_MAP_TYPE_HASH_OF_MAPS 13u
 #define KERNEL_BPF_MAP_TYPE_DEVMAP 14u
+#define KERNEL_BPF_MAP_TYPE_SOCKMAP 15u
 #define KERNEL_BPF_MAP_TYPE_CPUMAP 16u
 #define KERNEL_BPF_MAP_TYPE_XSKMAP 17u
+#define KERNEL_BPF_MAP_TYPE_SOCKHASH 18u
 #define KERNEL_BPF_MAP_TYPE_QUEUE 22u
 #define KERNEL_BPF_MAP_TYPE_STACK 23u
 #define KERNEL_BPF_MAP_TYPE_DEVMAP_HASH 25u
@@ -217,6 +219,9 @@ int kernel_bpf_devmap_update(int object_id, const void *key,
 int kernel_bpf_xskmap_update(int object_id, const void *key,
                              const void *value, uint64_t flags,
                              int socket_status);
+int kernel_bpf_socket_map_update(int object_id, const void *key,
+                                 int32_t socket_descriptor,
+                                 uint64_t flags);
 int kernel_bpf_perf_event_array_update(int object_id, const void *key,
                                        int32_t event_id, uint64_t flags);
 int kernel_bpf_cgroup_array_update(int object_id, const void *key,

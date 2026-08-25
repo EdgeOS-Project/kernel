@@ -57,6 +57,8 @@ static kernel_file_description_entry_t
     g_file_descriptions[KERNEL_FILE_DESCRIPTION_CAPACITY];
 static spinlock_t g_file_description_lock;
 static kernel_file_description_ops_t g_file_description_ops;
+static kernel_file_description_close_observer_fn
+    g_file_description_close_observer;
 static uint64_t g_file_description_identity_sequence;
 static volatile uint32_t g_file_description_initialization_state;
 
@@ -322,10 +324,29 @@ int kernel_file_description_runtime_initialize(
         &g_file_description_ops, sizeof(g_file_description_ops));
     spinlock_init(&g_file_description_lock);
     g_file_description_identity_sequence = 0;
+    g_file_description_close_observer = 0;
     g_file_description_ops = *ops;
     __atomic_store_n(&g_file_description_initialization_state, 2u,
                      __ATOMIC_RELEASE);
     return 0;
+}
+
+int kernel_file_description_close_observer_register(
+        kernel_file_description_close_observer_fn observer) {
+    uint64_t irq_flags;
+    int result = 0;
+
+    if (!observer) return -EDGE_LINUX_EINVAL;
+    if (!file_description_runtime_ready())
+        return -EDGE_LINUX_ENODEV;
+    irq_flags = spin_lock_irqsave(&g_file_description_lock);
+    if (g_file_description_close_observer &&
+        g_file_description_close_observer != observer)
+        result = -EDGE_LINUX_EBUSY;
+    else
+        g_file_description_close_observer = observer;
+    spin_unlock_irqrestore(&g_file_description_lock, irq_flags);
+    return result;
 }
 
 int kernel_file_description_create(
@@ -412,6 +433,7 @@ int kernel_file_description_release_begin(
     uint32_t slot = 0;
     uint16_t generation = 0;
     int run_detach = 0;
+    kernel_file_description_close_observer_fn close_observer = 0;
     int result = 0;
 
     if (!release) return -EDGE_LINUX_EINVAL;
@@ -441,9 +463,13 @@ int kernel_file_description_release_begin(
             release->active = 1u;
             run_detach =
                 file_description_request_detach_locked(entry);
+            close_observer = g_file_description_close_observer;
         }
     }
     spin_unlock_irqrestore(&g_file_description_lock, irq_flags);
+
+    if (close_observer)
+        close_observer(identity);
 
     if (run_detach)
         file_description_drain_detach(

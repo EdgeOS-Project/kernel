@@ -370,12 +370,13 @@ EDGEOS_ASSESSMENTS = [
             "CPU-map creation, CPU and queue validation, entry lifecycle, optional program descriptor rejection and Linux unsupported-operation behavior",
             "device-map and device-hash creation, network-interface validation, entry lifecycle, capacity, iteration and program descriptor behavior",
             "XSK-map creation, syscall lookup rejection, socket descriptor and family error behavior, deletion, key iteration and unsupported batch behavior",
+            "socket-array and socket-hash creation, connected stream socket insertion, cookie lookup, close-time removal, replacement, deletion and key iteration semantics",
             "instruction-array creation, offset update and zeroing behavior, lookup, iteration, freeze and unsupported delete and batch operations",
             "resizable-hash creation flag and size-hint validation, element operations, iteration, lookup-and-delete, batch operations and freeze behavior",
             "ia32 and x32 fixed-width map-create and map-element attribute layouts",
         ],
         "missing": [
-            "remaining map types, stack-trace helper population, CPU-map packet redirect execution, device-map packet redirect execution and AF_XDP socket-backed XSK-map entries",
+            "remaining map types, socket-map program attachment and redirect execution, stack-trace helper population, CPU-map packet redirect execution, device-map packet redirect execution and AF_XDP socket-backed XSK-map entries",
             "resizable-hash concurrent dynamic resizing and full Linux key and value size range",
             "remaining specialized map-family concurrency semantics, plus instruction-array verifier and jump-table integration",
             "additional attachment families and program types",
@@ -389,6 +390,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/bpf_cpumap_abi_probe.c",
             "tools/tests/bpf_devmap_abi_probe.c",
             "tools/tests/bpf_xskmap_abi_probe.c",
+            "tools/tests/bpf_sockmap_abi_probe.c",
             "tools/tests/bpf_insn_array_abi_probe.c",
             "tools/tests/bpf_rhash_abi_probe.c",
             "tools/tests/bpf_stack_trace_abi_probe.c",
@@ -418,6 +420,9 @@ EDGEOS_ASSESSMENTS = [
                 "XSK-map creation, syscall lookup rejection, socket "
                 "descriptor and family errors, deletion, key iteration and "
                 "unsupported batch behavior, "
+                "socket-array and socket-hash creation, connected stream "
+                "socket insertion, cookie lookup, close-time removal, "
+                "replacement, deletion and key iteration, "
                 "instruction-array creation, offset updates, lookup, "
                 "iteration, freeze and unsupported delete and batch behavior, "
                 "resizable-hash creation flags, size hints, element and batch "

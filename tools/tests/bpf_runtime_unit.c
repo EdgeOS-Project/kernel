@@ -7,7 +7,10 @@
 #include <string.h>
 
 #include "kernel/bpf_runtime.h"
+#include "kernel/fd_runtime.h"
+#include "kernel/file_description_runtime.h"
 #include "kernel/linux_errno.h"
+#include "kernel/socket_runtime.h"
 
 typedef struct test_page_region {
     uint8_t *base;
@@ -78,6 +81,91 @@ static uint32_t g_ringbuf_notifications;
 static uint64_t g_monotonic_time_us;
 static uint64_t g_cgroup_references_released[8];
 static uint32_t g_cgroup_reference_release_count;
+static uint32_t g_socket_lease_references;
+static kernel_file_description_close_observer_fn g_close_observer;
+
+int kernel_file_description_close_observer_register(
+        kernel_file_description_close_observer_fn observer) {
+    if (!observer) return -EDGE_LINUX_EINVAL;
+    if (g_close_observer && g_close_observer != observer)
+        return -EDGE_LINUX_EBUSY;
+    g_close_observer = observer;
+    return 0;
+}
+
+static uint64_t *test_lease_words(kernel_fd_operation_lease_t *lease) {
+    return (uint64_t *)(void *)lease;
+}
+
+static const uint64_t *test_lease_words_const(
+        const kernel_fd_operation_lease_t *lease) {
+    return (const uint64_t *)(const void *)lease;
+}
+
+int kernel_fd_operation_acquire(
+        int32_t descriptor, kernel_fd_operation_lease_t *lease) {
+    uint64_t *words;
+
+    if (!lease || descriptor != 10) return -EDGE_LINUX_EBADF;
+    words = test_lease_words(lease);
+    if (words[0]) return -EDGE_LINUX_EBUSY;
+    words[0] = 1u;
+    words[1] = 0x1122334455667788ull;
+    ++g_socket_lease_references;
+    return 0;
+}
+
+const void *kernel_fd_operation_view(
+        const kernel_fd_operation_lease_t *lease) {
+    return lease && test_lease_words_const(lease)[0] ? lease : 0;
+}
+
+int kernel_fd_operation_socket_supported(
+        const kernel_fd_operation_lease_t *lease) {
+    return kernel_fd_operation_view(lease) != 0;
+}
+
+int64_t kernel_fd_operation_socket(
+        kernel_fd_operation_lease_t *lease,
+        const kernel_socket_operation_request_t *request,
+        kernel_socket_operation_result_t *result) {
+    if (!kernel_fd_operation_view(lease) || !request || !result ||
+        request->operation != KERNEL_SOCKET_OPERATION_DESCRIBE)
+        return -EDGE_LINUX_EINVAL;
+    memset(result, 0, sizeof(*result));
+    result->output.description.domain = EDGE_LINUX_AF_UNIX;
+    result->output.description.type = EDGE_LINUX_SOCK_STREAM;
+    result->output.description.connected = 1u;
+    return 0;
+}
+
+int kernel_fd_operation_description_id(
+        const kernel_fd_operation_lease_t *lease,
+        uint64_t *description_id) {
+    if (!kernel_fd_operation_view(lease) || !description_id)
+        return -EDGE_LINUX_EINVAL;
+    *description_id = test_lease_words_const(lease)[1];
+    return 0;
+}
+
+int kernel_fd_operation_move(kernel_fd_operation_lease_t *destination,
+                             kernel_fd_operation_lease_t *source) {
+    if (!destination || !source || destination == source ||
+        kernel_fd_operation_view(destination) ||
+        !kernel_fd_operation_view(source))
+        return -EDGE_LINUX_EINVAL;
+    memcpy(destination, source, sizeof(*destination));
+    memset(source, 0, sizeof(*source));
+    return 0;
+}
+
+int kernel_fd_operation_release(kernel_fd_operation_lease_t *lease) {
+    if (!kernel_fd_operation_view(lease)) return -EDGE_LINUX_EINVAL;
+    memset(lease, 0, sizeof(*lease));
+    assert(g_socket_lease_references > 0u);
+    --g_socket_lease_references;
+    return 0;
+}
 
 uint64_t boottime_monotonic_us(void) {
     return ++g_monotonic_time_us;
@@ -2172,6 +2260,95 @@ static void test_pinned_object_lifetime(void) {
     assert(kernel_bpf_map_info(second, &info) < 0);
 }
 
+static void test_socket_maps(void) {
+    kernel_bpf_map_create_request_t request = {
+        .type = KERNEL_BPF_MAP_TYPE_SOCKMAP,
+        .key_size = sizeof(uint32_t),
+        .value_size = sizeof(uint64_t),
+        .max_entries = 3u,
+    };
+    uint32_t array_key = 1u;
+    uint32_t next_key = UINT32_MAX;
+    uint64_t cookie = 0u;
+    int map;
+
+    g_socket_lease_references = 0u;
+    map = kernel_bpf_map_create(&request);
+    assert(map >= 0);
+    assert(kernel_bpf_map_lookup(map, &array_key, &cookie) ==
+           -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_socket_map_update(
+               map, &array_key, 10, KERNEL_BPF_EXIST) ==
+           -EDGE_LINUX_ENOENT);
+    assert(g_socket_lease_references == 0u);
+    assert(kernel_bpf_socket_map_update(
+               map, &array_key, 10, KERNEL_BPF_ANY) == 0);
+    assert(g_socket_lease_references == 0u);
+    assert(kernel_bpf_map_lookup(map, &array_key, &cookie) == 0);
+    assert(cookie == 0x1122334455667788ull);
+    assert(g_close_observer != 0);
+    g_close_observer(cookie);
+    assert(kernel_bpf_map_lookup(map, &array_key, &cookie) ==
+           -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_socket_map_update(
+               map, &array_key, 10, KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_socket_map_update(
+               map, &array_key, 10, KERNEL_BPF_NOEXIST) ==
+           -EDGE_LINUX_EEXIST);
+    assert(g_socket_lease_references == 0u);
+    assert(kernel_bpf_socket_map_update(
+               map, &array_key, 10, KERNEL_BPF_ANY) == 0);
+    assert(g_socket_lease_references == 0u);
+    assert(kernel_bpf_map_next_key(map, &array_key, &next_key) == 0);
+    assert(next_key == 2u);
+    assert(kernel_bpf_map_delete(map, &array_key) == 0);
+    assert(g_socket_lease_references == 0u);
+    assert(kernel_bpf_map_delete(map, &array_key) ==
+           -EDGE_LINUX_EINVAL);
+    kernel_bpf_object_release(map);
+
+    request.value_size = sizeof(uint32_t);
+    map = kernel_bpf_map_create(&request);
+    assert(map >= 0);
+    assert(kernel_bpf_socket_map_update(
+               map, &array_key, 10, KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_lookup(map, &array_key, &cookie) ==
+           -EDGE_LINUX_ENOSPC);
+    kernel_bpf_object_release(map);
+    assert(g_socket_lease_references == 0u);
+
+    request.type = KERNEL_BPF_MAP_TYPE_SOCKHASH;
+    request.key_size = 8u;
+    request.value_size = sizeof(uint64_t);
+    request.max_entries = 2u;
+    map = kernel_bpf_map_create(&request);
+    assert(map >= 0);
+    {
+        uint64_t first_key = 0x101u;
+        uint64_t second_key = 0x202u;
+        uint64_t output_key = 0u;
+
+        assert(kernel_bpf_socket_map_update(
+                   map, &first_key, 10, KERNEL_BPF_ANY) == 0);
+        assert(kernel_bpf_socket_map_update(
+                   map, &second_key, 10, KERNEL_BPF_ANY) == 0);
+        assert(g_socket_lease_references == 0u);
+        assert(kernel_bpf_map_lookup(map, &first_key, &cookie) == 0);
+        assert(cookie == 0x1122334455667788ull);
+        assert(kernel_bpf_map_next_key(map, 0, &output_key) == 0);
+        assert(output_key == first_key);
+        assert(kernel_bpf_map_delete(map, &first_key) == 0);
+        assert(g_socket_lease_references == 0u);
+        assert(kernel_bpf_map_delete(map, &first_key) ==
+               -EDGE_LINUX_ENOENT);
+    }
+    kernel_bpf_object_release(map);
+    assert(g_socket_lease_references == 0u);
+
+    request.key_size = 513u;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_E2BIG);
+}
+
 int main(void) {
     test_array_map();
     test_cgroup_array();
@@ -2201,6 +2378,7 @@ int main(void) {
     test_btf_objects();
     test_ids();
     test_pinned_object_lifetime();
+    test_socket_maps();
     puts("bpf_runtime_unit: PASS");
     return 0;
 }

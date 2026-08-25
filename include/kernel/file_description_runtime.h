@@ -40,6 +40,9 @@ typedef struct kernel_file_description_ops {
     void *context;
 } kernel_file_description_ops_t;
 
+typedef void (*kernel_file_description_close_observer_fn)(
+    uint64_t identity);
+
 typedef struct kernel_file_description_release {
     uint64_t identity;
     uint32_t handle;
@@ -102,6 +105,8 @@ kernel_file_description_identity_locator(uint64_t identity) {
  */
 int kernel_file_description_runtime_initialize(
     const kernel_file_description_ops_t *ops);
+int kernel_file_description_close_observer_register(
+    kernel_file_description_close_observer_fn observer);
 
 /*
  * A successful create transfers owned_payload to the runtime. On failure the

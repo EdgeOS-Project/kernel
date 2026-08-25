@@ -5734,7 +5734,19 @@ static int64_t edge_linux_bpf_map_element(
                 goto out;
             }
         }
-        if (info.type == KERNEL_BPF_MAP_TYPE_DEVMAP ||
+        if (info.type == KERNEL_BPF_MAP_TYPE_SOCKMAP ||
+            info.type == KERNEL_BPF_MAP_TYPE_SOCKHASH) {
+            uint64_t socket_value = 0u;
+
+            memcpy(&socket_value, value, info.value_size);
+            if (socket_value > INT32_MAX) {
+                status = -EDGE_LINUX_EINVAL;
+                goto out;
+            }
+            status = kernel_bpf_socket_map_update(
+                object_id, key, (int32_t)socket_value,
+                attribute.flags);
+        } else if (info.type == KERNEL_BPF_MAP_TYPE_DEVMAP ||
             info.type == KERNEL_BPF_MAP_TYPE_DEVMAP_HASH) {
             edge_net_device_snapshot_t snapshot;
             uint32_t ifindex;
@@ -5912,6 +5924,8 @@ static int64_t edge_linux_bpf_map_batch(
         info.type == KERNEL_BPF_MAP_TYPE_DEVMAP ||
         info.type == KERNEL_BPF_MAP_TYPE_DEVMAP_HASH ||
         info.type == KERNEL_BPF_MAP_TYPE_XSKMAP ||
+        info.type == KERNEL_BPF_MAP_TYPE_SOCKMAP ||
+        info.type == KERNEL_BPF_MAP_TYPE_SOCKHASH ||
         info.type == KERNEL_BPF_MAP_TYPE_INSN_ARRAY)
         return -EDGE_LINUX_ENOTSUPP;
     if (!info.key_size) return -EDGE_LINUX_ENOTSUPP;
