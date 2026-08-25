@@ -15,13 +15,18 @@
 #define SYS_sched_yield 24
 #define SYS_getpid 39
 #define SYS_exit 60
+#define SYS_uname 63
 #define SYS_getuid 102
 #define SYS_getgid 104
+#define SYS_sched_getscheduler 145
 #define SYS_gettid 186
+#define SYS_sched_getaffinity 204
 #define SYS_timerfd_create 283
 #define SYS_eventfd2 290
 #define SYS_epoll_create1 291
 #define SYS_pidfd_open 434
+#define SYS_getcpu 309
+#define SYS_getrandom 318
 
 #define EBADF 9
 #define EFAULT 14
@@ -118,6 +123,11 @@ static int expect_descriptor(const char *name, long descriptor) {
 
 START_ATTRIBUTES void _start(void) {
     static const char pointer_marker = '\n';
+    static uint8_t utsname[390];
+    static uint8_t random_bytes[16];
+    static uint64_t affinity;
+    static uint32_t cpu;
+    static uint32_t node;
     long native_pid = raw_syscall6(SYS_getpid, 0, 0, 0, 0, 0, 0);
     long native_tid = raw_syscall6(SYS_gettid, 0, 0, 0, 0, 0, 0);
     int failures = 0;
@@ -134,6 +144,23 @@ START_ATTRIBUTES void _start(void) {
         raw_syscall6(SYS_getgid, 0, 0, 0, 0, 0, 0));
     failures += expect_result(
         "sched-yield", x32_syscall(SYS_sched_yield, 0, 0), 0);
+    failures += expect_result(
+        "uname", x32_syscall(SYS_uname, (long)utsname, 0), 0);
+    failures += expect_result(
+        "sched-getscheduler",
+        x32_syscall(SYS_sched_getscheduler, 0, 0), 0);
+    failures += expect_result(
+        "sched-getaffinity", raw_syscall6(
+            X32_SYSCALL_BIT | SYS_sched_getaffinity, 0, sizeof(affinity),
+            (long)&affinity, 0, 0, 0), sizeof(affinity));
+    failures += expect_result(
+        "getcpu", raw_syscall6(
+            X32_SYSCALL_BIT | SYS_getcpu, (long)&cpu, (long)&node,
+            0, 0, 0, 0), 0);
+    failures += expect_result(
+        "getrandom", raw_syscall6(
+            X32_SYSCALL_BIT | SYS_getrandom, (long)random_bytes,
+            sizeof(random_bytes), 0, 0, 0, 0), sizeof(random_bytes));
     failures += expect_result(
         "close-invalid", x32_syscall(SYS_close, -1, 0), -EBADF);
     failures += expect_result(

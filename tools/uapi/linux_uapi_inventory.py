@@ -460,6 +460,8 @@ COVERAGE_ASSESSMENTS = [
             "getrusage layouts, and "
             "native x32 64-bit time, interval-timer and timerfd layouts, and "
             "basic file, path, offset, stat, pipe and UNIX socket I/O, and "
+            "UTS data, CPU placement, affinity and random "
+            "data queries, and "
             "unassigned-number ENOSYS behavior"
         )),
     coverage_assessment(
