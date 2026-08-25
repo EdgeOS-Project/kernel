@@ -8,6 +8,8 @@ bits 64
 %define FRAME_CS_OFFSET 144
 
 extern isr_exception_handler
+extern process_x86_compat_capture_user_segments
+extern process_x86_compat_user_segments
 global isr_return_from_frame
 
 %macro PUSH_GPRS 0
@@ -63,11 +65,20 @@ exception_common:
     mov ax, KERNEL_DS
     mov ds, ax
     mov es, ax
+    cmp word [rsp + FRAME_CS_OFFSET], USER32_CS
+    jne .segments_captured
+    call process_x86_compat_capture_user_segments
+.segments_captured:
     mov rdi, rsp
     call isr_exception_handler
 isr_return_from_frame:
     ; No maskable interrupt may observe user GS while CPL is still zero.
     cli
+    cmp word [rsp + FRAME_CS_OFFSET], USER32_CS
+    jne .compat_segments_ready
+    call process_x86_compat_user_segments
+    mov [rsp + 120], rax
+.compat_segments_ready:
     test byte [rsp + FRAME_CS_OFFSET], 3
     jz .kernel_segments_ready
     cmp word [rsp + FRAME_CS_OFFSET], USER32_CS
@@ -87,10 +98,25 @@ isr_return_from_frame:
     mov es, ax
 .segments_ready:
     POP_GPRS
-    add rsp, 16
-    test byte [rsp + 8], 3
-    jz .iret
+    test byte [rsp + 24], 3
+    jz .kernel_return
+    cmp word [rsp + 24], USER32_CS
+    jne .native_user_return
     swapgs
+    push rax
+    mov eax, [rsp + 8]
+    mov fs, ax
+    shr eax, 16
+    mov gs, ax
+    pop rax
+    add rsp, 16
+    jmp .iret
+.native_user_return:
+    add rsp, 16
+    swapgs
+    jmp .iret
+.kernel_return:
+    add rsp, 16
 .iret:
     iretq
 

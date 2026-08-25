@@ -8523,6 +8523,10 @@ int process_fork(const edge_trap_frame_t *parent_tf,
     }
     child->fs_base = parent->fs_base;
     child->gs_base = parent->gs_base;
+    memcpy(child->x86_tls_entries, parent->x86_tls_entries,
+           sizeof(child->x86_tls_entries));
+    child->x86_fs_selector = parent->x86_fs_selector;
+    child->x86_gs_selector = parent->x86_gs_selector;
     task_copy_credentials(child, parent);
     task_copy_caps(child, parent);
     if (task_copy_groups(child, parent) < 0) {
@@ -8813,6 +8817,10 @@ static int process_fork_shared_vm_impl(const edge_trap_frame_t *parent_tf,
     }
     child->fs_base = parent->fs_base;
     child->gs_base = parent->gs_base;
+    memcpy(child->x86_tls_entries, parent->x86_tls_entries,
+           sizeof(child->x86_tls_entries));
+    child->x86_fs_selector = parent->x86_fs_selector;
+    child->x86_gs_selector = parent->x86_gs_selector;
     task_copy_credentials(child, parent);
     task_copy_caps(child, parent);
     if (task_copy_groups(child, parent) < 0) {
@@ -9023,6 +9031,10 @@ int process_clone_thread(const edge_trap_frame_t *parent_tf) {
         child->user_vmas = vm_parent->user_vmas;
     child->fs_base = parent->fs_base;
     child->gs_base = parent->gs_base;
+    memcpy(child->x86_tls_entries, parent->x86_tls_entries,
+           sizeof(child->x86_tls_entries));
+    child->x86_fs_selector = parent->x86_fs_selector;
+    child->x86_gs_selector = parent->x86_gs_selector;
     task_copy_credentials(child, parent);
     task_copy_caps(child, parent);
     if (task_copy_groups(child, parent) < 0) {
@@ -11642,7 +11654,11 @@ int process_exec_reset_current(
     if (configuration->reset_architecture_tls) {
         cur->fs_base = 0;
         cur->gs_base = 0;
+        memset(cur->x86_tls_entries, 0, sizeof(cur->x86_tls_entries));
+        cur->x86_fs_selector = 0;
+        cur->x86_gs_selector = 0;
         process_x86_ldt_reset(cur);
+        process_x86_tls_activate(cur);
         edgeos_x86_64_set_fs_base(0);
         edgeos_x86_64_set_user_gs_base(0);
     }
@@ -11682,6 +11698,75 @@ uint64_t process_get_gs_base(void) {
 }
 
 #define EDGE_X86_LDT_ENTRY_COUNT 8192u
+#define EDGE_X86_TLS_ENTRY_MIN 12u
+#define EDGE_X86_TLS_ENTRY_MAX 14u
+
+int process_x86_tls_set(task_t *task, uint32_t entry, uint64_t descriptor) {
+    if (!task || entry < EDGE_X86_TLS_ENTRY_MIN ||
+        entry > EDGE_X86_TLS_ENTRY_MAX)
+        return -1;
+    task->x86_tls_entries[entry - EDGE_X86_TLS_ENTRY_MIN] = descriptor;
+    if (task == process_current_task()) gdt_load_tls(task->x86_tls_entries);
+    return 0;
+}
+
+int process_x86_tls_get(task_t *task, uint32_t entry, uint64_t *descriptor) {
+    if (!task || !descriptor || entry < EDGE_X86_TLS_ENTRY_MIN ||
+        entry > EDGE_X86_TLS_ENTRY_MAX)
+        return -1;
+    *descriptor = task->x86_tls_entries[entry - EDGE_X86_TLS_ENTRY_MIN];
+    return 0;
+}
+
+void process_x86_tls_activate(task_t *task) {
+    gdt_load_tls(task ? task->x86_tls_entries : 0);
+}
+
+void process_x86_compat_capture_user_segments(void) {
+    task_t *task = process_current_task();
+    uint16_t fs;
+    uint16_t gs;
+
+    if (!task || task->linux_abi != EDGE_LINUX_TASK_ABI_IA32) return;
+    __asm__ __volatile__("mov %%fs, %0" : "=rm"(fs));
+    __asm__ __volatile__("mov %%gs, %0" : "=rm"(gs));
+    task->x86_fs_selector = fs;
+    task->x86_gs_selector = gs;
+}
+
+uint32_t process_x86_compat_user_segments(void) {
+    task_t *task = process_current_task();
+    if (!task || task->linux_abi != EDGE_LINUX_TASK_ABI_IA32) return 0;
+    return task->x86_fs_selector |
+           ((uint32_t)task->x86_gs_selector << 16);
+}
+
+static int process_x86_compat_selector_valid(uint16_t selector) {
+    uint32_t index;
+
+    if (selector <= 3u) return 1;
+    if ((selector & 3u) != 3u) return 0;
+    index = selector >> 3;
+    if (selector & 4u) return index < EDGE_X86_LDT_ENTRY_COUNT;
+    if (selector == USER_CS || selector == USER_DS ||
+        selector == USER32_CS || selector == USER32_DS)
+        return 1;
+    return index >= EDGE_X86_TLS_ENTRY_MIN &&
+           index <= EDGE_X86_TLS_ENTRY_MAX;
+}
+
+int process_x86_compat_set_user_segments(uint16_t fs, uint16_t gs) {
+    task_t *task = process_current_task();
+
+    if (!task || task->linux_abi != EDGE_LINUX_TASK_ABI_IA32 ||
+        !process_x86_compat_selector_valid(fs) ||
+        !process_x86_compat_selector_valid(gs))
+        return -1;
+    task->x86_fs_selector = fs;
+    task->x86_gs_selector = gs;
+    return 0;
+}
+
 #define EDGE_X86_LDT_BYTE_COUNT \
     (EDGE_X86_LDT_ENTRY_COUNT * (uint32_t)sizeof(uint64_t))
 

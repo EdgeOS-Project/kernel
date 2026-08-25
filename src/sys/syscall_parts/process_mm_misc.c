@@ -2,6 +2,8 @@ static void x86_file_cache_cachestat(
     vfs_superblock_t *superblock, const vfs_inode_t *inode,
     uint64_t offset, uint64_t length,
     kernel_vfs_cache_stats_t *statistics);
+static int edge_x86_clone_set_ia32_tls(task_t *child,
+                                       uint64_t description_u);
 
 int process_clone_arch_validate_cgroup(uint64_t descriptor) {
     edge_fd_t *entry;
@@ -95,8 +97,15 @@ int process_clone_arch_configure(
         process_set_fork_frame_rsp(
             child->pid, configuration->child_stack) < 0)
         return -EFAULT;
-    if (configuration->set_tls)
-        child->fs_base = configuration->tls;
+    if (configuration->set_tls) {
+        if (child->linux_abi == EDGE_LINUX_TASK_ABI_IA32) {
+            int tls_status = edge_x86_clone_set_ia32_tls(
+                child, configuration->tls);
+            if (tls_status < 0) return tls_status;
+        } else {
+            child->fs_base = configuration->tls;
+        }
+    }
     child->linux_thread.clear_child_tid =
         configuration->clear_child_tid;
 
@@ -9819,8 +9828,11 @@ static void x86_ia32_sigcontext_from_regs(
         edge_x86_ia32_linux_sigcontext_t *sc, const REGISTERS *r,
         uint32_t fpstate_u, uint32_t oldmask) {
     uint64_t cr2 = 0;
+    uint32_t segments = process_x86_compat_user_segments();
 
     memset(sc, 0, sizeof(*sc));
+    sc->fs = (uint16_t)segments;
+    sc->gs = (uint16_t)(segments >> 16);
     sc->es = USER32_DS;
     sc->ds = USER32_DS;
     sc->di = (uint32_t)r->rdi;
@@ -10386,6 +10398,8 @@ struct edge_x86_user_desc {
 #define EDGE_X86_USER_DESC_USEABLE (1u << 6)
 #define EDGE_X86_LDT_ENTRIES 8192u
 #define EDGE_X86_LDT_BYTES (EDGE_X86_LDT_ENTRIES * 8u)
+#define EDGE_X86_TLS_ENTRY_MIN 12u
+#define EDGE_X86_TLS_ENTRY_MAX 14u
 
 _Static_assert(sizeof(struct edge_x86_user_desc) == 16u,
                "Linux x86 user_desc layout");
@@ -10430,6 +10444,130 @@ static uint64_t edge_x86_pack_ldt_descriptor(
         descriptor |= UINT64_C(1) << 55;
     descriptor |= ((uint64_t)(description->base_addr >> 24) & 0xffu) << 56;
     return descriptor;
+}
+
+static int edge_x86_user_desc_zero(
+        const struct edge_x86_user_desc *description) {
+    return description->base_addr == 0 && description->limit == 0 &&
+           (description->flags & 0x7fu) == 0;
+}
+
+static int edge_x86_tls_description_valid(
+        const struct edge_x86_user_desc *description) {
+    if (!description || (description->flags & ~0x7fu)) return 0;
+    if (edge_x86_user_desc_empty(description) ||
+        edge_x86_user_desc_zero(description))
+        return 1;
+    if (!(description->flags & EDGE_X86_USER_DESC_SEG_32BIT)) return 0;
+    if (edge_x86_user_desc_contents(description) > 1u) return 0;
+    return !(description->flags & EDGE_X86_USER_DESC_SEG_NOT_PRESENT);
+}
+
+static void edge_x86_unpack_tls_descriptor(
+        struct edge_x86_user_desc *description, uint32_t entry,
+        uint64_t descriptor) {
+    uint32_t type;
+
+    memset(description, 0, sizeof(*description));
+    description->entry_number = entry;
+    if (!descriptor) {
+        description->flags = EDGE_X86_USER_DESC_READ_EXEC_ONLY |
+                             EDGE_X86_USER_DESC_SEG_NOT_PRESENT;
+        return;
+    }
+    description->base_addr =
+        (uint32_t)((descriptor >> 16) & 0xffffu) |
+        (uint32_t)((descriptor >> 32) & 0xffu) << 16 |
+        (uint32_t)(descriptor >> 56) << 24;
+    description->limit = (uint32_t)(descriptor & 0xffffu) |
+        (uint32_t)((descriptor >> 48) & 0x0fu) << 16;
+    type = (uint32_t)((descriptor >> 40) & 0x0fu);
+    if (descriptor & (UINT64_C(1) << 54))
+        description->flags |= EDGE_X86_USER_DESC_SEG_32BIT;
+    description->flags |= ((type >> 2) & 3u) << 1;
+    if (!(type & 2u))
+        description->flags |= EDGE_X86_USER_DESC_READ_EXEC_ONLY;
+    if (descriptor & (UINT64_C(1) << 55))
+        description->flags |= EDGE_X86_USER_DESC_LIMIT_IN_PAGES;
+    if (!(descriptor & (UINT64_C(1) << 47)))
+        description->flags |= EDGE_X86_USER_DESC_SEG_NOT_PRESENT;
+    if (descriptor & (UINT64_C(1) << 52))
+        description->flags |= EDGE_X86_USER_DESC_USEABLE;
+}
+
+static int edge_x86_clone_set_ia32_tls(task_t *child,
+                                       uint64_t description_u) {
+    struct edge_x86_user_desc description;
+    uint64_t descriptor;
+
+    if (!child || !description_u || copy_from_user(
+            &description, description_u, sizeof(description)) < 0)
+        return -EFAULT;
+    if (!edge_x86_tls_description_valid(&description)) return -EINVAL;
+    if (description.entry_number < EDGE_X86_TLS_ENTRY_MIN ||
+        description.entry_number > EDGE_X86_TLS_ENTRY_MAX)
+        return -EINVAL;
+    descriptor = edge_x86_user_desc_empty(&description) ||
+                 edge_x86_user_desc_zero(&description) ?
+        0 : edge_x86_pack_ldt_descriptor(&description, 0);
+    return process_x86_tls_set(
+        child, description.entry_number, descriptor) == 0 ? 0 : -EINVAL;
+}
+
+static uint64_t do_sys_set_thread_area(uint64_t description_u) {
+    struct edge_x86_user_desc description;
+    task_t *task = process_current_task();
+    uint64_t descriptor;
+    uint32_t entry;
+
+    if (!task || task->linux_abi != EDGE_LINUX_TASK_ABI_IA32)
+        return (uint64_t)(int64_t)-ENOSYS;
+    if (!description_u || copy_from_user(
+            &description, description_u, sizeof(description)) < 0)
+        return (uint64_t)(int64_t)-EFAULT;
+    if (!edge_x86_tls_description_valid(&description))
+        return (uint64_t)(int64_t)-EINVAL;
+    entry = description.entry_number;
+    if (entry == UINT32_MAX) {
+        for (entry = EDGE_X86_TLS_ENTRY_MIN;
+             entry <= EDGE_X86_TLS_ENTRY_MAX; ++entry) {
+            if (process_x86_tls_get(task, entry, &descriptor) == 0 &&
+                descriptor == 0)
+                break;
+        }
+        if (entry > EDGE_X86_TLS_ENTRY_MAX)
+            return (uint64_t)(int64_t)-ESRCH;
+        description.entry_number = entry;
+        if (copy_to_user(description_u, &description.entry_number,
+                         sizeof(description.entry_number)) < 0)
+            return (uint64_t)(int64_t)-EFAULT;
+    }
+    if (entry < EDGE_X86_TLS_ENTRY_MIN || entry > EDGE_X86_TLS_ENTRY_MAX)
+        return (uint64_t)(int64_t)-EINVAL;
+    descriptor = edge_x86_user_desc_empty(&description) ||
+                 edge_x86_user_desc_zero(&description) ?
+        0 : edge_x86_pack_ldt_descriptor(&description, 0);
+    return process_x86_tls_set(task, entry, descriptor) == 0 ?
+        0 : (uint64_t)(int64_t)-EINVAL;
+}
+
+static uint64_t do_sys_get_thread_area(uint64_t description_u) {
+    struct edge_x86_user_desc description;
+    task_t *task = process_current_task();
+    uint64_t descriptor;
+    uint32_t entry;
+
+    if (!task || task->linux_abi != EDGE_LINUX_TASK_ABI_IA32)
+        return (uint64_t)(int64_t)-ENOSYS;
+    if (!description_u || copy_from_user(
+            &entry, description_u, sizeof(entry)) < 0)
+        return (uint64_t)(int64_t)-EFAULT;
+    if (process_x86_tls_get(task, entry, &descriptor) < 0)
+        return (uint64_t)(int64_t)-EINVAL;
+    edge_x86_unpack_tls_descriptor(&description, entry, descriptor);
+    if (copy_to_user(description_u, &description, sizeof(description)) < 0)
+        return (uint64_t)(int64_t)-EFAULT;
+    return 0;
 }
 
 static uint64_t edge_x86_modify_ldt_result(int32_t result) {
@@ -10799,6 +10937,14 @@ static uint64_t do_sys_ia32_rt_sigreturn(REGISTERS *r) {
     restored.ss = USER32_DS;
     restored.err_code = frame.ucontext.mcontext.err;
     restored.int_no = frame.ucontext.mcontext.trapno;
+    if (process_x86_compat_set_user_segments(
+            frame.ucontext.mcontext.fs <= 3u ?
+                frame.ucontext.mcontext.fs :
+                (uint16_t)(frame.ucontext.mcontext.fs | 3u),
+            frame.ucontext.mcontext.gs <= 3u ?
+                frame.ucontext.mcontext.gs :
+                (uint16_t)(frame.ucontext.mcontext.gs | 3u)) < 0)
+        x86_64_sigreturn_badframe(r, frame_u, "ia32-segments");
 
     fpstate_u = frame.ucontext.mcontext.fpstate;
     if (fpstate_u) {

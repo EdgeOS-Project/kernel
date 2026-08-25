@@ -202,6 +202,9 @@ typedef struct task_struct {
     uint8_t _user_vma_pad[3];
     uint64_t fs_base;
     uint64_t gs_base;
+    uint64_t x86_tls_entries[3];
+    uint16_t x86_fs_selector;
+    uint16_t x86_gs_selector;
     /* Native x86 LDT state is owned by the address-space leader. */
     uint64_t *x86_ldt_entries;
     uint32_t x86_ldt_nr_entries;
@@ -486,6 +489,12 @@ int process_x86_ldt_write(task_t *task, uint32_t entry,
 int process_x86_ldt_clone(task_t *destination, const task_t *source);
 void process_x86_ldt_reset(task_t *task);
 void process_x86_ldt_activate(task_t *task);
+int process_x86_tls_set(task_t *task, uint32_t entry, uint64_t descriptor);
+int process_x86_tls_get(task_t *task, uint32_t entry, uint64_t *descriptor);
+void process_x86_tls_activate(task_t *task);
+void process_x86_compat_capture_user_segments(void);
+uint32_t process_x86_compat_user_segments(void);
+int process_x86_compat_set_user_segments(uint16_t fs, uint16_t gs);
 uint32_t process_getuid(void);
 uint32_t process_getgid(void);
 uint32_t process_geteuid(void);

@@ -32,6 +32,8 @@ typedef struct {
 
 #define GDT_ENTRY_LDT 7u
 #define GDT_LDT_SELECTOR ((uint16_t)(GDT_ENTRY_LDT << 3))
+#define GDT_ENTRY_TLS_MIN 12u
+#define GDT_ENTRY_TLS_COUNT 3u
 #define GDT_ENTRY_COUNT 15u
 
 static uint64 g_gdt[SCHED_MAX_CPUS][GDT_ENTRY_COUNT]
@@ -97,6 +99,14 @@ static void gdt_load_ldt_cpu(uint32_t cpu, const uint64_t *entries,
 
 void gdt_load_ldt(const uint64_t *entries, uint32_t entry_count) {
     gdt_load_ldt_cpu(scheduler_cpu_id(), entries, entry_count);
+}
+
+void gdt_load_tls(const uint64_t entries[GDT_ENTRY_TLS_COUNT]) {
+    uint32_t cpu = scheduler_cpu_id();
+
+    if (cpu >= SCHED_MAX_CPUS) cpu = 0;
+    for (uint32_t index = 0; index < GDT_ENTRY_TLS_COUNT; ++index)
+        g_gdt[cpu][GDT_ENTRY_TLS_MIN + index] = entries ? entries[index] : 0;
 }
 
 void gdt_init_cpu(uint32_t cpu) {

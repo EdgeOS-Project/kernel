@@ -1399,6 +1399,7 @@ static __attribute__((noinline)) void switch_task_context(task_t *prev,
     fxrstor_task(next);
     gdt_set_tss_rsp0(next_kernel_stack_top);
     process_x86_ldt_activate(next);
+    process_x86_tls_activate(next);
     edgeos_x86_64_set_user_gs_base(next_gs_base);
 
     if (!prev) {

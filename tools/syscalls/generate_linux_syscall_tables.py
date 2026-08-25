@@ -72,7 +72,9 @@ IA32_SHARED_SYSCALLS = {
 }
 
 IA32_ARCH_SYSCALLS = {
+    "get_thread_area",
     "rt_sigreturn",
+    "set_thread_area",
 }
 
 

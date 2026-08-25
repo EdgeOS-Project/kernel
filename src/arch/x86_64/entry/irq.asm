@@ -1,7 +1,12 @@
 section .text
 bits 64
 
+%define USER32_CS 0x4b
+%define FRAME_CS_OFFSET 144
+
 extern isr_irq_handler
+extern process_x86_compat_capture_user_segments
+extern process_x86_compat_user_segments
 
 %macro PUSH_GPRS 0
     push r15
@@ -49,14 +54,38 @@ irq_common:
     ; interrupt frame and will be restored by iretq.
     cld
     PUSH_GPRS
+    cmp word [rsp + FRAME_CS_OFFSET], USER32_CS
+    jne .segments_captured
+    call process_x86_compat_capture_user_segments
+.segments_captured:
     mov rdi, rsp
     call isr_irq_handler
     cli
+    cmp word [rsp + FRAME_CS_OFFSET], USER32_CS
+    jne .compat_segments_ready
+    call process_x86_compat_user_segments
+    mov [rsp + 120], rax
+.compat_segments_ready:
     POP_GPRS
-    add rsp, 16
-    test byte [rsp + 8], 3
-    jz .iret
+    test byte [rsp + 24], 3
+    jz .kernel_return
+    cmp word [rsp + 24], USER32_CS
+    jne .native_user_return
     swapgs
+    push rax
+    mov eax, [rsp + 8]
+    mov fs, ax
+    shr eax, 16
+    mov gs, ax
+    pop rax
+    add rsp, 16
+    jmp .iret
+.native_user_return:
+    add rsp, 16
+    swapgs
+    jmp .iret
+.kernel_return:
+    add rsp, 16
 .iret:
     iretq
 
