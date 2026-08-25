@@ -311,6 +311,14 @@ struct edge_linux_siginfo_child {
     uint8_t reserved[80];
 };
 
+/* x32 keeps siginfo_t at 128 bytes but starts its tagged union at byte 12. */
+struct edge_linux_compat_siginfo {
+    int32_t signal_number;
+    int32_t error;
+    int32_t code;
+    uint8_t payload[116];
+} __attribute__((aligned(8)));
+
 #define EDGE_LINUX_WAIT_P_ALL 0u
 #define EDGE_LINUX_WAIT_P_PID 1u
 #define EDGE_LINUX_WAIT_P_PGID 2u
@@ -367,6 +375,10 @@ _Static_assert(offsetof(struct edge_linux_siginfo, code) == 8,
                "Linux siginfo code offset mismatch");
 _Static_assert(offsetof(struct edge_linux_siginfo, payload) == 16,
                "Linux siginfo payload offset mismatch");
+_Static_assert(sizeof(struct edge_linux_compat_siginfo) == 128,
+               "Linux x32 siginfo size mismatch");
+_Static_assert(offsetof(struct edge_linux_compat_siginfo, payload) == 12,
+               "Linux x32 siginfo payload offset mismatch");
 _Static_assert(sizeof(struct edge_linux_stack64) == 24,
                "Linux stack_t size mismatch");
 _Static_assert(offsetof(struct edge_linux_stack64, flags) == 8,

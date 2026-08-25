@@ -6082,6 +6082,310 @@ static int64_t edge_linux_sys_process_vm(
     return (int64_t)transferred;
 }
 
+enum edge_linux_siginfo_layout {
+    EDGE_LINUX_SIGINFO_KILL,
+    EDGE_LINUX_SIGINFO_TIMER,
+    EDGE_LINUX_SIGINFO_POLL,
+    EDGE_LINUX_SIGINFO_FAULT,
+    EDGE_LINUX_SIGINFO_FAULT_MCE,
+    EDGE_LINUX_SIGINFO_FAULT_BOUNDS,
+    EDGE_LINUX_SIGINFO_FAULT_PKEY,
+    EDGE_LINUX_SIGINFO_FAULT_PERF,
+    EDGE_LINUX_SIGINFO_CHILD,
+    EDGE_LINUX_SIGINFO_REALTIME,
+    EDGE_LINUX_SIGINFO_SYSTEM,
+};
+
+static uint32_t edge_linux_siginfo_read_u32(const uint8_t *source,
+                                             uint32_t offset) {
+    uint32_t value;
+
+    memcpy(&value, source + offset, sizeof(value));
+    return value;
+}
+
+static uint16_t edge_linux_siginfo_read_u16(const uint8_t *source,
+                                             uint32_t offset) {
+    uint16_t value;
+
+    memcpy(&value, source + offset, sizeof(value));
+    return value;
+}
+
+static uint64_t edge_linux_siginfo_read_u64(const uint8_t *source,
+                                             uint32_t offset) {
+    uint64_t value;
+
+    memcpy(&value, source + offset, sizeof(value));
+    return value;
+}
+
+static void edge_linux_siginfo_write_u32(uint8_t *destination,
+                                          uint32_t offset,
+                                          uint32_t value) {
+    memcpy(destination + offset, &value, sizeof(value));
+}
+
+static void edge_linux_siginfo_write_u16(uint8_t *destination,
+                                          uint32_t offset,
+                                          uint16_t value) {
+    memcpy(destination + offset, &value, sizeof(value));
+}
+
+static void edge_linux_siginfo_write_u64(uint8_t *destination,
+                                          uint32_t offset,
+                                          uint64_t value) {
+    memcpy(destination + offset, &value, sizeof(value));
+}
+
+static enum edge_linux_siginfo_layout edge_linux_siginfo_layout_for(
+        uint32_t signal, int32_t code) {
+    if (code <= 0) {
+        if (code == -2) return EDGE_LINUX_SIGINFO_TIMER;
+        if (code == -5) return EDGE_LINUX_SIGINFO_POLL;
+        if (code < 0) return EDGE_LINUX_SIGINFO_REALTIME;
+        return EDGE_LINUX_SIGINFO_KILL;
+    }
+    if (code >= 128) return EDGE_LINUX_SIGINFO_KILL;
+    if (signal == EDGE_LINUX_SIGCHLD && code <= 6)
+        return EDGE_LINUX_SIGINFO_CHILD;
+    if (signal == EDGE_LINUX_SIGSYS && code <= 2)
+        return EDGE_LINUX_SIGINFO_SYSTEM;
+    if (signal == EDGE_LINUX_SIGILL && code <= 11)
+        return EDGE_LINUX_SIGINFO_FAULT;
+    if (signal == EDGE_LINUX_SIGFPE && code <= 15)
+        return EDGE_LINUX_SIGINFO_FAULT;
+    if (signal == EDGE_LINUX_SIGBUS && code <= 5)
+        return code >= 4 ? EDGE_LINUX_SIGINFO_FAULT_MCE :
+                           EDGE_LINUX_SIGINFO_FAULT;
+    if (signal == EDGE_LINUX_SIGSEGV && code <= 10) {
+        if (code == 3) return EDGE_LINUX_SIGINFO_FAULT_BOUNDS;
+        if (code == 4) return EDGE_LINUX_SIGINFO_FAULT_PKEY;
+        return EDGE_LINUX_SIGINFO_FAULT;
+    }
+    if (signal == EDGE_LINUX_SIGTRAP && code <= 6)
+        return code == 6 ? EDGE_LINUX_SIGINFO_FAULT_PERF :
+                           EDGE_LINUX_SIGINFO_FAULT;
+    if (code <= 6) return EDGE_LINUX_SIGINFO_POLL;
+    return EDGE_LINUX_SIGINFO_KILL;
+}
+
+static void edge_linux_compat_siginfo_to_native(
+        const struct edge_linux_compat_siginfo *compat,
+        struct edge_linux_siginfo *native) {
+    const uint8_t *source = (const uint8_t *)compat;
+    uint8_t *destination = (uint8_t *)native;
+    enum edge_linux_siginfo_layout layout;
+
+    memset(native, 0, sizeof(*native));
+    native->signal_number = compat->signal_number;
+    native->error = compat->error;
+    native->code = compat->code;
+    layout = edge_linux_siginfo_layout_for(
+        (uint32_t)compat->signal_number, compat->code);
+    switch (layout) {
+    case EDGE_LINUX_SIGINFO_KILL:
+        edge_linux_siginfo_write_u32(
+            destination, 16u, edge_linux_siginfo_read_u32(source, 12u));
+        edge_linux_siginfo_write_u32(
+            destination, 20u, edge_linux_siginfo_read_u32(source, 16u));
+        break;
+    case EDGE_LINUX_SIGINFO_TIMER:
+        edge_linux_siginfo_write_u32(
+            destination, 16u, edge_linux_siginfo_read_u32(source, 12u));
+        edge_linux_siginfo_write_u32(
+            destination, 20u, edge_linux_siginfo_read_u32(source, 16u));
+        edge_linux_siginfo_write_u32(
+            destination, 24u, edge_linux_siginfo_read_u32(source, 20u));
+        break;
+    case EDGE_LINUX_SIGINFO_POLL:
+        edge_linux_siginfo_write_u64(
+            destination, 16u,
+            (uint64_t)(int64_t)(int32_t)edge_linux_siginfo_read_u32(
+                source, 12u));
+        edge_linux_siginfo_write_u32(
+            destination, 24u, edge_linux_siginfo_read_u32(source, 16u));
+        break;
+    case EDGE_LINUX_SIGINFO_FAULT:
+        edge_linux_siginfo_write_u64(
+            destination, 16u, edge_linux_siginfo_read_u32(source, 12u));
+        break;
+    case EDGE_LINUX_SIGINFO_FAULT_MCE:
+        edge_linux_siginfo_write_u64(
+            destination, 16u, edge_linux_siginfo_read_u32(source, 12u));
+        edge_linux_siginfo_write_u16(
+            destination, 24u, edge_linux_siginfo_read_u16(source, 16u));
+        break;
+    case EDGE_LINUX_SIGINFO_FAULT_BOUNDS:
+        edge_linux_siginfo_write_u64(
+            destination, 16u, edge_linux_siginfo_read_u32(source, 12u));
+        edge_linux_siginfo_write_u64(
+            destination, 32u, edge_linux_siginfo_read_u32(source, 20u));
+        edge_linux_siginfo_write_u64(
+            destination, 40u, edge_linux_siginfo_read_u32(source, 24u));
+        break;
+    case EDGE_LINUX_SIGINFO_FAULT_PKEY:
+        edge_linux_siginfo_write_u64(
+            destination, 16u, edge_linux_siginfo_read_u32(source, 12u));
+        edge_linux_siginfo_write_u32(
+            destination, 32u, edge_linux_siginfo_read_u32(source, 20u));
+        break;
+    case EDGE_LINUX_SIGINFO_FAULT_PERF:
+        edge_linux_siginfo_write_u64(
+            destination, 16u, edge_linux_siginfo_read_u32(source, 12u));
+        edge_linux_siginfo_write_u64(
+            destination, 24u, edge_linux_siginfo_read_u32(source, 16u));
+        edge_linux_siginfo_write_u32(
+            destination, 32u, edge_linux_siginfo_read_u32(source, 20u));
+        edge_linux_siginfo_write_u32(
+            destination, 36u, edge_linux_siginfo_read_u32(source, 24u));
+        break;
+    case EDGE_LINUX_SIGINFO_CHILD:
+        edge_linux_siginfo_write_u32(
+            destination, 16u, edge_linux_siginfo_read_u32(source, 12u));
+        edge_linux_siginfo_write_u32(
+            destination, 20u, edge_linux_siginfo_read_u32(source, 16u));
+        edge_linux_siginfo_write_u32(
+            destination, 24u, edge_linux_siginfo_read_u32(source, 20u));
+        edge_linux_siginfo_write_u64(
+            destination, 32u, edge_linux_siginfo_read_u64(source, 24u));
+        edge_linux_siginfo_write_u64(
+            destination, 40u, edge_linux_siginfo_read_u64(source, 32u));
+        break;
+    case EDGE_LINUX_SIGINFO_REALTIME:
+        edge_linux_siginfo_write_u32(
+            destination, 16u, edge_linux_siginfo_read_u32(source, 12u));
+        edge_linux_siginfo_write_u32(
+            destination, 20u, edge_linux_siginfo_read_u32(source, 16u));
+        edge_linux_siginfo_write_u32(
+            destination, 24u, edge_linux_siginfo_read_u32(source, 20u));
+        break;
+    case EDGE_LINUX_SIGINFO_SYSTEM:
+        edge_linux_siginfo_write_u64(
+            destination, 16u, edge_linux_siginfo_read_u32(source, 12u));
+        edge_linux_siginfo_write_u32(
+            destination, 24u, edge_linux_siginfo_read_u32(source, 16u));
+        edge_linux_siginfo_write_u32(
+            destination, 28u, edge_linux_siginfo_read_u32(source, 20u));
+        break;
+    }
+}
+
+static void edge_linux_native_siginfo_to_compat(
+        const struct edge_linux_siginfo *native,
+        struct edge_linux_compat_siginfo *compat) {
+    const uint8_t *source = (const uint8_t *)native;
+    uint8_t *destination = (uint8_t *)compat;
+    enum edge_linux_siginfo_layout layout;
+
+    memset(compat, 0, sizeof(*compat));
+    compat->signal_number = native->signal_number;
+    compat->error = native->error;
+    compat->code = native->code;
+    layout = edge_linux_siginfo_layout_for(
+        (uint32_t)native->signal_number, native->code);
+    switch (layout) {
+    case EDGE_LINUX_SIGINFO_KILL:
+        edge_linux_siginfo_write_u32(
+            destination, 12u, edge_linux_siginfo_read_u32(source, 16u));
+        edge_linux_siginfo_write_u32(
+            destination, 16u, edge_linux_siginfo_read_u32(source, 20u));
+        break;
+    case EDGE_LINUX_SIGINFO_TIMER:
+        edge_linux_siginfo_write_u32(
+            destination, 12u, edge_linux_siginfo_read_u32(source, 16u));
+        edge_linux_siginfo_write_u32(
+            destination, 16u, edge_linux_siginfo_read_u32(source, 20u));
+        edge_linux_siginfo_write_u32(
+            destination, 20u, edge_linux_siginfo_read_u32(source, 24u));
+        break;
+    case EDGE_LINUX_SIGINFO_POLL:
+        edge_linux_siginfo_write_u32(
+            destination, 12u, edge_linux_siginfo_read_u32(source, 16u));
+        edge_linux_siginfo_write_u32(
+            destination, 16u, edge_linux_siginfo_read_u32(source, 24u));
+        break;
+    case EDGE_LINUX_SIGINFO_FAULT:
+        edge_linux_siginfo_write_u32(
+            destination, 12u, edge_linux_siginfo_read_u32(source, 16u));
+        break;
+    case EDGE_LINUX_SIGINFO_FAULT_MCE:
+        edge_linux_siginfo_write_u32(
+            destination, 12u, edge_linux_siginfo_read_u32(source, 16u));
+        edge_linux_siginfo_write_u16(
+            destination, 16u, edge_linux_siginfo_read_u16(source, 24u));
+        break;
+    case EDGE_LINUX_SIGINFO_FAULT_BOUNDS:
+        edge_linux_siginfo_write_u32(
+            destination, 12u, edge_linux_siginfo_read_u32(source, 16u));
+        edge_linux_siginfo_write_u32(
+            destination, 20u, edge_linux_siginfo_read_u32(source, 32u));
+        edge_linux_siginfo_write_u32(
+            destination, 24u, edge_linux_siginfo_read_u32(source, 40u));
+        break;
+    case EDGE_LINUX_SIGINFO_FAULT_PKEY:
+        edge_linux_siginfo_write_u32(
+            destination, 12u, edge_linux_siginfo_read_u32(source, 16u));
+        edge_linux_siginfo_write_u32(
+            destination, 20u, edge_linux_siginfo_read_u32(source, 32u));
+        break;
+    case EDGE_LINUX_SIGINFO_FAULT_PERF:
+        edge_linux_siginfo_write_u32(
+            destination, 12u, edge_linux_siginfo_read_u32(source, 16u));
+        edge_linux_siginfo_write_u32(
+            destination, 16u, edge_linux_siginfo_read_u32(source, 24u));
+        edge_linux_siginfo_write_u32(
+            destination, 20u, edge_linux_siginfo_read_u32(source, 32u));
+        edge_linux_siginfo_write_u32(
+            destination, 24u, edge_linux_siginfo_read_u32(source, 36u));
+        break;
+    case EDGE_LINUX_SIGINFO_CHILD:
+        edge_linux_siginfo_write_u32(
+            destination, 12u, edge_linux_siginfo_read_u32(source, 16u));
+        edge_linux_siginfo_write_u32(
+            destination, 16u, edge_linux_siginfo_read_u32(source, 20u));
+        edge_linux_siginfo_write_u32(
+            destination, 20u, edge_linux_siginfo_read_u32(source, 24u));
+        edge_linux_siginfo_write_u64(
+            destination, 24u, edge_linux_siginfo_read_u64(source, 32u));
+        edge_linux_siginfo_write_u64(
+            destination, 32u, edge_linux_siginfo_read_u64(source, 40u));
+        break;
+    case EDGE_LINUX_SIGINFO_REALTIME:
+        edge_linux_siginfo_write_u32(
+            destination, 12u, edge_linux_siginfo_read_u32(source, 16u));
+        edge_linux_siginfo_write_u32(
+            destination, 16u, edge_linux_siginfo_read_u32(source, 20u));
+        edge_linux_siginfo_write_u32(
+            destination, 20u, edge_linux_siginfo_read_u32(source, 24u));
+        break;
+    case EDGE_LINUX_SIGINFO_SYSTEM:
+        edge_linux_siginfo_write_u32(
+            destination, 12u, edge_linux_siginfo_read_u32(source, 16u));
+        edge_linux_siginfo_write_u32(
+            destination, 16u, edge_linux_siginfo_read_u32(source, 24u));
+        edge_linux_siginfo_write_u32(
+            destination, 20u, edge_linux_siginfo_read_u32(source, 28u));
+        break;
+    }
+}
+
+static int edge_linux_copy_x32_siginfo_to_user(
+        void *copy_context, uint64_t user_destination,
+        const void *kernel_source, uint64_t size) {
+    edge_linux_syscall_context_t *context =
+        (edge_linux_syscall_context_t *)copy_context;
+    struct edge_linux_compat_siginfo compat;
+
+    if (!context || !kernel_source ||
+        size != sizeof(struct edge_linux_siginfo))
+        return -1;
+    edge_linux_native_siginfo_to_compat(
+        (const struct edge_linux_siginfo *)kernel_source, &compat);
+    return edge_linux_copy_to_user(
+        context, user_destination, &compat, sizeof(compat));
+}
+
 static int64_t edge_linux_sys_pidfd_send_signal(
     edge_linux_syscall_context_t *context) {
     struct edge_linux_siginfo information;
@@ -6109,10 +6413,20 @@ static int64_t edge_linux_sys_pidfd_send_signal(
         return -EDGE_LINUX_ESRCH;
 
     if (information_user) {
-        if (edge_linux_copy_from_user(
+        if (context->architecture == EDGE_LINUX_ARCH_X32) {
+            struct edge_linux_compat_siginfo compat_information;
+
+            if (edge_linux_copy_from_user(
+                    context, &compat_information, information_user,
+                    sizeof(compat_information)) < 0)
+                return -EDGE_LINUX_EFAULT;
+            edge_linux_compat_siginfo_to_native(
+                &compat_information, &information);
+        } else if (edge_linux_copy_from_user(
                 context, &information, information_user,
-                sizeof(information)) < 0)
+                sizeof(information)) < 0) {
             return -EDGE_LINUX_EFAULT;
+        }
         if (information.signal_number != (int32_t)signal)
             return -EDGE_LINUX_EINVAL;
         if ((caller.global_tid != target_pid ||
@@ -6181,10 +6495,20 @@ static int64_t edge_linux_sys_queued_signal(
     if (tgid <= 0 || tid <= 0 || signal > EDGE_LINUX_SIGNAL_MAX)
         return -EDGE_LINUX_EINVAL;
     if (!information_user) return -EDGE_LINUX_EFAULT;
-    if (edge_linux_copy_from_user(
+    if (context->architecture == EDGE_LINUX_ARCH_X32) {
+        struct edge_linux_compat_siginfo compat_information;
+
+        if (edge_linux_copy_from_user(
+                context, &compat_information, information_user,
+                sizeof(compat_information)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        edge_linux_compat_siginfo_to_native(
+            &compat_information, &information);
+    } else if (edge_linux_copy_from_user(
             context, &information, information_user,
-            sizeof(information)) < 0)
+            sizeof(information)) < 0) {
         return -EDGE_LINUX_EFAULT;
+    }
     if (kernel_current_linux_identity(&caller) < 0)
         return -EDGE_LINUX_ESRCH;
     if (edge_linux_pid_to_global(&caller, tgid, &global_tgid) < 0 ||
@@ -13612,6 +13936,12 @@ static int64_t edge_linux_sys_signal_wait(
         now = boottime_monotonic_us();
         deadline = (uint64_t)timeout_microseconds > UINT64_MAX - now ?
             UINT64_MAX : now + (uint64_t)timeout_microseconds;
+    }
+    if (context->architecture == EDGE_LINUX_ARCH_X32) {
+        return kernel_current_signal_timed_wait(
+            edge_linux_signal_sanitize_mask(mask), context->arguments[1],
+            deadline, edge_linux_copy_x32_siginfo_to_user,
+            context, context->user_registers);
     }
     return kernel_current_signal_timed_wait(
         edge_linux_signal_sanitize_mask(mask), context->arguments[1],
