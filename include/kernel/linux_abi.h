@@ -1072,6 +1072,36 @@ struct edge_linux_statfs64 {
     int64_t f_spare[4];
 };
 
+struct edge_linux_statfs32 {
+    uint32_t f_type;
+    uint32_t f_bsize;
+    uint32_t f_blocks;
+    uint32_t f_bfree;
+    uint32_t f_bavail;
+    uint32_t f_files;
+    uint32_t f_ffree;
+    int32_t f_fsid[2];
+    uint32_t f_namelen;
+    uint32_t f_frsize;
+    uint32_t f_flags;
+    uint32_t f_spare[4];
+};
+
+struct __attribute__((packed, aligned(4))) edge_linux_statfs64_compat {
+    uint32_t f_type;
+    uint32_t f_bsize;
+    uint64_t f_blocks;
+    uint64_t f_bfree;
+    uint64_t f_bavail;
+    uint64_t f_files;
+    uint64_t f_ffree;
+    int32_t f_fsid[2];
+    uint32_t f_namelen;
+    uint32_t f_frsize;
+    uint32_t f_flags;
+    uint32_t f_spare[4];
+};
+
 struct edge_linux_ustat {
     int32_t f_tfree;
     uint32_t __padding;
@@ -1081,10 +1111,19 @@ struct edge_linux_ustat {
     uint32_t __tail_padding;
 };
 
+struct edge_linux_ustat32 {
+    int32_t f_tfree;
+    uint32_t f_tinode;
+    char f_fname[6];
+    char f_fpack[6];
+};
+
 _Static_assert(sizeof(struct edge_linux_ustat) == 32u,
                "Linux x86_64 ustat size mismatch");
 _Static_assert(offsetof(struct edge_linux_ustat, f_tinode) == 8u,
                "Linux x86_64 ustat inode offset mismatch");
+_Static_assert(sizeof(struct edge_linux_ustat32) == 20u,
+               "Linux compat ustat size mismatch");
 
 #define EDGE_LINUX_SOL_PACKET 263u
 #define EDGE_LINUX_PACKET_ADD_MEMBERSHIP 1u
@@ -1603,6 +1642,11 @@ struct edge_linux_rlimit64 {
     uint64_t rlim_max;
 };
 
+struct edge_linux_rlimit32 {
+    uint32_t rlim_cur;
+    uint32_t rlim_max;
+};
+
 struct edge_linux_rusage64 {
     linux_timeval64_t ru_utime;
     linux_timeval64_t ru_stime;
@@ -1622,11 +1666,37 @@ struct edge_linux_rusage64 {
     int64_t ru_nivcsw;
 };
 
+struct edge_linux_rusage32 {
+    linux_timeval32_t ru_utime;
+    linux_timeval32_t ru_stime;
+    int32_t ru_maxrss;
+    int32_t ru_ixrss;
+    int32_t ru_idrss;
+    int32_t ru_isrss;
+    int32_t ru_minflt;
+    int32_t ru_majflt;
+    int32_t ru_nswap;
+    int32_t ru_inblock;
+    int32_t ru_oublock;
+    int32_t ru_msgsnd;
+    int32_t ru_msgrcv;
+    int32_t ru_nsignals;
+    int32_t ru_nvcsw;
+    int32_t ru_nivcsw;
+};
+
 struct edge_linux_tms64 {
     int64_t tms_utime;
     int64_t tms_stime;
     int64_t tms_cutime;
     int64_t tms_cstime;
+};
+
+struct edge_linux_tms32 {
+    int32_t tms_utime;
+    int32_t tms_stime;
+    int32_t tms_cutime;
+    int32_t tms_cstime;
 };
 
 #define EDGE_LINUX_PRIO_PROCESS 0
@@ -1672,6 +1742,23 @@ struct edge_linux_sysinfo64 {
     uint64_t totalhigh;
     uint64_t freehigh;
     uint32_t mem_unit;
+};
+
+struct edge_linux_sysinfo32 {
+    int32_t uptime;
+    uint32_t loads[3];
+    uint32_t totalram;
+    uint32_t freeram;
+    uint32_t sharedram;
+    uint32_t bufferram;
+    uint32_t totalswap;
+    uint32_t freeswap;
+    uint16_t procs;
+    uint16_t pad;
+    uint32_t totalhigh;
+    uint32_t freehigh;
+    uint32_t mem_unit;
+    char reserved[8];
 };
 
 struct edge_linux_open_how {
@@ -1898,18 +1985,34 @@ _Static_assert(sizeof(struct edge_linux_rlimit64) == 16,
                "Linux 64-bit rlimit ABI layout");
 _Static_assert(offsetof(struct edge_linux_rlimit64, rlim_max) == 8,
                "Linux 64-bit rlimit maximum offset");
+_Static_assert(sizeof(struct edge_linux_rlimit32) == 8,
+               "Linux compat rlimit ABI layout");
 _Static_assert(sizeof(struct edge_linux_rusage64) == 144,
                "Linux 64-bit rusage ABI layout");
 _Static_assert(offsetof(struct edge_linux_rusage64, ru_maxrss) == 32,
                "Linux 64-bit rusage maxrss offset");
 _Static_assert(offsetof(struct edge_linux_rusage64, ru_nivcsw) == 136,
                "Linux 64-bit rusage involuntary switch offset");
+_Static_assert(sizeof(struct edge_linux_rusage32) == 72,
+               "Linux compat rusage ABI layout");
+_Static_assert(offsetof(struct edge_linux_rusage32, ru_maxrss) == 16,
+               "Linux compat rusage maxrss offset");
+_Static_assert(offsetof(struct edge_linux_rusage32, ru_nivcsw) == 68,
+               "Linux compat rusage involuntary switch offset");
 _Static_assert(sizeof(struct edge_linux_tms64) == 32,
                "Linux 64-bit tms ABI layout");
+_Static_assert(sizeof(struct edge_linux_tms32) == 16,
+               "Linux compat tms ABI layout");
 _Static_assert(sizeof(struct edge_linux_sysinfo64) == 112,
                "Linux 64-bit sysinfo ABI layout");
+_Static_assert(sizeof(struct edge_linux_sysinfo32) == 64,
+               "Linux compat sysinfo ABI layout");
 _Static_assert(sizeof(struct edge_linux_statfs64) == 120,
                "Linux 64-bit statfs ABI layout");
+_Static_assert(sizeof(struct edge_linux_statfs32) == 64,
+               "Linux compat statfs ABI layout");
+_Static_assert(sizeof(struct edge_linux_statfs64_compat) == 84,
+               "Linux i386 statfs64 ABI layout");
 _Static_assert(offsetof(struct edge_linux_statfs64, f_fsid) == 56,
                "Linux 64-bit statfs fsid offset");
 _Static_assert(offsetof(struct edge_linux_statfs64, f_namelen) == 64,

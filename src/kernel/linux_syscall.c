@@ -2062,6 +2062,51 @@ static int64_t edge_linux_sys_sysinfo(
     result.procs = snapshot.process_count > UINT16_MAX ?
         UINT16_MAX : (uint16_t)snapshot.process_count;
     result.mem_unit = 1u;
+    if (context->architecture == EDGE_LINUX_ARCH_IA32) {
+        struct edge_linux_sysinfo32 compat;
+        uint64_t totalram = result.totalram;
+        uint64_t freeram = result.freeram;
+        uint64_t sharedram = result.sharedram;
+        uint64_t bufferram = result.bufferram;
+        uint64_t totalswap = result.totalswap;
+        uint64_t freeswap = result.freeswap;
+        uint64_t totalhigh = result.totalhigh;
+        uint64_t freehigh = result.freehigh;
+        uint32_t mem_unit = 1u;
+        uint32_t shift = 0u;
+
+        if (totalram > UINT32_MAX || totalswap > UINT32_MAX) {
+            while (mem_unit < KERNEL_MM_USER_PAGE_SIZE) {
+                mem_unit <<= 1u;
+                ++shift;
+            }
+            totalram >>= shift;
+            freeram >>= shift;
+            sharedram >>= shift;
+            bufferram >>= shift;
+            totalswap >>= shift;
+            freeswap >>= shift;
+            totalhigh >>= shift;
+            freehigh >>= shift;
+        }
+        memset(&compat, 0, sizeof(compat));
+        compat.uptime = (int32_t)result.uptime;
+        for (uint32_t index = 0; index < 3u; ++index)
+            compat.loads[index] = (uint32_t)result.loads[index];
+        compat.totalram = (uint32_t)totalram;
+        compat.freeram = (uint32_t)freeram;
+        compat.sharedram = (uint32_t)sharedram;
+        compat.bufferram = (uint32_t)bufferram;
+        compat.totalswap = (uint32_t)totalswap;
+        compat.freeswap = (uint32_t)freeswap;
+        compat.procs = result.procs;
+        compat.totalhigh = (uint32_t)totalhigh;
+        compat.freehigh = (uint32_t)freehigh;
+        compat.mem_unit = mem_unit;
+        return edge_linux_copy_to_user(
+            context, context->arguments[0], &compat, sizeof(compat)) < 0 ?
+            -EDGE_LINUX_EFAULT : 0;
+    }
     return edge_linux_copy_to_user(context, context->arguments[0], &result,
                                    sizeof(result)) < 0 ?
         -EDGE_LINUX_EFAULT : 0;
@@ -3691,7 +3736,7 @@ static int edge_linux_posix_mq_descriptor(
 static int edge_linux_mq_attr_copy_from_user(
         edge_linux_syscall_context_t *context, uint64_t source,
         struct edge_linux_mq_attr *attributes) {
-    if (edge_linux_architecture_is_compat32(context->architecture)) {
+    if (context->architecture == EDGE_LINUX_ARCH_IA32) {
         struct edge_linux_mq_attr32 compat_attributes;
 
         if (edge_linux_copy_from_user(
@@ -3712,7 +3757,7 @@ static int edge_linux_mq_attr_copy_from_user(
 static int edge_linux_mq_attr_copy_to_user(
         edge_linux_syscall_context_t *context, uint64_t destination,
         const struct edge_linux_mq_attr *attributes) {
-    if (edge_linux_architecture_is_compat32(context->architecture)) {
+    if (context->architecture == EDGE_LINUX_ARCH_IA32) {
         struct edge_linux_mq_attr32 compat_attributes;
 
         if (attributes->mq_flags < INT32_MIN ||
@@ -7550,6 +7595,57 @@ static int edge_linux_identity_may_adjust(
            caller->gid == target->sgid;
 }
 
+static int edge_linux_resource_limit_import(
+        edge_linux_syscall_context_t *context, uint64_t user_address,
+        struct edge_linux_rlimit64 *limit) {
+    if (context->id != EDGE_LINUX_SYS_prlimit64 &&
+        context->architecture == EDGE_LINUX_ARCH_IA32) {
+        struct edge_linux_rlimit32 compat;
+
+        if (edge_linux_copy_from_user(
+                context, &compat, user_address, sizeof(compat)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        limit->rlim_cur = compat.rlim_cur == UINT32_MAX ?
+            EDGE_LINUX_RLIM_INFINITY : compat.rlim_cur;
+        limit->rlim_max = compat.rlim_max == UINT32_MAX ?
+            EDGE_LINUX_RLIM_INFINITY : compat.rlim_max;
+        return 0;
+    }
+    return edge_linux_copy_from_user(
+        context, limit, user_address, sizeof(*limit)) < 0 ?
+        -EDGE_LINUX_EFAULT : 0;
+}
+
+static int edge_linux_resource_limit_export(
+        edge_linux_syscall_context_t *context, uint64_t user_address,
+        const kernel_resource_limit_t *limit) {
+    if (context->id != EDGE_LINUX_SYS_prlimit64 &&
+        context->architecture == EDGE_LINUX_ARCH_IA32) {
+        uint64_t maximum = UINT32_MAX;
+        struct edge_linux_rlimit32 compat;
+
+        if (context->architecture == EDGE_LINUX_ARCH_IA32 &&
+            context->raw_number == 76u)
+            maximum = INT32_MAX;
+        compat.rlim_cur = limit->current > maximum ?
+            (uint32_t)maximum : (uint32_t)limit->current;
+        compat.rlim_max = limit->maximum > maximum ?
+            (uint32_t)maximum : (uint32_t)limit->maximum;
+        return edge_linux_copy_to_user(
+            context, user_address, &compat, sizeof(compat)) < 0 ?
+            -EDGE_LINUX_EFAULT : 0;
+    }
+    {
+        struct edge_linux_rlimit64 result = {
+            .rlim_cur = limit->current,
+            .rlim_max = limit->maximum,
+        };
+        return edge_linux_copy_to_user(
+            context, user_address, &result, sizeof(result)) < 0 ?
+            -EDGE_LINUX_EFAULT : 0;
+    }
+}
+
 static int64_t edge_linux_sys_resource_limit(
     edge_linux_syscall_context_t *context) {
     kernel_linux_identity_t caller;
@@ -7599,9 +7695,9 @@ static int64_t edge_linux_sys_resource_limit(
                  (1ull << EDGE_LINUX_CAP_SYS_RESOURCE)) != 0;
     if (new_user) {
         struct edge_linux_rlimit64 replacement;
-        if (edge_linux_copy_from_user(context, &replacement, new_user,
-                                      sizeof(replacement)) < 0)
-            return -EDGE_LINUX_EFAULT;
+        int status = edge_linux_resource_limit_import(
+            context, new_user, &replacement);
+        if (status < 0) return status;
         new_limit.current = replacement.rlim_cur;
         new_limit.maximum = replacement.rlim_max;
         if (new_limit.current > new_limit.maximum)
@@ -7614,13 +7710,9 @@ static int64_t edge_linux_sys_resource_limit(
             return -EDGE_LINUX_ESRCH;
     }
     if (old_user) {
-        struct edge_linux_rlimit64 result = {
-            .rlim_cur = old_limit.current,
-            .rlim_max = old_limit.maximum,
-        };
-        if (edge_linux_copy_to_user(context, old_user, &result,
-                                    sizeof(result)) < 0)
-            return -EDGE_LINUX_EFAULT;
+        int status = edge_linux_resource_limit_export(
+            context, old_user, &old_limit);
+        if (status < 0) return status;
     }
     return 0;
 }
@@ -7646,6 +7738,43 @@ static void edge_linux_rusage_from_kernel(
         (int64_t)source->voluntary_ctxt_switches;
     destination->ru_nivcsw =
         (int64_t)source->involuntary_ctxt_switches;
+}
+
+static int edge_linux_rusage_copy_to_user(
+        edge_linux_syscall_context_t *context, uint64_t destination,
+        const kernel_process_usage_t *usage) {
+    struct edge_linux_rusage64 native;
+
+    edge_linux_rusage_from_kernel(usage, &native);
+    if (context->architecture == EDGE_LINUX_ARCH_IA32) {
+        struct edge_linux_rusage32 compat;
+
+        memset(&compat, 0, sizeof(compat));
+        compat.ru_utime.tv_sec = (int32_t)native.ru_utime.tv_sec;
+        compat.ru_utime.tv_usec = (int32_t)native.ru_utime.tv_usec;
+        compat.ru_stime.tv_sec = (int32_t)native.ru_stime.tv_sec;
+        compat.ru_stime.tv_usec = (int32_t)native.ru_stime.tv_usec;
+        compat.ru_maxrss = (int32_t)native.ru_maxrss;
+        compat.ru_ixrss = (int32_t)native.ru_ixrss;
+        compat.ru_idrss = (int32_t)native.ru_idrss;
+        compat.ru_isrss = (int32_t)native.ru_isrss;
+        compat.ru_minflt = (int32_t)native.ru_minflt;
+        compat.ru_majflt = (int32_t)native.ru_majflt;
+        compat.ru_nswap = (int32_t)native.ru_nswap;
+        compat.ru_inblock = (int32_t)native.ru_inblock;
+        compat.ru_oublock = (int32_t)native.ru_oublock;
+        compat.ru_msgsnd = (int32_t)native.ru_msgsnd;
+        compat.ru_msgrcv = (int32_t)native.ru_msgrcv;
+        compat.ru_nsignals = (int32_t)native.ru_nsignals;
+        compat.ru_nvcsw = (int32_t)native.ru_nvcsw;
+        compat.ru_nivcsw = (int32_t)native.ru_nivcsw;
+        return edge_linux_copy_to_user(
+            context, destination, &compat, sizeof(compat)) < 0 ?
+            -EDGE_LINUX_EFAULT : 0;
+    }
+    return edge_linux_copy_to_user(
+        context, destination, &native, sizeof(native)) < 0 ?
+        -EDGE_LINUX_EFAULT : 0;
 }
 
 static int edge_linux_wait_status_code(uint32_t status,
@@ -7905,11 +8034,9 @@ static int64_t edge_linux_sys_wait(
             return -EDGE_LINUX_EFAULT;
     }
     if (usage_user) {
-        struct edge_linux_rusage64 usage;
-        edge_linux_rusage_from_kernel(&result.usage, &usage);
-        if (edge_linux_copy_to_user(
-                context, usage_user, &usage, sizeof(usage)) < 0)
-            return -EDGE_LINUX_EFAULT;
+        int status = edge_linux_rusage_copy_to_user(
+            context, usage_user, &result.usage);
+        if (status < 0) return status;
     }
     return context->id == EDGE_LINUX_SYS_wait4 ? result.pid : 0;
 }
@@ -7917,7 +8044,6 @@ static int64_t edge_linux_sys_wait(
 static int64_t edge_linux_sys_getrusage(
     edge_linux_syscall_context_t *context) {
     kernel_process_usage_t usage;
-    struct edge_linux_rusage64 result;
     int who = (int32_t)context->arguments[0];
     uint64_t destination = context->arguments[1];
     if (who != EDGE_LINUX_RUSAGE_SELF &&
@@ -7927,10 +8053,7 @@ static int64_t edge_linux_sys_getrusage(
     if (!destination) return -EDGE_LINUX_EFAULT;
     if (kernel_process_usage(who, &usage) < 0)
         return -EDGE_LINUX_ESRCH;
-    edge_linux_rusage_from_kernel(&usage, &result);
-    return edge_linux_copy_to_user(context, destination, &result,
-                                   sizeof(result)) < 0 ?
-        -EDGE_LINUX_EFAULT : 0;
+    return edge_linux_rusage_copy_to_user(context, destination, &usage);
 }
 
 static int64_t edge_linux_sys_times(
@@ -7943,10 +8066,24 @@ static int64_t edge_linux_sys_times(
     result.tms_stime = (int64_t)times.system_ticks;
     result.tms_cutime = (int64_t)times.children_user_ticks;
     result.tms_cstime = (int64_t)times.children_system_ticks;
-    if (context->arguments[0] &&
-        edge_linux_copy_to_user(context, context->arguments[0], &result,
-                                sizeof(result)) < 0)
-        return -EDGE_LINUX_EFAULT;
+    if (context->arguments[0]) {
+        if (context->architecture == EDGE_LINUX_ARCH_IA32) {
+            struct edge_linux_tms32 compat = {
+                .tms_utime = (int32_t)result.tms_utime,
+                .tms_stime = (int32_t)result.tms_stime,
+                .tms_cutime = (int32_t)result.tms_cutime,
+                .tms_cstime = (int32_t)result.tms_cstime,
+            };
+            if (edge_linux_copy_to_user(
+                    context, context->arguments[0], &compat,
+                    sizeof(compat)) < 0)
+                return -EDGE_LINUX_EFAULT;
+        } else if (edge_linux_copy_to_user(
+                       context, context->arguments[0], &result,
+                       sizeof(result)) < 0) {
+            return -EDGE_LINUX_EFAULT;
+        }
+    }
     return (int64_t)times.elapsed_ticks;
 }
 
@@ -17309,6 +17446,71 @@ static int edge_linux_statfs_from_descriptor(
     return 0;
 }
 
+static int edge_linux_statfs_copy_to_user(
+        edge_linux_syscall_context_t *context,
+        const struct edge_linux_statfs64 *source) {
+    uint64_t destination = context->arguments[1];
+
+    if (context->architecture == EDGE_LINUX_ARCH_IA32 &&
+        (context->raw_number == 268u || context->raw_number == 269u)) {
+        struct edge_linux_statfs64_compat compat;
+
+        if (context->arguments[1] != sizeof(compat))
+            return -EDGE_LINUX_EINVAL;
+        destination = context->arguments[2];
+        if ((source->f_bsize | source->f_frsize) >> 32u)
+            return -EDGE_LINUX_EOVERFLOW;
+        memset(&compat, 0, sizeof(compat));
+        compat.f_type = (uint32_t)source->f_type;
+        compat.f_bsize = (uint32_t)source->f_bsize;
+        compat.f_blocks = source->f_blocks;
+        compat.f_bfree = source->f_bfree;
+        compat.f_bavail = source->f_bavail;
+        compat.f_files = source->f_files;
+        compat.f_ffree = source->f_ffree;
+        compat.f_fsid[0] = source->f_fsid[0];
+        compat.f_fsid[1] = source->f_fsid[1];
+        compat.f_namelen = (uint32_t)source->f_namelen;
+        compat.f_frsize = (uint32_t)source->f_frsize;
+        compat.f_flags = (uint32_t)source->f_flags;
+        if (!destination || edge_linux_copy_to_user(
+                context, destination, &compat, sizeof(compat)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        return 0;
+    }
+    if (context->architecture == EDGE_LINUX_ARCH_IA32) {
+        struct edge_linux_statfs32 compat;
+
+        if (((source->f_blocks | source->f_bfree | source->f_bavail |
+              (uint64_t)source->f_bsize | (uint64_t)source->f_frsize) >>
+             32u) ||
+            (source->f_files != UINT64_MAX && source->f_files > UINT32_MAX) ||
+            (source->f_ffree != UINT64_MAX && source->f_ffree > UINT32_MAX))
+            return -EDGE_LINUX_EOVERFLOW;
+        memset(&compat, 0, sizeof(compat));
+        compat.f_type = (uint32_t)source->f_type;
+        compat.f_bsize = (uint32_t)source->f_bsize;
+        compat.f_blocks = (uint32_t)source->f_blocks;
+        compat.f_bfree = (uint32_t)source->f_bfree;
+        compat.f_bavail = (uint32_t)source->f_bavail;
+        compat.f_files = (uint32_t)source->f_files;
+        compat.f_ffree = (uint32_t)source->f_ffree;
+        compat.f_fsid[0] = source->f_fsid[0];
+        compat.f_fsid[1] = source->f_fsid[1];
+        compat.f_namelen = (uint32_t)source->f_namelen;
+        compat.f_frsize = (uint32_t)source->f_frsize;
+        compat.f_flags = (uint32_t)source->f_flags;
+        if (!destination || edge_linux_copy_to_user(
+                context, destination, &compat, sizeof(compat)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        return 0;
+    }
+    if (!destination || edge_linux_copy_to_user(
+            context, destination, source, sizeof(*source)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    return 0;
+}
+
 static int64_t edge_linux_sys_statfs(
     edge_linux_syscall_context_t *context) {
     struct edge_linux_statfs64 result;
@@ -17339,11 +17541,7 @@ static int64_t edge_linux_sys_statfs(
         return -EDGE_LINUX_ENOSYS;
     }
     if (status < 0) return status;
-    if (!context->arguments[1] ||
-        edge_linux_copy_to_user(context, context->arguments[1], &result,
-                                sizeof(result)) < 0)
-        return -EDGE_LINUX_EFAULT;
-    return 0;
+    return edge_linux_statfs_copy_to_user(context, &result);
 }
 
 static int64_t edge_linux_sys_ustat(
@@ -17364,10 +17562,23 @@ static int64_t edge_linux_sys_ustat(
     memset(&result, 0, sizeof(result));
     result.f_tfree = (int32_t)statfs.f_bfree;
     result.f_tinode = statfs.f_ffree;
-    if (!context->arguments[1] ||
-        edge_linux_copy_to_user(context, context->arguments[1], &result,
-                                sizeof(result)) < 0)
+    if (!context->arguments[1]) return -EDGE_LINUX_EFAULT;
+    if (context->architecture == EDGE_LINUX_ARCH_IA32) {
+        struct edge_linux_ustat32 compat;
+
+        memset(&compat, 0, sizeof(compat));
+        compat.f_tfree = result.f_tfree;
+        compat.f_tinode = result.f_tinode > UINT32_MAX ?
+            UINT32_MAX : (uint32_t)result.f_tinode;
+        if (edge_linux_copy_to_user(
+                context, context->arguments[1], &compat,
+                sizeof(compat)) < 0)
+            return -EDGE_LINUX_EFAULT;
+    } else if (edge_linux_copy_to_user(
+                   context, context->arguments[1], &result,
+                   sizeof(result)) < 0) {
         return -EDGE_LINUX_EFAULT;
+    }
     return 0;
 }
 
