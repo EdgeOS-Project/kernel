@@ -18,6 +18,8 @@
 #include "string.h"
 #include "sys/spinlock.h"
 
+#define IORING_SETUP_SQPOLL          (1u << 1)
+#define IORING_SETUP_SQ_AFF          (1u << 2)
 #define IORING_SETUP_CQSIZE          (1u << 3)
 #define IORING_SETUP_CLAMP           (1u << 4)
 #define IORING_SETUP_R_DISABLED      (1u << 6)
@@ -47,13 +49,15 @@
 #define IORING_FEAT_SUBMIT_STABLE    (1u << 2)
 #define IORING_FEAT_RW_CUR_POS       (1u << 3)
 #define IORING_FEAT_POLL_32BITS      (1u << 6)
+#define IORING_FEAT_SQPOLL_NONFIXED  (1u << 7)
 #define IORING_FEAT_CQE_SKIP         (1u << 11)
 #define IORING_SQ_CQ_OVERFLOW        (1u << 1)
 #define IORING_SQ_NEED_WAKEUP        (1u << 0)
 #define IORING_SQ_TASKRUN            (1u << 2)
 
 #define IORING_SETUP_SUPPORTED \
-    (IORING_SETUP_CQSIZE | IORING_SETUP_CLAMP | \
+    (IORING_SETUP_SQPOLL | IORING_SETUP_SQ_AFF | \
+     IORING_SETUP_CQSIZE | IORING_SETUP_CLAMP | \
      IORING_SETUP_R_DISABLED | IORING_SETUP_SUBMIT_ALL | \
      IORING_SETUP_COOP_TASKRUN | IORING_SETUP_TASKRUN_FLAG | \
      IORING_SETUP_SQE128 | IORING_SETUP_CQE32 | \
@@ -917,6 +921,14 @@ int kernel_io_uring_create_for_task(
         return -EDGE_LINUX_EINVAL;
     if (parameters->flags & ~IORING_SETUP_SUPPORTED)
         return -EDGE_LINUX_EINVAL;
+    if ((parameters->flags & IORING_SETUP_SQ_AFF) &&
+        !(parameters->flags & IORING_SETUP_SQPOLL))
+        return -EDGE_LINUX_EINVAL;
+    if ((parameters->flags & IORING_SETUP_SQPOLL) &&
+        (parameters->flags & (IORING_SETUP_COOP_TASKRUN |
+                              IORING_SETUP_TASKRUN_FLAG |
+                              IORING_SETUP_DEFER_TASKRUN)))
+        return -EDGE_LINUX_EINVAL;
     if ((parameters->flags & IORING_SETUP_TASKRUN_FLAG) &&
         !(parameters->flags & (IORING_SETUP_COOP_TASKRUN |
                                IORING_SETUP_DEFER_TASKRUN)))
@@ -1066,6 +1078,9 @@ int kernel_io_uring_create_for_task(
     *io_uring_u32(ring->sq_ring, ring->sq_off.ring_mask) =
         entries - 1u;
     *io_uring_u32(ring->sq_ring, ring->sq_off.ring_entries) = entries;
+    if (parameters->flags & IORING_SETUP_SQPOLL)
+        *io_uring_u32(ring->sq_ring, ring->sq_off.flags) =
+            IORING_SQ_NEED_WAKEUP;
     *io_uring_u32(ring->cq_ring, ring->cq_off.ring_mask) =
         cq_entries - 1u;
     *io_uring_u32(ring->cq_ring, ring->cq_off.ring_entries) = cq_entries;
@@ -1075,6 +1090,7 @@ int kernel_io_uring_create_for_task(
     parameters->features = IORING_FEAT_SUBMIT_STABLE |
                            IORING_FEAT_RW_CUR_POS |
                            IORING_FEAT_POLL_32BITS |
+                           IORING_FEAT_SQPOLL_NONFIXED |
                            IORING_FEAT_CQE_SKIP;
     parameters->sq_off = ring->sq_off;
     parameters->cq_off = ring->cq_off;
@@ -1669,6 +1685,7 @@ void kernel_io_uring_capabilities(uint64_t *features,
         *features = IORING_FEAT_SUBMIT_STABLE |
                     IORING_FEAT_RW_CUR_POS |
                     IORING_FEAT_POLL_32BITS |
+                    IORING_FEAT_SQPOLL_NONFIXED |
                     IORING_FEAT_CQE_SKIP;
     if (setup_flags) *setup_flags = IORING_SETUP_SUPPORTED;
 }

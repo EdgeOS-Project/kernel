@@ -10834,6 +10834,8 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_ZCRX_CTRL_ARM_NOTIFICATION 2u
 #define EDGE_LINUX_IORING_NOTIF_USAGE_ZC_COPIED (1u << 31)
 
+#define EDGE_LINUX_IORING_SETUP_SQPOLL (1u << 1)
+#define EDGE_LINUX_IORING_SETUP_SQ_AFF (1u << 2)
 #define EDGE_LINUX_IORING_SETUP_CLAMP  (1u << 4)
 #define EDGE_LINUX_IORING_SETUP_SQE128 (1u << 10)
 #define EDGE_LINUX_IORING_SETUP_CQE32  (1u << 11)
@@ -10857,6 +10859,7 @@ static int64_t edge_linux_sys_aio(
 
 #define EDGE_LINUX_IORING_ENTER_GETEVENTS (1u << 0)
 #define EDGE_LINUX_IORING_ENTER_SQ_WAKEUP (1u << 1)
+#define EDGE_LINUX_IORING_ENTER_SQ_WAIT (1u << 2)
 #define EDGE_LINUX_IORING_ENTER_EXT_ARG   (1u << 3)
 #define EDGE_LINUX_IORING_ENTER_REGISTERED_RING (1u << 4)
 #define EDGE_LINUX_IORING_ENTER_ABS_TIMER (1u << 5)
@@ -10865,6 +10868,7 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_ENTER_SUPPORTED \
     (EDGE_LINUX_IORING_ENTER_GETEVENTS | \
      EDGE_LINUX_IORING_ENTER_SQ_WAKEUP | \
+     EDGE_LINUX_IORING_ENTER_SQ_WAIT | \
      EDGE_LINUX_IORING_ENTER_EXT_ARG | \
      EDGE_LINUX_IORING_ENTER_REGISTERED_RING | \
      EDGE_LINUX_IORING_ENTER_ABS_TIMER | \
@@ -12886,6 +12890,11 @@ static int64_t edge_linux_sys_io_uring_setup(
         return -EDGE_LINUX_EFAULT;
     for (uint32_t index = 0; index < 3; ++index)
         if (parameters.reserved[index]) return -EDGE_LINUX_EINVAL;
+    if ((parameters.flags & EDGE_LINUX_IORING_SETUP_SQ_AFF) &&
+        (parameters.sq_thread_cpu >= 64u ||
+         !(kernel_scheduler_online_cpu_mask() &
+           (UINT64_C(1) << parameters.sq_thread_cpu))))
+        return -EDGE_LINUX_EINVAL;
     result = kernel_io_uring_create_for_task(
         (uint32_t)entries, &parameters, &ring_id,
         kernel_current_pid());

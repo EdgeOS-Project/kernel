@@ -520,7 +520,7 @@ int main(void) {
     kernel_io_uring_capabilities(
         &capability_features, &capability_setup_flags);
     assert(capability_features == parameters.features);
-    assert(capability_setup_flags == 0x1d7fd8u);
+    assert(capability_setup_flags == 0x1d7fdeu);
     assert(parameters.sq_entries == 8);
     assert(parameters.cq_entries == 16);
     assert(kernel_io_uring_completion_capacity(ring_id) == 16u);

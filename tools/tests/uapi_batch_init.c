@@ -211,6 +211,8 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "io_uring_uring_cmd_abi_probe",
 #elif defined(UAPI_BATCH_IO_URING_ZCRX_ONLY)
         "io_uring_zcrx_abi_probe",
+#elif defined(UAPI_BATCH_IO_URING_SQPOLL_ONLY)
+        "io_uring_sqpoll_abi_probe",
 #elif defined(UAPI_BATCH_BPF_COMPAT_ONLY)
         "ia32_bpf_uapi_probe",
         "x32_bpf_uapi_probe",
