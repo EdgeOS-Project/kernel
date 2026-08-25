@@ -47,6 +47,16 @@ typedef struct linux_sigevent64 {
     } fields;
 } linux_sigevent64_t;
 
+typedef struct linux_sigevent32 {
+    uint32_t sigev_value;
+    int32_t sigev_signo;
+    int32_t sigev_notify;
+    union {
+        int32_t thread_id;
+        uint8_t padding[52];
+    } fields;
+} linux_sigevent32_t;
+
 typedef struct linux_timezone {
     int32_t minutes_west;
     int32_t dst_time;
@@ -62,6 +72,8 @@ _Static_assert(sizeof(linux_itimerval64_t) == 32,
                "Linux 64-bit itimerval ABI layout");
 _Static_assert(sizeof(linux_sigevent64_t) == 64,
                "Linux 64-bit sigevent ABI layout");
+_Static_assert(sizeof(linux_sigevent32_t) == 64,
+               "Linux compat sigevent ABI layout");
 _Static_assert(offsetof(linux_itimerval64_t, it_interval) == 0,
                "Linux 64-bit itimerval interval offset");
 _Static_assert(offsetof(linux_itimerval64_t, it_value) == 16,
@@ -72,6 +84,12 @@ _Static_assert(offsetof(linux_sigevent64_t, sigev_notify) == 12,
                "Linux 64-bit sigevent notification offset");
 _Static_assert(offsetof(linux_sigevent64_t, fields) == 16,
                "Linux 64-bit sigevent payload offset");
+_Static_assert(offsetof(linux_sigevent32_t, sigev_signo) == 4,
+               "Linux compat sigevent signal offset");
+_Static_assert(offsetof(linux_sigevent32_t, sigev_notify) == 8,
+               "Linux compat sigevent notification offset");
+_Static_assert(offsetof(linux_sigevent32_t, fields) == 12,
+               "Linux compat sigevent payload offset");
 _Static_assert(sizeof(linux_timezone_t) == 8,
                "Linux timezone ABI layout");
 

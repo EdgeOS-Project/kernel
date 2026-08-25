@@ -12,8 +12,9 @@
 #include "string.h"
 #include "sys/spinlock.h"
 
-#define KERNEL_AIO_HANDLE_TAG 0xa10c000000000000ull
-#define KERNEL_AIO_HANDLE_TAG_MASK 0xffff000000000000ull
+#define KERNEL_AIO_HANDLE_TAG UINT64_C(0xa1000000)
+#define KERNEL_AIO_HANDLE_TAG_MASK UINT64_C(0xff000000)
+#define KERNEL_AIO_HANDLE_GENERATION_MASK UINT32_C(0x0000ffff)
 
 typedef struct kernel_aio_pending_slot {
     uint8_t used;
@@ -42,7 +43,8 @@ static spinlock_t g_aio_lock;
 static uint32_t g_aio_generation = 1u;
 
 static uint64_t aio_handle(uint32_t slot, uint32_t generation) {
-    return KERNEL_AIO_HANDLE_TAG | ((uint64_t)generation << 8) |
+    return KERNEL_AIO_HANDLE_TAG |
+           ((uint64_t)(generation & KERNEL_AIO_HANDLE_GENERATION_MASK) << 8) |
            (uint64_t)(slot + 1u);
 }
 
@@ -55,7 +57,8 @@ static int aio_context_locked(int32_t owner_tgid, uint64_t handle) {
     slot = (uint32_t)(handle & 0xffu);
     if (!slot || slot > KERNEL_AIO_MAX_CONTEXTS) return -1;
     --slot;
-    generation = (uint32_t)((handle >> 8) & 0xffffffffu);
+    generation = (uint32_t)((handle >> 8) &
+                            KERNEL_AIO_HANDLE_GENERATION_MASK);
     if (!g_aio_contexts[slot].used ||
         g_aio_contexts[slot].owner_tgid != owner_tgid ||
         g_aio_contexts[slot].generation != generation)
@@ -105,7 +108,9 @@ int kernel_aio_context_create(int32_t owner_tgid, uint32_t maximum_events,
         return -EDGE_LINUX_EAGAIN;
     }
     memset(&g_aio_contexts[slot], 0, sizeof(g_aio_contexts[slot]));
-    if (++g_aio_generation == 0u) ++g_aio_generation;
+    g_aio_generation =
+        (g_aio_generation + 1u) & KERNEL_AIO_HANDLE_GENERATION_MASK;
+    if (!g_aio_generation) ++g_aio_generation;
     g_aio_contexts[slot].used = 1u;
     g_aio_contexts[slot].owner_tgid = owner_tgid;
     g_aio_contexts[slot].generation = g_aio_generation;

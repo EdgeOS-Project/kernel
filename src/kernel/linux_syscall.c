@@ -738,6 +738,28 @@ static void edge_linux_posix_timer_state_to_uapi(
         state->remaining_microseconds, &value->it_value);
 }
 
+static int edge_linux_import_sigevent(
+    edge_linux_syscall_context_t *context, uint64_t user_address,
+    linux_sigevent64_t *event) {
+    if (!context || !event || !user_address) return -EDGE_LINUX_EFAULT;
+    memset(event, 0, sizeof(*event));
+    if (context->architecture == EDGE_LINUX_ARCH_X32) {
+        linux_sigevent32_t compat_event;
+        if (user_address > UINT32_MAX || edge_linux_copy_from_user(
+                context, &compat_event, user_address,
+                sizeof(compat_event)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        event->sigev_value = compat_event.sigev_value;
+        event->sigev_signo = compat_event.sigev_signo;
+        event->sigev_notify = compat_event.sigev_notify;
+        event->fields.thread_id = compat_event.fields.thread_id;
+        return 0;
+    }
+    return edge_linux_copy_from_user(
+        context, event, user_address, sizeof(*event)) < 0 ?
+        -EDGE_LINUX_EFAULT : 0;
+}
+
 static int64_t edge_linux_sys_posix_timer(
     edge_linux_syscall_context_t *context) {
     kernel_posix_timer_create_request_t create_request;
@@ -771,10 +793,9 @@ static int64_t edge_linux_sys_posix_timer(
                 return -EDGE_LINUX_EPERM;
         }
         if (context->arguments[1]) {
-            if (edge_linux_copy_from_user(
-                    context, &event, context->arguments[1],
-                    sizeof(event)) < 0)
-                return -EDGE_LINUX_EFAULT;
+            status = edge_linux_import_sigevent(
+                context, context->arguments[1], &event);
+            if (status < 0) return status;
             create_request.notify = event.sigev_notify;
             create_request.signal_number = event.sigev_signo;
             create_request.signal_value = event.sigev_value;
@@ -1695,10 +1716,25 @@ static int64_t edge_linux_sys_numa_policy(
             uint8_t resident;
             int32_t page_status = 0;
 
-            if (edge_linux_copy_from_user(
-                    context, &page,
-                    pages_user + index * sizeof(page), sizeof(page)) < 0)
+            if (context->architecture == EDGE_LINUX_ARCH_X32) {
+                uint32_t compat_page;
+                if (pages_user > UINT32_MAX ||
+                    index > (UINT32_MAX - pages_user) /
+                                sizeof(compat_page) ||
+                    edge_linux_copy_from_user(
+                        context, &compat_page,
+                        pages_user + index * sizeof(compat_page),
+                        sizeof(compat_page)) < 0)
+                    return -EDGE_LINUX_EFAULT;
+                page = compat_page;
+            } else if (index > (UINT64_MAX - pages_user) /
+                                   sizeof(page) ||
+                       edge_linux_copy_from_user(
+                           context, &page,
+                           pages_user + index * sizeof(page),
+                           sizeof(page)) < 0) {
                 return -EDGE_LINUX_EFAULT;
+            }
             if (nodes_user && edge_linux_copy_from_user(
                     context, &node,
                     nodes_user + index * sizeof(node), sizeof(node)) < 0)
@@ -2292,6 +2328,11 @@ static int64_t edge_linux_sys_kcmp(edge_linux_syscall_context_t *context) {
 #define EDGE_LINUX_IOV_MAX       1024u
 #define EDGE_LINUX_MAX_RW_COUNT  0x7ffff000ULL
 
+static int edge_linux_import_iovec_array(
+    edge_linux_syscall_context_t *context,
+    struct edge_linux_iovec *destination, uint64_t user_address,
+    uint64_t vector_count);
+
 static int64_t edge_linux_sys_process_madvise(
     edge_linux_syscall_context_t *context) {
     kernel_io_vector_scratch_t scratch;
@@ -2338,11 +2379,9 @@ static int64_t edge_linux_sys_process_madvise(
     if (kernel_io_current_vector_scratch(&scratch) < 0 ||
         !scratch.vectors || scratch.capacity < vector_count)
         return -EDGE_LINUX_ENOMEM;
-    if (vector_count > UINT64_MAX / sizeof(scratch.vectors[0]) ||
-        edge_linux_copy_from_user(
-            context, scratch.vectors, vector_address,
-            vector_count * sizeof(scratch.vectors[0])) < 0)
-        return -EDGE_LINUX_EFAULT;
+    status = edge_linux_import_iovec_array(
+        context, scratch.vectors, vector_address, vector_count);
+    if (status < 0) return status;
 
     /* Linux imports and validates the complete vector before changing memory. */
     for (uint64_t index = 0; index < vector_count; ++index) {
@@ -3601,9 +3640,9 @@ static int64_t edge_linux_sys_mq_notify(
     if (result < 0) return result;
     if (!context->arguments[1])
         return kernel_posix_mq_notify(queue_id, 0);
-    if (edge_linux_copy_from_user(
-            context, &event, context->arguments[1], sizeof(event)) < 0)
-        return -EDGE_LINUX_EFAULT;
+    result = edge_linux_import_sigevent(
+        context, context->arguments[1], &event);
+    if (result < 0) return result;
     notification.notify = event.sigev_notify;
     notification.signal = event.sigev_signo;
     notification.value = event.sigev_value;
@@ -9055,10 +9094,9 @@ static int64_t edge_linux_aio_execute_io(
     if (kernel_io_current_vector_scratch(&scratch) < 0 ||
         !scratch.vectors || scratch.capacity < vector_count)
         return -EDGE_LINUX_ENOMEM;
-    if (edge_linux_copy_from_user(
-            context, scratch.vectors, iocb->buffer,
-            (uint64_t)vector_count * sizeof(scratch.vectors[0])) < 0)
-        return -EDGE_LINUX_EFAULT;
+    result = edge_linux_import_iovec_array(
+        context, scratch.vectors, iocb->buffer, vector_count);
+    if (result < 0) return result;
     for (uint32_t index = 0; index < vector_count; ++index) {
         uint64_t length = scratch.vectors[index].iov_len;
         if (requested >= EDGE_LINUX_MAX_RW_COUNT) break;
@@ -9203,22 +9241,42 @@ static int64_t edge_linux_aio_submit_one(
 static int64_t edge_linux_sys_aio_setup(
         edge_linux_syscall_context_t *context, int32_t owner_tgid) {
     uint64_t handle = 0;
-    uint64_t initial;
+    uint64_t initial = 0;
     uint64_t destination = context->arguments[1];
     uint64_t requested = context->arguments[0];
     int result;
 
     if (!destination) return -EDGE_LINUX_EFAULT;
     if (requested > UINT32_MAX) return -EDGE_LINUX_EINVAL;
-    if (edge_linux_copy_from_user(
-            context, &initial, destination, sizeof(initial)) < 0)
+    if (context->architecture == EDGE_LINUX_ARCH_X32) {
+        uint32_t compat_initial;
+        if (destination > UINT32_MAX || edge_linux_copy_from_user(
+                context, &compat_initial, destination,
+                sizeof(compat_initial)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        initial = compat_initial;
+    } else if (edge_linux_copy_from_user(
+                   context, &initial, destination, sizeof(initial)) < 0) {
         return -EDGE_LINUX_EFAULT;
+    }
     if (initial) return -EDGE_LINUX_EINVAL;
     result = kernel_aio_context_create(
         owner_tgid, (uint32_t)requested, &handle);
     if (result < 0) return result;
-    if (edge_linux_copy_to_user(
-            context, destination, &handle, sizeof(handle)) < 0) {
+    if (context->architecture == EDGE_LINUX_ARCH_X32 &&
+        handle > UINT32_MAX) {
+        (void)kernel_aio_context_destroy(owner_tgid, handle);
+        return -EDGE_LINUX_EOVERFLOW;
+    }
+    if (context->architecture == EDGE_LINUX_ARCH_X32) {
+        uint32_t compat_handle = (uint32_t)handle;
+        result = edge_linux_copy_to_user(
+            context, destination, &compat_handle, sizeof(compat_handle));
+    } else {
+        result = edge_linux_copy_to_user(
+            context, destination, &handle, sizeof(handle));
+    }
+    if (result < 0) {
         (void)kernel_aio_context_destroy(owner_tgid, handle);
         return -EDGE_LINUX_EFAULT;
     }
@@ -9239,16 +9297,31 @@ static int64_t edge_linux_sys_aio_submit(
     if (!request_count) return 0;
     if (!list) return -EDGE_LINUX_EFAULT;
     for (; submitted < request_count; ++submitted) {
-        uint64_t iocb_user;
-        if ((uint64_t)submitted >
-            (UINT64_MAX - list) / sizeof(iocb_user))
+        uint64_t iocb_user = 0;
+        uint64_t pointer_size = context->architecture ==
+            EDGE_LINUX_ARCH_X32 ? sizeof(uint32_t) : sizeof(uint64_t);
+        if ((uint64_t)submitted > (UINT64_MAX - list) / pointer_size) {
             result = -EDGE_LINUX_EFAULT;
-        else if (edge_linux_copy_from_user(
-                     context, &iocb_user,
-                     list + (uint64_t)submitted * sizeof(iocb_user),
-                     sizeof(iocb_user)) < 0)
+        } else if (context->architecture == EDGE_LINUX_ARCH_X32) {
+            uint32_t compat_iocb_user;
+            if (list > UINT32_MAX || edge_linux_copy_from_user(
+                    context, &compat_iocb_user,
+                    list + (uint64_t)submitted * pointer_size,
+                    sizeof(compat_iocb_user)) < 0)
+                result = -EDGE_LINUX_EFAULT;
+            else {
+                iocb_user = compat_iocb_user;
+                result = 0;
+            }
+        } else if (edge_linux_copy_from_user(
+                       context, &iocb_user,
+                       list + (uint64_t)submitted * pointer_size,
+                       sizeof(iocb_user)) < 0) {
             result = -EDGE_LINUX_EFAULT;
-        else
+        } else {
+            result = 0;
+        }
+        if (result == 0)
             result = (int)edge_linux_aio_submit_one(
                 context, owner_tgid, handle, iocb_user);
         if (result < 0) return submitted ? submitted : result;
@@ -13778,11 +13851,9 @@ static int64_t edge_linux_sys_vmsplice(
     if (kernel_io_current_vector_scratch(&scratch) < 0 ||
         !scratch.vectors || scratch.capacity < vector_count)
         return -EDGE_LINUX_ENOMEM;
-    if (vector_count > UINT64_MAX / sizeof(scratch.vectors[0]) ||
-        edge_linux_copy_from_user(
-            context, scratch.vectors, vector_address,
-            vector_count * sizeof(scratch.vectors[0])) < 0)
-        return -EDGE_LINUX_EFAULT;
+    status = edge_linux_import_iovec_array(
+        context, scratch.vectors, vector_address, vector_count);
+    if (status < 0) return status;
 
     if (descriptor.writable)
         operation = KERNEL_IO_WRITE_CURRENT;

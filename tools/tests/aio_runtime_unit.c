@@ -36,6 +36,7 @@ int main(void) {
     assert(kernel_eventfd_retain(event_id) == 0);
 
     assert(kernel_aio_context_create(10, 2, &first) == 0);
+    assert(first <= UINT32_MAX);
     assert(kernel_aio_context_query(11, first, 0, 0) ==
            -EDGE_LINUX_EINVAL);
     assert(kernel_aio_completion_enqueue(10, first, &event) == 0);

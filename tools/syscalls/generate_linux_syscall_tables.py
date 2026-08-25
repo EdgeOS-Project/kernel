@@ -19,6 +19,10 @@ DISPATCH_INCLUDE = ROOT / "src/kernel/linux_syscall_dispatch.inc"
 X32_COMPAT_SHARED_SYSCALLS = {
     "get_robust_list",
     "getsockopt",
+    "io_setup",
+    "io_submit",
+    "move_pages",
+    "mq_notify",
     "preadv",
     "preadv2",
     "process_vm_readv",
@@ -39,6 +43,8 @@ X32_COMPAT_SHARED_SYSCALLS = {
     "sigaltstack",
     "set_robust_list",
     "setsockopt",
+    "timer_create",
+    "vmsplice",
     "writev",
     "waitid",
 }
