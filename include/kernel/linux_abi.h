@@ -529,6 +529,23 @@ struct edge_linux_flock64 {
     int32_t padding1;
 };
 
+/* Linux i386 fcntl and fcntl64 use distinct packed lock layouts. */
+struct edge_linux_ia32_flock {
+    int16_t l_type;
+    int16_t l_whence;
+    int32_t l_start;
+    int32_t l_len;
+    int32_t l_pid;
+};
+
+struct __attribute__((packed)) edge_linux_ia32_flock64 {
+    int16_t l_type;
+    int16_t l_whence;
+    int64_t l_start;
+    int64_t l_len;
+    int32_t l_pid;
+};
+
 _Static_assert(sizeof(struct edge_linux_flock64) == 32,
                "Linux flock size mismatch");
 _Static_assert(offsetof(struct edge_linux_flock64, l_start) == 8,
@@ -537,6 +554,20 @@ _Static_assert(offsetof(struct edge_linux_flock64, l_len) == 16,
                "Linux flock length offset mismatch");
 _Static_assert(offsetof(struct edge_linux_flock64, l_pid) == 24,
                "Linux flock pid offset mismatch");
+_Static_assert(sizeof(struct edge_linux_ia32_flock) == 16,
+               "Linux i386 flock size mismatch");
+_Static_assert(offsetof(struct edge_linux_ia32_flock, l_start) == 4,
+               "Linux i386 flock start offset mismatch");
+_Static_assert(offsetof(struct edge_linux_ia32_flock, l_pid) == 12,
+               "Linux i386 flock pid offset mismatch");
+_Static_assert(sizeof(struct edge_linux_ia32_flock64) == 24,
+               "Linux i386 flock64 size mismatch");
+_Static_assert(offsetof(struct edge_linux_ia32_flock64, l_start) == 4,
+               "Linux i386 flock64 start offset mismatch");
+_Static_assert(offsetof(struct edge_linux_ia32_flock64, l_len) == 12,
+               "Linux i386 flock64 length offset mismatch");
+_Static_assert(offsetof(struct edge_linux_ia32_flock64, l_pid) == 20,
+               "Linux i386 flock64 pid offset mismatch");
 
 /* SysV IPC metadata is shared by the supported 64-bit Linux ABIs. */
 struct edge_linux_ipc_perm64 {

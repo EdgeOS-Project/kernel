@@ -481,8 +481,7 @@ void edgeos_x86_64_syscall_dispatch(REGISTERS *r) {
             .route_status = EDGE_LINUX_SYSCALL_IMPLEMENTED,
             .raw_number = x32_abi ? nr & ~X32_SYSCALL_BIT : nr,
             .arguments = {
-                a1, a2, a3, a4, a5,
-                ia32_abi && nr == 192u ? a6 << 12 : a6,
+                a1, a2, a3, a4, a5, a6,
             },
             .current_task = cur,
             .user_registers = r,

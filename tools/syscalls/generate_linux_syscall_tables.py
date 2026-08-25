@@ -115,6 +115,8 @@ IA32_SHARED_SYSCALLS = {
     "file_getattr",
     "file_setattr",
     "finit_module",
+    "fcntl",
+    "fcntl64",
     "flock",
     "fork",
     "fstatfs",
@@ -200,6 +202,7 @@ IA32_SHARED_SYSCALLS = {
     "mlock",
     "mlock2",
     "mlockall",
+    "mmap",
     "mmap2",
     "mount_setattr",
     "mount",
@@ -352,6 +355,7 @@ IA32_SHARED_SYSCALLS = {
     "listxattr",
     "llistxattr",
     "lremovexattr",
+    "_llseek",
     "lseek",
     "lsetxattr",
     "fgetxattr",
@@ -412,6 +416,7 @@ IA32_SHARED_SYSCALLS = {
     "msgrcv",
     "msgctl",
     "_newselect",
+    "select",
     "fadvise64",
     "fadvise64_64",
     "fallocate",
@@ -444,6 +449,7 @@ IA32_ARCH_SYSCALLS = {
 }
 
 IA32_CANONICAL_ALIASES = {
+    "_llseek": "lseek",
     "_newselect": "select",
     "clock_adjtime64": "clock_adjtime",
     "clock_getres_time64": "clock_getres",
@@ -453,6 +459,7 @@ IA32_CANONICAL_ALIASES = {
     "fstat64": "fstat",
     "fstatat64": "newfstatat",
     "fstatfs64": "fstatfs",
+    "fcntl64": "fcntl",
     "fadvise64_64": "fadvise64",
     "ftruncate64": "ftruncate",
     "chown32": "chown",

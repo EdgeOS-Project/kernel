@@ -61,6 +61,9 @@ int64_t edge_linux_file_lock_fcntl(
     edge_linux_copy_from_user_fn copy_from_user,
     edge_linux_copy_to_user_fn copy_to_user, void *copy_context,
     void *user_registers);
+int64_t edge_linux_file_lock_fcntl_value(
+    int32_t descriptor, uint32_t command,
+    struct edge_linux_flock64 *lock, void *user_registers);
 int64_t edge_linux_file_lock_flock(int32_t descriptor, uint32_t operation,
                                    void *user_registers);
 

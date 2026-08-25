@@ -536,12 +536,9 @@ static int edge_file_lock_drop_flock_for_conversion(
     return result;
 }
 
-int64_t edge_linux_file_lock_fcntl(
-    int32_t descriptor, uint32_t command, uint64_t user_lock,
-    edge_linux_copy_from_user_fn copy_from_user,
-    edge_linux_copy_to_user_fn copy_to_user, void *copy_context,
-    void *user_registers) {
-    struct edge_linux_flock64 lock;
+int64_t edge_linux_file_lock_fcntl_value(
+    int32_t descriptor, uint32_t command,
+    struct edge_linux_flock64 *lock, void *user_registers) {
     kernel_file_lock_info_t information;
     edge_file_lock_request_t request;
     int is_ofd = command == EDGE_LINUX_F_OFD_GETLK ||
@@ -555,21 +552,18 @@ int64_t edge_linux_file_lock_fcntl(
     int result;
     uint64_t flags;
 
-    if (!user_lock || !copy_from_user || !copy_to_user)
-        return -EDGE_LINUX_EFAULT;
-    if (copy_from_user(copy_context, &lock, user_lock, sizeof(lock)) < 0)
-        return -EDGE_LINUX_EFAULT;
-    if (lock.l_type != EDGE_LINUX_F_RDLCK &&
-        lock.l_type != EDGE_LINUX_F_WRLCK &&
-        lock.l_type != EDGE_LINUX_F_UNLCK)
+    if (!lock) return -EDGE_LINUX_EFAULT;
+    if (lock->l_type != EDGE_LINUX_F_RDLCK &&
+        lock->l_type != EDGE_LINUX_F_WRLCK &&
+        lock->l_type != EDGE_LINUX_F_UNLCK)
         return -EDGE_LINUX_EINVAL;
-    if ((is_get && lock.l_type == EDGE_LINUX_F_UNLCK) ||
-        (is_ofd && lock.l_pid != 0))
+    if ((is_get && lock->l_type == EDGE_LINUX_F_UNLCK) ||
+        (is_ofd && lock->l_pid != 0))
         return -EDGE_LINUX_EINVAL;
     result = arch_fd_file_lock_info(descriptor, &information);
     if (result < 0) return result;
-    if (!is_get && lock.l_type != EDGE_LINUX_F_UNLCK) {
-        result = edge_file_lock_validate_access(&information, lock.l_type);
+    if (!is_get && lock->l_type != EDGE_LINUX_F_UNLCK) {
+        result = edge_file_lock_validate_access(&information, lock->l_type);
         if (result < 0) return result;
     }
     memset(&request, 0, sizeof(request));
@@ -578,9 +572,9 @@ int64_t edge_linux_file_lock_fcntl(
     request.open_description = information.open_description;
     request.process_id = information.process_id;
     request.task_id = information.task_id;
-    request.type = lock.l_type;
+    request.type = lock->l_type;
     request.kind = is_ofd ? EDGE_FILE_LOCK_OFD : EDGE_FILE_LOCK_POSIX;
-    result = edge_file_lock_normalize(&information, &lock, &request);
+    result = edge_file_lock_normalize(&information, lock, &request);
     if (result < 0) return result;
 
     if (!is_get)
@@ -589,20 +583,40 @@ int64_t edge_linux_file_lock_fcntl(
     flags = spin_lock_irqsave(&g_file_lock_state_lock);
     conflict = edge_file_lock_find_conflict_locked(&request);
     if (conflict < 0) {
-        lock.l_type = EDGE_LINUX_F_UNLCK;
-        lock.l_pid = 0;
+        lock->l_type = EDGE_LINUX_F_UNLCK;
+        lock->l_pid = 0;
     } else {
         const edge_file_lock_request_t *held =
             &g_file_locks[conflict].request;
-        lock.l_type = held->type;
-        lock.l_whence = EDGE_LINUX_SEEK_SET;
-        lock.l_start = (int64_t)held->start;
-        lock.l_len = held->end == UINT64_MAX ? 0 :
+        lock->l_type = held->type;
+        lock->l_whence = EDGE_LINUX_SEEK_SET;
+        lock->l_start = (int64_t)held->start;
+        lock->l_len = held->end == UINT64_MAX ? 0 :
                      (int64_t)(held->end - held->start + 1u);
-        lock.l_pid = held->kind == EDGE_FILE_LOCK_POSIX ?
+        lock->l_pid = held->kind == EDGE_FILE_LOCK_POSIX ?
                      held->process_id : -1;
     }
     spin_unlock_irqrestore(&g_file_lock_state_lock, flags);
+    return 0;
+}
+
+int64_t edge_linux_file_lock_fcntl(
+    int32_t descriptor, uint32_t command, uint64_t user_lock,
+    edge_linux_copy_from_user_fn copy_from_user,
+    edge_linux_copy_to_user_fn copy_to_user, void *copy_context,
+    void *user_registers) {
+    struct edge_linux_flock64 lock;
+    int64_t result;
+
+    if (!user_lock || !copy_from_user || !copy_to_user)
+        return -EDGE_LINUX_EFAULT;
+    if (copy_from_user(copy_context, &lock, user_lock, sizeof(lock)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    result = edge_linux_file_lock_fcntl_value(
+        descriptor, command, &lock, user_registers);
+    if (result < 0 || (command != EDGE_LINUX_F_GETLK &&
+                       command != EDGE_LINUX_F_OFD_GETLK))
+        return result;
     return copy_to_user(copy_context, user_lock, &lock, sizeof(lock)) < 0 ?
            -EDGE_LINUX_EFAULT : 0;
 }

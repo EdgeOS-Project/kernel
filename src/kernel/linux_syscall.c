@@ -2868,21 +2868,44 @@ static int64_t edge_linux_sys_mprotect(
 static int64_t edge_linux_sys_mmap(
     edge_linux_syscall_context_t *context) {
     kernel_mm_map_request_t request;
+    uint64_t arguments[6];
     /*
      * mmap's fd argument is an int. Upper register bits are unspecified for
      * narrower arguments, so normalize the ABI value before shared policy
      * validates it.
      */
-    int32_t descriptor = (int32_t)(uint32_t)context->arguments[4];
-    uint64_t flags = context->arguments[3];
+    int32_t descriptor;
+    uint64_t flags;
+
+    for (uint32_t index = 0; index < 6u; ++index)
+        arguments[index] = context->arguments[index];
+    if (context->architecture == EDGE_LINUX_ARCH_IA32 &&
+        context->raw_number == 90u) {
+        uint32_t compat_arguments[6];
+        if (edge_linux_copy_from_user(
+                context, compat_arguments, context->arguments[0],
+                sizeof(compat_arguments)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        for (uint32_t index = 0; index < 6u; ++index)
+            arguments[index] = compat_arguments[index];
+        if (arguments[5] & (KERNEL_MM_USER_PAGE_SIZE - 1u))
+            return -EDGE_LINUX_EINVAL;
+    } else if (context->architecture == EDGE_LINUX_ARCH_IA32 &&
+               context->raw_number == 192u) {
+        if (arguments[5] > (UINT64_MAX >> 12))
+            return -EDGE_LINUX_EOVERFLOW;
+        arguments[5] <<= 12;
+    }
+    descriptor = (int32_t)(uint32_t)arguments[4];
+    flags = arguments[3];
 
     memset(&request, 0, sizeof(request));
-    request.address = context->arguments[0];
-    request.length = context->arguments[1];
-    request.protection = context->arguments[2];
+    request.address = arguments[0];
+    request.length = arguments[1];
+    request.protection = arguments[2];
     request.flags = flags;
     request.descriptor = descriptor;
-    request.offset = context->arguments[5];
+    request.offset = arguments[5];
     return kernel_mm_map(&request);
 }
 
@@ -9552,6 +9575,26 @@ static int64_t edge_linux_sys_fallocate(
 
 static int64_t edge_linux_sys_lseek(
     edge_linux_syscall_context_t *context) {
+    if (context->architecture == EDGE_LINUX_ARCH_IA32 &&
+        context->raw_number == 140u) {
+        uint64_t offset =
+            ((uint64_t)(uint32_t)context->arguments[1] << 32) |
+            (uint32_t)context->arguments[2];
+        int64_t result;
+        if (context->arguments[0] > INT32_MAX)
+            return -EDGE_LINUX_EBADF;
+        if (context->arguments[4] > UINT32_MAX)
+            return -EDGE_LINUX_EINVAL;
+        result = edge_linux_lseek_descriptor(
+            (int32_t)context->arguments[0], (int64_t)offset,
+            (uint32_t)context->arguments[4]);
+        if (result < 0) return result;
+        if (edge_linux_copy_to_user(
+                context, context->arguments[3], &result,
+                sizeof(result)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        return 0;
+    }
     if (context->arguments[0] > INT32_MAX)
         return -EDGE_LINUX_EBADF;
     if (context->arguments[2] > UINT32_MAX)
@@ -14406,6 +14449,9 @@ static int64_t edge_linux_sys_copy_file_range(
 #define EDGE_LINUX_F_GETLK         5u
 #define EDGE_LINUX_F_SETLK         6u
 #define EDGE_LINUX_F_SETLKW        7u
+#define EDGE_LINUX_F_GETLK64       12u
+#define EDGE_LINUX_F_SETLK64       13u
+#define EDGE_LINUX_F_SETLKW64      14u
 #define EDGE_LINUX_F_OFD_GETLK     36u
 #define EDGE_LINUX_F_OFD_SETLK     37u
 #define EDGE_LINUX_F_OFD_SETLKW    38u
@@ -14673,9 +14719,91 @@ static int64_t edge_linux_sys_fcntl(
         case EDGE_LINUX_F_GETLK:
         case EDGE_LINUX_F_SETLK:
         case EDGE_LINUX_F_SETLKW:
+        case EDGE_LINUX_F_GETLK64:
+        case EDGE_LINUX_F_SETLK64:
+        case EDGE_LINUX_F_SETLKW64:
         case EDGE_LINUX_F_OFD_GETLK:
         case EDGE_LINUX_F_OFD_SETLK:
         case EDGE_LINUX_F_OFD_SETLKW:
+            if (context->architecture == EDGE_LINUX_ARCH_IA32) {
+                struct edge_linux_flock64 lock;
+                uint32_t normalized_command = command;
+                int wide_layout = command == EDGE_LINUX_F_GETLK64 ||
+                    command == EDGE_LINUX_F_SETLK64 ||
+                    command == EDGE_LINUX_F_SETLKW64 ||
+                    command == EDGE_LINUX_F_OFD_GETLK ||
+                    command == EDGE_LINUX_F_OFD_SETLK ||
+                    command == EDGE_LINUX_F_OFD_SETLKW;
+                int get_lock;
+                int64_t result;
+
+                memset(&lock, 0, sizeof(lock));
+                if (wide_layout) {
+                    struct edge_linux_ia32_flock64 compat_lock;
+                    if (edge_linux_copy_from_user(
+                            context, &compat_lock, argument,
+                            sizeof(compat_lock)) < 0)
+                        return -EDGE_LINUX_EFAULT;
+                    lock.l_type = compat_lock.l_type;
+                    lock.l_whence = compat_lock.l_whence;
+                    lock.l_start = compat_lock.l_start;
+                    lock.l_len = compat_lock.l_len;
+                    lock.l_pid = compat_lock.l_pid;
+                } else {
+                    struct edge_linux_ia32_flock compat_lock;
+                    if (edge_linux_copy_from_user(
+                            context, &compat_lock, argument,
+                            sizeof(compat_lock)) < 0)
+                        return -EDGE_LINUX_EFAULT;
+                    lock.l_type = compat_lock.l_type;
+                    lock.l_whence = compat_lock.l_whence;
+                    lock.l_start = compat_lock.l_start;
+                    lock.l_len = compat_lock.l_len;
+                    lock.l_pid = compat_lock.l_pid;
+                }
+                if (normalized_command >= EDGE_LINUX_F_GETLK64 &&
+                    normalized_command <= EDGE_LINUX_F_SETLKW64)
+                    normalized_command -=
+                        EDGE_LINUX_F_GETLK64 - EDGE_LINUX_F_GETLK;
+                get_lock = normalized_command == EDGE_LINUX_F_GETLK ||
+                    normalized_command == EDGE_LINUX_F_OFD_GETLK;
+                result = edge_linux_file_lock_fcntl_value(
+                    descriptor, normalized_command, &lock,
+                    context->user_registers);
+                if (result < 0 || !get_lock) return result;
+                if (wide_layout) {
+                    struct edge_linux_ia32_flock64 compat_lock;
+                    memset(&compat_lock, 0, sizeof(compat_lock));
+                    compat_lock.l_type = lock.l_type;
+                    compat_lock.l_whence = lock.l_whence;
+                    compat_lock.l_start = lock.l_start;
+                    compat_lock.l_len = lock.l_len;
+                    compat_lock.l_pid = lock.l_pid;
+                    return edge_linux_copy_to_user(
+                        context, argument, &compat_lock,
+                        sizeof(compat_lock)) < 0 ?
+                            -EDGE_LINUX_EFAULT : 0;
+                } else {
+                    struct edge_linux_ia32_flock compat_lock;
+                    if (lock.l_start > INT32_MAX)
+                        return -EDGE_LINUX_EOVERFLOW;
+                    if (lock.l_len > INT32_MAX)
+                        lock.l_len = INT32_MAX;
+                    memset(&compat_lock, 0, sizeof(compat_lock));
+                    compat_lock.l_type = lock.l_type;
+                    compat_lock.l_whence = lock.l_whence;
+                    compat_lock.l_start = (int32_t)lock.l_start;
+                    compat_lock.l_len = (int32_t)lock.l_len;
+                    compat_lock.l_pid = lock.l_pid;
+                    return edge_linux_copy_to_user(
+                        context, argument, &compat_lock,
+                        sizeof(compat_lock)) < 0 ?
+                            -EDGE_LINUX_EFAULT : 0;
+                }
+            }
+            if (command >= EDGE_LINUX_F_GETLK64 &&
+                command <= EDGE_LINUX_F_SETLKW64)
+                return -EDGE_LINUX_EINVAL;
             return edge_linux_file_lock_fcntl(
                 descriptor, command, argument,
                 context->arch_ops ? context->arch_ops->copy_from_user : 0,
@@ -15185,10 +15313,25 @@ static int64_t edge_linux_sys_select(
     struct edge_linux_pselect_sigset signal_argument;
     int64_t timeout_microseconds;
     uint64_t signal_mask = 0;
-    uint64_t user_timeout = context->arguments[4];
+    uint64_t arguments[5];
+    uint64_t user_timeout;
     uint32_t timeout_format;
     int replace_signal_mask = 0;
     int status;
+
+    for (uint32_t index = 0; index < 5u; ++index)
+        arguments[index] = context->arguments[index];
+    if (context->architecture == EDGE_LINUX_ARCH_IA32 &&
+        context->raw_number == 82u) {
+        uint32_t compat_arguments[5];
+        if (edge_linux_copy_from_user(
+                context, compat_arguments, context->arguments[0],
+                sizeof(compat_arguments)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        for (uint32_t index = 0; index < 5u; ++index)
+            arguments[index] = compat_arguments[index];
+    }
+    user_timeout = arguments[4];
 
     if (context->id == EDGE_LINUX_SYS_pselect6) {
         signal_argument.sigmask_u = 0;
@@ -15239,12 +15382,11 @@ static int64_t edge_linux_sys_select(
                 KERNEL_WAIT_TIMEOUT_TIMEVAL32 :
                 KERNEL_WAIT_TIMEOUT_TIMEVAL;
     }
-    if (context->arguments[0] > INT32_MAX)
+    if (arguments[0] > INT32_MAX)
         return -EDGE_LINUX_EINVAL;
 
     return kernel_select_wait_descriptors(
-        context->arguments[0], context->arguments[1],
-        context->arguments[2], context->arguments[3],
+        arguments[0], arguments[1], arguments[2], arguments[3],
         timeout_microseconds, user_timeout, timeout_format,
         replace_signal_mask, signal_mask, context->user_registers);
 }
