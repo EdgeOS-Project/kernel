@@ -1656,6 +1656,11 @@ struct edge_linux_iovec {
     };
 };
 
+struct edge_linux_x32_iovec {
+    uint32_t iov_base;
+    uint32_t iov_len;
+};
+
 struct edge_linux_cmsghdr {
     union {
         uint64_t cmsg_len;
@@ -1820,6 +1825,8 @@ _Static_assert(offsetof(struct edge_linux_sysinfo64, mem_unit) == 104,
                "Linux 64-bit sysinfo memory unit offset");
 _Static_assert(sizeof(struct edge_linux_iovec) == 16,
                "Linux iovec ABI layout");
+_Static_assert(sizeof(struct edge_linux_x32_iovec) == 8,
+               "Linux x32 iovec ABI layout");
 _Static_assert(sizeof(struct edge_linux_msghdr) == 56,
                "Linux msghdr ABI layout");
 _Static_assert(offsetof(struct edge_linux_msghdr, msg_namelen) == 8,

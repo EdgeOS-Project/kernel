@@ -53,6 +53,13 @@ X32_DIRECT_SHARED_SYSCALLS = {
     "pause",
     "personality",
     "pidfd_open",
+    "preadv",
+    "preadv2",
+    "process_vm_readv",
+    "process_vm_writev",
+    "pwritev",
+    "pwritev2",
+    "readv",
     "restart_syscall",
     "sched_get_priority_max",
     "sched_get_priority_min",
@@ -68,6 +75,7 @@ X32_DIRECT_SHARED_SYSCALLS = {
     "umask",
     "userfaultfd",
     "write",
+    "writev",
 }
 
 

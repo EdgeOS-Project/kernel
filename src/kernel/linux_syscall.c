@@ -5876,6 +5876,42 @@ static int64_t edge_linux_sys_pkey(
     }
 }
 
+static int edge_linux_import_iovec_array(
+    edge_linux_syscall_context_t *context,
+    struct edge_linux_iovec *destination, uint64_t user_address,
+    uint64_t vector_count) {
+    if (!context || !destination) return -EDGE_LINUX_EIO;
+    if (!vector_count) return 0;
+    if (!user_address) return -EDGE_LINUX_EFAULT;
+
+    if (context->architecture == EDGE_LINUX_ARCH_X32) {
+        if (user_address > UINT32_MAX ||
+            vector_count >
+                (UINT64_MAX - user_address) /
+                    sizeof(struct edge_linux_x32_iovec))
+            return -EDGE_LINUX_EFAULT;
+        for (uint64_t index = 0; index < vector_count; ++index) {
+            struct edge_linux_x32_iovec compat_vector;
+            uint64_t address = user_address +
+                index * sizeof(compat_vector);
+            if (edge_linux_copy_from_user(
+                    context, &compat_vector, address,
+                    sizeof(compat_vector)) < 0)
+                return -EDGE_LINUX_EFAULT;
+            destination[index].iov_base = compat_vector.iov_base;
+            destination[index].iov_len = compat_vector.iov_len;
+        }
+        return 0;
+    }
+
+    if (vector_count > UINT64_MAX / sizeof(destination[0]) ||
+        edge_linux_copy_from_user(
+            context, destination, user_address,
+            vector_count * sizeof(destination[0])) < 0)
+        return -EDGE_LINUX_EFAULT;
+    return 0;
+}
+
 static int64_t edge_linux_sys_process_vm(
     edge_linux_syscall_context_t *context) {
     kernel_io_vector_scratch_t vector_scratch;
@@ -5901,19 +5937,16 @@ static int64_t edge_linux_sys_process_vm(
     if (local_count > EDGE_LINUX_IOV_MAX)
         return -EDGE_LINUX_EINVAL;
     if (!local_count) return 0;
-    if (!context->arguments[1] ||
-        local_count > UINT64_MAX / sizeof(local_vectors[0]))
-        return -EDGE_LINUX_EFAULT;
+    if (!context->arguments[1]) return -EDGE_LINUX_EFAULT;
     if (kernel_io_current_vector_scratch(&vector_scratch) < 0 ||
         !vector_scratch.vectors ||
         vector_scratch.capacity < local_count)
         return -EDGE_LINUX_ENOMEM;
 
     local_vectors = vector_scratch.vectors;
-    if (edge_linux_copy_from_user(
-            context, local_vectors, context->arguments[1],
-            local_count * sizeof(local_vectors[0])) < 0)
-        return -EDGE_LINUX_EFAULT;
+    status = edge_linux_import_iovec_array(
+        context, local_vectors, context->arguments[1], local_count);
+    if (status < 0) return status;
 
     /*
      * Linux imports the local iterator first and caps its count at
@@ -5938,16 +5971,13 @@ static int64_t edge_linux_sys_process_vm(
     if (remote_count > EDGE_LINUX_IOV_MAX)
         return -EDGE_LINUX_EINVAL;
     if (!remote_count) return 0;
-    if (!context->arguments[3] ||
-        remote_count > UINT64_MAX / sizeof(remote_vectors[0]))
-        return -EDGE_LINUX_EFAULT;
+    if (!context->arguments[3]) return -EDGE_LINUX_EFAULT;
     if (vector_scratch.capacity < local_count + remote_count)
         return -EDGE_LINUX_ENOMEM;
     remote_vectors = local_vectors + local_count;
-    if (edge_linux_copy_from_user(
-            context, remote_vectors, context->arguments[3],
-            remote_count * sizeof(remote_vectors[0])) < 0)
-        return -EDGE_LINUX_EFAULT;
+    status = edge_linux_import_iovec_array(
+        context, remote_vectors, context->arguments[3], remote_count);
+    if (status < 0) return status;
     for (uint64_t index = 0; index < remote_count; ++index)
         if (remote_vectors[index].iov_len) remote_has_data = 1;
     if (!remote_has_data) return 0;
@@ -8285,6 +8315,16 @@ static int edge_linux_io_decode_offset(
 
     if (!offset || !use_current) return -EDGE_LINUX_EIO;
     *use_current = 0;
+    if (context->architecture == EDGE_LINUX_ARCH_X32) {
+        if (edge_linux_io_is_v2(context->id) && low == UINT64_MAX) {
+            *offset = 0;
+            *use_current = 1;
+            return 0;
+        }
+        if ((int64_t)low < 0) return -EDGE_LINUX_EINVAL;
+        *offset = low;
+        return 0;
+    }
     if (edge_linux_io_is_v2(context->id) && low == UINT64_MAX && !high) {
         *offset = 0;
         *use_current = 1;
@@ -8307,7 +8347,8 @@ static int edge_linux_io_decode_flags(
         *flags = 0;
         return 0;
     }
-    raw = context->arguments[5];
+    raw = context->architecture == EDGE_LINUX_ARCH_X32 ?
+        context->arguments[4] : context->arguments[5];
     if (raw > UINT32_MAX || (raw & ~EDGE_LINUX_RWF_KNOWN) ||
         (raw & ~EDGE_LINUX_RWF_IMPLEMENTED))
         return -EDGE_LINUX_EOPNOTSUPP;
@@ -8469,10 +8510,9 @@ static int64_t edge_linux_sys_vector_io(
         (void)kernel_fd_operation_release(&operation_lease);
         return -EDGE_LINUX_ENOMEM;
     }
-    if (vector_count > UINT64_MAX / sizeof(scratch.vectors[0]) ||
-        edge_linux_copy_from_user(
+    if (edge_linux_import_iovec_array(
             context, scratch.vectors, vector_address,
-            vector_count * sizeof(scratch.vectors[0])) < 0) {
+            vector_count) < 0) {
         (void)kernel_fd_operation_release(&operation_lease);
         return -EDGE_LINUX_EFAULT;
     }
