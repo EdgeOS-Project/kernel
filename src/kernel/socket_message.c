@@ -123,9 +123,6 @@ int64_t kernel_socket_message_invoke_abi(
     status = kernel_socket_message_import_abi(
         copy_context, copy_from_user, user_header, abi, &request.message);
     if (status < 0) return status;
-    if (abi == KERNEL_SOCKET_MESSAGE_ABI_X32 &&
-        request.message.header.msg_controllen)
-        return -EDGE_LINUX_EOPNOTSUPP;
     request.descriptor = descriptor;
     request.flags = flags;
     request.user_header = user_header;
@@ -261,21 +258,47 @@ uint64_t kernel_socket_control_align(uint64_t length) {
     return length > UINT64_MAX - 7u ? UINT64_MAX : (length + 7u) & ~7ULL;
 }
 
+uint64_t kernel_socket_control_align_abi(
+    uint64_t length, kernel_socket_message_abi_t abi) {
+    if (abi == KERNEL_SOCKET_MESSAGE_ABI_X32)
+        return length > UINT64_MAX - 3u ?
+            UINT64_MAX : (length + 3u) & ~3ULL;
+    return kernel_socket_control_align(length);
+}
+
+static uint64_t socket_control_header_size(
+    kernel_socket_message_abi_t abi) {
+    return abi == KERNEL_SOCKET_MESSAGE_ABI_X32 ?
+        sizeof(struct edge_linux_x32_cmsghdr) :
+        sizeof(struct edge_linux_cmsghdr);
+}
+
 void kernel_socket_control_cursor_initialize(
     kernel_socket_control_cursor_t *cursor, void *copy_context,
     edge_linux_copy_from_user_fn copy_from_user, uint64_t user_control,
     uint64_t control_length) {
+    kernel_socket_control_cursor_initialize_abi(
+        cursor, copy_context, copy_from_user, user_control, control_length,
+        KERNEL_SOCKET_MESSAGE_ABI_NATIVE);
+}
+
+void kernel_socket_control_cursor_initialize_abi(
+    kernel_socket_control_cursor_t *cursor, void *copy_context,
+    edge_linux_copy_from_user_fn copy_from_user, uint64_t user_control,
+    uint64_t control_length, kernel_socket_message_abi_t abi) {
     if (!cursor) return;
     memset(cursor, 0, sizeof(*cursor));
     cursor->copy_context = copy_context;
     cursor->copy_from_user = copy_from_user;
     cursor->user_control = user_control;
     cursor->control_length = control_length;
+    cursor->abi = abi;
 }
 
 int kernel_socket_control_next(kernel_socket_control_cursor_t *cursor,
                                kernel_socket_control_item_t *item) {
     uint64_t remaining;
+    uint64_t header_size;
     uint64_t aligned;
     uint64_t next;
 
@@ -284,23 +307,37 @@ int kernel_socket_control_next(kernel_socket_control_cursor_t *cursor,
     if (cursor->offset > cursor->control_length)
         return -EDGE_LINUX_EINVAL;
     remaining = cursor->control_length - cursor->offset;
-    if (remaining < sizeof(item->header)) return 0;
-    if (cursor->user_control > UINT64_MAX - cursor->offset ||
-        cursor->copy_from_user(
+    header_size = socket_control_header_size(cursor->abi);
+    if (remaining < header_size) return 0;
+    if (cursor->user_control > UINT64_MAX - cursor->offset)
+        return -EDGE_LINUX_EFAULT;
+    if (cursor->abi == KERNEL_SOCKET_MESSAGE_ABI_X32) {
+        struct edge_linux_x32_cmsghdr compat_header;
+        if (cursor->copy_from_user(
+                cursor->copy_context, &compat_header,
+                cursor->user_control + cursor->offset,
+                sizeof(compat_header)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        item->header.cmsg_len = compat_header.cmsg_len;
+        item->header.cmsg_level = compat_header.cmsg_level;
+        item->header.cmsg_type = compat_header.cmsg_type;
+    } else if (cursor->copy_from_user(
             cursor->copy_context, &item->header,
             cursor->user_control + cursor->offset,
-            sizeof(item->header)) < 0)
+            sizeof(item->header)) < 0) {
         return -EDGE_LINUX_EFAULT;
-    if (item->header.cmsg_len < sizeof(item->header) ||
+    }
+    if (item->header.cmsg_len < header_size ||
         item->header.cmsg_len > remaining)
         return -EDGE_LINUX_EINVAL;
     if (cursor->user_control + cursor->offset >
-        UINT64_MAX - sizeof(item->header))
+        UINT64_MAX - header_size)
         return -EDGE_LINUX_EFAULT;
     item->user_data = cursor->user_control + cursor->offset +
-                      sizeof(item->header);
-    item->data_length = item->header.cmsg_len - sizeof(item->header);
-    aligned = kernel_socket_control_align(item->header.cmsg_len);
+                      header_size;
+    item->data_length = item->header.cmsg_len - header_size;
+    aligned = kernel_socket_control_align_abi(
+        item->header.cmsg_len, cursor->abi);
     if (aligned == UINT64_MAX || aligned > remaining)
         cursor->offset = cursor->control_length;
     else {
@@ -400,11 +437,25 @@ static void socket_rights_abort_range(
 static int socket_control_copy_header(
     void *copy_context, edge_linux_copy_to_user_fn copy_to_user,
     uint64_t destination, int32_t level, int32_t type,
-    uint64_t data_length) {
+    uint64_t data_length, kernel_socket_message_abi_t abi) {
     struct edge_linux_cmsghdr header;
+    uint64_t header_size = socket_control_header_size(abi);
 
-    if (data_length > UINT64_MAX - sizeof(header))
+    if (data_length > UINT64_MAX - header_size)
         return -EDGE_LINUX_EFAULT;
+    if (abi == KERNEL_SOCKET_MESSAGE_ABI_X32) {
+        struct edge_linux_x32_cmsghdr compat_header;
+        if (data_length > UINT32_MAX - sizeof(compat_header))
+            return -EDGE_LINUX_EFAULT;
+        memset(&compat_header, 0, sizeof(compat_header));
+        compat_header.cmsg_len =
+            (uint32_t)(sizeof(compat_header) + data_length);
+        compat_header.cmsg_level = level;
+        compat_header.cmsg_type = type;
+        return copy_to_user(
+            copy_context, destination, &compat_header,
+            sizeof(compat_header)) < 0 ? -EDGE_LINUX_EFAULT : 0;
+    }
     memset(&header, 0, sizeof(header));
     header.cmsg_len = sizeof(header) + data_length;
     header.cmsg_level = level;
@@ -482,7 +533,8 @@ int kernel_socket_control_receive_rights(
         socket_control_copy_header(
             copy_context, copy_to_user, destination,
             EDGE_LINUX_SOL_SOCKET, KERNEL_SOCKET_SCM_RIGHTS,
-            (uint64_t)candidate_count * sizeof(int32_t)) < 0) {
+            (uint64_t)candidate_count * sizeof(int32_t),
+            KERNEL_SOCKET_MESSAGE_ABI_NATIVE) < 0) {
         result->truncated = 1;
         result->control_fault = 1;
         *message_flags |= EDGE_LINUX_MSG_CTRUNC;
@@ -534,7 +586,8 @@ int kernel_socket_control_receive_rights(
         socket_control_copy_header(
             copy_context, copy_to_user, destination,
             EDGE_LINUX_SOL_SOCKET, KERNEL_SOCKET_SCM_RIGHTS,
-            (uint64_t)copied_count * sizeof(int32_t)) < 0) {
+            (uint64_t)copied_count * sizeof(int32_t),
+            KERNEL_SOCKET_MESSAGE_ABI_NATIVE) < 0) {
         result->control_fault = 1;
         copied_count = 0;
     } else if (copied_count) {
@@ -571,7 +624,8 @@ int kernel_socket_control_receive_rights(
         socket_control_copy_header(
             copy_context, copy_to_user, destination,
             EDGE_LINUX_SOL_SOCKET, KERNEL_SOCKET_SCM_RIGHTS,
-            (uint64_t)published_count * sizeof(int32_t)) < 0)
+            (uint64_t)published_count * sizeof(int32_t),
+            KERNEL_SOCKET_MESSAGE_ABI_NATIVE) < 0)
         result->control_fault = 1;
 
     if (result->truncated) {
@@ -629,7 +683,7 @@ static int socket_rights_target_cleanup_failure(
     return original_status;
 }
 
-int kernel_socket_control_receive_rights_record(
+int kernel_socket_control_receive_rights_record_abi(
     kernel_socket_rights_pool_t *pool,
     kernel_socket_rights_record_handle_t record,
     kernel_fd_transfer_target_t *target_workspace,
@@ -637,7 +691,8 @@ int kernel_socket_control_receive_rights_record(
     edge_linux_copy_to_user_fn copy_to_user,
     uint64_t user_control, uint64_t control_capacity, uint64_t *used,
     int32_t *message_flags, uint32_t receive_flags,
-    kernel_socket_rights_receive_result_t *result) {
+    kernel_socket_rights_receive_result_t *result,
+    kernel_socket_message_abi_t abi) {
     kernel_socket_rights_record_info_t information;
     kernel_socket_rights_token_cursor_t cursor;
     uint64_t committed;
@@ -646,6 +701,7 @@ int kernel_socket_control_receive_rights_record(
     uint64_t final_length;
     uint64_t aligned_length;
     uint64_t capacity_count;
+    uint64_t header_size = socket_control_header_size(abi);
     uint32_t candidate_count;
     uint32_t prepared_count = 0;
     uint32_t copied_count = 0;
@@ -679,8 +735,7 @@ int kernel_socket_control_receive_rights_record(
         return 0;
     }
     remaining = control_capacity - committed;
-    if (remaining <
-        sizeof(struct edge_linux_cmsghdr) + sizeof(int32_t)) {
+    if (remaining < header_size + sizeof(int32_t)) {
         result->truncated = 1;
         *message_flags |= EDGE_LINUX_MSG_CTRUNC;
         return 0;
@@ -693,12 +748,12 @@ int kernel_socket_control_receive_rights_record(
     }
     destination = user_control + committed;
     capacity_count =
-        (remaining - sizeof(struct edge_linux_cmsghdr)) /
+        (remaining - header_size) /
         sizeof(int32_t);
     candidate_count =
         capacity_count > information.descriptor_count ?
         information.descriptor_count : (uint32_t)capacity_count;
-    final_length = sizeof(struct edge_linux_cmsghdr) +
+    final_length = header_size +
         (uint64_t)candidate_count * sizeof(int32_t);
     if (destination > UINT64_MAX - final_length) {
         result->truncated = 1;
@@ -751,7 +806,7 @@ int kernel_socket_control_receive_rights_record(
     status = socket_control_copy_header(
         copy_context, copy_to_user, destination,
         EDGE_LINUX_SOL_SOCKET, KERNEL_SOCKET_SCM_RIGHTS,
-        (uint64_t)prepared_count * sizeof(int32_t));
+        (uint64_t)prepared_count * sizeof(int32_t), abi);
     if (status < 0) {
         status = socket_rights_target_cleanup_failure(
             target_workspace, status);
@@ -764,7 +819,7 @@ int kernel_socket_control_receive_rights_record(
 
     while (copied_count < prepared_count) {
         uint64_t descriptor_destination =
-            destination + sizeof(struct edge_linux_cmsghdr) +
+            destination + header_size +
             (uint64_t)copied_count * sizeof(int32_t);
         int32_t descriptor;
 
@@ -787,7 +842,7 @@ int kernel_socket_control_receive_rights_record(
         status = socket_control_copy_header(
             copy_context, copy_to_user, destination,
             EDGE_LINUX_SOL_SOCKET, KERNEL_SOCKET_SCM_RIGHTS,
-            (uint64_t)copied_count * sizeof(int32_t));
+            (uint64_t)copied_count * sizeof(int32_t), abi);
         if (status < 0) {
             result->control_fault = 1;
             copied_count = 0;
@@ -828,9 +883,9 @@ int kernel_socket_control_receive_rights_record(
     if (result->truncated)
         *message_flags |= EDGE_LINUX_MSG_CTRUNC;
 
-    final_length = sizeof(struct edge_linux_cmsghdr) +
+    final_length = header_size +
         (uint64_t)copied_count * sizeof(int32_t);
-    aligned_length = kernel_socket_control_align(final_length);
+    aligned_length = kernel_socket_control_align_abi(final_length, abi);
     if (result->truncated &&
         (!prepare_limited || copy_limited)) {
         *used = committed + final_length;
@@ -843,13 +898,28 @@ int kernel_socket_control_receive_rights_record(
     return 0;
 }
 
-int kernel_socket_control_receive_metadata_append(
+int kernel_socket_control_receive_rights_record(
+    kernel_socket_rights_pool_t *pool,
+    kernel_socket_rights_record_handle_t record,
+    kernel_fd_transfer_target_t *target_workspace,
+    const void *fd_owner, void *copy_context,
+    edge_linux_copy_to_user_fn copy_to_user,
+    uint64_t user_control, uint64_t control_capacity, uint64_t *used,
+    int32_t *message_flags, uint32_t receive_flags,
+    kernel_socket_rights_receive_result_t *result) {
+    return kernel_socket_control_receive_rights_record_abi(
+        pool, record, target_workspace, fd_owner, copy_context,
+        copy_to_user, user_control, control_capacity, used, message_flags,
+        receive_flags, result, KERNEL_SOCKET_MESSAGE_ABI_NATIVE);
+}
+
+int kernel_socket_control_receive_metadata_append_abi(
     void *copy_context, edge_linux_copy_to_user_fn copy_to_user,
     uint64_t user_control, uint64_t control_capacity, uint64_t *used,
     int32_t *message_flags, int32_t level, int32_t type,
     const void *data, uint32_t data_length,
-    kernel_socket_control_receive_result_t *result) {
-    struct edge_linux_cmsghdr header;
+    kernel_socket_control_receive_result_t *result,
+    kernel_socket_message_abi_t abi) {
     uint64_t committed;
     uint64_t remaining;
     uint64_t destination;
@@ -857,6 +927,7 @@ int kernel_socket_control_receive_metadata_append(
     uint64_t copied_length;
     uint64_t copied_data;
     uint64_t aligned;
+    uint64_t header_size = socket_control_header_size(abi);
 
     if (result) *result = KERNEL_SOCKET_CONTROL_RECEIVE_FAULTED;
     if (!copy_to_user || !used || !message_flags || !result ||
@@ -870,27 +941,24 @@ int kernel_socket_control_receive_metadata_append(
         return 0;
     }
     remaining = control_capacity - committed;
-    if (remaining < sizeof(header)) {
+    if (remaining < header_size) {
         *message_flags |= EDGE_LINUX_MSG_CTRUNC;
         *result = KERNEL_SOCKET_CONTROL_RECEIVE_TRUNCATED;
         return 0;
     }
     if (!user_control || user_control > UINT64_MAX - committed) return 0;
     destination = user_control + committed;
-    required = sizeof(header) + (uint64_t)data_length;
+    required = header_size + (uint64_t)data_length;
     copied_length = required < remaining ? required : remaining;
     if (destination > UINT64_MAX - copied_length) return 0;
 
-    memset(&header, 0, sizeof(header));
-    header.cmsg_len = copied_length;
-    header.cmsg_level = level;
-    header.cmsg_type = type;
-    if (copy_to_user(
-            copy_context, destination, &header, sizeof(header)) < 0)
+    if (socket_control_copy_header(
+            copy_context, copy_to_user, destination, level, type,
+            copied_length - header_size, abi) < 0)
         return 0;
-    copied_data = copied_length - sizeof(header);
+    copied_data = copied_length - header_size;
     if (copied_data && copy_to_user(
-            copy_context, destination + sizeof(header),
+            copy_context, destination + header_size,
             data, copied_data) < 0)
         return 0;
 
@@ -900,11 +968,23 @@ int kernel_socket_control_receive_metadata_append(
         *result = KERNEL_SOCKET_CONTROL_RECEIVE_TRUNCATED;
         return 0;
     }
-    aligned = kernel_socket_control_align(required);
+    aligned = kernel_socket_control_align_abi(required, abi);
     *used = aligned != UINT64_MAX && aligned <= remaining ?
         committed + aligned : committed + required;
     *result = KERNEL_SOCKET_CONTROL_RECEIVE_APPENDED;
     return 0;
+}
+
+int kernel_socket_control_receive_metadata_append(
+    void *copy_context, edge_linux_copy_to_user_fn copy_to_user,
+    uint64_t user_control, uint64_t control_capacity, uint64_t *used,
+    int32_t *message_flags, int32_t level, int32_t type,
+    const void *data, uint32_t data_length,
+    kernel_socket_control_receive_result_t *result) {
+    return kernel_socket_control_receive_metadata_append_abi(
+        copy_context, copy_to_user, user_control, control_capacity, used,
+        message_flags, level, type, data, data_length, result,
+        KERNEL_SOCKET_MESSAGE_ABI_NATIVE);
 }
 
 static int socket_ip_control_append_one(
@@ -912,24 +992,26 @@ static int socket_ip_control_append_one(
     uint64_t user_control, uint64_t control_capacity, uint64_t *used,
     int32_t *message_flags, int32_t level, int32_t type,
     const void *data, uint32_t data_length,
-    kernel_socket_control_receive_result_t *result) {
+    kernel_socket_control_receive_result_t *result,
+    kernel_socket_message_abi_t abi) {
     int status;
 
-    status = kernel_socket_control_receive_metadata_append(
+    status = kernel_socket_control_receive_metadata_append_abi(
         copy_context, copy_to_user, user_control, control_capacity, used,
-        message_flags, level, type, data, data_length, result);
+        message_flags, level, type, data, data_length, result, abi);
     if (status < 0 || *result != KERNEL_SOCKET_CONTROL_RECEIVE_APPENDED)
         return status;
     return 0;
 }
 
-int kernel_socket_ip_receive_control_append(
+int kernel_socket_ip_receive_control_append_abi(
     const kernel_socket_option_state_t *options,
     const kernel_socket_ip_receive_metadata_t *metadata,
     void *copy_context, edge_linux_copy_to_user_fn copy_to_user,
     uint64_t user_control, uint64_t control_capacity, uint64_t *used,
     int32_t *message_flags,
-    kernel_socket_control_receive_result_t *result) {
+    kernel_socket_control_receive_result_t *result,
+    kernel_socket_message_abi_t abi) {
     int32_t integer_value;
     int status;
 
@@ -954,7 +1036,7 @@ int kernel_socket_ip_receive_control_append(
                 copy_context, copy_to_user, user_control, control_capacity,
                 used, message_flags, EDGE_LINUX_SOL_IP,
                 EDGE_LINUX_IP_PKTINFO, &packet_info, sizeof(packet_info),
-                result);
+                result, abi);
             if (status < 0 ||
                 *result != KERNEL_SOCKET_CONTROL_RECEIVE_APPENDED)
                 return status;
@@ -965,7 +1047,7 @@ int kernel_socket_ip_receive_control_append(
                 copy_context, copy_to_user, user_control, control_capacity,
                 used, message_flags, EDGE_LINUX_SOL_IP,
                 EDGE_LINUX_IP_TTL, &integer_value, sizeof(integer_value),
-                result);
+                result, abi);
         }
         return 0;
     }
@@ -982,7 +1064,7 @@ int kernel_socket_ip_receive_control_append(
                 copy_context, copy_to_user, user_control, control_capacity,
                 used, message_flags, EDGE_LINUX_SOL_IPV6,
                 EDGE_LINUX_IPV6_PKTINFO, &packet_info, sizeof(packet_info),
-                result);
+                result, abi);
             if (status < 0 ||
                 *result != KERNEL_SOCKET_CONTROL_RECEIVE_APPENDED)
                 return status;
@@ -993,7 +1075,7 @@ int kernel_socket_ip_receive_control_append(
                 copy_context, copy_to_user, user_control, control_capacity,
                 used, message_flags, EDGE_LINUX_SOL_IPV6,
                 EDGE_LINUX_IPV6_HOPLIMIT, &integer_value,
-                sizeof(integer_value), result);
+                sizeof(integer_value), result, abi);
             if (status < 0 ||
                 *result != KERNEL_SOCKET_CONTROL_RECEIVE_APPENDED)
                 return status;
@@ -1004,12 +1086,25 @@ int kernel_socket_ip_receive_control_append(
                 copy_context, copy_to_user, user_control, control_capacity,
                 used, message_flags, EDGE_LINUX_SOL_IPV6,
                 EDGE_LINUX_IPV6_TCLASS, &integer_value,
-                sizeof(integer_value), result);
+                sizeof(integer_value), result, abi);
         }
         return 0;
     }
 
     return metadata->family ? -EDGE_LINUX_EAFNOSUPPORT : 0;
+}
+
+int kernel_socket_ip_receive_control_append(
+    const kernel_socket_option_state_t *options,
+    const kernel_socket_ip_receive_metadata_t *metadata,
+    void *copy_context, edge_linux_copy_to_user_fn copy_to_user,
+    uint64_t user_control, uint64_t control_capacity, uint64_t *used,
+    int32_t *message_flags,
+    kernel_socket_control_receive_result_t *result) {
+    return kernel_socket_ip_receive_control_append_abi(
+        options, metadata, copy_context, copy_to_user, user_control,
+        control_capacity, used, message_flags, result,
+        KERNEL_SOCKET_MESSAGE_ABI_NATIVE);
 }
 
 static int socket_ip_send_control_copy(
@@ -1023,11 +1118,12 @@ static int socket_ip_send_control_copy(
         -EDGE_LINUX_EFAULT : 0;
 }
 
-int kernel_socket_ip_send_control_parse(
+int kernel_socket_ip_send_control_parse_abi(
     uint8_t family, void *copy_context,
     edge_linux_copy_from_user_fn copy_from_user,
     uint64_t user_control, uint64_t control_length,
-    kernel_socket_ip_send_metadata_t *metadata) {
+    kernel_socket_ip_send_metadata_t *metadata,
+    kernel_socket_message_abi_t abi) {
     kernel_socket_control_cursor_t cursor;
 
     if (!copy_from_user || !metadata ||
@@ -1037,9 +1133,9 @@ int kernel_socket_ip_send_control_parse(
     memset(metadata, 0, sizeof(*metadata));
     metadata->family = family;
     if (!control_length) return 0;
-    kernel_socket_control_cursor_initialize(
+    kernel_socket_control_cursor_initialize_abi(
         &cursor, copy_context, copy_from_user,
-        user_control, control_length);
+        user_control, control_length, abi);
     for (;;) {
         kernel_socket_control_item_t item;
         int32_t integer_value;
@@ -1134,6 +1230,16 @@ int kernel_socket_ip_send_control_parse(
     }
 }
 
+int kernel_socket_ip_send_control_parse(
+    uint8_t family, void *copy_context,
+    edge_linux_copy_from_user_fn copy_from_user,
+    uint64_t user_control, uint64_t control_length,
+    kernel_socket_ip_send_metadata_t *metadata) {
+    return kernel_socket_ip_send_control_parse_abi(
+        family, copy_context, copy_from_user, user_control, control_length,
+        metadata, KERNEL_SOCKET_MESSAGE_ABI_NATIVE);
+}
+
 int kernel_socket_timestamp_control_append(
     kernel_socket_timestamp_mode_t mode, uint64_t timestamp_microseconds,
     void *copy_context, edge_linux_copy_to_user_fn copy_to_user,
@@ -1170,12 +1276,13 @@ int kernel_socket_timestamp_control_append(
     }
 }
 
-int kernel_socket_timestamp_control_receive_append(
+int kernel_socket_timestamp_control_receive_append_abi(
     kernel_socket_timestamp_mode_t mode, uint64_t timestamp_microseconds,
     void *copy_context, edge_linux_copy_to_user_fn copy_to_user,
     uint64_t user_control, uint64_t control_capacity, uint64_t *used,
     int32_t *message_flags,
-    kernel_socket_control_receive_result_t *result) {
+    kernel_socket_control_receive_result_t *result,
+    kernel_socket_message_abi_t abi) {
     linux_timespec64_t timespec;
     linux_timeval64_t timeval;
     int32_t type;
@@ -1193,22 +1300,34 @@ int kernel_socket_timestamp_control_receive_append(
             linux_timeval_from_microseconds(timestamp_microseconds, &timeval);
             type = mode == KERNEL_SOCKET_TIMESTAMP_US_OLD ?
                 EDGE_LINUX_SO_TIMESTAMP : EDGE_LINUX_SO_TIMESTAMP_NEW;
-            return kernel_socket_control_receive_metadata_append(
+            return kernel_socket_control_receive_metadata_append_abi(
                 copy_context, copy_to_user, user_control, control_capacity,
                 used, message_flags, EDGE_LINUX_SOL_SOCKET, type,
-                &timeval, sizeof(timeval), result);
+                &timeval, sizeof(timeval), result, abi);
         case KERNEL_SOCKET_TIMESTAMP_NS_OLD:
         case KERNEL_SOCKET_TIMESTAMP_NS_NEW:
             linux_timespec_from_microseconds(timestamp_microseconds, &timespec);
             type = mode == KERNEL_SOCKET_TIMESTAMP_NS_OLD ?
                 EDGE_LINUX_SO_TIMESTAMPNS : EDGE_LINUX_SO_TIMESTAMPNS_NEW;
-            return kernel_socket_control_receive_metadata_append(
+            return kernel_socket_control_receive_metadata_append_abi(
                 copy_context, copy_to_user, user_control, control_capacity,
                 used, message_flags, EDGE_LINUX_SOL_SOCKET, type,
-                &timespec, sizeof(timespec), result);
+                &timespec, sizeof(timespec), result, abi);
         default:
             return -EDGE_LINUX_EINVAL;
     }
+}
+
+int kernel_socket_timestamp_control_receive_append(
+    kernel_socket_timestamp_mode_t mode, uint64_t timestamp_microseconds,
+    void *copy_context, edge_linux_copy_to_user_fn copy_to_user,
+    uint64_t user_control, uint64_t control_capacity, uint64_t *used,
+    int32_t *message_flags,
+    kernel_socket_control_receive_result_t *result) {
+    return kernel_socket_timestamp_control_receive_append_abi(
+        mode, timestamp_microseconds, copy_context, copy_to_user,
+        user_control, control_capacity, used, message_flags, result,
+        KERNEL_SOCKET_MESSAGE_ABI_NATIVE);
 }
 
 int kernel_socket_mmsg_import(uint64_t user_messages, uint64_t requested_count,

@@ -4641,13 +4641,13 @@ static int socket_recvmsg_deliver_rights(
         return -EINVAL;
     common_used = *control_used;
     common_flags = *msg_flags;
-    status = kernel_socket_control_receive_rights_record(
+    status = kernel_socket_control_receive_rights_record_abi(
         socket_rights_pool(), record,
         &owner->scratch->socket_rights_target,
         owner, request->copy_context, request->copy_to_user,
         msg->msg_control, msg->msg_controllen,
         &common_used, &common_flags, (uint32_t)flags_u,
-        delivery_result);
+        delivery_result, request->message.abi);
     *control_used = common_used > UINT32_MAX ?
         UINT32_MAX : (uint32_t)common_used;
     *msg_flags = common_flags;
@@ -4844,11 +4844,11 @@ recvmsg_payload_done:
         int32_t common_flags = out_msg_flags;
         int status;
 
-        status = kernel_socket_ip_receive_control_append(
+        status = kernel_socket_ip_receive_control_append_abi(
             &s->option_state, &s->received_ip_metadata,
             0, x86_socket_message_copy_to_user,
             msg.msg_control, msg.msg_controllen,
-            &common_used, &common_flags, &control_result);
+            &common_used, &common_flags, &control_result, imported.abi);
         if (status < 0) return (uint64_t)(int64_t)status;
         control_used = common_used > UINT32_MAX ?
             UINT32_MAX : (uint32_t)common_used;
@@ -4877,12 +4877,12 @@ recvmsg_payload_done:
             }
             if (group_mask) ++group;
         }
-        status = kernel_socket_control_receive_metadata_append(
+        status = kernel_socket_control_receive_metadata_append_abi(
             0, x86_socket_message_copy_to_user,
             msg.msg_control, msg.msg_controllen,
             &common_used, &common_flags,
             EDGE_LINUX_SOL_NETLINK, EDGE_LINUX_NETLINK_PACKET_INFO,
-            &group, sizeof(group), &control_result);
+            &group, sizeof(group), &control_result, imported.abi);
         if (status < 0) return (uint64_t)(int64_t)status;
         control_used = common_used > UINT32_MAX ?
             UINT32_MAX : (uint32_t)common_used;
@@ -4965,12 +4965,12 @@ recvmsg_payload_done:
         }
         common_used = control_used;
         common_flags = out_msg_flags;
-        status = kernel_socket_control_receive_metadata_append(
+        status = kernel_socket_control_receive_metadata_append_abi(
             0, x86_socket_message_copy_to_user,
             msg.msg_control, msg.msg_controllen,
             &common_used, &common_flags,
             LINUX_SOL_SOCKET, LINUX_SCM_CREDENTIALS,
-            &cred, sizeof(cred), &control_result);
+            &cred, sizeof(cred), &control_result, imported.abi);
         if (status < 0) return (uint64_t)(int64_t)status;
         control_used = common_used > UINT32_MAX ?
             UINT32_MAX : (uint32_t)common_used;
@@ -4983,11 +4983,11 @@ recvmsg_payload_done:
         kernel_socket_control_receive_result_t control_result;
         uint64_t common_used = control_used;
         int32_t common_flags = out_msg_flags;
-        int status = kernel_socket_timestamp_control_receive_append(
+        int status = kernel_socket_timestamp_control_receive_append_abi(
             (kernel_socket_timestamp_mode_t)s->option_state.timestamp_mode,
             s->received_timestamp_us, 0, x86_socket_message_copy_to_user,
             msg.msg_control, msg.msg_controllen, &common_used, &common_flags,
-            &control_result);
+            &control_result, imported.abi);
         control_used = common_used > UINT32_MAX ? UINT32_MAX :
                                                    (uint32_t)common_used;
         out_msg_flags = common_flags;
@@ -5262,10 +5262,11 @@ static int64_t x86_socket_message_send(
     msg = imported.header;
     kernel_socket_iovec_source_from_message(&iov_source, &imported);
     if (msg.msg_controllen > UINT32_MAX) return (uint64_t)-EINVAL;
-    rc = kernel_socket_rights_record_import(
+    rc = kernel_socket_rights_record_import_abi(
         socket_rights_pool(), request->copy_context,
         request->copy_context, request->copy_from_user,
-        msg.msg_control, msg.msg_controllen, &rights_record);
+        msg.msg_control, msg.msg_controllen, &rights_record,
+        request->message.abi);
     if (rc < 0) return (uint64_t)rc;
     s = socket_from_fd((int)fd_u);
     if (!s) {
@@ -5275,10 +5276,11 @@ static int64_t x86_socket_message_send(
     if ((s->domain == LINUX_AF_INET ||
          s->domain == LINUX_AF_INET6) &&
         s->type == LINUX_SOCK_DGRAM && msg.msg_controllen) {
-        rc = kernel_socket_ip_send_control_parse(
+        rc = kernel_socket_ip_send_control_parse_abi(
             (uint8_t)s->domain, request->copy_context,
             request->copy_from_user, msg.msg_control,
-            msg.msg_controllen, &ip_send_metadata);
+            msg.msg_controllen, &ip_send_metadata,
+            request->message.abi);
         if (rc < 0) {
             socket_rights_record_drop(&rights_record);
             return (uint64_t)(int64_t)rc;

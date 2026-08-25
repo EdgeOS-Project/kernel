@@ -1151,6 +1151,60 @@ void linux_timeval_from_microseconds(
     value->tv_usec = (int64_t)(microseconds % 1000000u);
 }
 
+static void test_x32_control_layout(void) {
+    copy_mock_t mock;
+    kernel_socket_control_cursor_t cursor;
+    kernel_socket_control_item_t item;
+    kernel_socket_control_receive_result_t result;
+    struct edge_linux_x32_cmsghdr input_header;
+    struct edge_linux_x32_cmsghdr output_header;
+    int32_t input_value = 73;
+    int32_t output_value = 91;
+    int32_t message_flags = 0;
+    uint64_t used = 0;
+
+    copy_mock_initialize(&mock);
+    memset(&input_header, 0, sizeof(input_header));
+    input_header.cmsg_len = sizeof(input_header) + sizeof(input_value);
+    input_header.cmsg_level = EDGE_LINUX_SOL_SOCKET;
+    input_header.cmsg_type = KERNEL_SOCKET_SCM_RIGHTS;
+    memcpy(mock.memory, &input_header, sizeof(input_header));
+    memcpy(mock.memory + sizeof(input_header),
+           &input_value, sizeof(input_value));
+
+    kernel_socket_control_cursor_initialize_abi(
+        &cursor, &mock, copy_from_user, TEST_USER_BASE,
+        input_header.cmsg_len, KERNEL_SOCKET_MESSAGE_ABI_X32);
+    assert(kernel_socket_control_next(&cursor, &item) == 1);
+    assert(item.header.cmsg_len == input_header.cmsg_len);
+    assert(item.header.cmsg_level == input_header.cmsg_level);
+    assert(item.header.cmsg_type == input_header.cmsg_type);
+    assert(item.user_data == TEST_USER_BASE + sizeof(input_header));
+    assert(item.data_length == sizeof(input_value));
+    assert(cursor.offset == input_header.cmsg_len);
+    assert(kernel_socket_control_next(&cursor, &item) == 0);
+    assert(kernel_socket_control_align_abi(
+               13u, KERNEL_SOCKET_MESSAGE_ABI_X32) == 16u);
+    assert(kernel_socket_control_align_abi(
+               17u, KERNEL_SOCKET_MESSAGE_ABI_NATIVE) == 24u);
+
+    copy_mock_initialize(&mock);
+    assert(kernel_socket_control_receive_metadata_append_abi(
+               &mock, copy_to_user, TEST_USER_BASE, 64u, &used,
+               &message_flags, EDGE_LINUX_SOL_SOCKET,
+               TEST_SCM_CREDENTIALS, &output_value,
+               sizeof(output_value), &result,
+               KERNEL_SOCKET_MESSAGE_ABI_X32) == 0);
+    assert(result == KERNEL_SOCKET_CONTROL_RECEIVE_APPENDED);
+    assert(used == sizeof(output_header) + sizeof(output_value));
+    memcpy(&output_header, mock.memory, sizeof(output_header));
+    assert(output_header.cmsg_len == used);
+    assert(output_header.cmsg_level == EDGE_LINUX_SOL_SOCKET);
+    assert(output_header.cmsg_type == TEST_SCM_CREDENTIALS);
+    assert(memcmp(mock.memory + sizeof(output_header),
+                  &output_value, sizeof(output_value)) == 0);
+}
+
 int main(void) {
     test_message_execute_entry();
     test_message_iovec_import();
@@ -1176,6 +1230,7 @@ int main(void) {
     test_ip_receive_metadata_policy();
     test_ip_send_metadata_policy();
     test_legacy_append_fault_behavior_is_unchanged();
+    test_x32_control_layout();
     puts("socket_message_unit: PASS");
     return 0;
 }

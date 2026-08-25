@@ -45,6 +45,7 @@ typedef struct kernel_socket_control_cursor {
     uint64_t user_control;
     uint64_t control_length;
     uint64_t offset;
+    kernel_socket_message_abi_t abi;
 } kernel_socket_control_cursor_t;
 
 typedef struct kernel_socket_control_item {
@@ -216,12 +217,18 @@ void kernel_socket_control_cursor_initialize(
     kernel_socket_control_cursor_t *cursor, void *copy_context,
     edge_linux_copy_from_user_fn copy_from_user, uint64_t user_control,
     uint64_t control_length);
+void kernel_socket_control_cursor_initialize_abi(
+    kernel_socket_control_cursor_t *cursor, void *copy_context,
+    edge_linux_copy_from_user_fn copy_from_user, uint64_t user_control,
+    uint64_t control_length, kernel_socket_message_abi_t abi);
 
 /* Returns one for an item, zero at end, or a negative Linux errno. */
 int kernel_socket_control_next(kernel_socket_control_cursor_t *cursor,
                                kernel_socket_control_item_t *item);
 
 uint64_t kernel_socket_control_align(uint64_t length);
+uint64_t kernel_socket_control_align_abi(
+    uint64_t length, kernel_socket_message_abi_t abi);
 
 int kernel_socket_control_append(
     void *copy_context, edge_linux_copy_to_user_fn copy_to_user,
@@ -298,6 +305,16 @@ int kernel_socket_control_receive_rights_record(
     uint64_t user_control, uint64_t control_capacity, uint64_t *used,
     int32_t *message_flags, uint32_t receive_flags,
     kernel_socket_rights_receive_result_t *result);
+int kernel_socket_control_receive_rights_record_abi(
+    kernel_socket_rights_pool_t *pool,
+    kernel_socket_rights_record_handle_t record,
+    kernel_fd_transfer_target_t *target_workspace,
+    const void *fd_owner, void *copy_context,
+    edge_linux_copy_to_user_fn copy_to_user,
+    uint64_t user_control, uint64_t control_capacity, uint64_t *used,
+    int32_t *message_flags, uint32_t receive_flags,
+    kernel_socket_rights_receive_result_t *result,
+    kernel_socket_message_abi_t abi);
 
 /*
  * Appends receive-side metadata such as SCM_CREDENTIALS or a timestamp.
@@ -311,6 +328,13 @@ int kernel_socket_control_receive_metadata_append(
     int32_t *message_flags, int32_t level, int32_t type,
     const void *data, uint32_t data_length,
     kernel_socket_control_receive_result_t *result);
+int kernel_socket_control_receive_metadata_append_abi(
+    void *copy_context, edge_linux_copy_to_user_fn copy_to_user,
+    uint64_t user_control, uint64_t control_capacity, uint64_t *used,
+    int32_t *message_flags, int32_t level, int32_t type,
+    const void *data, uint32_t data_length,
+    kernel_socket_control_receive_result_t *result,
+    kernel_socket_message_abi_t abi);
 
 int kernel_socket_ip_receive_control_append(
     const kernel_socket_option_state_t *options,
@@ -319,12 +343,26 @@ int kernel_socket_ip_receive_control_append(
     uint64_t user_control, uint64_t control_capacity, uint64_t *used,
     int32_t *message_flags,
     kernel_socket_control_receive_result_t *result);
+int kernel_socket_ip_receive_control_append_abi(
+    const kernel_socket_option_state_t *options,
+    const kernel_socket_ip_receive_metadata_t *metadata,
+    void *copy_context, edge_linux_copy_to_user_fn copy_to_user,
+    uint64_t user_control, uint64_t control_capacity, uint64_t *used,
+    int32_t *message_flags,
+    kernel_socket_control_receive_result_t *result,
+    kernel_socket_message_abi_t abi);
 
 int kernel_socket_ip_send_control_parse(
     uint8_t family, void *copy_context,
     edge_linux_copy_from_user_fn copy_from_user,
     uint64_t user_control, uint64_t control_length,
     kernel_socket_ip_send_metadata_t *metadata);
+int kernel_socket_ip_send_control_parse_abi(
+    uint8_t family, void *copy_context,
+    edge_linux_copy_from_user_fn copy_from_user,
+    uint64_t user_control, uint64_t control_length,
+    kernel_socket_ip_send_metadata_t *metadata,
+    kernel_socket_message_abi_t abi);
 
 int kernel_socket_timestamp_control_append(
     kernel_socket_timestamp_mode_t mode, uint64_t timestamp_microseconds,
@@ -338,6 +376,13 @@ int kernel_socket_timestamp_control_receive_append(
     uint64_t user_control, uint64_t control_capacity, uint64_t *used,
     int32_t *message_flags,
     kernel_socket_control_receive_result_t *result);
+int kernel_socket_timestamp_control_receive_append_abi(
+    kernel_socket_timestamp_mode_t mode, uint64_t timestamp_microseconds,
+    void *copy_context, edge_linux_copy_to_user_fn copy_to_user,
+    uint64_t user_control, uint64_t control_capacity, uint64_t *used,
+    int32_t *message_flags,
+    kernel_socket_control_receive_result_t *result,
+    kernel_socket_message_abi_t abi);
 
 /* Linux caps mmsg vector counts to UIO_MAXIOV and accepts a null vector at 0. */
 int kernel_socket_mmsg_import(uint64_t user_messages, uint64_t requested_count,

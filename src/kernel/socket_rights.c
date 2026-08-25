@@ -676,12 +676,13 @@ int kernel_socket_rights_record_create_empty(
     return 0;
 }
 
-int kernel_socket_rights_record_import(
+int kernel_socket_rights_record_import_abi(
         kernel_socket_rights_pool_t *pool,
         const void *fd_owner, void *copy_context,
         edge_linux_copy_from_user_fn copy_from_user,
         uint64_t user_control, uint64_t control_length,
-        kernel_socket_rights_record_handle_t *record) {
+        kernel_socket_rights_record_handle_t *record,
+        uint32_t message_abi) {
     kernel_socket_control_cursor_t cursor;
     kernel_socket_rights_record_handle_t building = 0;
     uint32_t descriptor_count = 0;
@@ -692,9 +693,10 @@ int kernel_socket_rights_record_import(
         return -EDGE_LINUX_EINVAL;
     if (*record) return -EDGE_LINUX_EBUSY;
     if (!control_length) return 0;
-    kernel_socket_control_cursor_initialize(
+    kernel_socket_control_cursor_initialize_abi(
         &cursor, copy_context, copy_from_user,
-        user_control, control_length);
+        user_control, control_length,
+        (kernel_socket_message_abi_t)message_abi);
     for (;;) {
         kernel_socket_control_item_t item;
         uint64_t item_count;
@@ -768,6 +770,17 @@ int kernel_socket_rights_record_import(
     }
     *record = building;
     return 0;
+}
+
+int kernel_socket_rights_record_import(
+        kernel_socket_rights_pool_t *pool,
+        const void *fd_owner, void *copy_context,
+        edge_linux_copy_from_user_fn copy_from_user,
+        uint64_t user_control, uint64_t control_length,
+        kernel_socket_rights_record_handle_t *record) {
+    return kernel_socket_rights_record_import_abi(
+        pool, fd_owner, copy_context, copy_from_user, user_control,
+        control_length, record, KERNEL_SOCKET_MESSAGE_ABI_NATIVE);
 }
 
 int kernel_socket_rights_record_drop(

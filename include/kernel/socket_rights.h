@@ -134,6 +134,13 @@ int kernel_socket_rights_record_import(
     edge_linux_copy_from_user_fn copy_from_user,
     uint64_t user_control, uint64_t control_length,
     kernel_socket_rights_record_handle_t *record);
+int kernel_socket_rights_record_import_abi(
+    kernel_socket_rights_pool_t *pool,
+    const void *fd_owner, void *copy_context,
+    edge_linux_copy_from_user_fn copy_from_user,
+    uint64_t user_control, uint64_t control_length,
+    kernel_socket_rights_record_handle_t *record,
+    uint32_t message_abi);
 
 /* Creates an explicit zero-token DETACHED record for queue state machinery. */
 int kernel_socket_rights_record_create_empty(

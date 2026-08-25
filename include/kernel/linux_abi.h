@@ -1676,6 +1676,12 @@ struct edge_linux_cmsghdr {
     };
 };
 
+struct edge_linux_x32_cmsghdr {
+    uint32_t cmsg_len;
+    int32_t cmsg_level;
+    int32_t cmsg_type;
+};
+
 struct edge_linux_msghdr {
     union {
         uint64_t msg_name;
@@ -1837,6 +1843,8 @@ _Static_assert(sizeof(struct edge_linux_iovec) == 16,
                "Linux iovec ABI layout");
 _Static_assert(sizeof(struct edge_linux_x32_iovec) == 8,
                "Linux x32 iovec ABI layout");
+_Static_assert(sizeof(struct edge_linux_x32_cmsghdr) == 12,
+               "Linux x32 cmsghdr ABI layout");
 _Static_assert(sizeof(struct edge_linux_msghdr) == 56,
                "Linux msghdr ABI layout");
 _Static_assert(sizeof(struct edge_linux_x32_msghdr) == 28,
