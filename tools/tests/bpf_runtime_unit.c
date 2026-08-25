@@ -456,6 +456,60 @@ static void test_queue_stack_maps(void) {
     assert(kernel_bpf_map_create(&invalid) == -EDGE_LINUX_EINVAL);
 }
 
+static void test_stack_trace_map(void) {
+    kernel_bpf_map_create_request_t request = {
+        .type = KERNEL_BPF_MAP_TYPE_STACK_TRACE,
+        .key_size = sizeof(uint32_t),
+        .value_size = 4u * sizeof(uint64_t),
+        .max_entries = 3u,
+    };
+    kernel_bpf_map_info_t info;
+    uint64_t value[4] = {0u};
+    uint32_t cursor = 0u;
+    uint32_t key = 0u;
+    uint32_t next_key = 0u;
+    int has_more = 0;
+    int object;
+
+    strcpy(request.name, "stack_trace");
+    object = kernel_bpf_map_create(&request);
+    assert(object >= 0);
+    assert(kernel_bpf_map_info(object, &info) == 0);
+    assert(info.type == KERNEL_BPF_MAP_TYPE_STACK_TRACE);
+    assert(info.max_entries == 3u);
+    assert(kernel_bpf_map_lookup(object, &key, value) ==
+           -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_map_update(
+               object, &key, value, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_EINVAL);
+    assert(kernel_bpf_map_delete(object, &key) ==
+           -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_map_lookup_and_delete(object, &key, value) ==
+           -EDGE_LINUX_ENOENT);
+    key = 4u;
+    assert(kernel_bpf_map_delete(object, &key) ==
+           -EDGE_LINUX_E2BIG);
+    assert(kernel_bpf_map_next_key(object, 0, &next_key) ==
+           -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_map_batch_next(
+               object, &cursor, &key, value, 0, &has_more) ==
+           -EDGE_LINUX_ENOTSUPP);
+    kernel_bpf_object_release(object);
+
+    request.flags = KERNEL_BPF_MAP_STACK_BUILD_ID;
+    object = kernel_bpf_map_create(&request);
+    assert(object >= 0);
+    kernel_bpf_object_release(object);
+    request.value_size = sizeof(uint64_t);
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+    request.flags = 0u;
+    request.value_size = 128u * sizeof(uint64_t);
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+    request.value_size = sizeof(uint64_t);
+    request.max_entries = (1u << 31u) + 1u;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_E2BIG);
+}
+
 static void test_lpm_trie_map(void) {
     struct lpm_key {
         uint32_t prefix_length;
@@ -1691,6 +1745,7 @@ int main(void) {
     test_hash_map();
     test_lru_hash_map();
     test_queue_stack_maps();
+    test_stack_trace_map();
     test_lpm_trie_map();
     test_bloom_filter_map();
     test_percpu_maps();

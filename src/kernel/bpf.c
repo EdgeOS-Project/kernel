@@ -19,6 +19,7 @@
 
 #define BPF_OBJECT_CAPACITY EDGE_RUNTIME_MAX_BPF_OBJECTS
 #define BPF_PAGE_SIZE 4096u
+#define BPF_STACK_MAX_DEPTH 127u
 #define BPF_OBJECT_ALLOCATION_LIMIT (16u * 1024u * 1024u)
 
 #define BPF_CLASS(code) ((code) & 0x07u)
@@ -80,6 +81,7 @@ typedef struct kernel_bpf_map {
     uint32_t key_size;
     uint32_t value_size;
     uint32_t max_entries;
+    uint32_t storage_entries;
     uint32_t flags;
     uint32_t entry_stride;
     uint32_t entry_count;
@@ -301,6 +303,17 @@ static int bpf_map_is_bloom_filter(const kernel_bpf_map_t *map) {
     return map && map->type == KERNEL_BPF_MAP_TYPE_BLOOM_FILTER;
 }
 
+static int bpf_map_is_stack_trace(const kernel_bpf_map_t *map) {
+    return map && map->type == KERNEL_BPF_MAP_TYPE_STACK_TRACE;
+}
+
+static uint32_t bpf_round_power_of_two(uint32_t value) {
+    uint32_t rounded = 1u;
+
+    while (rounded < value && rounded < (1u << 31u)) rounded <<= 1u;
+    return rounded;
+}
+
 static int bpf_map_type_is_ringbuf(uint32_t type) {
     return type == KERNEL_BPF_MAP_TYPE_RINGBUF ||
            type == KERNEL_BPF_MAP_TYPE_USER_RINGBUF;
@@ -428,6 +441,7 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
     uint32_t value_stride;
     uint32_t possible_cpu_count;
     uint32_t actual_max_entries;
+    uint32_t storage_entries;
     uint32_t bloom_bit_count = 0u;
     uint32_t bloom_hash_count = 0u;
     uint64_t bytes;
@@ -484,6 +498,7 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
         kernel_bpf_possible_cpu_count() : 1u;
     if (!possible_cpu_count) possible_cpu_count = 1u;
     actual_max_entries = request->max_entries;
+    storage_entries = actual_max_entries;
     memset(&inner_info, 0, sizeof(inner_info));
     if (bpf_map_type_is_map_in_map(request->type)) {
         status = kernel_bpf_map_info(
@@ -521,6 +536,25 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
             request->btf_present)
             goto invalid_btf;
         stride = sizeof(uint64_t);
+    } else if (request->type == KERNEL_BPF_MAP_TYPE_STACK_TRACE) {
+        uint32_t element_size =
+            validation_flags & KERNEL_BPF_MAP_STACK_BUILD_ID ? 32u : 8u;
+
+        if (request->max_entries > (1u << 31u)) {
+            status = -EDGE_LINUX_E2BIG;
+            goto fail_btf;
+        }
+        if (request->key_size != sizeof(uint32_t) ||
+            request->value_size < element_size ||
+            request->value_size % element_size ||
+            request->value_size / element_size > BPF_STACK_MAX_DEPTH ||
+            (validation_flags &
+             ~(KERNEL_BPF_MAP_NUMA_NODE |
+               KERNEL_BPF_MAP_STACK_BUILD_ID)) ||
+            request->btf_present || request->map_extra)
+            goto invalid_btf;
+        storage_entries = bpf_round_power_of_two(request->max_entries);
+        stride = bpf_align8(1u + request->value_size);
     } else if (request->type == KERNEL_BPF_MAP_TYPE_HASH ||
                request->type == KERNEL_BPF_MAP_TYPE_PERCPU_HASH) {
         if (validation_flags & ~KERNEL_BPF_MAP_NO_PREALLOC)
@@ -610,7 +644,7 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
     bytes = request->type == KERNEL_BPF_MAP_TYPE_BLOOM_FILTER ?
         stride : bpf_map_type_is_ringbuf(request->type) ?
         (uint64_t)actual_max_entries + 2u * BPF_PAGE_SIZE :
-        (uint64_t)stride * actual_max_entries;
+        (uint64_t)stride * storage_entries;
     status = bpf_allocation_size(bytes, &pages);
     if (status < 0) goto fail_btf;
     storage = (uint8_t *)arch_vm_alloc_pages(pages);
@@ -634,6 +668,7 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
         object->value.map.key_size = request->key_size;
         object->value.map.value_size = request->value_size;
         object->value.map.max_entries = actual_max_entries;
+        object->value.map.storage_entries = storage_entries;
         object->value.map.flags = validation_flags;
         object->value.map.entry_stride = stride;
         object->value.map.value_stride = value_stride;
@@ -2517,6 +2552,31 @@ int kernel_bpf_map_lookup_flags(int object_id, const void *key, void *value,
         status = -EDGE_LINUX_ENOTSUPP;
         goto out;
     }
+    if (bpf_map_is_stack_trace(map)) {
+        uint32_t bucket;
+        uint8_t *entry;
+
+        if (flags) {
+            status = -EDGE_LINUX_EINVAL;
+            goto out;
+        }
+        if (!key) {
+            status = -EDGE_LINUX_EFAULT;
+            goto out;
+        }
+        memcpy(&bucket, key, sizeof(bucket));
+        if (bucket >= map->storage_entries) {
+            status = -EDGE_LINUX_ENOENT;
+            goto out;
+        }
+        entry = bpf_map_entry(map, bucket);
+        if (!entry[0]) {
+            status = -EDGE_LINUX_ENOENT;
+            goto out;
+        }
+        memcpy(value, entry + 1u, map->value_size);
+        goto out;
+    }
     status = bpf_map_check_percpu_flags_locked(map, flags);
     if (status < 0 || ((uint32_t)flags & ~KERNEL_BPF_F_CPU)) {
         if (status == 0) status = -EDGE_LINUX_EINVAL;
@@ -2611,6 +2671,10 @@ int kernel_bpf_map_update(int object_id, const void *key, const void *value,
     }
     if (bpf_map_is_cgroup_array(map)) {
         status = -EDGE_LINUX_ENOTSUPP;
+        goto out;
+    }
+    if (bpf_map_is_stack_trace(map)) {
+        status = -EDGE_LINUX_EINVAL;
         goto out;
     }
     if (bpf_map_is_map_in_map(map) ||
@@ -2878,6 +2942,29 @@ int kernel_bpf_map_lookup_and_delete(int object_id, const void *key,
         status = bpf_map_queue_stack_get(map, value, 1);
         goto out;
     }
+    if (bpf_map_is_stack_trace(map)) {
+        uint32_t bucket;
+        uint8_t *entry;
+
+        if (!key) {
+            status = -EDGE_LINUX_EFAULT;
+            goto out;
+        }
+        memcpy(&bucket, key, sizeof(bucket));
+        if (bucket >= map->storage_entries) {
+            status = -EDGE_LINUX_ENOENT;
+            goto out;
+        }
+        entry = bpf_map_entry(map, bucket);
+        if (!entry[0]) {
+            status = -EDGE_LINUX_ENOENT;
+            goto out;
+        }
+        memcpy(value, entry + 1u, map->value_size);
+        memset(entry, 0, map->entry_stride);
+        if (map->entry_count) --map->entry_count;
+        goto out;
+    }
     if (bpf_map_is_bloom_filter(map) || bpf_map_is_lpm_trie(map)) {
         status = -EDGE_LINUX_EOPNOTSUPP;
         goto out;
@@ -2944,6 +3031,24 @@ int kernel_bpf_map_delete(int object_id, const void *key) {
     }
     if (!key) {
         status = -EDGE_LINUX_EFAULT;
+        goto out;
+    }
+    if (bpf_map_is_stack_trace(map)) {
+        uint32_t bucket;
+        uint8_t *entry;
+
+        memcpy(&bucket, key, sizeof(bucket));
+        if (bucket >= map->storage_entries) {
+            status = -EDGE_LINUX_E2BIG;
+            goto out;
+        }
+        entry = bpf_map_entry(map, bucket);
+        if (!entry[0]) {
+            status = -EDGE_LINUX_ENOENT;
+            goto out;
+        }
+        memset(entry, 0, map->entry_stride);
+        if (map->entry_count) --map->entry_count;
         goto out;
     }
     if (bpf_map_is_array(map) && !bpf_map_is_object_array(map) &&
@@ -3046,6 +3151,27 @@ int kernel_bpf_map_next_key(int object_id, const void *key, void *next_key) {
         status = -EDGE_LINUX_EOPNOTSUPP;
         goto out;
     }
+    if (bpf_map_is_stack_trace(map)) {
+        uint32_t bucket = 0u;
+
+        if (key) {
+            memcpy(&bucket, key, sizeof(bucket));
+            if (bucket < map->storage_entries &&
+                bpf_map_entry(map, bucket)[0])
+                ++bucket;
+            else
+                bucket = 0u;
+        }
+        while (bucket < map->storage_entries &&
+               !bpf_map_entry(map, bucket)[0])
+            ++bucket;
+        if (bucket >= map->storage_entries) {
+            status = -EDGE_LINUX_ENOENT;
+            goto out;
+        }
+        memcpy(next_key, &bucket, sizeof(bucket));
+        goto out;
+    }
     if (bpf_map_is_array(map)) {
         if (key) {
             memcpy(&index, key, sizeof(index));
@@ -3122,6 +3248,10 @@ int kernel_bpf_map_batch_next_flags(int object_id, uint32_t *cursor,
         goto out;
     }
     map = &object->value.map;
+    if (bpf_map_is_stack_trace(map)) {
+        status = -EDGE_LINUX_ENOTSUPP;
+        goto out;
+    }
     status = bpf_map_check_percpu_flags_locked(map, flags);
     if (status < 0 || ((uint32_t)flags & ~KERNEL_BPF_F_CPU)) {
         if (status == 0) status = -EDGE_LINUX_EINVAL;

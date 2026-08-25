@@ -216,6 +216,8 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
 #elif defined(UAPI_BATCH_BPF_COMPAT_ONLY)
         "ia32_bpf_uapi_probe",
         "x32_bpf_uapi_probe",
+#elif defined(UAPI_BATCH_BPF_STACK_TRACE_ONLY)
+        "bpf_stack_trace_abi_probe",
 #else
 #ifndef UAPI_BATCH_FREESTANDING_ONLY
         "restart_syscall_abi_probe",

@@ -363,10 +363,11 @@ EDGEOS_ASSESSMENTS = [
             "explicit map binding to program lifetime with program map-ID reporting",
             "runtime statistics enable descriptors with close-time disable semantics",
             "program test-run and unknown-command error ordering for the supported program family",
+            "stack-trace map creation, build-ID value layouts, rounded bucket addressing and empty syscall operations",
             "ia32 and x32 fixed-width map-create and map-element attribute layouts",
         ],
         "missing": [
-            "remaining map types",
+            "remaining map types and stack-trace helper population",
             "remaining specialized map families and their concurrency semantics",
             "additional attachment families and program types",
             "complete allow-override and multi-position attachment semantics",
@@ -376,6 +377,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/bpf_abi_probe.c",
             "tools/tests/compat_bpf_uapi_probe.c",
             "tools/tests/bpf_cgroup_array_abi_probe.c",
+            "tools/tests/bpf_stack_trace_abi_probe.c",
             "tools/tests/bpf_runtime_unit.c",
         ],
         "linux_oracle": {
@@ -394,7 +396,9 @@ EDGEOS_ASSESSMENTS = [
                 "cgroup array descriptors and retained cgroup lifetime, "
                 "BPF filesystem object pinning, explicit program-map binding, "
                 "runtime statistics descriptors and supported program-test "
-                "error behavior, plus ia32 and x32 page-boundary map-create, "
+                "error behavior, stack-trace map creation, value-depth limits, "
+                "rounded bucket addressing and empty map operations, plus ia32 "
+                "and x32 page-boundary map-create, "
                 "map-update and map-lookup attribute layouts"
             ),
         },
