@@ -121,6 +121,8 @@ int main(void) {
         .copy_from_user = copy_from_user,
         .copy_to_user = copy_to_user,
         .context = 0,
+        .iovec_pointer_size = sizeof(uint64_t),
+        .keyctl_kdf_pointer_size = sizeof(uint64_t),
     };
     static const char payload[] = "payload";
     static const char replacement[] = "replacement";

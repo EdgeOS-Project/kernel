@@ -21,8 +21,8 @@ EDGEOS_ASSESSMENTS = [
         "architectures": {
             "x86_64": "runtime-verified-partial",
             "aarch64": "runtime-verified-partial",
-            "ia32": "unimplemented",
-            "x32": "unimplemented",
+            "ia32": "runtime-verified-partial",
+            "x32": "runtime-verified-partial",
         },
         "implemented": [
             "user, logon, big-key and keyring objects with descriptor-independent serial lifetime",
@@ -35,16 +35,18 @@ EDGEOS_ASSESSMENTS = [
             "namespace-tagged named keyrings and same-description key isolation",
             "raw finite-field key agreement through user-key payloads",
             "SP800-108 counter-mode SHA-224 and SHA-256 derivation with Linux output and other-info limits",
+            "ia32 and x32 iovec and key-derivation parameter layouts",
         ],
         "missing": [
-            "request-key construction authorization, instantiate, negate and reject operations",
+            "positive request-key construction authorization and successful instantiate, negate and reject operations",
             "additional configured digest algorithms, larger raw parameters and asymmetric key operations",
-            "ia32 and x32 compatibility layouts",
         ],
         "runtime_tests": [
             "tools/tests/keyring_abi_probe.c",
             "tools/tests/keyring_dh_abi_probe.c",
             "tools/tests/keyring_runtime_unit.c",
+            "tools/tests/ia32_keyctl_compat_uapi_probe.c",
+            "tools/tests/x32_keyctl_compat_uapi_probe.c",
         ],
         "linux_oracle": {
             "status": "partial",
@@ -54,7 +56,8 @@ EDGEOS_ASSESSMENTS = [
                 "search, read, update, revoke, links and named keyring "
                 "user-namespace isolation, plus notification watch setup, "
                 "delivery and removal records, plus raw finite-field result "
-                "layout, size negotiation and SHA-224 or SHA-256 KDF output"
+                "layout, size negotiation and SHA-224 or SHA-256 KDF output, "
+                "plus ia32 and x32 boundary-checked iovec and KDF layouts"
             ),
         },
     },
@@ -450,13 +453,15 @@ COVERAGE_ASSESSMENTS = [
             "tools/tests/ia32_sysv_ipc_uapi_probe.c",
             "tools/tests/ia32_time_uapi_probe.c",
             "tools/tests/ia32_disabled_syscalls_uapi_probe.c",
+            "tools/tests/ia32_keyctl_compat_uapi_probe.c",
         ],
         oracle_status="partial",
         oracle_scope=(
             "ELF loading, int 0x80 entry, scalar and common calls, legacy and "
             "time64 structures, file and memory operations, socketcall, SysV "
             "IPC, POSIX message queues, signals, LDT and TLS, ptrace, NUMA, "
-            "quota, AIO, architecture control and configuration-disabled slots"
+            "quota, AIO, keyctl compatibility layouts, architecture control "
+            "and configuration-disabled slots"
         )),
     coverage_assessment(
         "syscalls-x32", "partial", X32_ARCHITECTURES,
@@ -471,6 +476,7 @@ COVERAGE_ASSESSMENTS = [
             "tools/tests/x32_robust_list_abi_probe.c",
             "tools/tests/x32_signal_registration_abi_probe.c",
             "tools/tests/x32_signal_info_abi_probe.c",
+            "tools/tests/x32_keyctl_compat_uapi_probe.c",
             "tools/tests/x32_process_observation_abi_probe.c",
             "tools/tests/x32_time_abi_probe.c",
             "tools/tests/x32_basic_io_abi_probe.c",
@@ -493,6 +499,7 @@ COVERAGE_ASSESSMENTS = [
             "compat waitid child information with native x32 wait4 and "
             "getrusage layouts, and "
             "native x32 64-bit time, interval-timer and timerfd layouts, and "
+            "keyctl compat iovec and native KDF parameter layouts, and "
             "basic file, path, offset, stat, pipe and UNIX socket I/O, and "
             "UTS data, CPU placement, affinity and random "
             "data queries, and "

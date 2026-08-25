@@ -282,6 +282,11 @@ static int64_t edge_linux_sys_keyring(
         .copy_from_user = edge_linux_keyring_copy_from_user,
         .copy_to_user = edge_linux_keyring_copy_to_user,
         .context = context,
+        .iovec_pointer_size = edge_linux_architecture_is_compat32(
+            context->architecture) ? sizeof(uint32_t) : sizeof(uint64_t),
+        .keyctl_kdf_pointer_size =
+            context->architecture == EDGE_LINUX_ARCH_IA32 ?
+                sizeof(uint32_t) : sizeof(uint64_t),
     };
     uint64_t arguments[4];
 

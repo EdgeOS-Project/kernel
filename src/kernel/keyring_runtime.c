@@ -67,6 +67,11 @@ typedef struct kernel_key_user_iovec {
     uint64_t length;
 } kernel_key_user_iovec_t;
 
+typedef struct kernel_key_user_iovec32 {
+    uint32_t base;
+    uint32_t length;
+} kernel_key_user_iovec32_t;
+
 enum kernel_key_kind {
     KERNEL_KEY_KIND_KEYRING = 1,
     KERNEL_KEY_KIND_USER,
@@ -650,8 +655,17 @@ typedef struct kernel_keyctl_kdf_params {
     uint32_t padding;
 } kernel_keyctl_kdf_params_t;
 
+typedef struct kernel_keyctl_kdf_params32 {
+    uint32_t hash_name;
+    uint32_t other_info;
+    uint32_t other_info_length;
+    uint32_t spare[8];
+} kernel_keyctl_kdf_params32_t;
+
 _Static_assert(sizeof(kernel_keyctl_kdf_params_t) == 56u,
                "native keyctl KDF parameters must match Linux UAPI");
+_Static_assert(sizeof(kernel_keyctl_kdf_params32_t) == 44u,
+               "compat keyctl KDF parameters must match Linux UAPI");
 
 static int key_dh_compare(const uint32_t *left, const uint32_t *right,
                           uint32_t limbs) {
@@ -786,10 +800,25 @@ static int64_t keyctl_dh_compute(
     int result;
 
     if (use_kdf) {
-        if (!access->copy_from_user ||
-            access->copy_from_user(access->context, &kdf,
-                                   arguments[3], sizeof(kdf)) < 0)
+        if (access->keyctl_kdf_pointer_size == sizeof(uint32_t)) {
+            kernel_keyctl_kdf_params32_t compat_kdf;
+
+            if (!access->copy_from_user ||
+                access->copy_from_user(
+                    access->context, &compat_kdf,
+                    arguments[3], sizeof(compat_kdf)) < 0)
+                return -EDGE_LINUX_EFAULT;
+            memset(&kdf, 0, sizeof(kdf));
+            kdf.hash_name = compat_kdf.hash_name;
+            kdf.other_info = compat_kdf.other_info;
+            kdf.other_info_length = compat_kdf.other_info_length;
+            memcpy(kdf.spare, compat_kdf.spare, sizeof(kdf.spare));
+        } else if (!access->copy_from_user ||
+                   access->copy_from_user(
+                       access->context, &kdf, arguments[3],
+                       sizeof(kdf)) < 0) {
             return -EDGE_LINUX_EFAULT;
+        }
     } else {
         memset(&kdf, 0, sizeof(kdf));
     }
@@ -1411,13 +1440,26 @@ int64_t kernel_keyring_keyctl(
         for (uint32_t index = 0; index < count; ++index) {
             kernel_key_user_iovec_t vector;
 
-            if (!access->copy_from_user ||
-                access->copy_from_user(
-                    access->context, &vector,
-                    arguments[1] +
-                        (uint64_t)index * sizeof(vector),
-                    sizeof(vector)) < 0)
+            if (access->iovec_pointer_size == sizeof(uint32_t)) {
+                kernel_key_user_iovec32_t compat_vector;
+
+                if (!access->copy_from_user ||
+                    access->copy_from_user(
+                        access->context, &compat_vector,
+                        arguments[1] +
+                            (uint64_t)index * sizeof(compat_vector),
+                        sizeof(compat_vector)) < 0)
+                    return -EDGE_LINUX_EFAULT;
+                vector.base = compat_vector.base;
+                vector.length = compat_vector.length;
+            } else if (!access->copy_from_user ||
+                       access->copy_from_user(
+                           access->context, &vector,
+                           arguments[1] +
+                               (uint64_t)index * sizeof(vector),
+                           sizeof(vector)) < 0) {
                 return -EDGE_LINUX_EFAULT;
+            }
             if (vector.length > UINT64_MAX - total)
                 return -EDGE_LINUX_EINVAL;
             total += vector.length;

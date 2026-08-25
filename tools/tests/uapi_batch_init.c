@@ -32,6 +32,14 @@ void *memcpy(void *destination, const void *source, unsigned long length) {
     return destination;
 }
 
+void *memset(void *destination, int value, unsigned long length) {
+    unsigned char *output = destination;
+
+    for (unsigned long index = 0; index < length; ++index)
+        output[index] = (unsigned char)value;
+    return destination;
+}
+
 static long raw_syscall1(long number, long a0) {
 #if defined(__x86_64__)
     long result;
@@ -182,6 +190,9 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "userfaultfd_abi_probe",
 #elif defined(UAPI_BATCH_FANOTIFY_ONLY)
         "fanotify_abi_probe",
+#elif defined(UAPI_BATCH_KEYCTL_COMPAT_ONLY)
+        "ia32_keyctl_compat_uapi_probe",
+        "x32_keyctl_compat_uapi_probe",
 #else
 #ifndef UAPI_BATCH_FREESTANDING_ONLY
         "restart_syscall_abi_probe",

@@ -95,6 +95,8 @@ typedef struct kernel_keyring_user_access {
     kernel_keyring_copy_from_user_fn copy_from_user;
     kernel_keyring_copy_to_user_fn copy_to_user;
     void *context;
+    uint32_t iovec_pointer_size;
+    uint32_t keyctl_kdf_pointer_size;
 } kernel_keyring_user_access_t;
 
 int64_t kernel_keyring_add_key(
