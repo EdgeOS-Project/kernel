@@ -1,6 +1,12 @@
 section .text
 bits 64
 
+%define KERNEL_DS 0x10
+%define USER_DS 0x23
+%define USER32_CS 0x4b
+%define USER32_DS 0x53
+%define FRAME_CS_OFFSET 144
+
 extern isr_exception_handler
 global isr_return_from_frame
 
@@ -54,11 +60,32 @@ exception_common:
     ; the flags restored by iretq.
     cld
     PUSH_GPRS
+    mov ax, KERNEL_DS
+    mov ds, ax
+    mov es, ax
     mov rdi, rsp
     call isr_exception_handler
 isr_return_from_frame:
     ; No maskable interrupt may observe user GS while CPL is still zero.
     cli
+    test byte [rsp + FRAME_CS_OFFSET], 3
+    jz .kernel_segments_ready
+    cmp word [rsp + FRAME_CS_OFFSET], USER32_CS
+    jne .native_user_segments
+    mov ax, USER32_DS
+    mov ds, ax
+    mov es, ax
+    jmp .segments_ready
+.native_user_segments:
+    mov ax, USER_DS
+    mov ds, ax
+    mov es, ax
+    jmp .segments_ready
+.kernel_segments_ready:
+    mov ax, KERNEL_DS
+    mov ds, ax
+    mov es, ax
+.segments_ready:
     POP_GPRS
     add rsp, 16
     test byte [rsp + 8], 3

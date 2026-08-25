@@ -226,7 +226,7 @@ static int elf_header_read(vfs_superblock_t *superblock, vfs_inode_t *inode,
         return -1;
 #if defined(__x86_64__)
     if (storage.bytes[4] == 1u) {
-#ifdef CONFIG_X86_X32_ABI
+#if defined(CONFIG_X86_X32_ABI) || defined(CONFIG_COMPAT_IA32)
         header_size = ELF32_EHDR_SIZE;
 #else
         return -1;
@@ -250,7 +250,21 @@ static int elf_header_read(vfs_superblock_t *superblock, vfs_inode_t *inode,
         header->phoff = storage.elf32.e_phoff;
         header->phentsize = storage.elf32.e_phentsize;
         header->phnum = storage.elf32.e_phnum;
-        header->linux_abi = EDGE_LINUX_TASK_ABI_X32;
+        if (header->machine == 62u) {
+#ifdef CONFIG_X86_X32_ABI
+            header->linux_abi = EDGE_LINUX_TASK_ABI_X32;
+#else
+            return -1;
+#endif
+        } else if (header->machine == 3u) {
+#ifdef CONFIG_COMPAT_IA32
+            header->linux_abi = EDGE_LINUX_TASK_ABI_IA32;
+#else
+            return -1;
+#endif
+        } else {
+            return -1;
+        }
     } else {
         header->type = storage.elf64.e_type;
         header->machine = storage.elf64.e_machine;
@@ -260,9 +274,10 @@ static int elf_header_read(vfs_superblock_t *superblock, vfs_inode_t *inode,
         header->phnum = storage.elf64.e_phnum;
         header->linux_abi = EDGE_LINUX_TASK_ABI_NATIVE64;
     }
-    if (header->machine != 62u ||
+    if ((header->linux_abi == EDGE_LINUX_TASK_ABI_NATIVE64 &&
+         header->machine != 62u) ||
         (header->type != ET_EXEC && header->type != ET_DYN) ||
-        (header->linux_abi == EDGE_LINUX_TASK_ABI_X32 &&
+        (header->linux_abi != EDGE_LINUX_TASK_ABI_NATIVE64 &&
          header->phentsize != ELF32_PHDR_SIZE) ||
         (header->linux_abi == EDGE_LINUX_TASK_ABI_NATIVE64 &&
          header->phentsize != ELF64_PHDR_SIZE) ||
@@ -468,9 +483,9 @@ static int edge_load_elf_from_vfs(
         if (!user_addr_range_ok(dst, ph[i].p_memsz)) { printf("[elf][err] seg addr %s i=%u dst=0x%x mem=0x%x bias=0x%x\n", path, i, (uint32_t)dst, (uint32_t)ph[i].p_memsz, (uint32_t)load_bias); goto out_release; }
         end = dst + ph[i].p_memsz;
         if (end < dst) { printf("[elf][err] seg end ovf %s i=%u\n", path, i); goto out_release; }
-        if (eh.linux_abi == EDGE_LINUX_TASK_ABI_X32 &&
+        if (eh.linux_abi != EDGE_LINUX_TASK_ABI_NATIVE64 &&
             end > UINT64_C(0x100000000)) {
-            printf("[elf][err] x32 seg above 4G %s i=%u\n", path, i);
+            printf("[elf][err] compat seg above 4G %s i=%u\n", path, i);
             goto out_release;
         }
         if (end > load_hi) load_hi = end;
@@ -609,9 +624,9 @@ static int edge_load_elf_from_vfs(
     out->load_hi = load_hi;
     out->phent = eh.phentsize;
     out->linux_abi = eh.linux_abi;
-    if (out->linux_abi == EDGE_LINUX_TASK_ABI_X32 &&
+    if (out->linux_abi != EDGE_LINUX_TASK_ABI_NATIVE64 &&
         (out->entry > UINT32_MAX || load_hi > UINT64_C(0x100000000))) {
-        printf("[elf][err] x32 entry above 4G %s\n", path);
+        printf("[elf][err] compat entry above 4G %s\n", path);
         goto out_release;
     }
 

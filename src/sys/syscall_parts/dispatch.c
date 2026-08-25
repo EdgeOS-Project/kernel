@@ -245,6 +245,24 @@ static const edge_linux_syscall_arch_ops_t x86_linux_syscall_ops = {
     .version = EDGEOS_LINUX_ABI_VERSION,
 };
 
+static const edge_linux_syscall_arch_ops_t ia32_linux_syscall_ops = {
+    .copy_from_user = x86_linux_copy_from_user,
+    .copy_to_user = x86_linux_copy_to_user,
+    .user_address_minimum = USER_MIN_ADDR,
+    .user_address_limit = UINT32_MAX,
+    .validate_user_range_arch = x86_linux_validate_user_range_arch,
+    .copy_stat_to_user = edge_x86_64_linux_stat_to_user,
+    .copy_epoll_event_from_user = x86_linux_copy_epoll_event_from_user,
+    .network_poll = syscall_network_poll,
+    .epoll_event_size = 12u,
+    .epoll_event_data_offset = 4u,
+    .fcntl_setfl_mask = 0x00044000u,
+    .open_direct_flag = 0x00004000u,
+    .machine = "i686",
+    .release = CONFIG_LINUX_ABI_RELEASE,
+    .version = EDGEOS_LINUX_ABI_VERSION,
+};
+
 static int syscall_ptrace_single_step(const task_t *task) {
     return task && task->ptrace.tracer_pid > 0 &&
            task->ptrace.resume_mode == EDGE_LINUX_PTRACE_RESUME_SINGLESTEP;
@@ -256,8 +274,10 @@ void edgeos_x86_64_syscall_dispatch(REGISTERS *r) {
      * Re-entering the kernel on the same stack while the frame is live has
      * been corrupting user return state on int80/#UD-emulated syscall paths. */
 
-    uint64_t arguments[6] = {r->rdi, r->rsi, r->rdx,
-                             r->r10, r->r8, r->r9};
+    task_t *cur = process_current_task();
+    const int ia32_abi = r->int_no == 128u ||
+        (cur && cur->linux_abi == EDGE_LINUX_TASK_ABI_IA32);
+    uint64_t arguments[6];
     uint64_t a1;
     uint64_t a2;
     uint64_t a3;
@@ -265,7 +285,22 @@ void edgeos_x86_64_syscall_dispatch(REGISTERS *r) {
     uint64_t a5;
     uint64_t a6;
     const int emulated_syscall = r->int_no == 6;
-    task_t *cur = process_current_task();
+    if (ia32_abi) {
+        nr = (uint32_t)nr;
+        arguments[0] = (uint32_t)r->rbx;
+        arguments[1] = (uint32_t)r->rcx;
+        arguments[2] = (uint32_t)r->rdx;
+        arguments[3] = (uint32_t)r->rsi;
+        arguments[4] = (uint32_t)r->rdi;
+        arguments[5] = (uint32_t)r->rbp;
+    } else {
+        arguments[0] = r->rdi;
+        arguments[1] = r->rsi;
+        arguments[2] = r->rdx;
+        arguments[3] = r->r10;
+        arguments[4] = r->r8;
+        arguments[5] = r->r9;
+    }
     if (cur && !cur->is_idle) cur->ptrace_live_frame = (uintptr_t)r;
     edge_linux_ptrace_syscall_enter(r, &nr, arguments);
     a1 = arguments[0];
@@ -428,19 +463,24 @@ void edgeos_x86_64_syscall_dispatch(REGISTERS *r) {
 #endif
         edge_linux_syscall_context_t shared = {
             .id = EDGE_LINUX_SYS_INVALID,
-            .architecture = x32_abi ? EDGE_LINUX_ARCH_X32 :
-                                      EDGE_LINUX_ARCH_X86_64,
+            .architecture = ia32_abi ? EDGE_LINUX_ARCH_IA32 :
+                (x32_abi ? EDGE_LINUX_ARCH_X32 : EDGE_LINUX_ARCH_X86_64),
             .route_status = EDGE_LINUX_SYSCALL_IMPLEMENTED,
             .raw_number = x32_abi ? nr & ~X32_SYSCALL_BIT : nr,
             .arguments = {a1, a2, a3, a4, a5, a6},
             .current_task = cur,
             .user_registers = r,
-            .arch_ops = &x86_linux_syscall_ops,
+            .arch_ops = ia32_abi ? &ia32_linux_syscall_ops :
+                                   &x86_linux_syscall_ops,
             .result = 0,
         };
         if (edge_linux_syscall_dispatch(&shared) ==
             EDGE_LINUX_SYSCALL_HANDLED) {
             r->rax = (uint64_t)shared.result;
+            goto syscall_dispatch_complete;
+        }
+        if (ia32_abi) {
+            r->rax = (uint64_t)-ENOSYS;
             goto syscall_dispatch_complete;
         }
     }

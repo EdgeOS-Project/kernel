@@ -1,6 +1,15 @@
 # EdgeOS x86 architecture configuration
 
 menu "Processor type and features"
+config COMPAT_IA32
+    bool "IA-32 compatibility ABI"
+    depends on ARCH_X86_64
+    default y
+    help
+      Enable ELF32/EM_386 process loading and the Linux i386 int 0x80
+      system call ABI. Compatibility structure conversion remains explicit;
+      calls without an audited conversion return ENOSYS.
+
 config X86_X32_ABI
     bool "x32 ABI for 64-bit processes"
     depends on ARCH_X86_64

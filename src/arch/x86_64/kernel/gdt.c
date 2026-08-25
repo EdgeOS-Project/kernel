@@ -108,6 +108,10 @@ void gdt_init_cpu(uint32_t cpu) {
     g_gdt[cpu][4] = 0x00AFF2000000FFFFULL;
     for (uint32_t index = 5u; index < GDT_ENTRY_COUNT; ++index)
         g_gdt[cpu][index] = 0;
+#ifdef CONFIG_COMPAT_IA32
+    g_gdt[cpu][9] = 0x00CFFA000000FFFFULL;
+    g_gdt[cpu][10] = 0x00CFF2000000FFFFULL;
+#endif
 
     for (uint32 i = 0; i < sizeof(g_tss[cpu]); ++i)
         ((uint8 *)&g_tss[cpu])[i] = 0;

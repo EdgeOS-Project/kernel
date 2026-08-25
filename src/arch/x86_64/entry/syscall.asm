@@ -8,7 +8,7 @@ bits 64
 
 %define USER_CS             0x1b
 %define USER_DS             0x23
-%define SYSCALL_VECTOR      128
+%define SYSCALL_VECTOR      256
 %define ENTRY_KERNEL_RSP    0
 %define ENTRY_USER_RSP      8
 

@@ -59,6 +59,18 @@ static int user_push_word(uintptr_t *stack_pointer, uint64_t value,
         (uint64_t)*stack_pointer, &value, sizeof(value));
 }
 
+static const char *user_exec_platform(edge_linux_task_abi_t abi,
+                                      uint32_t *size) {
+    static const char native_platform[] = "x86_64";
+    static const char ia32_platform[] = "i686";
+    const char *platform = abi == EDGE_LINUX_TASK_ABI_IA32 ?
+        ia32_platform : native_platform;
+
+    if (size) *size = abi == EDGE_LINUX_TASK_ABI_IA32 ?
+        sizeof(ia32_platform) : sizeof(native_platform);
+    return platform;
+}
+
 static __attribute__((noreturn)) void user_exec_enter(
     const user_exec_image_t *img, task_t *cur, uint64_t stack_pointer) {
     edge_trap_frame_t frame;
@@ -67,10 +79,12 @@ static __attribute__((noreturn)) void user_exec_enter(
     edgeos_x86_64_set_user_gs_base(cur->gs_base);
     memset(&frame, 0, sizeof(frame));
     frame.rip = img->entry;
-    frame.cs = USER_CS;
+    frame.cs = img->linux_abi == EDGE_LINUX_TASK_ABI_IA32 ?
+        USER32_CS : USER_CS;
     frame.rflags = 0x202u;
     frame.rsp = stack_pointer;
-    frame.ss = USER_DS;
+    frame.ss = img->linux_abi == EDGE_LINUX_TASK_ABI_IA32 ?
+        USER32_DS : USER_DS;
     edge_linux_ptrace_exec_stop(&frame);
     {
         int64_t exec_result = 0;
@@ -107,7 +121,6 @@ static int user_write_word_forward(uint64_t *cursor, uint64_t limit,
 int user_exec_run_payload(const user_exec_image_t *img,
                           const linux_exec_payload_t *payload,
                           kernel_exec_payload_handle_t *payload_handle) {
-    static const char platform[] = "x86_64";
     const uint64_t auxiliary_pairs = 21u;
     task_t *cur;
     uint64_t stack_top;
@@ -124,6 +137,8 @@ int user_exec_run_payload(const user_exec_image_t *img,
     uint64_t vdso_base;
     uint8_t word_size;
     uint8_t random_bytes[16];
+    const char *platform;
+    uint32_t platform_size;
 
     if (!img || !payload || !payload_handle || !payload->argc ||
         payload->argc > LINUX_EXEC_POINTER_MAX ||
@@ -132,6 +147,7 @@ int user_exec_run_payload(const user_exec_image_t *img,
     cur = process_current_task();
     if (!cur) return -1;
     word_size = edge_linux_task_abi_word_size(img->linux_abi);
+    platform = user_exec_platform(img->linux_abi, &platform_size);
     vdso_base = img->linux_abi == EDGE_LINUX_TASK_ABI_NATIVE64 ?
         linux_vdso_map(cur->cr3) : 0;
     if (img->linux_abi == EDGE_LINUX_TASK_ABI_NATIVE64 && !vdso_base)
@@ -157,8 +173,8 @@ int user_exec_run_payload(const user_exec_image_t *img,
     stack_top = img->user_stack_top;
     if (strings_bytes >= stack_top - X86_USER_STACK_BASE) return -1;
     strings_start = stack_top - strings_bytes;
-    if (strings_start < X86_USER_STACK_BASE + sizeof(platform)) return -1;
-    platform_address = strings_start - sizeof(platform);
+    if (strings_start < X86_USER_STACK_BASE + platform_size) return -1;
+    platform_address = strings_start - platform_size;
     if (platform_address < X86_USER_STACK_BASE + sizeof(random_bytes))
         return -1;
     random_address = (platform_address - sizeof(random_bytes)) & ~15ULL;
@@ -185,7 +201,7 @@ int user_exec_run_payload(const user_exec_image_t *img,
         string_cursor += length;
     }
     if (user_copy_to_current(platform_address, platform,
-                             sizeof(platform)) < 0)
+                             platform_size) < 0)
         return -1;
     {
         uint64_t first = user_exec_entropy64();
@@ -274,8 +290,11 @@ int user_exec_run(const user_exec_image_t *img, int argc, char **argv, int envc,
     uint8_t random_bytes[16];
     uint64_t vdso_base;
     uint8_t word_size;
+    const char *platform;
+    uint32_t platform_size;
 
     word_size = edge_linux_task_abi_word_size(img->linux_abi);
+    platform = user_exec_platform(img->linux_abi, &platform_size);
     vdso_base = img->linux_abi == EDGE_LINUX_TASK_ABI_NATIVE64 ?
         linux_vdso_map(cur->cr3) : 0;
     if (img->linux_abi == EDGE_LINUX_TASK_ABI_NATIVE64 && !vdso_base)
@@ -309,10 +328,9 @@ int user_exec_run(const user_exec_image_t *img, int argc, char **argv, int envc,
     }
     user_envp_ptrs[real_envc] = 0;
     {
-        const char platform[] = "x86_64";
-        sp -= sizeof(platform);
+        sp -= platform_size;
         if (user_copy_to_current((uint64_t)sp, platform,
-                                 sizeof(platform)) < 0)
+                                 platform_size) < 0)
             return -1;
         user_platform_ptr = (uint64_t)sp;
     }

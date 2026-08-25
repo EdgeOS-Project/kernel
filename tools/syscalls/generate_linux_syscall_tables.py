@@ -57,6 +57,18 @@ X32_ARCH_SYSCALLS = {
     "rt_sigreturn",
 }
 
+IA32_SHARED_SYSCALLS = {
+    "close",
+    "exit",
+    "exit_group",
+    "getpid",
+    "getppid",
+    "gettid",
+    "read",
+    "sched_yield",
+    "write",
+}
+
 
 def load_inventory() -> list[dict[str, object]]:
     document = json.loads(INVENTORY.read_text(encoding="utf-8"))
@@ -68,13 +80,15 @@ def load_inventory() -> list[dict[str, object]]:
     return syscalls
 
 
-def load_x32_syscalls() -> list[dict[str, object]]:
+def load_compat_syscalls(architecture: str) -> list[dict[str, object]]:
     document = json.loads(UAPI_INVENTORY.read_text(encoding="utf-8"))
     if document.get("schema") != 2:
         raise ValueError("unsupported Linux UAPI inventory schema")
-    syscalls = document["domains"]["syscalls"]["architectures"]["x32"]
+    syscalls = document["domains"]["syscalls"]["architectures"][architecture]
     if not isinstance(syscalls, list):
-        raise ValueError("x32 Linux UAPI syscall inventory is not a list")
+        raise ValueError(
+            f"{architecture} Linux UAPI syscall inventory is not a list"
+        )
     return syscalls
 
 
@@ -107,9 +121,11 @@ def render_tables(syscalls: list[dict[str, object]]) -> str:
         "x86_64": [],
         "aarch64": [],
         "x32": [],
+        "ia32": [],
     }
     canonical = {str(entry["id"]): entry for entry in syscalls}
-    x32_syscalls = load_x32_syscalls()
+    x32_syscalls = load_compat_syscalls("x32")
+    ia32_syscalls = load_compat_syscalls("ia32")
     x32_abis = {str(entry["name"]): entry.get("abi")
                 for entry in x32_syscalls}
     invalid_compat = sorted(
@@ -162,6 +178,25 @@ def render_tables(syscalls: list[dict[str, object]]) -> str:
             else "enosys"
         )
         by_architecture["x32"].append(
+            (int(mapping["number"]), name, status)
+        )
+    for mapping in ia32_syscalls:
+        name = str(mapping["name"])
+        entry = canonical.get(name)
+        if entry is None:
+            continue
+        architectures = entry["architectures"]
+        assert isinstance(architectures, dict)
+        native = architectures.get("x86_64")
+        native_implemented = (
+            isinstance(native, dict) and native.get("status") == "implemented"
+        )
+        status = (
+            "implemented"
+            if native_implemented and name in IA32_SHARED_SYSCALLS
+            else "enosys"
+        )
+        by_architecture["ia32"].append(
             (int(mapping["number"]), name, status)
         )
     lines = [

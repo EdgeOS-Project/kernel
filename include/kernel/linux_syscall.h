@@ -18,6 +18,7 @@ typedef enum edge_linux_syscall_architecture {
     EDGE_LINUX_ARCH_X86_64 = 1,
     EDGE_LINUX_ARCH_AARCH64 = 2,
     EDGE_LINUX_ARCH_X32 = 3,
+    EDGE_LINUX_ARCH_IA32 = 4,
 } edge_linux_syscall_architecture_t;
 
 typedef enum edge_linux_syscall_route_status {

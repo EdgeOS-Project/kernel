@@ -223,6 +223,13 @@ int edge_linux_syscall_map(edge_linux_syscall_architecture_t architecture,
                 sizeof(edge_linux_x32_numbers[0]),
             raw_number, id, status);
     }
+    if (architecture == EDGE_LINUX_ARCH_IA32) {
+        return edge_linux_syscall_lookup(
+            edge_linux_ia32_numbers,
+            sizeof(edge_linux_ia32_numbers) /
+                sizeof(edge_linux_ia32_numbers[0]),
+            raw_number, id, status);
+    }
     return -1;
 }
 
