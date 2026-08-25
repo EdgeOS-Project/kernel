@@ -7,6 +7,7 @@
 #include "kernel/exec_payload.h"
 #include "kernel/groups.h"
 #include "kernel/linux_abi.h"
+#include "kernel/linux_task_abi.h"
 #include "kernel/linux_ptrace.h"
 #include "kernel/mm_runtime.h"
 #include "kernel/namespaces.h"
@@ -150,6 +151,7 @@ typedef struct task_struct {
     uint64_t user_brk;
     uint64_t user_heap_limit;
     uint64_t user_mmap_next;
+    edge_linux_task_abi_t linux_abi;
     uint64_t last_syscall_nr;
     uint64_t last_syscall_args[6];
     int64_t last_syscall_ret;
@@ -210,6 +212,7 @@ typedef struct task_struct {
     uint64_t start_at_phnum;
     uint64_t start_at_entry;
     uint64_t start_at_base;
+    uint16_t start_at_phent;
     int start_pending;
     uint32_t uid;
     uint32_t gid;

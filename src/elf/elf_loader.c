@@ -23,6 +23,8 @@ static inline void elf_cpu_relax(void) {
 
 #define ELF64_EHDR_SIZE 64
 #define ELF64_PHDR_SIZE 56
+#define ELF32_EHDR_SIZE 52
+#define ELF32_PHDR_SIZE 32
 #define ELF_IO_CHUNK   (64u * 1024u)
 #define ELF_MAX_PHNUM  128
 
@@ -79,6 +81,50 @@ typedef struct {
 } elf64_phdr_t;
 
 typedef struct {
+    unsigned char e_ident[16];
+    uint16_t e_type;
+    uint16_t e_machine;
+    uint32_t e_version;
+    uint32_t e_entry;
+    uint32_t e_phoff;
+    uint32_t e_shoff;
+    uint32_t e_flags;
+    uint16_t e_ehsize;
+    uint16_t e_phentsize;
+    uint16_t e_phnum;
+    uint16_t e_shentsize;
+    uint16_t e_shnum;
+    uint16_t e_shstrndx;
+} elf32_ehdr_t;
+
+typedef struct {
+    uint32_t p_type;
+    uint32_t p_offset;
+    uint32_t p_vaddr;
+    uint32_t p_paddr;
+    uint32_t p_filesz;
+    uint32_t p_memsz;
+    uint32_t p_flags;
+    uint32_t p_align;
+} elf32_phdr_t;
+
+typedef union {
+    elf64_ehdr_t elf64;
+    elf32_ehdr_t elf32;
+    uint8_t bytes[ELF64_EHDR_SIZE];
+} edge_elf_ehdr_storage_t;
+
+typedef struct {
+    uint16_t type;
+    uint16_t machine;
+    uint64_t entry;
+    uint64_t phoff;
+    uint16_t phentsize;
+    uint16_t phnum;
+    edge_linux_task_abi_t linux_abi;
+} edge_elf_header_t;
+
+typedef struct {
     uint64_t load_bias;
     uint64_t entry;
     uint64_t phdr;
@@ -87,6 +133,8 @@ typedef struct {
     uint64_t interp_off;
     uint64_t interp_sz;
     uint8_t has_interp;
+    uint16_t phent;
+    edge_linux_task_abi_t linux_abi;
     char interp_path[256];
 } edge_elf_loaded_t;
 
@@ -159,13 +207,102 @@ static void elf_debug_dump_xorg_hash(const char *tag) {
            h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
 }
 
-static int elf_valid(const elf64_ehdr_t *eh) {
-    if (!eh) return 0;
-    if (eh->e_ident[0] != 0x7F || eh->e_ident[1] != 'E' || eh->e_ident[2] != 'L' || eh->e_ident[3] != 'F') return 0;
-    if (eh->e_ident[4] != 2) return 0;
-    if (eh->e_machine != 62) return 0;
-    if (!(eh->e_type == ET_EXEC || eh->e_type == ET_DYN)) return 0;
-    return 1;
+static int elf_magic_valid(const unsigned char *ident) {
+    return ident && ident[0] == 0x7f && ident[1] == 'E' &&
+        ident[2] == 'L' && ident[3] == 'F';
+}
+
+static int elf_header_read(vfs_superblock_t *superblock, vfs_inode_t *inode,
+                           edge_elf_header_t *header) {
+    edge_elf_ehdr_storage_t storage;
+    uint32_t header_size;
+
+    if (!superblock || !inode || !header || inode->size < ELF32_EHDR_SIZE)
+        return -1;
+    memset(&storage, 0, sizeof(storage));
+    if (vfs_read_inode_exact(
+            superblock, inode, 0, storage.bytes, 16u) < 0 ||
+        !elf_magic_valid(storage.bytes))
+        return -1;
+#if defined(__x86_64__)
+    if (storage.bytes[4] == 1u) {
+#ifdef CONFIG_X86_X32_ABI
+        header_size = ELF32_EHDR_SIZE;
+#else
+        return -1;
+#endif
+    } else
+#endif
+    if (storage.bytes[4] == 2u) {
+        header_size = ELF64_EHDR_SIZE;
+    } else {
+        return -1;
+    }
+    if (inode->size < header_size ||
+        vfs_read_inode_exact(
+            superblock, inode, 0, storage.bytes, header_size) < 0)
+        return -1;
+    memset(header, 0, sizeof(*header));
+    if (storage.bytes[4] == 1u) {
+        header->type = storage.elf32.e_type;
+        header->machine = storage.elf32.e_machine;
+        header->entry = storage.elf32.e_entry;
+        header->phoff = storage.elf32.e_phoff;
+        header->phentsize = storage.elf32.e_phentsize;
+        header->phnum = storage.elf32.e_phnum;
+        header->linux_abi = EDGE_LINUX_TASK_ABI_X32;
+    } else {
+        header->type = storage.elf64.e_type;
+        header->machine = storage.elf64.e_machine;
+        header->entry = storage.elf64.e_entry;
+        header->phoff = storage.elf64.e_phoff;
+        header->phentsize = storage.elf64.e_phentsize;
+        header->phnum = storage.elf64.e_phnum;
+        header->linux_abi = EDGE_LINUX_TASK_ABI_NATIVE64;
+    }
+    if (header->machine != 62u ||
+        (header->type != ET_EXEC && header->type != ET_DYN) ||
+        (header->linux_abi == EDGE_LINUX_TASK_ABI_X32 &&
+         header->phentsize != ELF32_PHDR_SIZE) ||
+        (header->linux_abi == EDGE_LINUX_TASK_ABI_NATIVE64 &&
+         header->phentsize != ELF64_PHDR_SIZE) ||
+        !header->phnum || header->phnum > ELF_MAX_PHNUM)
+        return -1;
+    return 0;
+}
+
+static int elf_program_headers_read(vfs_superblock_t *superblock,
+                                    vfs_inode_t *inode,
+                                    const edge_elf_header_t *header,
+                                    elf64_phdr_t *program_headers) {
+    uint64_t bytes;
+
+    if (!superblock || !inode || !header || !program_headers) return -1;
+    bytes = (uint64_t)header->phnum * header->phentsize;
+    if (header->phoff > inode->size || bytes > inode->size - header->phoff)
+        return -1;
+    if (header->linux_abi == EDGE_LINUX_TASK_ABI_NATIVE64)
+        return vfs_read_inode_exact(
+            superblock, inode, (uint32_t)header->phoff,
+            program_headers, (uint32_t)bytes);
+    for (uint16_t index = 0; index < header->phnum; ++index) {
+        elf32_phdr_t compat;
+        uint64_t offset = header->phoff +
+            (uint64_t)index * ELF32_PHDR_SIZE;
+        if (vfs_read_inode_exact(
+                superblock, inode, (uint32_t)offset,
+                &compat, sizeof(compat)) < 0)
+            return -1;
+        program_headers[index].p_type = compat.p_type;
+        program_headers[index].p_flags = compat.p_flags;
+        program_headers[index].p_offset = compat.p_offset;
+        program_headers[index].p_vaddr = compat.p_vaddr;
+        program_headers[index].p_paddr = compat.p_paddr;
+        program_headers[index].p_filesz = compat.p_filesz;
+        program_headers[index].p_memsz = compat.p_memsz;
+        program_headers[index].p_align = compat.p_align;
+    }
+    return 0;
 }
 
 static int user_addr_range_ok(uint64_t addr, uint64_t len) {
@@ -242,7 +379,7 @@ static int edge_load_elf_from_vfs(
     edge_elf_loaded_t *out) {
     vfs_inode_t ino;
     vfs_superblock_t *sb = 0;
-    elf64_ehdr_t eh;
+    edge_elf_header_t eh;
     elf_load_workspace_t *ws;
     elf64_phdr_t *ph;
     uint8_t *io_chunk;
@@ -264,23 +401,23 @@ static int edge_load_elf_from_vfs(
         goto out_release;
     }
     if ((ino.mode & 0xF000u) == VFS_INODE_DIR) { printf("[elf][err] dir %s\n", path); goto out_release; }
-    if (ino.size < ELF64_EHDR_SIZE) { printf("[elf][err] short %s sz=%u\n", path, ino.size); goto out_release; }
-    if (vfs_pread_exact(sb, &ino, 0, &eh, ELF64_EHDR_SIZE) < 0) { printf("[elf][err] read ehdr %s\n", path); goto out_release; }
-    if (!elf_valid(&eh)) { printf("[elf][err] invalid ehdr %s\n", path); goto out_release; }
-    if (eh.e_phentsize != ELF64_PHDR_SIZE) { printf("[elf][err] phentsz %s %u\n", path, eh.e_phentsize); goto out_release; }
-    if (eh.e_phnum == 0 || eh.e_phnum > ELF_MAX_PHNUM) { printf("[elf][err] phnum %s %u\n", path, eh.e_phnum); goto out_release; }
-
-    ph_bytes = (uint64_t)eh.e_phnum * ELF64_PHDR_SIZE;
-    if (eh.e_phoff + ph_bytes > (uint64_t)ino.size) { printf("[elf][err] phoff range %s\n", path); goto out_release; }
-    if (vfs_pread_exact(sb, &ino, (uint32_t)eh.e_phoff, ph, (uint32_t)ph_bytes) < 0) { printf("[elf][err] read phdr %s\n", path); goto out_release; }
+    if (elf_header_read(sb, &ino, &eh) < 0) {
+        printf("[elf][err] invalid ehdr %s\n", path);
+        goto out_release;
+    }
+    ph_bytes = (uint64_t)eh.phnum * eh.phentsize;
+    if (elf_program_headers_read(sb, &ino, &eh, ph) < 0) {
+        printf("[elf][err] read phdr %s\n", path);
+        goto out_release;
+    }
 
     load_bias = 0;
-    if (eh.e_type == ET_DYN) {
+    if (eh.type == ET_DYN) {
         if (et_dyn_base == EDGE_MAIN_ET_DYN_BASE) {
-            if (elf_pick_et_dyn_bias(ph, eh.e_phnum,
+            if (elf_pick_et_dyn_bias(ph, eh.phnum,
                                      USER_LOW_BASE_ADDR, USER_LOW_LIMIT_ADDR,
                                      &load_bias) < 0) {
-                if (elf_pick_et_dyn_bias(ph, eh.e_phnum,
+                if (elf_pick_et_dyn_bias(ph, eh.phnum,
                                          USER_BIGPIE_BASE_ADDR, USER_BIGPIE_LIMIT_ADDR,
                                          &load_bias) < 0) {
                     printf("[elf][err] dyn layout %s main span too large\n", path);
@@ -288,7 +425,7 @@ static int edge_load_elf_from_vfs(
                 }
             }
         } else if (et_dyn_base == EDGE_INTERP_ET_DYN_BASE) {
-            if (elf_pick_et_dyn_bias(ph, eh.e_phnum,
+            if (elf_pick_et_dyn_bias(ph, eh.phnum,
                                      USER_TEXT_BASE_ADDR, USER_TEXT_LIMIT_ADDR,
                                      &load_bias) < 0) {
                 printf("[elf][err] dyn layout %s interp span too large\n", path);
@@ -297,7 +434,7 @@ static int edge_load_elf_from_vfs(
         } else {
             uint64_t min_vaddr;
             uint64_t max_vaddr;
-            if (elf_et_dyn_layout(ph, eh.e_phnum, &min_vaddr, &max_vaddr) < 0) {
+            if (elf_et_dyn_layout(ph, eh.phnum, &min_vaddr, &max_vaddr) < 0) {
                 printf("[elf][err] dyn layout %s invalid\n", path);
                 goto out_release;
             }
@@ -305,7 +442,7 @@ static int edge_load_elf_from_vfs(
         }
     }
 
-    for (uint16_t i = 0; i < eh.e_phnum; ++i) {
+    for (uint16_t i = 0; i < eh.phnum; ++i) {
         uint64_t dst;
         uint64_t end;
         uint64_t file_end;
@@ -331,6 +468,11 @@ static int edge_load_elf_from_vfs(
         if (!user_addr_range_ok(dst, ph[i].p_memsz)) { printf("[elf][err] seg addr %s i=%u dst=0x%x mem=0x%x bias=0x%x\n", path, i, (uint32_t)dst, (uint32_t)ph[i].p_memsz, (uint32_t)load_bias); goto out_release; }
         end = dst + ph[i].p_memsz;
         if (end < dst) { printf("[elf][err] seg end ovf %s i=%u\n", path, i); goto out_release; }
+        if (eh.linux_abi == EDGE_LINUX_TASK_ABI_X32 &&
+            end > UINT64_C(0x100000000)) {
+            printf("[elf][err] x32 seg above 4G %s i=%u\n", path, i);
+            goto out_release;
+        }
         if (end > load_hi) load_hi = end;
         file_end = dst + ph[i].p_filesz;
         if (file_end < dst) { printf("[elf][err] seg file end ovf %s i=%u\n", path, i); goto out_release; }
@@ -431,7 +573,7 @@ static int edge_load_elf_from_vfs(
      * segment-by-segment pass can otherwise make the boundary page read-only
      * just because an adjacent RX segment rounded into the same page.
      */
-    for (uint16_t i = 0; i < eh.e_phnum; ++i) {
+    for (uint16_t i = 0; i < eh.phnum; ++i) {
         uint64_t start;
         uint64_t end;
         if (ph[i].p_type != PT_LOAD || ph[i].p_memsz == 0) continue;
@@ -441,7 +583,7 @@ static int edge_load_elf_from_vfs(
         if (end <= start) continue;
         for (uint64_t va = start; va < end; va += 0x1000ULL) {
             uint32_t prot = 0;
-            for (uint16_t j = 0; j < eh.e_phnum; ++j) {
+            for (uint16_t j = 0; j < eh.phnum; ++j) {
                 uint64_t j_start;
                 uint64_t j_end;
                 if (ph[j].p_type != PT_LOAD || ph[j].p_memsz == 0) continue;
@@ -461,12 +603,19 @@ static int edge_load_elf_from_vfs(
 
     memset(out, 0, sizeof(*out));
     out->load_bias = load_bias;
-    out->entry = load_bias + eh.e_entry;
+    out->entry = load_bias + eh.entry;
     out->phdr = 0;
-    out->phnum = eh.e_phnum;
+    out->phnum = eh.phnum;
     out->load_hi = load_hi;
+    out->phent = eh.phentsize;
+    out->linux_abi = eh.linux_abi;
+    if (out->linux_abi == EDGE_LINUX_TASK_ABI_X32 &&
+        (out->entry > UINT32_MAX || load_hi > UINT64_C(0x100000000))) {
+        printf("[elf][err] x32 entry above 4G %s\n", path);
+        goto out_release;
+    }
 
-    for (uint16_t i = 0; i < eh.e_phnum; ++i) {
+    for (uint16_t i = 0; i < eh.phnum; ++i) {
         if (ph[i].p_type == PT_PHDR) out->phdr = load_bias + ph[i].p_vaddr;
         if (ph[i].p_type != PT_INTERP) continue;
         out->has_interp = 1;
@@ -482,11 +631,11 @@ static int edge_load_elf_from_vfs(
         out->interp_path[ph[i].p_filesz - 1] = 0;
     }
     if (!out->phdr) {
-        for (uint16_t i = 0; i < eh.e_phnum; ++i) {
+        for (uint16_t i = 0; i < eh.phnum; ++i) {
             if (ph[i].p_type != PT_LOAD) continue;
-            if (eh.e_phoff < ph[i].p_offset) continue;
-            if (eh.e_phoff + ph_bytes > ph[i].p_offset + ph[i].p_filesz) continue;
-            out->phdr = load_bias + ph[i].p_vaddr + (eh.e_phoff - ph[i].p_offset);
+            if (eh.phoff < ph[i].p_offset) continue;
+            if (eh.phoff + ph_bytes > ph[i].p_offset + ph[i].p_filesz) continue;
+            out->phdr = load_bias + ph[i].p_vaddr + (eh.phoff - ph[i].p_offset);
             break;
         }
     }
@@ -499,23 +648,21 @@ out_release:
 }
 
 int elf_loader_probe(const char *path) {
-    elf64_ehdr_t eh;
-    int n = vfs_read_file(path, (char *)&eh, ELF64_EHDR_SIZE);
-    if (n < ELF64_EHDR_SIZE) return -1;
-    return elf_valid(&eh) ? 0 : -1;
+    edge_elf_header_t header;
+    vfs_inode_t inode;
+    vfs_superblock_t *superblock = 0;
+    if (!path || vfs_resolve(path, &inode, &superblock, 0, 0) < 0)
+        return -1;
+    return elf_header_read(superblock, &inode, &header);
 }
 
 int elf_loader_probe_inode(vfs_superblock_t *superblock,
                            const vfs_inode_t *inode) {
-    elf64_ehdr_t eh;
+    edge_elf_header_t header;
     vfs_inode_t source;
-    if (!superblock || !inode || inode->size < ELF64_EHDR_SIZE)
-        return -1;
+    if (!superblock || !inode) return -1;
     source = *inode;
-    if (vfs_pread_exact(
-            superblock, &source, 0, &eh, ELF64_EHDR_SIZE) < 0)
-        return -1;
-    return elf_valid(&eh) ? 0 : -1;
+    return elf_header_read(superblock, &source, &header);
 }
 
 static int elf_loader_exec_source(
@@ -546,6 +693,8 @@ static int elf_loader_exec_source(
     out->at_entry = main_img.entry;
     out->at_base = 0;
     out->main_load_hi = main_img.load_hi;
+    out->at_phent = main_img.phent;
+    out->linux_abi = main_img.linux_abi;
 
     if (!main_img.has_interp) {
         /*
@@ -562,6 +711,11 @@ static int elf_loader_exec_source(
             target_pid, main_img.interp_path, 0, 0,
             EDGE_INTERP_ET_DYN_BASE, &interp_img) < 0) {
         printf("[elf][err] interp load failed %s -> %s\n", path, main_img.interp_path);
+        return -1;
+    }
+    if (interp_img.linux_abi != main_img.linux_abi) {
+        printf("[elf][err] interp ABI mismatch %s -> %s\n",
+               path, main_img.interp_path);
         return -1;
     }
     if (EDGE_ELF_XORG_TRACE && elf_debug_is_xorg_path(path)) {

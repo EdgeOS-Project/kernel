@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include "kernel/exec_payload.h"
+#include "kernel/linux_task_abi.h"
 
 #define USER_CS 0x1B
 #define USER_DS 0x23
@@ -17,6 +18,8 @@ typedef struct user_exec_image {
     uint64_t at_phnum;
     uint64_t at_entry;
     uint64_t at_base;
+    uint16_t at_phent;
+    edge_linux_task_abi_t linux_abi;
     uint8_t secure_exec;
 } user_exec_image_t;
 

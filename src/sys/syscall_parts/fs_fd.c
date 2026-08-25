@@ -382,7 +382,10 @@ int process_exec_arch_commit_image(kernel_exec_state_t *state) {
     native->user_image.at_phnum = native->elf_image.at_phnum;
     native->user_image.at_entry = native->elf_image.at_entry;
     native->user_image.at_base = native->elf_image.at_base;
+    native->user_image.at_phent = native->elf_image.at_phent;
+    native->user_image.linux_abi = native->elf_image.linux_abi;
     native->user_image.secure_exec = state->secure_exec;
+    native->task->linux_abi = native->elf_image.linux_abi;
     native->task->user_heap_limit =
         USER_HEAP_BASE_ADDR + USER_HEAP_DEFAULT_DELTA;
     if (state->file.size > 4u * 1024u * 1024u)

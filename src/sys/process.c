@@ -897,6 +897,7 @@ static int task_copy_exec_identity(task_t *child, const task_t *parent) {
     strncpy(child->exec_path, parent->exec_path,
             sizeof(child->exec_path) - 1u);
     child->exec_path[sizeof(child->exec_path) - 1u] = 0;
+    child->linux_abi = parent->linux_abi;
     child->exec_file_handle = parent->exec_file_handle;
     if (child->exec_file_handle &&
         kernel_exec_file_retain(child->exec_file_handle) < 0) {
@@ -10536,6 +10537,8 @@ int process_spawn_exec_env(const char *path, int argc, char **argv, int envc, ch
     child->start_at_phnum = elf_img.at_phnum;
     child->start_at_entry = elf_img.at_entry;
     child->start_at_base = elf_img.at_base;
+    child->start_at_phent = elf_img.at_phent;
+    child->linux_abi = elf_img.linux_abi;
     child->start_pending = 1;
     memset(&child->context, 0, sizeof(child->context));
     child->context.rsp = child->kernel_stack_top;
@@ -10589,6 +10592,8 @@ __attribute__((noreturn)) void process_enter_user_current(void) {
     img.at_phnum = cur->start_at_phnum;
     img.at_entry = cur->start_at_entry;
     img.at_base = cur->start_at_base;
+    img.at_phent = cur->start_at_phent;
+    img.linux_abi = cur->linux_abi;
     img.secure_exec = 0;
     cur->start_pending = 0;
     if (!cur->exec_record) {

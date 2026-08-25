@@ -43,10 +43,20 @@ static int user_copy_to_current(uint64_t destination, const void *source,
                                      length);
 }
 
-static int user_push_u64(uintptr_t *sp, uint64_t v) {
-    if (!sp || *sp < 8) return -1;
-    *sp -= sizeof(uint64_t);
-    return user_copy_to_current((uint64_t)*sp, &v, sizeof(v));
+static int user_push_word(uintptr_t *stack_pointer, uint64_t value,
+                          uint8_t word_size) {
+    if (!stack_pointer || (word_size != 4u && word_size != 8u) ||
+        *stack_pointer < word_size ||
+        (word_size == 4u && value > UINT32_MAX))
+        return -1;
+    *stack_pointer -= word_size;
+    if (word_size == 4u) {
+        uint32_t compat = (uint32_t)value;
+        return user_copy_to_current(
+            (uint64_t)*stack_pointer, &compat, sizeof(compat));
+    }
+    return user_copy_to_current(
+        (uint64_t)*stack_pointer, &value, sizeof(value));
 }
 
 static __attribute__((noreturn)) void user_exec_enter(
@@ -77,13 +87,20 @@ static uint32_t payload_string_length(const char *string) {
     return length;
 }
 
-static int user_write_u64_forward(uint64_t *cursor, uint64_t limit,
-                                  uint64_t value) {
-    if (!cursor || *cursor > limit || limit - *cursor < sizeof(value))
+static int user_write_word_forward(uint64_t *cursor, uint64_t limit,
+                                   uint64_t value, uint8_t word_size) {
+    if (!cursor || (word_size != 4u && word_size != 8u) ||
+        *cursor > limit || limit - *cursor < word_size ||
+        (word_size == 4u && value > UINT32_MAX))
         return -1;
-    if (user_copy_to_current(*cursor, &value, sizeof(value)) < 0)
+    if (word_size == 4u) {
+        uint32_t compat = (uint32_t)value;
+        if (user_copy_to_current(*cursor, &compat, sizeof(compat)) < 0)
+            return -1;
+    } else if (user_copy_to_current(*cursor, &value, sizeof(value)) < 0) {
         return -1;
-    *cursor += sizeof(value);
+    }
+    *cursor += word_size;
     return 0;
 }
 
@@ -105,6 +122,7 @@ int user_exec_run_payload(const user_exec_image_t *img,
     uint64_t vector_cursor;
     uint64_t execfn;
     uint64_t vdso_base;
+    uint8_t word_size;
     uint8_t random_bytes[16];
 
     if (!img || !payload || !payload_handle || !payload->argc ||
@@ -113,8 +131,11 @@ int user_exec_run_payload(const user_exec_image_t *img,
         return -1;
     cur = process_current_task();
     if (!cur) return -1;
-    vdso_base = linux_vdso_map(cur->cr3);
-    if (!vdso_base) return -1;
+    word_size = edge_linux_task_abi_word_size(img->linux_abi);
+    vdso_base = img->linux_abi == EDGE_LINUX_TASK_ABI_NATIVE64 ?
+        linux_vdso_map(cur->cr3) : 0;
+    if (img->linux_abi == EDGE_LINUX_TASK_ABI_NATIVE64 && !vdso_base)
+        return -1;
 
     for (uint32_t index = 0; index < payload->argc; ++index) {
         const char *string = linux_exec_payload_argument(payload, index);
@@ -130,7 +151,7 @@ int user_exec_run_payload(const user_exec_image_t *img,
         strings_bytes += (uint64_t)length + 1u;
     }
     if (strings_bytes + ((uint64_t)payload->argc + payload->envc + 2u) *
-            sizeof(uint64_t) > LINUX_EXEC_BYTES_MAX)
+            word_size > LINUX_EXEC_BYTES_MAX)
         return -1;
 
     stack_top = img->user_stack_top;
@@ -142,7 +163,7 @@ int user_exec_run_payload(const user_exec_image_t *img,
         return -1;
     random_address = (platform_address - sizeof(random_bytes)) & ~15ULL;
     vector_bytes = ((uint64_t)payload->argc + payload->envc + 3u +
-                    auxiliary_pairs * 2u) * sizeof(uint64_t);
+                    auxiliary_pairs * 2u) * word_size;
     if (random_address < X86_USER_STACK_BASE + vector_bytes) return -1;
     stack_pointer = (random_address - vector_bytes) & ~15ULL;
     if (stack_pointer < X86_USER_STACK_BASE) return -1;
@@ -179,8 +200,8 @@ int user_exec_run_payload(const user_exec_image_t *img,
 
 #define WRITE_STACK(value) \
     do { \
-        if (user_write_u64_forward(&vector_cursor, random_address, \
-                                   (uint64_t)(value)) < 0) \
+        if (user_write_word_forward(&vector_cursor, random_address, \
+                                    (uint64_t)(value), word_size) < 0) \
             return -1; \
     } while (0)
 
@@ -202,7 +223,7 @@ int user_exec_run_payload(const user_exec_image_t *img,
     }
     WRITE_STACK(0);
     WRITE_STACK(3);  WRITE_STACK(img->at_phdr);       /* AT_PHDR */
-    WRITE_STACK(4);  WRITE_STACK(56);                 /* AT_PHENT */
+    WRITE_STACK(4);  WRITE_STACK(img->at_phent ? img->at_phent : 56u); /* AT_PHENT */
     WRITE_STACK(5);  WRITE_STACK(img->at_phnum);      /* AT_PHNUM */
     WRITE_STACK(6);  WRITE_STACK(4096);               /* AT_PAGESZ */
     WRITE_STACK(7);  WRITE_STACK(img->at_base);       /* AT_BASE */
@@ -252,9 +273,13 @@ int user_exec_run(const user_exec_image_t *img, int argc, char **argv, int envc,
     int real_envc = 0;
     uint8_t random_bytes[16];
     uint64_t vdso_base;
+    uint8_t word_size;
 
-    vdso_base = linux_vdso_map(cur->cr3);
-    if (!vdso_base) return -1;
+    word_size = edge_linux_task_abi_word_size(img->linux_abi);
+    vdso_base = img->linux_abi == EDGE_LINUX_TASK_ABI_NATIVE64 ?
+        linux_vdso_map(cur->cr3) : 0;
+    if (img->linux_abi == EDGE_LINUX_TASK_ABI_NATIVE64 && !vdso_base)
+        return -1;
 
     for (int i = 0; i < argc; ++i) {
         if (!argv || !argv[i]) break;
@@ -320,66 +345,69 @@ int user_exec_run(const user_exec_image_t *img, int argc, char **argv, int envc,
          * #GP for a misaligned movaps even though some TCG configurations are
          * permissive, so keep this calculation tied to the complete vector.
          */
-        int qwords = 45 + real_argc + real_envc;
-        sp &= ~(uintptr_t)0xFULL;
-        if ((qwords & 1) != 0) {
-            if (sp < sizeof(uint64_t)) return -1;
-            sp -= sizeof(uint64_t);
-        }
+        uintptr_t vector_bytes =
+            (uintptr_t)(45 + real_argc + real_envc) * word_size;
+        if (sp < vector_bytes) return -1;
+        sp = ((sp - vector_bytes) & ~(uintptr_t)0xfull) + vector_bytes;
     }
     /* Build Linux-style initial stack:
      * [argc][argv...][NULL][envp...][NULL][auxv...][AT_NULL]
      */
-    if (user_push_u64(&sp, 0) < 0) return -1; /* AT_NULL a_val */
-    if (user_push_u64(&sp, 0) < 0) return -1; /* AT_NULL a_type */
-    if (user_push_u64(&sp, vdso_base) < 0) return -1;
-    if (user_push_u64(&sp, 33) < 0) return -1; /* AT_SYSINFO_EHDR */
-    if (user_push_u64(&sp, EDGE_LINUX_RSEQ_ALIGN) < 0) return -1;
-    if (user_push_u64(&sp, EDGE_LINUX_AT_RSEQ_ALIGN) < 0) return -1;
-    if (user_push_u64(&sp, EDGE_LINUX_RSEQ_FEATURE_SIZE) < 0) return -1;
-    if (user_push_u64(&sp, EDGE_LINUX_AT_RSEQ_FEATURE_SIZE) < 0) return -1;
-    if (user_push_u64(&sp, user_execfn_ptr) < 0) return -1;
-    if (user_push_u64(&sp, 31) < 0) return -1; /* AT_EXECFN */
-    if (user_push_u64(&sp, 0) < 0) return -1;
-    if (user_push_u64(&sp, 26) < 0) return -1; /* AT_HWCAP2 */
-    if (user_push_u64(&sp, user_random_ptr) < 0) return -1;
-    if (user_push_u64(&sp, 25) < 0) return -1; /* AT_RANDOM */
-    if (user_push_u64(&sp, img->secure_exec) < 0) return -1;
-    if (user_push_u64(&sp, 23) < 0) return -1; /* AT_SECURE */
-    if (user_push_u64(&sp, 100) < 0) return -1;
-    if (user_push_u64(&sp, 17) < 0) return -1; /* AT_CLKTCK */
-    if (user_push_u64(&sp, 0) < 0) return -1;
-    if (user_push_u64(&sp, 16) < 0) return -1; /* AT_HWCAP */
-    if (user_push_u64(&sp, user_platform_ptr) < 0) return -1;
-    if (user_push_u64(&sp, 15) < 0) return -1; /* AT_PLATFORM */
-    if (user_push_u64(&sp, cur->egid) < 0) return -1;
-    if (user_push_u64(&sp, 14) < 0) return -1; /* AT_EGID */
-    if (user_push_u64(&sp, cur->gid) < 0) return -1;
-    if (user_push_u64(&sp, 13) < 0) return -1; /* AT_GID */
-    if (user_push_u64(&sp, cur->euid) < 0) return -1;
-    if (user_push_u64(&sp, 12) < 0) return -1; /* AT_EUID */
-    if (user_push_u64(&sp, cur->uid) < 0) return -1;
-    if (user_push_u64(&sp, 11) < 0) return -1; /* AT_UID */
-    if (user_push_u64(&sp, 4096) < 0) return -1;
-    if (user_push_u64(&sp, 6) < 0) return -1;  /* AT_PAGESZ */
-    if (user_push_u64(&sp, img->at_base) < 0) return -1;
-    if (user_push_u64(&sp, 7) < 0) return -1;  /* AT_BASE */
-    if (user_push_u64(&sp, img->at_entry) < 0) return -1;
-    if (user_push_u64(&sp, 9) < 0) return -1;  /* AT_ENTRY */
-    if (user_push_u64(&sp, img->at_phnum) < 0) return -1;
-    if (user_push_u64(&sp, 5) < 0) return -1;  /* AT_PHNUM */
-    if (user_push_u64(&sp, 56) < 0) return -1;
-    if (user_push_u64(&sp, 4) < 0) return -1;  /* AT_PHENT */
-    if (user_push_u64(&sp, img->at_phdr) < 0) return -1;
-    if (user_push_u64(&sp, 3) < 0) return -1;  /* AT_PHDR */
-    if (user_push_u64(&sp, 0) < 0) return -1;  /* envp terminator */
+#define PUSH_WORD(value) \
+    do { \
+        if (user_push_word(&sp, (uint64_t)(value), word_size) < 0) return -1; \
+    } while (0)
+    PUSH_WORD(0); /* AT_NULL a_val */
+    PUSH_WORD(0); /* AT_NULL a_type */
+    PUSH_WORD(vdso_base);
+    PUSH_WORD(33); /* AT_SYSINFO_EHDR */
+    PUSH_WORD(EDGE_LINUX_RSEQ_ALIGN);
+    PUSH_WORD(EDGE_LINUX_AT_RSEQ_ALIGN);
+    PUSH_WORD(EDGE_LINUX_RSEQ_FEATURE_SIZE);
+    PUSH_WORD(EDGE_LINUX_AT_RSEQ_FEATURE_SIZE);
+    PUSH_WORD(user_execfn_ptr);
+    PUSH_WORD(31); /* AT_EXECFN */
+    PUSH_WORD(0);
+    PUSH_WORD(26); /* AT_HWCAP2 */
+    PUSH_WORD(user_random_ptr);
+    PUSH_WORD(25); /* AT_RANDOM */
+    PUSH_WORD(img->secure_exec);
+    PUSH_WORD(23); /* AT_SECURE */
+    PUSH_WORD(100);
+    PUSH_WORD(17); /* AT_CLKTCK */
+    PUSH_WORD(0);
+    PUSH_WORD(16); /* AT_HWCAP */
+    PUSH_WORD(user_platform_ptr);
+    PUSH_WORD(15); /* AT_PLATFORM */
+    PUSH_WORD(cur->egid);
+    PUSH_WORD(14); /* AT_EGID */
+    PUSH_WORD(cur->gid);
+    PUSH_WORD(13); /* AT_GID */
+    PUSH_WORD(cur->euid);
+    PUSH_WORD(12); /* AT_EUID */
+    PUSH_WORD(cur->uid);
+    PUSH_WORD(11); /* AT_UID */
+    PUSH_WORD(4096);
+    PUSH_WORD(6);  /* AT_PAGESZ */
+    PUSH_WORD(img->at_base);
+    PUSH_WORD(7);  /* AT_BASE */
+    PUSH_WORD(img->at_entry);
+    PUSH_WORD(9);  /* AT_ENTRY */
+    PUSH_WORD(img->at_phnum);
+    PUSH_WORD(5);  /* AT_PHNUM */
+    PUSH_WORD(img->at_phent ? img->at_phent : 56u);
+    PUSH_WORD(4);  /* AT_PHENT */
+    PUSH_WORD(img->at_phdr);
+    PUSH_WORD(3);  /* AT_PHDR */
+    PUSH_WORD(0);  /* envp terminator */
     for (int i = real_envc - 1; i >= 0; --i) {
-        if (user_push_u64(&sp, user_envp_ptrs[i]) < 0) return -1;
+        PUSH_WORD(user_envp_ptrs[i]);
     }
     for (int i = real_argc; i >= 0; --i) {
-        if (user_push_u64(&sp, user_argv_ptrs[i]) < 0) return -1;
+        PUSH_WORD(user_argv_ptrs[i]);
     }
-    if (user_push_u64(&sp, (uint64_t)real_argc) < 0) return -1;
+    PUSH_WORD(real_argc);
+#undef PUSH_WORD
     if ((sp & 0xFULL) != 0) return -1;
 
     if (0) {
