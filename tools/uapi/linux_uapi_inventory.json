@@ -249,8 +249,8 @@
       "architectures": {
         "x86_64": "runtime-verified-partial",
         "aarch64": "runtime-verified-partial",
-        "ia32": "unimplemented",
-        "x32": "unimplemented"
+        "ia32": "runtime-verified-partial",
+        "x32": "runtime-verified-partial"
       },
       "implemented": [
         "array and hash map creation with descriptor-backed lifetime",
@@ -277,25 +277,26 @@
         "BPF filesystem mounting, object pinning, access-restricted reopening and unlink lifetime",
         "explicit map binding to program lifetime with program map-ID reporting",
         "runtime statistics enable descriptors with close-time disable semantics",
-        "program test-run and unknown-command error ordering for the supported program family"
+        "program test-run and unknown-command error ordering for the supported program family",
+        "ia32 and x32 fixed-width map-create and map-element attribute layouts"
       ],
       "missing": [
         "remaining map types",
         "remaining specialized map families and their concurrency semantics",
         "additional attachment families and program types",
         "complete allow-override and multi-position attachment semantics",
-        "complete BTF type-graph validation and program integration",
-        "ia32 and x32 compatibility layouts"
+        "complete BTF type-graph validation and program integration"
       ],
       "runtime_tests": [
         "tools/tests/bpf_abi_probe.c",
+        "tools/tests/compat_bpf_uapi_probe.c",
         "tools/tests/bpf_cgroup_array_abi_probe.c",
         "tools/tests/bpf_runtime_unit.c"
       ],
       "linux_oracle": {
         "status": "partial",
         "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa",
-        "scope": "array and hash maps, map element operations, object IDs, LRU hash creation, access-order eviction, element operations, queue and stack creation, push, peek, pop and replacement, per-CPU array, hash and LRU hash layouts, CPU selection, all-CPU updates, no-common-LRU eviction domains and map-in-map element and batch operations, descriptor reopening, map and program information, translated instructions, SHA-256 tags and cgroup-device program loading, attachment, detachment and query behavior, plus cgroup link object creation, replacement, information, ID enumeration and lifetime, kernel and user ring buffers, cgroup array descriptors and retained cgroup lifetime, BPF filesystem object pinning, explicit program-map binding, runtime statistics descriptors and supported program-test error behavior"
+        "scope": "array and hash maps, map element operations, object IDs, LRU hash creation, access-order eviction, element operations, queue and stack creation, push, peek, pop and replacement, per-CPU array, hash and LRU hash layouts, CPU selection, all-CPU updates, no-common-LRU eviction domains and map-in-map element and batch operations, descriptor reopening, map and program information, translated instructions, SHA-256 tags and cgroup-device program loading, attachment, detachment and query behavior, plus cgroup link object creation, replacement, information, ID enumeration and lifetime, kernel and user ring buffers, cgroup array descriptors and retained cgroup lifetime, BPF filesystem object pinning, explicit program-map binding, runtime statistics descriptors and supported program-test error behavior, plus ia32 and x32 page-boundary map-create, map-update and map-lookup attribute layouts"
       }
     }
   ],
@@ -349,12 +350,15 @@
         "tools/tests/ia32_sysv_ipc_uapi_probe.c",
         "tools/tests/ia32_time_uapi_probe.c",
         "tools/tests/ia32_disabled_syscalls_uapi_probe.c",
-        "tools/tests/ia32_keyctl_compat_uapi_probe.c"
+        "tools/tests/ia32_keyctl_compat_uapi_probe.c",
+        "tools/tests/compat_io_uring_iovec_uapi_probe.c",
+        "tools/tests/compat_userfaultfd_uapi_probe.c",
+        "tools/tests/compat_bpf_uapi_probe.c"
       ],
       "linux_oracle": {
         "status": "partial",
         "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa",
-        "scope": "ELF loading, int 0x80 entry, scalar and common calls, legacy and time64 structures, file and memory operations, socketcall, SysV IPC, POSIX message queues, signals, LDT and TLS, ptrace, NUMA, quota, AIO, keyctl compatibility layouts, architecture control and configuration-disabled slots"
+        "scope": "ELF loading, int 0x80 entry, scalar and common calls, legacy and time64 structures, file and memory operations, socketcall, SysV IPC, POSIX message queues, signals, LDT and TLS, ptrace, NUMA, quota, AIO, keyctl, io_uring, userfaultfd and BPF compatibility layouts, architecture control and configuration-disabled slots"
       }
     },
     {
@@ -383,12 +387,15 @@
         "tools/tests/x32_process_observation_abi_probe.c",
         "tools/tests/x32_time_abi_probe.c",
         "tools/tests/x32_basic_io_abi_probe.c",
-        "tools/tests/x32_common_entry_abi_probe.c"
+        "tools/tests/x32_common_entry_abi_probe.c",
+        "tools/tests/compat_io_uring_iovec_uapi_probe.c",
+        "tools/tests/compat_userfaultfd_uapi_probe.c",
+        "tools/tests/compat_bpf_uapi_probe.c"
       ],
       "linux_oracle": {
         "status": "partial",
         "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa",
-        "scope": "x32 syscall-number mask, scalar identity calls, scheduler yield, high-bit pointer rejection, descriptor creation and lifetime, x32 iovec conversion for vector, positioned and cross-process I/O, sendmsg and recvmsg compat-header conversion, x32 control message alignment, SCM_RIGHTS and SCM_CREDENTIALS delivery, sendmmsg and recvmmsg arrays with time64 timeout writeback, and old and time64 socket timeouts, scalar socket options and compat socket-filter programs, compat robust-list registration and query layouts, compat signal-action and alternate-stack registration, signal-mask and pending-set semantics, tagged compat siginfo conversion for queued process and thread signals, timed-wait delivery, and pidfd signal metadata, and compat waitid child information with native x32 wait4 and getrusage layouts, and native x32 64-bit time, interval-timer and timerfd layouts, and keyctl compat iovec and native KDF parameter layouts, and basic file, path, offset, stat, pipe and UNIX socket I/O, and UTS data, CPU placement, affinity and random data queries, and Linux-designated common syscall entries including memory, resource limits, futex, poll and packed epoll layouts, and unassigned-number ENOSYS behavior"
+        "scope": "x32 syscall-number mask, scalar identity calls, scheduler yield, high-bit pointer rejection, descriptor creation and lifetime, x32 iovec conversion for vector, positioned and cross-process I/O, sendmsg and recvmsg compat-header conversion, x32 control message alignment, SCM_RIGHTS and SCM_CREDENTIALS delivery, sendmmsg and recvmmsg arrays with time64 timeout writeback, and old and time64 socket timeouts, scalar socket options and compat socket-filter programs, compat robust-list registration and query layouts, compat signal-action and alternate-stack registration, signal-mask and pending-set semantics, tagged compat siginfo conversion for queued process and thread signals, timed-wait delivery, and pidfd signal metadata, and compat waitid child information with native x32 wait4 and getrusage layouts, and native x32 64-bit time, interval-timer and timerfd layouts, and keyctl, io_uring, userfaultfd and BPF compat layouts, including native x32 KDF parameter layout, and basic file, path, offset, stat, pipe and UNIX socket I/O, and UTS data, CPU placement, affinity and random data queries, and Linux-designated common syscall entries including memory, resource limits, futex, poll and packed epoll layouts, and unassigned-number ENOSYS behavior"
       }
     },
     {

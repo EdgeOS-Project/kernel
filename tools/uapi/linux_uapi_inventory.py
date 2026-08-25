@@ -315,8 +315,8 @@ EDGEOS_ASSESSMENTS = [
         "architectures": {
             "x86_64": "runtime-verified-partial",
             "aarch64": "runtime-verified-partial",
-            "ia32": "unimplemented",
-            "x32": "unimplemented",
+            "ia32": "runtime-verified-partial",
+            "x32": "runtime-verified-partial",
         },
         "implemented": [
             "array and hash map creation with descriptor-backed lifetime",
@@ -344,6 +344,7 @@ EDGEOS_ASSESSMENTS = [
             "explicit map binding to program lifetime with program map-ID reporting",
             "runtime statistics enable descriptors with close-time disable semantics",
             "program test-run and unknown-command error ordering for the supported program family",
+            "ia32 and x32 fixed-width map-create and map-element attribute layouts",
         ],
         "missing": [
             "remaining map types",
@@ -351,10 +352,10 @@ EDGEOS_ASSESSMENTS = [
             "additional attachment families and program types",
             "complete allow-override and multi-position attachment semantics",
             "complete BTF type-graph validation and program integration",
-            "ia32 and x32 compatibility layouts",
         ],
         "runtime_tests": [
             "tools/tests/bpf_abi_probe.c",
+            "tools/tests/compat_bpf_uapi_probe.c",
             "tools/tests/bpf_cgroup_array_abi_probe.c",
             "tools/tests/bpf_runtime_unit.c",
         ],
@@ -374,7 +375,8 @@ EDGEOS_ASSESSMENTS = [
                 "cgroup array descriptors and retained cgroup lifetime, "
                 "BPF filesystem object pinning, explicit program-map binding, "
                 "runtime statistics descriptors and supported program-test "
-                "error behavior"
+                "error behavior, plus ia32 and x32 page-boundary map-create, "
+                "map-update and map-lookup attribute layouts"
             ),
         },
     },
@@ -462,13 +464,17 @@ COVERAGE_ASSESSMENTS = [
             "tools/tests/ia32_time_uapi_probe.c",
             "tools/tests/ia32_disabled_syscalls_uapi_probe.c",
             "tools/tests/ia32_keyctl_compat_uapi_probe.c",
+            "tools/tests/compat_io_uring_iovec_uapi_probe.c",
+            "tools/tests/compat_userfaultfd_uapi_probe.c",
+            "tools/tests/compat_bpf_uapi_probe.c",
         ],
         oracle_status="partial",
         oracle_scope=(
             "ELF loading, int 0x80 entry, scalar and common calls, legacy and "
             "time64 structures, file and memory operations, socketcall, SysV "
             "IPC, POSIX message queues, signals, LDT and TLS, ptrace, NUMA, "
-            "quota, AIO, keyctl compatibility layouts, architecture control "
+            "quota, AIO, keyctl, io_uring, userfaultfd and BPF compatibility "
+            "layouts, architecture control "
             "and configuration-disabled slots"
         )),
     coverage_assessment(
@@ -489,6 +495,9 @@ COVERAGE_ASSESSMENTS = [
             "tools/tests/x32_time_abi_probe.c",
             "tools/tests/x32_basic_io_abi_probe.c",
             "tools/tests/x32_common_entry_abi_probe.c",
+            "tools/tests/compat_io_uring_iovec_uapi_probe.c",
+            "tools/tests/compat_userfaultfd_uapi_probe.c",
+            "tools/tests/compat_bpf_uapi_probe.c",
         ],
         oracle_status="partial",
         oracle_scope=(
@@ -507,7 +516,8 @@ COVERAGE_ASSESSMENTS = [
             "compat waitid child information with native x32 wait4 and "
             "getrusage layouts, and "
             "native x32 64-bit time, interval-timer and timerfd layouts, and "
-            "keyctl compat iovec and native KDF parameter layouts, and "
+            "keyctl, io_uring, userfaultfd and BPF compat layouts, including "
+            "native x32 KDF parameter layout, and "
             "basic file, path, offset, stat, pipe and UNIX socket I/O, and "
             "UTS data, CPU placement, affinity and random "
             "data queries, and "
