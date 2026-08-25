@@ -68,8 +68,8 @@ EDGEOS_ASSESSMENTS = [
         "architectures": {
             "x86_64": "runtime-verified-partial",
             "aarch64": "runtime-verified-partial",
-            "ia32": "unimplemented",
-            "x32": "unimplemented",
+            "ia32": "runtime-verified-partial",
+            "x32": "runtime-verified-partial",
         },
         "implemented": [
             "API negotiation and thread-ID page-fault records",
@@ -86,13 +86,14 @@ EDGEOS_ASSESSMENTS = [
             "shared-memory minor faults with CONTINUE, DONTWAKE and write-protect completion modes",
             "fork events with inherited registrations and child userfaultfd descriptors",
             "remap, remove and unmap event records with Linux range layouts and blocking completion",
+            "ia32 and x32 API negotiation, registration and unregistration with fixed-width ioctl layouts",
         ],
         "missing": [
             "hugetlb minor-fault behavior",
-            "ia32 and x32 compatibility layouts",
         ],
         "runtime_tests": [
             "tools/tests/userfaultfd_abi_probe.c",
+            "tools/tests/compat_userfaultfd_uapi_probe.c",
             "tools/tests/userfaultfd_runtime_unit.c",
         ],
         "linux_oracle": {
@@ -103,7 +104,8 @@ EDGEOS_ASSESSMENTS = [
                 "missing-page copy and zero-page behavior, anonymous private "
                 "page moves, poisoned-page markers and SIGBUS faults, mapping "
                 "lifecycle cleanup, resident and unpopulated asynchronous write "
-                "protection, write-protect event flags and wake behavior"
+                "protection, write-protect event flags and wake behavior, plus "
+                "ia32 and x32 page-boundary API, register and unregister layouts"
             ),
         },
     },

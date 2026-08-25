@@ -188,6 +188,9 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
     static const char *const probes[] = {
 #ifdef UAPI_BATCH_USERFAULTFD_ONLY
         "userfaultfd_abi_probe",
+#elif defined(UAPI_BATCH_USERFAULTFD_COMPAT_ONLY)
+        "ia32_userfaultfd_uapi_probe",
+        "x32_userfaultfd_uapi_probe",
 #elif defined(UAPI_BATCH_FANOTIFY_ONLY)
         "fanotify_abi_probe",
 #elif defined(UAPI_BATCH_KEYCTL_COMPAT_ONLY)
