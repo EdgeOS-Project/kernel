@@ -229,19 +229,21 @@
       "semantic_id": "arch_prctl",
       "shared_handler": null,
       "architecture_exceptions": [
-        "x86_64 register and TLS control"
+        "x86_64 register and TLS control",
+        "ia32 CPUID and xstate control; FS and GS requests return EINVAL"
       ],
       "runtime_tests": [
-        "tools/tests/x86_arch_control_abi_probe.c"
+        "tools/tests/x86_arch_control_abi_probe.c",
+        "tools/tests/ia32_numa_aio_quota_uapi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 158,
           "status": "implemented",
           "route": "do_sys_arch_prctl",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": null
       }
@@ -5989,22 +5991,23 @@
       "shared_handler": "edge_linux_sys_quota",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/quota_abi_probe.c"
+        "tools/tests/quota_abi_probe.c",
+        "tools/tests/ia32_numa_aio_quota_uapi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 179,
           "status": "implemented",
           "route": "shared:edge_linux_sys_quota",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 60,
           "status": "implemented",
           "route": "shared:edge_linux_sys_quota",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },

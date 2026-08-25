@@ -1772,6 +1772,9 @@ static int64_t edge_linux_sys_get_mempolicy(
     uint64_t rounded_bits;
     uint64_t bytes;
     uint64_t offset;
+    uint64_t word_size = context->architecture == EDGE_LINUX_ARCH_IA32 ?
+                         sizeof(uint32_t) : sizeof(uint64_t);
+    uint64_t word_bits = word_size * 8u;
 
     if (flags & ~allowed_flags) return -EDGE_LINUX_EINVAL;
     if ((flags & mpol_f_mems_allowed) &&
@@ -1808,11 +1811,11 @@ static int64_t edge_linux_sys_get_mempolicy(
     if (!nodemask_user) return 0;
     if (!maxnode) return -EDGE_LINUX_EINVAL;
 
-    /* Linux rounds maxnode to the native unsigned-long width. */
-    if (maxnode > UINT64_MAX - 63u) return -EDGE_LINUX_EINVAL;
-    rounded_bits = (maxnode + 63u) & ~63ULL;
+    if (maxnode > UINT64_MAX - (word_bits - 1u))
+        return -EDGE_LINUX_EINVAL;
+    rounded_bits = (maxnode + word_bits - 1u) & ~(word_bits - 1u);
     bytes = rounded_bits / 8u;
-    for (offset = 0; offset < bytes; offset += sizeof(uint64_t)) {
+    for (offset = 0; offset < bytes; offset += word_size) {
         uint64_t word = 0;
         uint64_t count = bytes - offset;
         if (offset == 0) {
@@ -1821,7 +1824,7 @@ static int64_t edge_linux_sys_get_mempolicy(
             else if (!(flags & mpol_f_node))
                 word = policy_nodes;
         }
-        if (count > sizeof(word)) count = sizeof(word);
+        if (count > word_size) count = word_size;
         if (edge_linux_copy_to_user(
                 context, nodemask_user + offset, &word, count) < 0)
             return -EDGE_LINUX_EFAULT;
@@ -1841,19 +1844,21 @@ static int edge_linux_mempolicy_mask_validate(
         uint64_t maxnode, int require_node, int permit_empty) {
     uint64_t rounded_bits;
     uint64_t bytes;
+    uint64_t word_size = context->architecture == EDGE_LINUX_ARCH_IA32 ?
+                         sizeof(uint32_t) : sizeof(uint64_t);
+    uint64_t word_bits = word_size * 8u;
     int node_zero = 0;
 
     if (!mask_user)
         return permit_empty ? 0 : -EDGE_LINUX_EINVAL;
     if (!maxnode || maxnode > 1024u)
         return -EDGE_LINUX_EINVAL;
-    rounded_bits = (maxnode + 63u) & ~63ULL;
+    rounded_bits = (maxnode + word_bits - 1u) & ~(word_bits - 1u);
     bytes = rounded_bits / 8u;
-    for (uint64_t offset = 0; offset < bytes;
-         offset += sizeof(uint64_t)) {
+    for (uint64_t offset = 0; offset < bytes; offset += word_size) {
         uint64_t word = 0;
         uint64_t count = bytes - offset;
-        if (count > sizeof(word)) count = sizeof(word);
+        if (count > word_size) count = word_size;
         if (edge_linux_copy_from_user(
                 context, &word, mask_user + offset, count) < 0)
             return -EDGE_LINUX_EFAULT;
@@ -1864,6 +1869,30 @@ static int edge_linux_mempolicy_mask_validate(
         if (word) return -EDGE_LINUX_EINVAL;
     }
     if (require_node && !node_zero) return -EDGE_LINUX_EINVAL;
+    return 0;
+}
+
+static int edge_linux_mempolicy_masks_overlap(
+        edge_linux_syscall_context_t *context, uint64_t left_user,
+        uint64_t right_user, uint64_t maxnode) {
+    uint64_t word_size = context->architecture == EDGE_LINUX_ARCH_IA32 ?
+                         sizeof(uint32_t) : sizeof(uint64_t);
+    uint64_t word_bits = word_size * 8u;
+    uint64_t bytes = ((maxnode + word_bits - 1u) &
+                      ~(word_bits - 1u)) / 8u;
+
+    for (uint64_t offset = 0; offset < bytes; offset += word_size) {
+        uint64_t left = 0;
+        uint64_t right = 0;
+        uint64_t count = bytes - offset;
+        if (count > word_size) count = word_size;
+        if (edge_linux_copy_from_user(
+                context, &left, left_user + offset, count) < 0 ||
+            edge_linux_copy_from_user(
+                context, &right, right_user + offset, count) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (left & right) return 1;
+    }
     return 0;
 }
 
@@ -1891,8 +1920,11 @@ static int edge_linux_mempolicy_mode_validate(
         if (status < 0 && mask_user) return status;
         if (mask_user) {
             uint64_t word = 0;
+            uint64_t word_size =
+                context->architecture == EDGE_LINUX_ARCH_IA32 ?
+                sizeof(uint32_t) : sizeof(uint64_t);
             if (edge_linux_copy_from_user(
-                    context, &word, mask_user, sizeof(word)) < 0)
+                    context, &word, mask_user, word_size) < 0)
                 return -EDGE_LINUX_EFAULT;
             if (word) return -EDGE_LINUX_EINVAL;
         }
@@ -1941,9 +1973,12 @@ static int64_t edge_linux_sys_numa_policy(
         if (status < 0) return status;
         {
             uint64_t nodes = 0;
+            uint64_t word_size =
+                context->architecture == EDGE_LINUX_ARCH_IA32 ?
+                sizeof(uint32_t) : sizeof(uint64_t);
             if (context->arguments[1] && edge_linux_copy_from_user(
                     context, &nodes, context->arguments[1],
-                    sizeof(nodes)) < 0)
+                    word_size) < 0)
                 return -EDGE_LINUX_EFAULT;
             return kernel_mm_mempolicy_set(
                 arch_mm_current_address_space(), mode, mode_flags,
@@ -1954,6 +1989,9 @@ static int64_t edge_linux_sys_numa_policy(
         uint64_t length = context->arguments[1];
         uint32_t move_flags = (uint32_t)context->arguments[5];
         uint64_t nodes = 0;
+        uint64_t word_size =
+            context->architecture == EDGE_LINUX_ARCH_IA32 ?
+            sizeof(uint32_t) : sizeof(uint64_t);
 
         if ((address & (KERNEL_MM_USER_PAGE_SIZE - 1u)) ||
             context->arguments[5] != move_flags ||
@@ -1975,7 +2013,7 @@ static int64_t edge_linux_sys_numa_policy(
         if (status < 0) return status;
         if (context->arguments[3] && edge_linux_copy_from_user(
                 context, &nodes, context->arguments[3],
-                sizeof(nodes)) < 0)
+                word_size) < 0)
             return -EDGE_LINUX_EFAULT;
         status = edge_linux_mempolicy_range_validate(address, length);
         if (status < 0) return status;
@@ -1985,6 +2023,7 @@ static int64_t edge_linux_sys_numa_policy(
     }
     case EDGE_LINUX_SYS_migrate_pages: {
         int32_t pid = (int32_t)context->arguments[0];
+        int overlap;
         if (context->arguments[0] != (uint64_t)(int64_t)pid ||
             (pid != 0 && pid != identity.global_tgid))
             return -EDGE_LINUX_ESRCH;
@@ -1995,7 +2034,12 @@ static int64_t edge_linux_sys_numa_policy(
         status = edge_linux_mempolicy_mask_validate(
             context, context->arguments[3], context->arguments[1],
             1, 0);
-        return status < 0 ? status : 0;
+        if (status < 0) return status;
+        overlap = edge_linux_mempolicy_masks_overlap(
+            context, context->arguments[2], context->arguments[3],
+            context->arguments[1]);
+        if (overlap < 0) return overlap;
+        return overlap ? -EDGE_LINUX_EINVAL : 0;
     }
     case EDGE_LINUX_SYS_move_pages: {
         int32_t pid = (int32_t)context->arguments[0];
@@ -10486,7 +10530,8 @@ static int edge_linux_aio_timeout(
     *deadline = UINT64_MAX;
     *immediate = 0;
     if (!user_timeout) return 0;
-    if (context->architecture == EDGE_LINUX_ARCH_IA32) {
+    if (context->architecture == EDGE_LINUX_ARCH_IA32 &&
+        context->raw_number != 416u) {
         linux_timespec32_t compat_timeout;
         if (edge_linux_copy_from_user(
                 context, &compat_timeout, user_timeout,
@@ -10530,10 +10575,19 @@ static int64_t edge_linux_sys_aio_getevents(
     if (result < 0) return result;
     if (context->id == EDGE_LINUX_SYS_io_pgetevents &&
         context->arguments[5]) {
-        if (edge_linux_copy_from_user(
-                context, &user_sigset, context->arguments[5],
-                sizeof(user_sigset)) < 0)
+        if (context->architecture == EDGE_LINUX_ARCH_IA32) {
+            struct edge_linux_aio_sigset32 compat_sigset;
+            if (edge_linux_copy_from_user(
+                    context, &compat_sigset, context->arguments[5],
+                    sizeof(compat_sigset)) < 0)
+                return -EDGE_LINUX_EFAULT;
+            user_sigset.signal_mask = compat_sigset.signal_mask;
+            user_sigset.signal_set_size = compat_sigset.signal_set_size;
+        } else if (edge_linux_copy_from_user(
+                       context, &user_sigset, context->arguments[5],
+                       sizeof(user_sigset)) < 0) {
             return -EDGE_LINUX_EFAULT;
+        }
         if (user_sigset.signal_mask) {
             if (user_sigset.signal_set_size != sizeof(temporary_mask))
                 return -EDGE_LINUX_EINVAL;

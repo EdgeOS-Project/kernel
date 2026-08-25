@@ -10433,6 +10433,32 @@ static uint64_t do_sys_arch_prctl(uint64_t code, uint64_t addr_u) {
     return (uint64_t)-EINVAL;
 }
 
+static uint64_t do_sys_ia32_arch_prctl(uint64_t code, uint64_t argument) {
+    const uint64_t legacy_xfeatures = 3u;
+
+    switch (code) {
+        case ARCH_GET_CPUID:
+            return 1;
+        case ARCH_SET_CPUID:
+            /* EdgeOS does not expose per-task CPUID faulting to userspace. */
+            return (uint64_t)(int64_t)-ENODEV;
+        case ARCH_GET_XCOMP_SUPP:
+        case ARCH_GET_XCOMP_PERM:
+        case ARCH_GET_XCOMP_GUEST_PERM:
+            if (!argument || copy_to_user(
+                    argument, &legacy_xfeatures,
+                    sizeof(legacy_xfeatures)) < 0)
+                return (uint64_t)(int64_t)-EFAULT;
+            return 0;
+        case ARCH_REQ_XCOMP_PERM:
+        case ARCH_REQ_XCOMP_GUEST_PERM:
+            return (uint64_t)(int64_t)(argument >= 19u ?
+                -EINVAL : -EOPNOTSUPP);
+        default:
+            return (uint64_t)(int64_t)-EINVAL;
+    }
+}
+
 #define EDGE_X86_LDT_ENTRIES 8192u
 #define EDGE_X86_LDT_BYTES (EDGE_X86_LDT_ENTRIES * 8u)
 #define EDGE_X86_TLS_ENTRY_MIN 12u

@@ -773,6 +773,11 @@ struct edge_linux_aio_sigset {
     uint64_t signal_set_size;
 };
 
+struct edge_linux_aio_sigset32 {
+    uint32_t signal_mask;
+    uint32_t signal_set_size;
+};
+
 /* Linux io_uring UAPI layouts shared by x86_64 and AArch64. */
 struct edge_linux_io_uring_sqe {
     uint8_t opcode;
@@ -1057,6 +1062,8 @@ _Static_assert(offsetof(struct edge_linux_iocb, flags) == 56,
                "Linux iocb flags offset mismatch");
 _Static_assert(sizeof(struct edge_linux_aio_sigset) == 16,
                "Linux aio sigset size mismatch");
+_Static_assert(sizeof(struct edge_linux_aio_sigset32) == 8,
+               "Linux ia32 aio sigset size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_sqe) == 64,
                "Linux io_uring SQE size mismatch");
 _Static_assert(offsetof(struct edge_linux_io_uring_sqe, user_data) == 32,

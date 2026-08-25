@@ -478,6 +478,10 @@ void edgeos_x86_64_syscall_dispatch(REGISTERS *r) {
         r->rax = do_sys_get_thread_area(a1);
         goto syscall_dispatch_complete;
     }
+    if (ia32_abi && nr == 384u) {
+        r->rax = do_sys_ia32_arch_prctl(a1, a2);
+        goto syscall_dispatch_complete;
+    }
 
     {
         int x32_abi = 0;
