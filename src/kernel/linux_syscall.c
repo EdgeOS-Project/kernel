@@ -14445,13 +14445,16 @@ static int64_t edge_linux_sys_socket_message(
 
     status = edge_linux_fd_number(context->arguments[0], &descriptor);
     if (status < 0) return status;
-    return kernel_socket_message_invoke(
+    return kernel_socket_message_invoke_abi(
         descriptor, context->arguments[1],
         (uint32_t)context->arguments[2],
         context->id == EDGE_LINUX_SYS_recvmsg,
         context->user_registers, context->current_task,
         context->arch_ops->copy_from_user,
-        context->arch_ops->copy_to_user);
+        context->arch_ops->copy_to_user,
+        context->architecture == EDGE_LINUX_ARCH_X32 ?
+            KERNEL_SOCKET_MESSAGE_ABI_X32 :
+            KERNEL_SOCKET_MESSAGE_ABI_NATIVE);
 }
 
 static int64_t edge_linux_sys_socket_mmsg(

@@ -33,17 +33,16 @@ static int kernel_socket_message_validate_iovec(
         return -EDGE_LINUX_EFAULT;
     if (message->header.msg_iovlen >
         (UINT64_MAX - message->header.msg_iov) /
-            sizeof(struct edge_linux_iovec))
+            (message->abi == KERNEL_SOCKET_MESSAGE_ABI_X32 ?
+                sizeof(struct edge_linux_x32_iovec) :
+                sizeof(struct edge_linux_iovec)))
         return -EDGE_LINUX_EFAULT;
 
     for (uint32_t index = 0;
          index < (uint32_t)message->header.msg_iovlen; ++index) {
         struct edge_linux_iovec iov;
-        uint64_t address = message->header.msg_iov +
-            (uint64_t)index * sizeof(iov);
-        if (message->copy_from_user(
-                message->copy_context, &iov, address, sizeof(iov)) < 0)
-            return -EDGE_LINUX_EFAULT;
+        int status = kernel_socket_message_iovec(message, index, &iov);
+        if (status < 0) return status;
         if (iov.iov_len > INT64_MAX - total)
             return -EDGE_LINUX_EINVAL;
         total += iov.iov_len;
@@ -52,19 +51,44 @@ static int kernel_socket_message_validate_iovec(
     return 0;
 }
 
-int kernel_socket_message_import(
+int kernel_socket_message_import_abi(
     void *copy_context, edge_linux_copy_from_user_fn copy_from_user,
-    uint64_t user_header, kernel_socket_user_message_t *message) {
+    uint64_t user_header, kernel_socket_message_abi_t abi,
+    kernel_socket_user_message_t *message) {
     if (!message || !copy_from_user) return -EDGE_LINUX_EIO;
     memset(message, 0, sizeof(*message));
     if (!user_header) return -EDGE_LINUX_EFAULT;
-    if (copy_from_user(copy_context, &message->header, user_header,
-                       sizeof(message->header)) < 0)
+    if (abi == KERNEL_SOCKET_MESSAGE_ABI_X32) {
+        struct edge_linux_x32_msghdr compat_header;
+        if (user_header > UINT32_MAX ||
+            copy_from_user(copy_context, &compat_header, user_header,
+                           sizeof(compat_header)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        message->header.msg_name = compat_header.msg_name;
+        message->header.msg_namelen = compat_header.msg_namelen;
+        message->header.msg_iov = compat_header.msg_iov;
+        message->header.msg_iovlen = compat_header.msg_iovlen;
+        message->header.msg_control = compat_header.msg_control;
+        message->header.msg_controllen = compat_header.msg_controllen;
+        message->header.msg_flags = compat_header.msg_flags;
+    } else if (copy_from_user(
+            copy_context, &message->header, user_header,
+            sizeof(message->header)) < 0) {
         return -EDGE_LINUX_EFAULT;
+    }
     message->user_header = user_header;
     message->copy_context = copy_context;
     message->copy_from_user = copy_from_user;
+    message->abi = abi;
     return kernel_socket_message_validate_iovec(message);
+}
+
+int kernel_socket_message_import(
+    void *copy_context, edge_linux_copy_from_user_fn copy_from_user,
+    uint64_t user_header, kernel_socket_user_message_t *message) {
+    return kernel_socket_message_import_abi(
+        copy_context, copy_from_user, user_header,
+        KERNEL_SOCKET_MESSAGE_ABI_NATIVE, message);
 }
 
 int kernel_socket_message_import_iovec(
@@ -75,16 +99,18 @@ int kernel_socket_message_import_iovec(
     memset(message, 0, sizeof(*message));
     message->copy_context = copy_context;
     message->copy_from_user = copy_from_user;
+    message->abi = KERNEL_SOCKET_MESSAGE_ABI_NATIVE;
     message->header.msg_iov = user_iovec;
     message->header.msg_iovlen = vector_count;
     return kernel_socket_message_validate_iovec(message);
 }
 
-int64_t kernel_socket_message_invoke(
+int64_t kernel_socket_message_invoke_abi(
     int32_t descriptor, uint64_t user_header, uint32_t flags, int receiving,
     void *user_registers, void *copy_context,
     edge_linux_copy_from_user_fn copy_from_user,
-    edge_linux_copy_to_user_fn copy_to_user) {
+    edge_linux_copy_to_user_fn copy_to_user,
+    kernel_socket_message_abi_t abi) {
     kernel_socket_message_request_t request;
     kernel_socket_descriptor_info_t descriptor_info;
     int status;
@@ -94,9 +120,12 @@ int64_t kernel_socket_message_invoke(
     if (status < 0) return status;
     (void)descriptor_info;
     memset(&request, 0, sizeof(request));
-    status = kernel_socket_message_import(
-        copy_context, copy_from_user, user_header, &request.message);
+    status = kernel_socket_message_import_abi(
+        copy_context, copy_from_user, user_header, abi, &request.message);
     if (status < 0) return status;
+    if (abi == KERNEL_SOCKET_MESSAGE_ABI_X32 &&
+        request.message.header.msg_controllen)
+        return -EDGE_LINUX_EOPNOTSUPP;
     request.descriptor = descriptor;
     request.flags = flags;
     request.user_header = user_header;
@@ -108,6 +137,17 @@ int64_t kernel_socket_message_invoke(
     return kernel_socket_message_execute(&request);
 }
 
+int64_t kernel_socket_message_invoke(
+    int32_t descriptor, uint64_t user_header, uint32_t flags, int receiving,
+    void *user_registers, void *copy_context,
+    edge_linux_copy_from_user_fn copy_from_user,
+    edge_linux_copy_to_user_fn copy_to_user) {
+    return kernel_socket_message_invoke_abi(
+        descriptor, user_header, flags, receiving, user_registers,
+        copy_context, copy_from_user, copy_to_user,
+        KERNEL_SOCKET_MESSAGE_ABI_NATIVE);
+}
+
 int kernel_socket_message_iovec(
     const kernel_socket_user_message_t *message, uint32_t index,
     struct edge_linux_iovec *iov) {
@@ -116,10 +156,22 @@ int kernel_socket_message_iovec(
     if (!message || !iov || !message->copy_from_user ||
         index >= message->header.msg_iovlen)
         return -EDGE_LINUX_EINVAL;
+    if (message->abi == KERNEL_SOCKET_MESSAGE_ABI_X32) {
+        struct edge_linux_x32_iovec compat_iov;
+        address = message->header.msg_iov +
+            (uint64_t)index * sizeof(compat_iov);
+        if (message->copy_from_user(
+                message->copy_context, &compat_iov, address,
+                sizeof(compat_iov)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        iov->iov_base = compat_iov.iov_base;
+        iov->iov_len = compat_iov.iov_len;
+        return 0;
+    }
     address = message->header.msg_iov + (uint64_t)index * sizeof(*iov);
-    return message->copy_from_user(message->copy_context, iov, address,
-                                   sizeof(*iov)) < 0 ?
-        -EDGE_LINUX_EFAULT : 0;
+    return message->copy_from_user(
+        message->copy_context, iov, address, sizeof(*iov)) < 0 ?
+            -EDGE_LINUX_EFAULT : 0;
 }
 
 int kernel_socket_iovec_source_from_array(
@@ -173,17 +225,30 @@ int kernel_socket_message_write_output(
     if (!message || !copy_to_user || !message->user_header)
         return -EDGE_LINUX_EIO;
     address = message->user_header +
-        offsetof(struct edge_linux_msghdr, msg_namelen);
+        (message->abi == KERNEL_SOCKET_MESSAGE_ABI_X32 ?
+            offsetof(struct edge_linux_x32_msghdr, msg_namelen) :
+            offsetof(struct edge_linux_msghdr, msg_namelen));
     if (copy_to_user(copy_context, address, &name_length,
                      sizeof(name_length)) < 0)
         return -EDGE_LINUX_EFAULT;
     address = message->user_header +
-        offsetof(struct edge_linux_msghdr, msg_controllen);
-    if (copy_to_user(copy_context, address, &control_length,
-                     sizeof(control_length)) < 0)
+        (message->abi == KERNEL_SOCKET_MESSAGE_ABI_X32 ?
+            offsetof(struct edge_linux_x32_msghdr, msg_controllen) :
+            offsetof(struct edge_linux_msghdr, msg_controllen));
+    if (message->abi == KERNEL_SOCKET_MESSAGE_ABI_X32) {
+        uint32_t compat_control_length = control_length > UINT32_MAX ?
+            UINT32_MAX : (uint32_t)control_length;
+        if (copy_to_user(copy_context, address, &compat_control_length,
+                         sizeof(compat_control_length)) < 0)
+            return -EDGE_LINUX_EFAULT;
+    } else if (copy_to_user(copy_context, address, &control_length,
+                            sizeof(control_length)) < 0) {
         return -EDGE_LINUX_EFAULT;
+    }
     address = message->user_header +
-        offsetof(struct edge_linux_msghdr, msg_flags);
+        (message->abi == KERNEL_SOCKET_MESSAGE_ABI_X32 ?
+            offsetof(struct edge_linux_x32_msghdr, msg_flags) :
+            offsetof(struct edge_linux_msghdr, msg_flags));
     return copy_to_user(copy_context, address, &flags, sizeof(flags)) < 0 ?
         -EDGE_LINUX_EFAULT : 0;
 }

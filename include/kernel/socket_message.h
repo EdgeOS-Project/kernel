@@ -18,12 +18,18 @@
 #define KERNEL_SOCKET_SCM_RIGHTS_MAX 253u
 #define KERNEL_SOCKET_UDP_PAYLOAD_MAX 65507u
 
+typedef enum kernel_socket_message_abi {
+    KERNEL_SOCKET_MESSAGE_ABI_NATIVE = 0,
+    KERNEL_SOCKET_MESSAGE_ABI_X32 = 1,
+} kernel_socket_message_abi_t;
+
 typedef struct kernel_socket_user_message {
     struct edge_linux_msghdr header;
     uint64_t user_header;
     uint64_t payload_length;
     void *copy_context;
     edge_linux_copy_from_user_fn copy_from_user;
+    kernel_socket_message_abi_t abi;
 } kernel_socket_user_message_t;
 
 typedef struct kernel_socket_iovec_source {
@@ -149,6 +155,10 @@ typedef int64_t (*kernel_socket_message_call_fn)(
 int kernel_socket_message_import(
     void *copy_context, edge_linux_copy_from_user_fn copy_from_user,
     uint64_t user_header, kernel_socket_user_message_t *message);
+int kernel_socket_message_import_abi(
+    void *copy_context, edge_linux_copy_from_user_fn copy_from_user,
+    uint64_t user_header, kernel_socket_message_abi_t abi,
+    kernel_socket_user_message_t *message);
 
 /* Import an iovec array as the payload of a headerless send request. */
 int kernel_socket_message_import_iovec(
@@ -166,6 +176,12 @@ int64_t kernel_socket_message_invoke(
     void *user_registers, void *copy_context,
     edge_linux_copy_from_user_fn copy_from_user,
     edge_linux_copy_to_user_fn copy_to_user);
+int64_t kernel_socket_message_invoke_abi(
+    int32_t descriptor, uint64_t user_header, uint32_t flags, int receiving,
+    void *user_registers, void *copy_context,
+    edge_linux_copy_from_user_fn copy_from_user,
+    edge_linux_copy_to_user_fn copy_to_user,
+    kernel_socket_message_abi_t abi);
 
 /* Shared entry followed by the native transport and scheduler adapter. */
 int64_t kernel_socket_message_execute(

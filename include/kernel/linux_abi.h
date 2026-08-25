@@ -1709,6 +1709,16 @@ struct edge_linux_msghdr {
     int32_t __pad3;
 };
 
+struct edge_linux_x32_msghdr {
+    uint32_t msg_name;
+    int32_t msg_namelen;
+    uint32_t msg_iov;
+    uint32_t msg_iovlen;
+    uint32_t msg_control;
+    uint32_t msg_controllen;
+    int32_t msg_flags;
+};
+
 struct edge_linux_mmsghdr {
     struct edge_linux_msghdr msg_hdr;
     uint32_t msg_len;
@@ -1829,6 +1839,12 @@ _Static_assert(sizeof(struct edge_linux_x32_iovec) == 8,
                "Linux x32 iovec ABI layout");
 _Static_assert(sizeof(struct edge_linux_msghdr) == 56,
                "Linux msghdr ABI layout");
+_Static_assert(sizeof(struct edge_linux_x32_msghdr) == 28,
+               "Linux x32 msghdr ABI layout");
+_Static_assert(offsetof(struct edge_linux_x32_msghdr, msg_iov) == 8,
+               "Linux x32 msghdr iovec offset");
+_Static_assert(offsetof(struct edge_linux_x32_msghdr, msg_control) == 16,
+               "Linux x32 msghdr control offset");
 _Static_assert(offsetof(struct edge_linux_msghdr, msg_namelen) == 8,
                "Linux msghdr name length offset");
 _Static_assert(offsetof(struct edge_linux_msghdr, msg_iov) == 16,

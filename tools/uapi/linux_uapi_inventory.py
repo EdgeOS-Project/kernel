@@ -431,13 +431,15 @@ COVERAGE_ASSESSMENTS = [
         runtime_tests=[
             "tools/tests/x32_scalar_abi_probe.c",
             "tools/tests/x32_iovec_abi_probe.c",
+            "tools/tests/x32_socket_message_abi_probe.c",
         ],
         oracle_status="partial",
         oracle_scope=(
             "x32 syscall-number mask, scalar identity calls, scheduler yield, "
             "high-bit pointer rejection, descriptor creation and lifetime, "
             "x32 iovec conversion for vector, positioned and cross-process "
-            "I/O, and unassigned-number ENOSYS behavior"
+            "I/O, basic sendmsg and recvmsg compat-header conversion without "
+            "ancillary data, and unassigned-number ENOSYS behavior"
         )),
     coverage_assessment(
         "ioctl-tty", "partial", NATIVE_ARCHITECTURES,
