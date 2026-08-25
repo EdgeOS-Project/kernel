@@ -6225,18 +6225,46 @@ static int64_t edge_linux_sys_signal_action(
     result = kernel_current_signal_action_get(signal, &old_action);
     if (result < 0) return result;
     if (new_user) {
+        if (context->architecture == EDGE_LINUX_ARCH_X32) {
+            struct edge_linux_compat_sigaction compat_action;
+
+            if (edge_linux_copy_from_user(
+                    context, &compat_action, new_user,
+                    sizeof(compat_action)) < 0)
+                return -EDGE_LINUX_EFAULT;
+            new_action.handler = compat_action.handler;
+            new_action.flags = compat_action.flags;
+            new_action.restorer = compat_action.restorer;
+            new_action.mask = compat_action.mask[0] |
+                ((uint64_t)compat_action.mask[1] << 32);
+        } else if (edge_linux_copy_from_user(
+                context, &new_action, new_user, sizeof(new_action)) < 0) {
+            return -EDGE_LINUX_EFAULT;
+        }
         if (!edge_linux_signal_catchable(signal))
             return -EDGE_LINUX_EINVAL;
-        if (edge_linux_copy_from_user(
-                context, &new_action, new_user, sizeof(new_action)) < 0)
-            return -EDGE_LINUX_EFAULT;
         new_action.mask = edge_linux_signal_sanitize_mask(new_action.mask);
         result = kernel_current_signal_action_set(signal, &new_action);
         if (result < 0) return result;
     }
-    if (old_user && edge_linux_copy_to_user(
-            context, old_user, &old_action, sizeof(old_action)) < 0)
-        return -EDGE_LINUX_EFAULT;
+    if (old_user) {
+        if (context->architecture == EDGE_LINUX_ARCH_X32) {
+            struct edge_linux_compat_sigaction compat_action;
+
+            compat_action.handler = (uint32_t)old_action.handler;
+            compat_action.flags = (uint32_t)old_action.flags;
+            compat_action.restorer = (uint32_t)old_action.restorer;
+            compat_action.mask[0] = (uint32_t)old_action.mask;
+            compat_action.mask[1] = (uint32_t)(old_action.mask >> 32);
+            if (edge_linux_copy_to_user(
+                    context, old_user, &compat_action,
+                    sizeof(compat_action)) < 0)
+                return -EDGE_LINUX_EFAULT;
+        } else if (edge_linux_copy_to_user(
+                context, old_user, &old_action, sizeof(old_action)) < 0) {
+            return -EDGE_LINUX_EFAULT;
+        }
+    }
     return 0;
 }
 
@@ -13602,9 +13630,23 @@ static int64_t edge_linux_sys_signal_altstack(
     uint32_t flags;
     edge_linux_signal_altstack_status_t status;
 
-    if (new_user && edge_linux_copy_from_user(
-            context, &new_stack, new_user, sizeof(new_stack)) < 0)
-        return -EDGE_LINUX_EFAULT;
+    if (new_user) {
+        if (context->architecture == EDGE_LINUX_ARCH_X32) {
+            struct edge_linux_stack32 compat_stack;
+
+            if (edge_linux_copy_from_user(
+                    context, &compat_stack, new_user,
+                    sizeof(compat_stack)) < 0)
+                return -EDGE_LINUX_EFAULT;
+            new_stack.sp = compat_stack.sp;
+            new_stack.flags = compat_stack.flags;
+            new_stack.padding = 0;
+            new_stack.size = compat_stack.size;
+        } else if (edge_linux_copy_from_user(
+                context, &new_stack, new_user, sizeof(new_stack)) < 0) {
+            return -EDGE_LINUX_EFAULT;
+        }
+    }
     if (kernel_current_signal_altstack_get(
             context->user_registers, &current) < 0)
         return -EDGE_LINUX_EINVAL;
@@ -13630,9 +13672,22 @@ static int64_t edge_linux_sys_signal_altstack(
                 return -EDGE_LINUX_EINVAL;
         }
     }
-    if (old_user && edge_linux_copy_to_user(
-            context, old_user, &old_stack, sizeof(old_stack)) < 0)
-        return -EDGE_LINUX_EFAULT;
+    if (old_user) {
+        if (context->architecture == EDGE_LINUX_ARCH_X32) {
+            struct edge_linux_stack32 compat_stack;
+
+            compat_stack.sp = (uint32_t)old_stack.sp;
+            compat_stack.flags = old_stack.flags;
+            compat_stack.size = (uint32_t)old_stack.size;
+            if (edge_linux_copy_to_user(
+                    context, old_user, &compat_stack,
+                    sizeof(compat_stack)) < 0)
+                return -EDGE_LINUX_EFAULT;
+        } else if (edge_linux_copy_to_user(
+                context, old_user, &old_stack, sizeof(old_stack)) < 0) {
+            return -EDGE_LINUX_EFAULT;
+        }
+    }
     return 0;
 }
 

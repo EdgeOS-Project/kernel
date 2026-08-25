@@ -436,6 +436,7 @@ COVERAGE_ASSESSMENTS = [
             "tools/tests/x32_mmsg_abi_probe.c",
             "tools/tests/x32_socket_option_abi_probe.c",
             "tools/tests/x32_robust_list_abi_probe.c",
+            "tools/tests/x32_signal_registration_abi_probe.c",
         ],
         oracle_status="partial",
         oracle_scope=(
@@ -447,7 +448,8 @@ COVERAGE_ASSESSMENTS = [
             "sendmmsg and recvmmsg arrays with time64 timeout writeback, and "
             "old and time64 socket timeouts, scalar socket options and "
             "compat socket-filter programs, compat robust-list registration "
-            "and query layouts, and "
+            "and query layouts, compat signal-action and alternate-stack "
+            "registration, and "
             "unassigned-number ENOSYS behavior"
         )),
     coverage_assessment(

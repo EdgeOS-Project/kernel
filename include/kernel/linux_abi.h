@@ -340,6 +340,19 @@ struct edge_linux_stack64 {
     uint64_t size;
 };
 
+struct edge_linux_stack32 {
+    uint32_t sp;
+    int32_t flags;
+    uint32_t size;
+};
+
+struct edge_linux_compat_sigaction {
+    uint32_t handler;
+    uint32_t flags;
+    uint32_t restorer;
+    uint32_t mask[2];
+};
+
 _Static_assert(sizeof(struct edge_linux_siginfo) == 128,
                "Linux siginfo size mismatch");
 _Static_assert(sizeof(struct edge_linux_siginfo_child) == 128,
@@ -360,6 +373,16 @@ _Static_assert(offsetof(struct edge_linux_stack64, flags) == 8,
                "Linux stack_t flags offset mismatch");
 _Static_assert(offsetof(struct edge_linux_stack64, size) == 16,
                "Linux stack_t size offset mismatch");
+_Static_assert(sizeof(struct edge_linux_stack32) == 12,
+               "Linux compat stack_t size mismatch");
+_Static_assert(offsetof(struct edge_linux_stack32, flags) == 4,
+               "Linux compat stack_t flags offset mismatch");
+_Static_assert(offsetof(struct edge_linux_stack32, size) == 8,
+               "Linux compat stack_t size offset mismatch");
+_Static_assert(sizeof(struct edge_linux_compat_sigaction) == 20,
+               "Linux compat rt_sigaction size mismatch");
+_Static_assert(offsetof(struct edge_linux_compat_sigaction, mask) == 12,
+               "Linux compat rt_sigaction mask offset mismatch");
 
 /* Linux signalfd_siginfo is identical on all 64-bit Linux architectures. */
 struct edge_linux_signalfd_siginfo {
