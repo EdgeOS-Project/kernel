@@ -27,6 +27,7 @@
 #include "kernel/boot_filesystems.h"
 #include "kernel/deferred_work.h"
 #include "kernel/drm_runtime.h"
+#include "kernel/file_metadata.h"
 #include "kernel/timer_policy.h"
 #include "elf/elf_loader.h"
 #include "drivers/e1000.h"
@@ -322,11 +323,27 @@ static void ensure_default_dev_entries(void) {
 #ifdef CONFIG_RTC
         "/dev/rtc", "/dev/rtc0",
 #endif
-        "/dev/null", "/dev/zero", "/dev/random",
-        "/dev/urandom", "/dev/fb0", "/dev/ptmx"
+        "/dev/fb0", "/dev/ptmx"
+    };
+    static const struct {
+        const char *path;
+        uint32_t minor;
+    } memory_nodes[] = {
+        { "/dev/null", 3u },
+        { "/dev/zero", 5u },
+        { "/dev/full", 7u },
+        { "/dev/random", 8u },
+        { "/dev/urandom", 9u },
     };
     for (int i = 0; i < (int)(sizeof(chr_nodes) / sizeof(chr_nodes[0])); ++i) {
         (void)vfs_touch(chr_nodes[i]);
+    }
+    for (uint32_t i = 0u;
+         i < (uint32_t)(sizeof(memory_nodes) / sizeof(memory_nodes[0]));
+         ++i) {
+        (void)vfs_mknod(
+            memory_nodes[i].path, (uint16_t)(VFS_INODE_CHR | 0666u),
+            kernel_file_device_encode(1u, memory_nodes[i].minor));
     }
     for (uint32_t vt = 1u; vt <= EDGE_FB_VT_COUNT; ++vt) {
         char path[12] = "/dev/tty";

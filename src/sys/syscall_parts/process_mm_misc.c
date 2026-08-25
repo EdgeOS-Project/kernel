@@ -11262,7 +11262,12 @@ static int64_t fd_read_kernel(uint64_t fd_u, void *buf, uint32_t len) {
     }
     if (e->kind != FD_VFS) return -EINVAL;
     if ((e->inode.mode & 0xF000) == VFS_INODE_DIR) return -EISDIR;
-    if ((e->inode.mode & 0xF000) == VFS_INODE_CHR || (e->inode.mode & 0xF000) == VFS_INODE_BLK) return -ESPIPE;
+    if ((e->inode.mode & 0xF000) == VFS_INODE_CHR) {
+        r = edge_memdev_read_description(
+            e->inode.rdev, file_ref_identity(e->file_ref), buf, len);
+        return r == EDGE_MEMDEV_NOT_HANDLED ? -ESPIPE : r;
+    }
+    if ((e->inode.mode & 0xF000) == VFS_INODE_BLK) return -ESPIPE;
     if (!e->sb || !e->sb->ops || !e->sb->ops->read) return -EINVAL;
     if (fd_description_offset(e) > UINT32_MAX) return 0;
     r = e->sb->ops->read(e->sb, &e->inode,
@@ -11366,7 +11371,12 @@ static int64_t fd_write_kernel(uint64_t fd_u, const void *buf, uint32_t len) {
     }
     if (e->kind != FD_VFS) return -EINVAL;
     if ((e->inode.mode & 0xF000) == VFS_INODE_DIR) return -EISDIR;
-    if ((e->inode.mode & 0xF000) == VFS_INODE_CHR || (e->inode.mode & 0xF000) == VFS_INODE_BLK) return -ESPIPE;
+    if ((e->inode.mode & 0xF000) == VFS_INODE_CHR) {
+        w = edge_memdev_write_description(
+            e->inode.rdev, file_ref_identity(e->file_ref), buf, len);
+        return w == EDGE_MEMDEV_NOT_HANDLED ? -ESPIPE : w;
+    }
+    if ((e->inode.mode & 0xF000) == VFS_INODE_BLK) return -ESPIPE;
     if (!e->sb || !e->sb->ops || !e->sb->ops->write) return -EINVAL;
     if ((e->flags & LINUX_O_APPEND) != 0)
         fd_description_set_offset(e, e->inode.size);

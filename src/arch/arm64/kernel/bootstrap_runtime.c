@@ -26233,6 +26233,11 @@ int64_t arch_io_kernel_read_current(int32_t descriptor,
             task, file->pipe_index,
             file->kind == KERNEL_FD_PTY_MASTER,
             buffer, length);
+    if (file->kind == KERNEL_FD_FILE) {
+        offset = fd_description_offset(file);
+        return fd_splice_read_kernel(
+            task, file, buffer, length, &offset, 0);
+    }
     if (file->kind != KERNEL_FD_SOCKET) return -LINUX_EINVAL;
     socket = fd_socket(file);
     if (!socket || socket->type != LINUX_SOCK_STREAM)

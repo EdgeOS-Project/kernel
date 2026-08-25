@@ -195,6 +195,22 @@ static void append_decimal(char *text, uint32_t *length, uint32_t value) {
     text[*length] = '\0';
 }
 
+static long open_character_device(const char *path, uint32_t device,
+                                  uint32_t flags) {
+    static const char dev[] = "/dev";
+    long descriptor = raw_syscall6(
+        SYS_openat, AT_FDCWD, (long)path, flags, 0, 0, 0);
+
+    if (!result_is_error(descriptor)) return descriptor;
+    (void)raw_syscall6(
+        SYS_mkdirat, AT_FDCWD, (long)dev, 0755, 0, 0, 0);
+    (void)raw_syscall6(
+        SYS_mknodat, AT_FDCWD, (long)path,
+        S_IFCHR | 0666, device, 0, 0);
+    return raw_syscall6(
+        SYS_openat, AT_FDCWD, (long)path, flags, 0, 0, 0);
+}
+
 static long open_pty_pair(int32_t descriptors[2]) {
     static const char dev[] = "/dev";
     static const char pts[] = "/dev/pts";
@@ -321,6 +337,8 @@ static int run_probe(void) {
     int32_t output_pipe[2] = {-1, -1};
     int32_t sockets[2] = {-1, -1};
     int32_t pty[2] = {-1, -1};
+    int32_t null_descriptor = -1;
+    int32_t zero_descriptor = -1;
     uint8_t observed[64];
     struct io_uring_sqe *sqes = 0;
     void *sq_ring = 0;
@@ -472,6 +490,70 @@ static int run_probe(void) {
             ++failures;
         }
     }
+    result = open_character_device("/dev/null", 0x103u, O_RDWR);
+    if (!result_is_error(result)) null_descriptor = (int32_t)result;
+    failures += require_result(
+        result_is_error(result), 0,
+        "IO_URING_FIXED_BUFFER_PIN_NULL_OPEN_FAIL\n");
+    result = open_character_device("/dev/zero", 0x105u, O_RDWR);
+    if (!result_is_error(result)) zero_descriptor = (int32_t)result;
+    failures += require_result(
+        result_is_error(result), 0,
+        "IO_URING_FIXED_BUFFER_PIN_ZERO_OPEN_FAIL\n");
+    if (!failures) {
+        result = submit(
+            ring, &parameters, sq_ring, cq_ring, sqes,
+            IORING_OP_WRITE_FIXED, null_descriptor,
+            buffer.base + FIRST_OFFSET, sizeof(first),
+            0x4e554c4c57524954ull);
+        failures += require_result(
+            result, sizeof(first),
+            "IO_URING_FIXED_BUFFER_PIN_NULL_WRITE_FAIL\n");
+        result = submit(
+            ring, &parameters, sq_ring, cq_ring, sqes,
+            IORING_OP_READ_FIXED, null_descriptor,
+            buffer.base + SECOND_OFFSET, sizeof(second),
+            0x4e554c4c52454144ull);
+        failures += require_result(
+            result, 0,
+            "IO_URING_FIXED_BUFFER_PIN_NULL_READ_FAIL\n");
+        result = submit(
+            ring, &parameters, sq_ring, cq_ring, sqes,
+            IORING_OP_READ_FIXED, zero_descriptor,
+            buffer.base + SECOND_OFFSET, sizeof(observed),
+            0x5a45524f52454144ull);
+        failures += require_result(
+            result, sizeof(observed),
+            "IO_URING_FIXED_BUFFER_PIN_ZERO_READ_FAIL\n");
+        result = submit(
+            ring, &parameters, sq_ring, cq_ring, sqes,
+            IORING_OP_WRITE_FIXED, output_pipe[1],
+            buffer.base + SECOND_OFFSET, sizeof(observed),
+            0x5a45524f56455249ull);
+        failures += require_result(
+            result, sizeof(observed),
+            "IO_URING_FIXED_BUFFER_PIN_ZERO_VERIFY_WRITE_FAIL\n");
+        for (uint32_t index = 0; index < sizeof(observed); ++index)
+            observed[index] = 0xffu;
+        result = raw_syscall6(
+            SYS_read, output_pipe[0], (long)observed,
+            sizeof(observed), 0, 0, 0);
+        failures += require_result(
+            result, sizeof(observed),
+            "IO_URING_FIXED_BUFFER_PIN_ZERO_VERIFY_READ_FAIL\n");
+        for (uint32_t index = 0; index < sizeof(observed); ++index) {
+            if (!observed[index]) continue;
+            {
+                static const char mismatch[] =
+                    "IO_URING_FIXED_BUFFER_PIN_ZERO_DATA_FAIL\n";
+                (void)raw_syscall6(
+                    SYS_write, 1, (long)mismatch,
+                    text_length(mismatch), 0, 0, 0);
+            }
+            ++failures;
+            break;
+        }
+    }
     result = open_pty_pair(pty);
     failures += require_result(
         result, 0, "IO_URING_FIXED_BUFFER_PIN_PTY_OPEN_FAIL\n");
@@ -558,6 +640,12 @@ cleanup:
         (void)raw_syscall6(SYS_close, pty[0], 0, 0, 0, 0, 0);
     if (pty[1] >= 0)
         (void)raw_syscall6(SYS_close, pty[1], 0, 0, 0, 0, 0);
+    if (null_descriptor >= 0)
+        (void)raw_syscall6(
+            SYS_close, null_descriptor, 0, 0, 0, 0, 0);
+    if (zero_descriptor >= 0)
+        (void)raw_syscall6(
+            SYS_close, zero_descriptor, 0, 0, 0, 0, 0);
     if (page)
         (void)raw_syscall6(
             SYS_munmap, (long)page, FIXED_BUFFER_SIZE, 0, 0, 0, 0);
