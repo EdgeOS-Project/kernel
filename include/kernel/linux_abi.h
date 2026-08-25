@@ -319,6 +319,13 @@ struct edge_linux_compat_siginfo {
     uint8_t payload[116];
 } __attribute__((aligned(8)));
 
+void edge_linux_compat_siginfo_to_native(
+    const struct edge_linux_compat_siginfo *compat,
+    struct edge_linux_siginfo *native);
+void edge_linux_native_siginfo_to_compat(
+    const struct edge_linux_siginfo *native,
+    struct edge_linux_compat_siginfo *compat);
+
 #define EDGE_LINUX_WAIT_P_ALL 0u
 #define EDGE_LINUX_WAIT_P_PID 1u
 #define EDGE_LINUX_WAIT_P_PGID 2u

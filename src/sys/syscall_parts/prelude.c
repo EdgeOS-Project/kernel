@@ -1430,6 +1430,12 @@ struct edge_linux_consolefontdesc {
     uint64_t chardata;
 };
 
+struct edge_linux_consolefontdesc32 {
+    uint16_t charcount;
+    uint16_t charheight;
+    uint32_t chardata;
+};
+
 struct edge_linux_console_font_op {
     uint32_t op;
     uint32_t flags;
@@ -1439,6 +1445,20 @@ struct edge_linux_console_font_op {
     uint32_t __pad;
     uint64_t data;
 };
+
+struct edge_linux_console_font_op32 {
+    uint32_t op;
+    uint32_t flags;
+    uint32_t width;
+    uint32_t height;
+    uint32_t charcount;
+    uint32_t data;
+};
+
+_Static_assert(sizeof(struct edge_linux_consolefontdesc32) == 8,
+               "Linux compat console font descriptor layout");
+_Static_assert(sizeof(struct edge_linux_console_font_op32) == 24,
+               "Linux compat console font operation layout");
 
 struct edge_termios {
     uint32_t c_iflag;

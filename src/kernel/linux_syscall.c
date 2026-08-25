@@ -6209,7 +6209,7 @@ static enum edge_linux_siginfo_layout edge_linux_siginfo_layout_for(
     return EDGE_LINUX_SIGINFO_KILL;
 }
 
-static void edge_linux_compat_siginfo_to_native(
+void edge_linux_compat_siginfo_to_native(
         const struct edge_linux_compat_siginfo *compat,
         struct edge_linux_siginfo *native) {
     const uint8_t *source = (const uint8_t *)compat;
@@ -6310,7 +6310,7 @@ static void edge_linux_compat_siginfo_to_native(
     }
 }
 
-static void edge_linux_native_siginfo_to_compat(
+void edge_linux_native_siginfo_to_compat(
         const struct edge_linux_siginfo *native,
         struct edge_linux_compat_siginfo *compat) {
     const uint8_t *source = (const uint8_t *)native;
@@ -13660,11 +13660,15 @@ static int64_t edge_linux_sys_ioctl(
     memset(&request, 0, sizeof(request));
     request.descriptor = descriptor;
     request.command = (uint32_t)context->arguments[1];
-    request.argument = context->arguments[2];
+    request.argument = context->architecture == EDGE_LINUX_ARCH_X32 ?
+        (uint32_t)context->arguments[2] : context->arguments[2];
     request.user_registers = context->user_registers;
     request.copy_context = context->current_task;
     request.copy_from_user = context->arch_ops->copy_from_user;
     request.copy_to_user = context->arch_ops->copy_to_user;
+    request.user_pointer_size =
+        context->architecture == EDGE_LINUX_ARCH_X32 ?
+            sizeof(uint32_t) : sizeof(uint64_t);
 
     if (request.command == EDGE_LINUX_FIOCLEX)
         return kernel_fd_set_descriptor_flags(

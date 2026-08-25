@@ -5691,7 +5691,8 @@ x86_bsd_bridge_ioctl(edge_fd_t *entry, uint32_t command,
 #endif
 
 static uint64_t x86_ioctl_execute_raw(uint64_t fd_u, uint64_t cmd_u,
-                                      uint64_t arg_u) {
+                                      uint64_t arg_u,
+                                      uint8_t user_pointer_size) {
     int fd = (int)fd_u;
     uint32_t cmd = (uint32_t)cmd_u;
     task_t *cur = process_current_task();
@@ -6835,10 +6836,21 @@ static uint64_t x86_ioctl_execute_raw(uint64_t fd_u, uint64_t cmd_u,
     }
     if (cmd == LINUX_PIO_FONTX) {
         struct edge_linux_consolefontdesc desc;
+        struct edge_linux_consolefontdesc32 compat_desc;
         uint32_t bytes;
         if (!console_line_supports_linux_vt(e)) return (uint64_t)-ENOTTY;
         if (!arg_u) return (uint64_t)-EINVAL;
-        if (copy_from_user(&desc, arg_u, sizeof(desc)) < 0) return (uint64_t)-EFAULT;
+        memset(&desc, 0, sizeof(desc));
+        if (user_pointer_size == sizeof(uint32_t)) {
+            if (copy_from_user(
+                    &compat_desc, arg_u, sizeof(compat_desc)) < 0)
+                return (uint64_t)-EFAULT;
+            desc.charcount = compat_desc.charcount;
+            desc.charheight = compat_desc.charheight;
+            desc.chardata = compat_desc.chardata;
+        } else if (copy_from_user(&desc, arg_u, sizeof(desc)) < 0) {
+            return (uint64_t)-EFAULT;
+        }
         if (!desc.chardata || !(desc.charcount == 256u || desc.charcount == 512u) ||
             desc.charheight == 0u || desc.charheight > 32u) {
             return (uint64_t)-EINVAL;
@@ -6851,12 +6863,23 @@ static uint64_t x86_ioctl_execute_raw(uint64_t fd_u, uint64_t cmd_u,
     }
     if (cmd == LINUX_GIO_FONTX) {
         struct edge_linux_consolefontdesc desc;
+        struct edge_linux_consolefontdesc32 compat_desc;
         uint32_t charcount = 0, width = 0, height = 0;
         uint32_t bytes;
         int rc;
         if (!console_line_supports_linux_vt(e)) return (uint64_t)-ENOTTY;
         if (!arg_u) return (uint64_t)-EINVAL;
-        if (copy_from_user(&desc, arg_u, sizeof(desc)) < 0) return (uint64_t)-EFAULT;
+        memset(&desc, 0, sizeof(desc));
+        if (user_pointer_size == sizeof(uint32_t)) {
+            if (copy_from_user(
+                    &compat_desc, arg_u, sizeof(compat_desc)) < 0)
+                return (uint64_t)-EFAULT;
+            desc.charcount = compat_desc.charcount;
+            desc.charheight = compat_desc.charheight;
+            desc.chardata = compat_desc.chardata;
+        } else if (copy_from_user(&desc, arg_u, sizeof(desc)) < 0) {
+            return (uint64_t)-EFAULT;
+        }
         rc = fb_console_get_font(0, &charcount, &width, &height, 0);
         if (rc < 0) return (uint64_t)rc;
         (void)width;
@@ -6870,18 +6893,40 @@ static uint64_t x86_ioctl_execute_raw(uint64_t fd_u, uint64_t cmd_u,
             if (rc < 0) return (uint64_t)rc;
             if (copy_to_user(desc.chardata, g_console_font_ioctl_buf, bytes) < 0) return (uint64_t)-EFAULT;
         }
-        if (copy_to_user(arg_u, &desc, sizeof(desc)) < 0) return (uint64_t)-EFAULT;
+        if (user_pointer_size == sizeof(uint32_t)) {
+            compat_desc.charcount = desc.charcount;
+            compat_desc.charheight = desc.charheight;
+            compat_desc.chardata = (uint32_t)desc.chardata;
+            if (copy_to_user(
+                    arg_u, &compat_desc, sizeof(compat_desc)) < 0)
+                return (uint64_t)-EFAULT;
+        } else if (copy_to_user(arg_u, &desc, sizeof(desc)) < 0) {
+            return (uint64_t)-EFAULT;
+        }
         return 0;
     }
     if (cmd == LINUX_KDFONTOP) {
         struct edge_linux_console_font_op op;
+        struct edge_linux_console_font_op32 compat_op;
         uint32_t pitch;
         uint32_t bytes;
         uint32_t charcount = 0, width = 0, height = 0;
         int rc;
         if (!console_line_supports_linux_vt(e)) return (uint64_t)-ENOTTY;
         if (!arg_u) return (uint64_t)-EINVAL;
-        if (copy_from_user(&op, arg_u, sizeof(op)) < 0) return (uint64_t)-EFAULT;
+        memset(&op, 0, sizeof(op));
+        if (user_pointer_size == sizeof(uint32_t)) {
+            if (copy_from_user(&compat_op, arg_u, sizeof(compat_op)) < 0)
+                return (uint64_t)-EFAULT;
+            op.op = compat_op.op;
+            op.flags = compat_op.flags;
+            op.width = compat_op.width;
+            op.height = compat_op.height;
+            op.charcount = compat_op.charcount;
+            op.data = compat_op.data;
+        } else if (copy_from_user(&op, arg_u, sizeof(op)) < 0) {
+            return (uint64_t)-EFAULT;
+        }
         if (op.flags & ~LINUX_KD_FONT_FLAG_DONT_RECALC) return (uint64_t)-EINVAL;
         switch (op.op) {
             case LINUX_KD_FONT_OP_SET:
@@ -6911,7 +6956,19 @@ static uint64_t x86_ioctl_execute_raw(uint64_t fd_u, uint64_t cmd_u,
                 op.height = height;
                 op.charcount = charcount;
                 if (op.data && copy_to_user(op.data, g_console_font_ioctl_buf, bytes) < 0) return (uint64_t)-EFAULT;
-                if (copy_to_user(arg_u, &op, sizeof(op)) < 0) return (uint64_t)-EFAULT;
+                if (user_pointer_size == sizeof(uint32_t)) {
+                    compat_op.op = op.op;
+                    compat_op.flags = op.flags;
+                    compat_op.width = op.width;
+                    compat_op.height = op.height;
+                    compat_op.charcount = op.charcount;
+                    compat_op.data = (uint32_t)op.data;
+                    if (copy_to_user(
+                            arg_u, &compat_op, sizeof(compat_op)) < 0)
+                        return (uint64_t)-EFAULT;
+                } else if (copy_to_user(arg_u, &op, sizeof(op)) < 0) {
+                    return (uint64_t)-EFAULT;
+                }
                 return 0;
             case LINUX_KD_FONT_OP_SET_DEFAULT:
                 fb_console_reset_font();
@@ -7262,7 +7319,7 @@ int64_t arch_ioctl_execute(const kernel_ioctl_request_t *request) {
         return -ENODEV;
     return (int64_t)x86_ioctl_execute_raw(
         (uint32_t)request->descriptor, request->command,
-        request->argument);
+        request->argument, request->user_pointer_size);
 }
 
 static uint64_t do_sys_fcntl(uint64_t fd_u, uint64_t cmd_u, uint64_t arg_u) {

@@ -58,6 +58,16 @@ static int ptrace_copy_from_user(edge_linux_syscall_context_t *context,
         context->current_task, destination, source, size);
 }
 
+static int ptrace_uses_compat_layout(
+    const edge_linux_syscall_context_t *context) {
+    return context && context->architecture == EDGE_LINUX_ARCH_X32;
+}
+
+static uint64_t ptrace_user_pointer(
+    const edge_linux_syscall_context_t *context, uint64_t value) {
+    return ptrace_uses_compat_layout(context) ? (uint32_t)value : value;
+}
+
 void edge_linux_ptrace_state_reset(edge_linux_ptrace_state_t *state) {
     if (state) memset(state, 0, sizeof(*state));
 }
@@ -421,11 +431,13 @@ static int ptrace_signal_valid(uint64_t signal) {
 static int64_t ptrace_peek_memory(edge_linux_syscall_context_t *context,
                                   int32_t pid, uint64_t address,
                                   uint64_t destination) {
-    uint64_t value;
+    uint64_t value = 0;
+    uint64_t word_size = ptrace_uses_compat_layout(context) ?
+        sizeof(uint32_t) : sizeof(uint64_t);
     if (!destination) return -EDGE_LINUX_EFAULT;
-    if (kernel_ptrace_read_memory(pid, address, &value, sizeof(value)) < 0)
+    if (kernel_ptrace_read_memory(pid, address, &value, word_size) < 0)
         return -EDGE_LINUX_EIO;
-    return ptrace_copy_to_user(context, destination, &value, sizeof(value)) < 0 ?
+    return ptrace_copy_to_user(context, destination, &value, word_size) < 0 ?
         -EDGE_LINUX_EFAULT : 0;
 }
 
@@ -434,10 +446,49 @@ static int64_t ptrace_peek_user(edge_linux_syscall_context_t *context,
                                 uint64_t destination) {
     uint64_t value;
     if (!destination) return -EDGE_LINUX_EFAULT;
+    if (ptrace_uses_compat_layout(context) && offset < 17u * sizeof(uint64_t))
+        return -EDGE_LINUX_EIO;
     if (kernel_ptrace_read_user_area(pid, offset, &value) < 0)
         return -EDGE_LINUX_EIO;
-    return ptrace_copy_to_user(context, destination, &value, sizeof(value)) < 0 ?
+    return ptrace_copy_to_user(
+        context, destination, &value,
+        ptrace_uses_compat_layout(context) ?
+            sizeof(uint32_t) : sizeof(uint64_t)) < 0 ?
         -EDGE_LINUX_EFAULT : 0;
+}
+
+static int ptrace_import_iovec(edge_linux_syscall_context_t *context,
+                               uint64_t iovec_user,
+                               struct edge_linux_iovec *iovec) {
+    if (!context || !iovec || !iovec_user) return -1;
+    memset(iovec, 0, sizeof(*iovec));
+    if (ptrace_uses_compat_layout(context)) {
+        struct edge_linux_x32_iovec compat;
+        if (ptrace_copy_from_user(
+                context, &compat, iovec_user, sizeof(compat)) < 0)
+            return -1;
+        iovec->iov_base = compat.iov_base;
+        iovec->iov_len = compat.iov_len;
+        return 0;
+    }
+    return ptrace_copy_from_user(
+        context, iovec, iovec_user, sizeof(*iovec));
+}
+
+static int ptrace_export_iovec_length(
+    edge_linux_syscall_context_t *context, uint64_t iovec_user,
+    uint64_t length) {
+    if (ptrace_uses_compat_layout(context)) {
+        uint32_t compat_length = length > UINT32_MAX ? UINT32_MAX :
+            (uint32_t)length;
+        return ptrace_copy_to_user(
+            context,
+            iovec_user + offsetof(struct edge_linux_x32_iovec, iov_len),
+            &compat_length, sizeof(compat_length));
+    }
+    return ptrace_copy_to_user(
+        context, iovec_user + offsetof(struct edge_linux_iovec, iov_len),
+        &length, sizeof(length));
 }
 
 static int64_t ptrace_get_regset(edge_linux_syscall_context_t *context,
@@ -447,8 +498,7 @@ static int64_t ptrace_get_regset(edge_linux_syscall_context_t *context,
     uint8_t buffer[1024];
     uint64_t size = sizeof(buffer);
     uint64_t copied;
-    if (!iovec_user || ptrace_copy_from_user(context, &iovec, iovec_user,
-                                             sizeof(iovec)) < 0)
+    if (ptrace_import_iovec(context, iovec_user, &iovec) < 0)
         return -EDGE_LINUX_EFAULT;
     if (kernel_ptrace_get_regset(pid, note, buffer, &size) < 0)
         return -EDGE_LINUX_EIO;
@@ -457,7 +507,8 @@ static int64_t ptrace_get_regset(edge_linux_syscall_context_t *context,
         ptrace_copy_to_user(context, iovec.iov_base, buffer, copied) < 0))
         return -EDGE_LINUX_EFAULT;
     iovec.iov_len = copied;
-    return ptrace_copy_to_user(context, iovec_user, &iovec, sizeof(iovec)) < 0 ?
+    return ptrace_export_iovec_length(
+        context, iovec_user, iovec.iov_len) < 0 ?
         -EDGE_LINUX_EFAULT : 0;
 }
 
@@ -466,8 +517,7 @@ static int64_t ptrace_set_regset(edge_linux_syscall_context_t *context,
                                  uint64_t iovec_user) {
     struct edge_linux_iovec iovec;
     uint8_t buffer[1024];
-    if (!iovec_user || ptrace_copy_from_user(context, &iovec, iovec_user,
-                                             sizeof(iovec)) < 0)
+    if (ptrace_import_iovec(context, iovec_user, &iovec) < 0)
         return -EDGE_LINUX_EFAULT;
     if (!iovec.iov_len || iovec.iov_len > sizeof(buffer))
         return -EDGE_LINUX_EINVAL;
@@ -520,9 +570,19 @@ static int64_t ptrace_peeksiginfo(edge_linux_syscall_context_t *context,
         kernel_ptrace_get_signal_info(pid, information,
                                       sizeof(information)) < 0)
         return 0;
-    if (!destination || ptrace_copy_to_user(context, destination, information,
-                                             sizeof(information)) < 0)
+    if (!destination) return -EDGE_LINUX_EFAULT;
+    if (ptrace_uses_compat_layout(context)) {
+        struct edge_linux_compat_siginfo compat;
+        edge_linux_native_siginfo_to_compat(
+            (const struct edge_linux_siginfo *)(const void *)information,
+            &compat);
+        if (ptrace_copy_to_user(
+                context, destination, &compat, sizeof(compat)) < 0)
+            return -EDGE_LINUX_EFAULT;
+    } else if (ptrace_copy_to_user(
+            context, destination, information, sizeof(information)) < 0) {
         return -EDGE_LINUX_EFAULT;
+    }
     return 1;
 }
 
@@ -537,7 +597,8 @@ static int64_t ptrace_get_syscall_info(
     memset(&information, 0, sizeof(information));
     information.op = target->ptrace.syscall_info_op;
     information.architecture =
-        context->architecture == EDGE_LINUX_ARCH_X86_64 ?
+        context->architecture == EDGE_LINUX_ARCH_X86_64 ||
+        context->architecture == EDGE_LINUX_ARCH_X32 ?
         0xc000003eu : 0xc00000b7u;
     information.instruction_pointer = target->ptrace.instruction_pointer;
     information.stack_pointer = target->ptrace.stack_pointer;
@@ -581,10 +642,12 @@ int64_t edge_linux_sys_ptrace(edge_linux_syscall_context_t *context) {
     uint64_t data;
     int result;
     if (!context) return -EDGE_LINUX_EINVAL;
-    request = (int64_t)context->arguments[0];
+    request = ptrace_uses_compat_layout(context) ?
+        (int32_t)(uint32_t)context->arguments[0] :
+        (int64_t)context->arguments[0];
     pid = (int32_t)context->arguments[1];
-    address = context->arguments[2];
-    data = context->arguments[3];
+    address = ptrace_user_pointer(context, context->arguments[2]);
+    data = ptrace_user_pointer(context, context->arguments[3]);
     if (ptrace_current_identity(&caller) < 0) return -EDGE_LINUX_ESRCH;
 
     if (request == EDGE_LINUX_PTRACE_TRACEME) {
@@ -620,11 +683,19 @@ int64_t edge_linux_sys_ptrace(edge_linux_syscall_context_t *context) {
     case EDGE_LINUX_PTRACE_PEEKUSER:
         return ptrace_peek_user(context, pid, address, data);
     case EDGE_LINUX_PTRACE_POKETEXT:
-    case EDGE_LINUX_PTRACE_POKEDATA:
-        return kernel_ptrace_write_memory(pid, address, &data,
-                                          sizeof(data)) < 0 ?
+    case EDGE_LINUX_PTRACE_POKEDATA: {
+        uint32_t compat_data = (uint32_t)data;
+        const void *source = ptrace_uses_compat_layout(context) ?
+            (const void *)&compat_data : (const void *)&data;
+        uint64_t size = ptrace_uses_compat_layout(context) ?
+            sizeof(compat_data) : sizeof(data);
+        return kernel_ptrace_write_memory(pid, address, source, size) < 0 ?
             -EDGE_LINUX_EIO : 0;
+    }
     case EDGE_LINUX_PTRACE_POKEUSER:
+        if (ptrace_uses_compat_layout(context) &&
+            address < 17u * sizeof(uint64_t))
+            return -EDGE_LINUX_EIO;
         return kernel_ptrace_write_user_area(pid, address, data) < 0 ?
             -EDGE_LINUX_EIO : 0;
     case EDGE_LINUX_PTRACE_CONT:
@@ -693,7 +764,9 @@ int64_t edge_linux_sys_ptrace(edge_linux_syscall_context_t *context) {
                 event_message = (uint64_t)(uint32_t)visible_pid;
             }
             return ptrace_copy_to_user(
-                context, data, &event_message, sizeof(event_message)) < 0 ?
+                context, data, &event_message,
+                ptrace_uses_compat_layout(context) ?
+                    sizeof(uint32_t) : sizeof(event_message)) < 0 ?
                 -EDGE_LINUX_EFAULT : 0;
         }
     case EDGE_LINUX_PTRACE_GETSIGINFO: {
@@ -702,15 +775,34 @@ int64_t edge_linux_sys_ptrace(edge_linux_syscall_context_t *context) {
         if (kernel_ptrace_get_signal_info(pid, information,
                                           sizeof(information)) < 0)
             return -EDGE_LINUX_EINVAL;
-        return ptrace_copy_to_user(context, data, information,
-                                   sizeof(information)) < 0 ?
+        if (ptrace_uses_compat_layout(context)) {
+            struct edge_linux_compat_siginfo compat;
+            edge_linux_native_siginfo_to_compat(
+                (const struct edge_linux_siginfo *)(const void *)information,
+                &compat);
+            return ptrace_copy_to_user(
+                context, data, &compat, sizeof(compat)) < 0 ?
+                -EDGE_LINUX_EFAULT : 0;
+        }
+        return ptrace_copy_to_user(
+            context, data, information, sizeof(information)) < 0 ?
             -EDGE_LINUX_EFAULT : 0;
     }
     case EDGE_LINUX_PTRACE_SETSIGINFO: {
         uint8_t information[128];
-        if (!data || ptrace_copy_from_user(context, information, data,
-                                           sizeof(information)) < 0)
+        if (!data) return -EDGE_LINUX_EFAULT;
+        if (ptrace_uses_compat_layout(context)) {
+            struct edge_linux_compat_siginfo compat;
+            if (ptrace_copy_from_user(
+                    context, &compat, data, sizeof(compat)) < 0)
+                return -EDGE_LINUX_EFAULT;
+            edge_linux_compat_siginfo_to_native(
+                &compat,
+                (struct edge_linux_siginfo *)(void *)information);
+        } else if (ptrace_copy_from_user(
+                context, information, data, sizeof(information)) < 0) {
             return -EDGE_LINUX_EFAULT;
+        }
         return kernel_ptrace_set_signal_info(pid, information,
                                              sizeof(information)) < 0 ?
             -EDGE_LINUX_EINVAL : 0;

@@ -19,6 +19,7 @@ typedef struct kernel_ioctl_request {
     void *copy_context;
     edge_linux_copy_from_user_fn copy_from_user;
     edge_linux_copy_to_user_fn copy_to_user;
+    uint8_t user_pointer_size;
 } kernel_ioctl_request_t;
 
 int64_t kernel_ioctl_execute(const kernel_ioctl_request_t *request);

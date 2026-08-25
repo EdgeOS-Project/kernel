@@ -42,9 +42,22 @@ static int64_t fbdev_colormap_ioctl(
     struct edge_fb_cmap colormap;
 
     if (!request->argument) return -EDGE_LINUX_EFAULT;
-    if (fbdev_copy_from_user(request, &colormap, request->argument,
-                             sizeof(colormap)) < 0)
+    memset(&colormap, 0, sizeof(colormap));
+    if (request->user_pointer_size == sizeof(uint32_t)) {
+        struct edge_fb_cmap32 compat;
+        if (fbdev_copy_from_user(
+                request, &compat, request->argument, sizeof(compat)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        colormap.start = compat.start;
+        colormap.len = compat.len;
+        colormap.red = compat.red;
+        colormap.green = compat.green;
+        colormap.blue = compat.blue;
+        colormap.transp = compat.transp;
+    } else if (fbdev_copy_from_user(
+            request, &colormap, request->argument, sizeof(colormap)) < 0) {
         return -EDGE_LINUX_EFAULT;
+    }
     if (colormap.len > 65536u) return -EDGE_LINUX_EINVAL;
     if (colormap.len &&
         (!colormap.red || !colormap.green || !colormap.blue))
@@ -113,8 +126,28 @@ int64_t kernel_fbdev_ioctl(const kernel_ioctl_request_t *request) {
         fixed.type = 0u;
         fixed.visual = 2u;
         fixed.line_length = fb.pitch;
-        return fbdev_copy_to_user(request, request->argument,
-                                  &fixed, sizeof(fixed)) < 0 ?
+        if (request->user_pointer_size == sizeof(uint32_t)) {
+            struct edge_fb_fix_screeninfo32 compat;
+            memset(&compat, 0, sizeof(compat));
+            memcpy(compat.id, fixed.id, sizeof(compat.id));
+            compat.smem_start = (uint32_t)fixed.smem_start;
+            compat.smem_len = fixed.smem_len;
+            compat.type = fixed.type;
+            compat.type_aux = fixed.type_aux;
+            compat.visual = fixed.visual;
+            compat.xpanstep = fixed.xpanstep;
+            compat.ypanstep = fixed.ypanstep;
+            compat.ywrapstep = fixed.ywrapstep;
+            compat.line_length = fixed.line_length;
+            compat.mmio_start = (uint32_t)fixed.mmio_start;
+            compat.mmio_len = fixed.mmio_len;
+            compat.accel = fixed.accel;
+            return fbdev_copy_to_user(
+                request, request->argument, &compat, sizeof(compat)) < 0 ?
+                -EDGE_LINUX_EFAULT : 0;
+        }
+        return fbdev_copy_to_user(
+            request, request->argument, &fixed, sizeof(fixed)) < 0 ?
             -EDGE_LINUX_EFAULT : 0;
     }
     if (request->command == LINUX_FBIOGET_VSCREENINFO) {

@@ -4995,6 +4995,14 @@ namespace-ioctl-runtime-unit: tools/tests/namespace_ioctl_runtime_unit.c include
 		-o $(OUT)/tests/namespace_ioctl_runtime_unit
 	@$(OUT)/tests/namespace_ioctl_runtime_unit
 
+fbdev-compat-ioctl-unit: tools/tests/fbdev_compat_ioctl_unit.c $(SRC)/kernel/fbdev_runtime.c include/kernel/fbdev_runtime.h include/kernel/ioctl_runtime.h include/dev/fbdev.h
+	@mkdir -p $(OUT)/tests
+	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fno-builtin -iquote $(INC) \
+		tools/tests/fbdev_compat_ioctl_unit.c \
+		$(SRC)/kernel/fbdev_runtime.c \
+		-o $(OUT)/tests/fbdev_compat_ioctl_unit
+	@$(OUT)/tests/fbdev_compat_ioctl_unit
+
 kernelrelease:
 	@printf '%s\n' "$(KERNEL_RELEASE)"
 

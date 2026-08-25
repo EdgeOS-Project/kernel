@@ -57,6 +57,23 @@ struct edge_fb_fix_screeninfo {
     uint16_t reserved[2];
 };
 
+struct edge_fb_fix_screeninfo32 {
+    char id[16];
+    uint32_t smem_start;
+    uint32_t smem_len;
+    uint32_t type;
+    uint32_t type_aux;
+    uint32_t visual;
+    uint16_t xpanstep;
+    uint16_t ypanstep;
+    uint16_t ywrapstep;
+    uint32_t line_length;
+    uint32_t mmio_start;
+    uint32_t mmio_len;
+    uint32_t accel;
+    uint16_t reserved[3];
+};
+
 struct edge_fb_var_screeninfo {
     uint32_t xres;
     uint32_t yres;
@@ -97,5 +114,19 @@ struct edge_fb_cmap {
     uint64_t blue;
     uint64_t transp;
 };
+
+struct edge_fb_cmap32 {
+    uint32_t start;
+    uint32_t len;
+    uint32_t red;
+    uint32_t green;
+    uint32_t blue;
+    uint32_t transp;
+};
+
+_Static_assert(sizeof(struct edge_fb_fix_screeninfo32) == 68,
+               "Linux compat fb fixed-info layout");
+_Static_assert(sizeof(struct edge_fb_cmap32) == 24,
+               "Linux compat fb colormap layout");
 
 #endif
