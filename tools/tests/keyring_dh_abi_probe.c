@@ -25,12 +25,20 @@
 #define KEYCTL_CAPABILITIES 31
 #define EFAULT 14
 #define EINVAL 22
+#define EMSGSIZE 90
 #define EOVERFLOW 75
 
 struct keyctl_dh_params {
     int32_t private_key;
     int32_t prime;
     int32_t base;
+};
+
+struct keyctl_kdf_params {
+    const char *hashname;
+    const void *otherinfo;
+    uint32_t otherinfolen;
+    uint32_t spare[8];
 };
 
 static long raw_syscall6(long number, long a0, long a1, long a2,
@@ -114,6 +122,15 @@ static int expect_result(const char *name, long actual, long expected) {
 START_ATTRIBUTES void _start(void) {
     static const unsigned char private_value[] = {1u};
     static const unsigned char base_value[] = {2u};
+    static const unsigned char kdf_expected[48] = {
+        0xdau, 0x8eu, 0xc1u, 0x67u, 0x48u, 0x77u, 0x1eu, 0x2eu,
+        0x90u, 0x3du, 0x58u, 0x15u, 0xc9u, 0xf7u, 0x86u, 0x73u,
+        0x37u, 0x8du, 0x6du, 0x96u, 0xb0u, 0x62u, 0x46u, 0xacu,
+        0x57u, 0xfbu, 0xfau, 0xc0u, 0x28u, 0xcfu, 0xb5u, 0x63u,
+        0x49u, 0x36u, 0x21u, 0xdeu, 0x31u, 0x31u, 0x7eu, 0x43u,
+        0xecu, 0xd1u, 0xcdu, 0x70u, 0xffu, 0x78u, 0x6cu, 0x1bu,
+    };
+    static const char kdf_otherinfo[] = "edge-kdf";
     static const unsigned char prime_value[] =
     "\xff\xff\xff\xff\xff\xff\xff\xff\xad\xf8\x54\x58\xa2\xbb\x4a\x9a"
     "\xaf\xdc\x56\x20\x27\x3d\x3c\xf1\xd8\xb9\xc5\x83\xce\x2d\x36\x95"
@@ -132,7 +149,9 @@ START_ATTRIBUTES void _start(void) {
     "\xc5\x8e\xf1\x83\x7d\x16\x83\xb2\xc6\xf3\x4a\x26\xc1\xb2\xef\xfa"
     "\x88\x6b\x42\x38\x61\x28\x5c\x97\xff\xff\xff\xff\xff\xff\xff\xff";
     struct keyctl_dh_params parameters;
+    struct keyctl_kdf_params kdf = {0};
     unsigned char output[sizeof(prime_value) - 1u];
+    unsigned char derived[sizeof(kdf_expected)];
     unsigned char capabilities[2] = {0};
     long session;
     int failures = 0;
@@ -204,6 +223,38 @@ START_ATTRIBUTES void _start(void) {
             print_text("FAIL value\n");
             ++failures;
         }
+        kdf.hashname = "sha256";
+        kdf.otherinfo = kdf_otherinfo;
+        kdf.otherinfolen = sizeof(kdf_otherinfo) - 1u;
+        failures += expect_result(
+            "kdf-compute",
+            raw_syscall6(
+                SYS_keyctl, KEYCTL_DH_COMPUTE,
+                (long)&parameters, (long)derived,
+                sizeof(derived), (long)&kdf, 0),
+            sizeof(derived));
+        for (unsigned long index = 0; index < sizeof(derived); ++index) {
+            if (derived[index] == kdf_expected[index]) continue;
+            print_text("FAIL kdf-value\n");
+            ++failures;
+            break;
+        }
+        kdf.spare[0] = 1u;
+        failures += expect_result(
+            "kdf-spare",
+            raw_syscall6(
+                SYS_keyctl, KEYCTL_DH_COMPUTE,
+                (long)&parameters, (long)derived,
+                sizeof(derived), (long)&kdf, 0),
+            -EINVAL);
+        kdf.spare[0] = 0u;
+        failures += expect_result(
+            "kdf-output-limit",
+            raw_syscall6(
+                SYS_keyctl, KEYCTL_DH_COMPUTE,
+                (long)&parameters, (long)derived,
+                1025, (long)&kdf, 0),
+            -EMSGSIZE);
     }
     failures += expect_result(
         "capabilities",

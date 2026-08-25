@@ -10,6 +10,7 @@
 #include "kernel/keyring_runtime.h"
 #include "kernel/linux_errno.h"
 #include "kernel/pipe_runtime.h"
+#include "kernel/sha256_runtime.h"
 #include "kernel/vfs_runtime.h"
 #include "string.h"
 #include "sys/boottime.h"
@@ -25,6 +26,9 @@
 #define KERNEL_KEY_IOV_MAX 1024u
 #define KERNEL_KEY_DH_MAX_BYTES 256u
 #define KERNEL_KEY_DH_MAX_LIMBS (KERNEL_KEY_DH_MAX_BYTES / 4u)
+#define KERNEL_KEY_KDF_MAX_OUTPUT 1024u
+#define KERNEL_KEY_KDF_MAX_OTHERINFO 64u
+#define KERNEL_KEY_KDF_HASH_NAME_MAX 64u
 
 enum kernel_key_notification_subtype {
     KERNEL_KEY_NOTIFY_INSTANTIATED = 0,
@@ -121,6 +125,9 @@ static uint8_t g_key_payload_scratch[KERNEL_KEY_PAYLOAD_MAX];
 static uint8_t g_key_dh_private[KERNEL_KEY_DH_MAX_BYTES];
 static uint8_t g_key_dh_prime[KERNEL_KEY_DH_MAX_BYTES];
 static uint8_t g_key_dh_base[KERNEL_KEY_DH_MAX_BYTES];
+static uint8_t g_key_dh_secret[KERNEL_KEY_DH_MAX_BYTES];
+static uint8_t g_key_kdf_otherinfo[KERNEL_KEY_KDF_MAX_OTHERINFO];
+static uint8_t g_key_kdf_output[KERNEL_KEY_KDF_MAX_OUTPUT];
 static uint32_t g_key_dh_left[KERNEL_KEY_DH_MAX_LIMBS];
 static uint32_t g_key_dh_right[KERNEL_KEY_DH_MAX_LIMBS];
 static uint32_t g_key_dh_modulus[KERNEL_KEY_DH_MAX_LIMBS];
@@ -635,6 +642,17 @@ typedef struct kernel_keyctl_dh_params {
     int32_t base;
 } kernel_keyctl_dh_params_t;
 
+typedef struct kernel_keyctl_kdf_params {
+    uint64_t hash_name;
+    uint64_t other_info;
+    uint32_t other_info_length;
+    uint32_t spare[8];
+    uint32_t padding;
+} kernel_keyctl_kdf_params_t;
+
+_Static_assert(sizeof(kernel_keyctl_kdf_params_t) == 56u,
+               "native keyctl KDF parameters must match Linux UAPI");
+
 static int key_dh_compare(const uint32_t *left, const uint32_t *right,
                           uint32_t limbs) {
     while (limbs) {
@@ -753,6 +771,8 @@ static int64_t keyctl_dh_compute(
         const kernel_keyring_user_access_t *access,
         const uint64_t arguments[4]) {
     kernel_keyctl_dh_params_t parameters;
+    kernel_keyctl_kdf_params_t kdf;
+    char hash_name[KERNEL_KEY_KDF_HASH_NAME_MAX];
     kernel_key_task_state_t *state;
     uint32_t private_length = 0u;
     uint32_t prime_length = 0u;
@@ -760,15 +780,35 @@ static int64_t keyctl_dh_compute(
     uint32_t limbs;
     uint32_t base_limbs;
     uint32_t exponent_bits;
+    int use_kdf = arguments[3] != 0u;
     int result;
 
+    if (use_kdf) {
+        if (!access->copy_from_user ||
+            access->copy_from_user(access->context, &kdf,
+                                   arguments[3], sizeof(kdf)) < 0)
+            return -EDGE_LINUX_EFAULT;
+    } else {
+        memset(&kdf, 0, sizeof(kdf));
+    }
     if (!arguments[0] || (!arguments[1] && arguments[2]))
         return -EDGE_LINUX_EINVAL;
-    if (arguments[3]) return -EDGE_LINUX_EOPNOTSUPP;
     if (!access->copy_from_user ||
         access->copy_from_user(access->context, &parameters,
                                arguments[0], sizeof(parameters)) < 0)
         return -EDGE_LINUX_EFAULT;
+    if (use_kdf) {
+        for (uint32_t index = 0; index < 8u; ++index)
+            if (kdf.spare[index]) return -EDGE_LINUX_EINVAL;
+        if (arguments[2] > KERNEL_KEY_KDF_MAX_OUTPUT ||
+            kdf.other_info_length > KERNEL_KEY_KDF_MAX_OTHERINFO)
+            return -EDGE_LINUX_EMSGSIZE;
+        result = key_copy_user_string(
+            access, kdf.hash_name, hash_name, sizeof(hash_name), 0);
+        if (result < 0) return result;
+        if (strcmp(hash_name, "sha256"))
+            return -EDGE_LINUX_ENOENT;
+    }
 
     key_lock(&g_key_copy_lock);
     key_lock(&g_key_lock);
@@ -798,11 +838,11 @@ static int64_t keyctl_dh_compute(
         result = -EDGE_LINUX_EINVAL;
         goto out_unlock_copy;
     }
-    if (!arguments[2]) {
+    if (!use_kdf && !arguments[2]) {
         result = (int)prime_length;
         goto out_unlock_copy;
     }
-    if (arguments[2] < prime_length) {
+    if (!use_kdf && arguments[2] < prime_length) {
         result = -EDGE_LINUX_EOVERFLOW;
         goto out_unlock_copy;
     }
@@ -833,16 +873,62 @@ static int64_t keyctl_dh_compute(
         }
     }
 
-    memset(g_key_payload_scratch, 0, prime_length);
+    memset(g_key_dh_secret, 0, prime_length);
     for (uint32_t offset = 0; offset < prime_length; ++offset) {
         uint32_t reverse = prime_length - 1u - offset;
-        g_key_payload_scratch[reverse] =
+        g_key_dh_secret[reverse] =
             (uint8_t)(g_key_dh_left[offset / 4u] >>
                       ((offset % 4u) * 8u));
     }
+    if (use_kdf) {
+        uint32_t produced = 0u;
+        uint32_t counter = 1u;
+
+        if (kdf.other_info_length &&
+            (!kdf.other_info || !access->copy_from_user ||
+             access->copy_from_user(
+                 access->context, g_key_kdf_otherinfo,
+                 kdf.other_info, kdf.other_info_length) < 0)) {
+            result = -EDGE_LINUX_EFAULT;
+            goto out_unlock_copy;
+        }
+        while (produced < arguments[2]) {
+            kernel_sha256_context_t hash;
+            uint8_t digest[32];
+            uint8_t encoded_counter[4] = {
+                (uint8_t)(counter >> 24u),
+                (uint8_t)(counter >> 16u),
+                (uint8_t)(counter >> 8u),
+                (uint8_t)counter,
+            };
+            uint32_t copy = (uint32_t)arguments[2] - produced;
+
+            if (copy > sizeof(digest)) copy = sizeof(digest);
+            kernel_sha256_init(&hash);
+            kernel_sha256_update(
+                &hash, encoded_counter, sizeof(encoded_counter));
+            kernel_sha256_update(&hash, g_key_dh_secret, prime_length);
+            kernel_sha256_update(
+                &hash, g_key_kdf_otherinfo, kdf.other_info_length);
+            kernel_sha256_final(&hash, digest);
+            memcpy(g_key_kdf_output + produced, digest, copy);
+            memset(digest, 0, sizeof(digest));
+            produced += copy;
+            ++counter;
+        }
+        if (arguments[2] &&
+            (!access->copy_to_user ||
+             access->copy_to_user(
+                 access->context, arguments[1], g_key_kdf_output,
+                 (uint32_t)arguments[2]) < 0))
+            result = -EDGE_LINUX_EFAULT;
+        else
+            result = (int)arguments[2];
+        goto out_unlock_copy;
+    }
     if (!access->copy_to_user ||
         access->copy_to_user(access->context, arguments[1],
-                             g_key_payload_scratch, prime_length) < 0)
+                             g_key_dh_secret, prime_length) < 0)
         result = -EDGE_LINUX_EFAULT;
     else
         result = (int)prime_length;
@@ -852,6 +938,9 @@ out_unlock_keys:
     key_unlock(&g_key_lock);
 out_unlock_copy:
     memset(g_key_dh_private, 0, private_length);
+    memset(g_key_dh_secret, 0, sizeof(g_key_dh_secret));
+    memset(g_key_kdf_otherinfo, 0, sizeof(g_key_kdf_otherinfo));
+    memset(g_key_kdf_output, 0, sizeof(g_key_kdf_output));
     memset(g_key_dh_left, 0, sizeof(g_key_dh_left));
     memset(g_key_dh_right, 0, sizeof(g_key_dh_right));
     memset(g_key_dh_result, 0, sizeof(g_key_dh_result));

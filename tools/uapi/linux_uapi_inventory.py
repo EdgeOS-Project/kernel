@@ -34,10 +34,11 @@ EDGEOS_ASSESSMENTS = [
             "key notification watches with removal records and notification-pipe lifetime",
             "namespace-tagged named keyrings and same-description key isolation",
             "raw finite-field key agreement through user-key payloads",
+            "SP800-108 counter-mode SHA-256 derivation with Linux output and other-info limits",
         ],
         "missing": [
             "request-key construction authorization, instantiate, negate and reject operations",
-            "key-derivation mode, larger raw parameters and asymmetric key operations",
+            "additional digest algorithms, larger raw parameters and asymmetric key operations",
             "ia32 and x32 compatibility layouts",
         ],
         "runtime_tests": [
@@ -53,7 +54,7 @@ EDGEOS_ASSESSMENTS = [
                 "search, read, update, revoke, links and named keyring "
                 "user-namespace isolation, plus notification watch setup, "
                 "delivery and removal records, plus raw finite-field result "
-                "layout and size negotiation"
+                "layout, size negotiation and SHA-256 KDF output"
             ),
         },
     },

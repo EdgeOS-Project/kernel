@@ -34,6 +34,14 @@ typedef struct test_keyctl_dh_params {
     int32_t base;
 } test_keyctl_dh_params_t;
 
+typedef struct test_keyctl_kdf_params {
+    uint64_t hash_name;
+    uint64_t other_info;
+    uint32_t other_info_length;
+    uint32_t spare[8];
+    uint32_t padding;
+} test_keyctl_kdf_params_t;
+
 uint64_t boottime_monotonic_us(void) {
     return test_time_us;
 }
@@ -162,8 +170,19 @@ int main(void) {
             "\xc5\x8e\xf1\x83\x7d\x16\x83\xb2\xc6\xf3\x4a\x26\xc1\xb2\xef\xfa"
             "\x88\x6b\x42\x38\x61\x28\x5c\x97\xff\xff\xff\xff\xff\xff\xff\xff";
         static const uint8_t base_value[] = {2u};
+        static const uint8_t kdf_expected[48] = {
+            0xdau, 0x8eu, 0xc1u, 0x67u, 0x48u, 0x77u, 0x1eu, 0x2eu,
+            0x90u, 0x3du, 0x58u, 0x15u, 0xc9u, 0xf7u, 0x86u, 0x73u,
+            0x37u, 0x8du, 0x6du, 0x96u, 0xb0u, 0x62u, 0x46u, 0xacu,
+            0x57u, 0xfbu, 0xfau, 0xc0u, 0x28u, 0xcfu, 0xb5u, 0x63u,
+            0x49u, 0x36u, 0x21u, 0xdeu, 0x31u, 0x31u, 0x7eu, 0x43u,
+            0xecu, 0xd1u, 0xcdu, 0x70u, 0xffu, 0x78u, 0x6cu, 0x1bu,
+        };
+        static const char other_info[] = "edge-kdf";
         test_keyctl_dh_params_t parameters;
+        test_keyctl_kdf_params_t kdf;
         uint8_t shared_value[sizeof(prime_value) - 1u];
+        uint8_t derived_value[sizeof(kdf_expected)];
 
         parameters.private_key = (int32_t)kernel_keyring_add_key(
             &parent, &access, (uint64_t)(uintptr_t)"user",
@@ -198,6 +217,24 @@ int main(void) {
              ++index)
             assert(shared_value[index] == 0u);
         assert(shared_value[sizeof(shared_value) - 1u] == 2u);
+
+        memset(&kdf, 0, sizeof(kdf));
+        kdf.hash_name = (uint64_t)(uintptr_t)"sha256";
+        kdf.other_info = (uint64_t)(uintptr_t)other_info;
+        kdf.other_info_length = sizeof(other_info) - 1u;
+        memset(derived_value, 0, sizeof(derived_value));
+        arguments[1] = (uint64_t)(uintptr_t)derived_value;
+        arguments[2] = sizeof(derived_value);
+        arguments[3] = (uint64_t)(uintptr_t)&kdf;
+        assert(kernel_keyring_keyctl(
+                   &parent, &access, EDGE_LINUX_KEYCTL_DH_COMPUTE,
+                   arguments) == (int64_t)sizeof(derived_value));
+        assert(memcmp(derived_value, kdf_expected,
+                      sizeof(derived_value)) == 0);
+        kdf.spare[0] = 1u;
+        assert(kernel_keyring_keyctl(
+                   &parent, &access, EDGE_LINUX_KEYCTL_DH_COMPUTE,
+                   arguments) == -EDGE_LINUX_EINVAL);
     }
 
     memset(arguments, 0, sizeof(arguments));

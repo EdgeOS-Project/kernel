@@ -4321,13 +4321,16 @@ rseq-slice-runtime-unit: tools/tests/rseq_slice_runtime_unit.c \
 
 .PHONY: keyring-runtime-unit watch-queue-runtime-unit
 keyring-runtime-unit: tools/tests/keyring_runtime_unit.c \
-		$(SRC)/kernel/keyring_runtime.c $(SRC)/kernel/pipe_runtime.c \
-		include/kernel/keyring_runtime.h include/kernel/pipe_runtime.h
+		$(SRC)/kernel/keyring_runtime.c $(SRC)/kernel/sha256_runtime.c \
+		$(SRC)/kernel/pipe_runtime.c \
+		include/kernel/keyring_runtime.h include/kernel/pipe_runtime.h \
+		include/kernel/sha256_runtime.h
 	@mkdir -p $(OUT)/tests
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fno-builtin \
 		-DCONFIG_WATCH_QUEUE -DCONFIG_KEY_NOTIFICATIONS \
 		-iquote $(INC) tools/tests/keyring_runtime_unit.c \
-		$(SRC)/kernel/keyring_runtime.c $(SRC)/kernel/pipe_runtime.c \
+		$(SRC)/kernel/keyring_runtime.c $(SRC)/kernel/sha256_runtime.c \
+		$(SRC)/kernel/pipe_runtime.c \
 		-o $(OUT)/tests/keyring_runtime_unit
 	@$(OUT)/tests/keyring_runtime_unit
 
