@@ -349,12 +349,13 @@
         "tools/tests/x32_iovec_abi_probe.c",
         "tools/tests/x32_socket_message_abi_probe.c",
         "tools/tests/x32_socket_control_abi_probe.c",
-        "tools/tests/x32_mmsg_abi_probe.c"
+        "tools/tests/x32_mmsg_abi_probe.c",
+        "tools/tests/x32_socket_option_abi_probe.c"
       ],
       "linux_oracle": {
         "status": "partial",
         "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa",
-        "scope": "x32 syscall-number mask, scalar identity calls, scheduler yield, high-bit pointer rejection, descriptor creation and lifetime, x32 iovec conversion for vector, positioned and cross-process I/O, sendmsg and recvmsg compat-header conversion, x32 control message alignment, SCM_RIGHTS and SCM_CREDENTIALS delivery, sendmmsg and recvmmsg arrays with time64 timeout writeback, and unassigned-number ENOSYS behavior"
+        "scope": "x32 syscall-number mask, scalar identity calls, scheduler yield, high-bit pointer rejection, descriptor creation and lifetime, x32 iovec conversion for vector, positioned and cross-process I/O, sendmsg and recvmsg compat-header conversion, x32 control message alignment, SCM_RIGHTS and SCM_CREDENTIALS delivery, sendmmsg and recvmmsg arrays with time64 timeout writeback, and old and time64 socket timeouts, scalar socket options and compat socket-filter programs, and unassigned-number ENOSYS behavior"
       }
     },
     {

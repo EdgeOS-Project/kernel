@@ -14688,12 +14688,26 @@ static int64_t edge_linux_socket_option_attach_filter(
     uint32_t value_length) {
     struct edge_linux_sock_fprog user_program;
 
-    if (value_length < sizeof(user_program))
-        return -EDGE_LINUX_EINVAL;
-    if (edge_linux_copy_from_user(
-            context, &user_program, context->arguments[3],
-            sizeof(user_program)) < 0)
-        return -EDGE_LINUX_EFAULT;
+    memset(&user_program, 0, sizeof(user_program));
+    if (context->architecture == EDGE_LINUX_ARCH_X32) {
+        struct edge_linux_compat_sock_fprog compat_program;
+
+        if (value_length != sizeof(compat_program))
+            return -EDGE_LINUX_EINVAL;
+        if (edge_linux_copy_from_user(
+                context, &compat_program, context->arguments[3],
+                sizeof(compat_program)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        user_program.len = compat_program.len;
+        user_program.filter = compat_program.filter;
+    } else {
+        if (value_length != sizeof(user_program))
+            return -EDGE_LINUX_EINVAL;
+        if (edge_linux_copy_from_user(
+                context, &user_program, context->arguments[3],
+                sizeof(user_program)) < 0)
+            return -EDGE_LINUX_EFAULT;
+    }
     if (!user_program.len ||
         user_program.len > EDGE_LINUX_PACKET_FILTER_MAX ||
         !user_program.filter)
@@ -14889,9 +14903,17 @@ static int64_t edge_linux_socket_option_set(
                 context, &timeout, context->arguments[3],
                 sizeof(timeout)) < 0)
             return -EDGE_LINUX_EFAULT;
-        if (timeout.tv_sec < 0 || timeout.tv_usec < 0 ||
+        if (timeout.tv_usec < 0 ||
             timeout.tv_usec >= 1000000)
             return -EDGE_LINUX_EDOM;
+        if (timeout.tv_sec < 0)
+            return kernel_socket_option_set_integer(
+                descriptor,
+                (name == EDGE_LINUX_SO_RCVTIMEO ||
+                 name == EDGE_LINUX_SO_RCVTIMEO_NEW) ?
+                    KERNEL_SOCKET_OPTION_RECEIVE_TIMEOUT_US :
+                    KERNEL_SOCKET_OPTION_SEND_TIMEOUT_US,
+                0);
         if ((uint64_t)timeout.tv_sec >
             (UINT64_MAX - (uint64_t)timeout.tv_usec) / 1000000u)
             microseconds = UINT64_MAX;

@@ -1372,6 +1372,12 @@ struct edge_linux_sock_fprog {
     uint64_t filter;
 };
 
+struct edge_linux_compat_sock_fprog {
+    uint16_t len;
+    uint16_t reserved;
+    uint32_t filter;
+};
+
 struct edge_linux_linger {
     int32_t enabled;
     int32_t seconds;
@@ -1964,6 +1970,8 @@ _Static_assert(sizeof(struct edge_linux_sock_filter) == 8,
                "Linux sock_filter ABI layout");
 _Static_assert(sizeof(struct edge_linux_sock_fprog) == 16,
                "Linux sock_fprog ABI layout");
+_Static_assert(sizeof(struct edge_linux_compat_sock_fprog) == 8,
+               "Linux compat sock_fprog ABI layout");
 _Static_assert(sizeof(struct edge_linux_linger) == 8,
                "Linux linger ABI layout");
 _Static_assert(offsetof(struct edge_linux_rseq, reserved) +

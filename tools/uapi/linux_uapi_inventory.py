@@ -434,6 +434,7 @@ COVERAGE_ASSESSMENTS = [
             "tools/tests/x32_socket_message_abi_probe.c",
             "tools/tests/x32_socket_control_abi_probe.c",
             "tools/tests/x32_mmsg_abi_probe.c",
+            "tools/tests/x32_socket_option_abi_probe.c",
         ],
         oracle_status="partial",
         oracle_scope=(
@@ -443,6 +444,8 @@ COVERAGE_ASSESSMENTS = [
             "I/O, sendmsg and recvmsg compat-header conversion, x32 control "
             "message alignment, SCM_RIGHTS and SCM_CREDENTIALS delivery, "
             "sendmmsg and recvmmsg arrays with time64 timeout writeback, and "
+            "old and time64 socket timeouts, scalar socket options and "
+            "compat socket-filter programs, and "
             "unassigned-number ENOSYS behavior"
         )),
     coverage_assessment(
