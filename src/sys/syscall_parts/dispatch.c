@@ -235,6 +235,7 @@ static const edge_linux_syscall_arch_ops_t x86_linux_syscall_ops = {
     .validate_user_range_arch = x86_linux_validate_user_range_arch,
     .copy_stat_to_user = edge_x86_64_linux_stat_to_user,
     .copy_epoll_event_from_user = x86_linux_copy_epoll_event_from_user,
+    .network_poll = syscall_network_poll,
     .epoll_event_size = 12u,
     .epoll_event_data_offset = 4u,
     .fcntl_setfl_mask = 0x00044000u, /* O_DIRECT | O_NOATIME */

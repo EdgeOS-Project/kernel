@@ -6,7 +6,18 @@
 
 #include "net/network_core.h"
 
+#include "kernel/io_uring_runtime.h"
 #include "string.h"
+
+static void edge_net_napi_id_register(int32_t ifindex) {
+    if (ifindex > 0)
+        (void)kernel_io_uring_napi_id_register((uint32_t)ifindex);
+}
+
+static void edge_net_napi_id_unregister(int32_t ifindex) {
+    if (ifindex > 0)
+        kernel_io_uring_napi_id_unregister((uint32_t)ifindex);
+}
 
 #define EDGE_NET_DELIVERY_MAX EDGE_NET_DEVICE_MAX
 #define EDGE_NET_OPERATION_MAX 8u
@@ -613,6 +624,7 @@ static void edge_net_lower_remove_dependents_locked(int32_t lower_ifindex) {
         ifindex = device->snapshot.configuration.ifindex;
         edge_net_lower_remove_dependents_locked(ifindex);
         edge_net_fdb_remove_device_locked(ifindex);
+        edge_net_napi_id_unregister(ifindex);
         memset(device, 0, sizeof(*device));
     }
 }
@@ -2173,6 +2185,7 @@ int edge_net_namespace_destroy(uint32_t network_namespace) {
 
             if (peer) {
                 edge_net_fdb_remove_device_locked(peer_ifindex);
+                edge_net_napi_id_unregister(peer_ifindex);
                 memset(peer, 0, sizeof(*peer));
             }
         }
@@ -2281,6 +2294,7 @@ int edge_net_device_register(
         return EDGE_NET_NO_SPACE;
     }
     edge_net_device_install_locked(slot, &installed_configuration);
+    edge_net_napi_id_register(installed_configuration.ifindex);
     edge_net_unlock();
     return EDGE_NET_OK;
 }
@@ -2331,6 +2345,8 @@ int edge_net_veth_register_pair(
     }
     edge_net_device_install_locked(first_slot, first);
     edge_net_device_install_locked(second_slot, second);
+    edge_net_napi_id_register(first->ifindex);
+    edge_net_napi_id_register(second->ifindex);
     first_slot->snapshot.peer_ifindex = second->ifindex;
     second_slot->snapshot.peer_ifindex = first->ifindex;
     edge_net_unlock();
@@ -2355,6 +2371,7 @@ int edge_net_device_unregister(int32_t ifindex) {
     old_master_ifindex = device->snapshot.master_ifindex;
     edge_net_lower_remove_dependents_locked(ifindex);
     edge_net_fdb_remove_device_locked(ifindex);
+    edge_net_napi_id_unregister(ifindex);
     memset(device, 0, sizeof(*device));
     if (peer_ifindex > 0) {
         edge_net_device_state_t *peer =
@@ -2363,6 +2380,7 @@ int edge_net_device_unregister(int32_t ifindex) {
         if (peer) {
             peer_master_ifindex = peer->snapshot.master_ifindex;
             edge_net_fdb_remove_device_locked(peer_ifindex);
+            edge_net_napi_id_unregister(peer_ifindex);
             memset(peer, 0, sizeof(*peer));
         }
     }

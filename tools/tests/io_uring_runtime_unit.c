@@ -757,6 +757,57 @@ int main(void) {
         assert(kernel_io_uring_task_restrictions_present(7002) == 0);
     }
     {
+        struct edge_linux_io_uring_params napi_parameters = {0};
+        kernel_io_uring_napi_state_t napi_state = {0};
+        int32_t napi_ring_id;
+
+        assert(kernel_io_uring_create(
+                   4u, &napi_parameters, &napi_ring_id) == 0);
+        assert(kernel_io_uring_napi_state_get(
+                   napi_ring_id, &napi_state) == 0);
+        assert(napi_state.busy_poll_to == 0u);
+        assert(napi_state.prefer_busy_poll == 0u);
+        assert(napi_state.tracking_mode == 255u);
+        assert(kernel_io_uring_napi_configure(
+                   napi_ring_id, 15000u, 2u, 0u) == 0);
+        assert(kernel_io_uring_napi_state_get(
+                   napi_ring_id, &napi_state) == 0);
+        assert(napi_state.busy_poll_to == 10000u);
+        assert(napi_state.prefer_busy_poll == 1u);
+        assert(napi_state.tracking_mode == 0u);
+        assert(kernel_io_uring_napi_static_add(
+                   napi_ring_id, 71u) == -EDGE_LINUX_EINVAL);
+        assert(kernel_io_uring_napi_configure(
+                   napi_ring_id, 127u, 1u, 1u) == 0);
+        assert(kernel_io_uring_napi_id_register(71u) == 0);
+        assert(kernel_io_uring_napi_id_register(71u) == 0);
+        assert(kernel_io_uring_napi_static_add(napi_ring_id, 71u) == 0);
+        assert(kernel_io_uring_napi_static_add(
+                   napi_ring_id, 71u) == -EDGE_LINUX_EEXIST);
+        assert(kernel_io_uring_napi_static_delete(
+                   napi_ring_id, 72u) == -EDGE_LINUX_EINVAL);
+        assert(kernel_io_uring_napi_static_delete(
+                   napi_ring_id, 71u) == 0);
+        assert(kernel_io_uring_napi_static_delete(
+                   napi_ring_id, 71u) == -EDGE_LINUX_ENOENT);
+        assert(kernel_io_uring_napi_static_add(napi_ring_id, 71u) == 0);
+        kernel_io_uring_napi_id_unregister(71u);
+        assert(kernel_io_uring_napi_static_add(
+                   napi_ring_id, 71u) == -EDGE_LINUX_EEXIST);
+        kernel_io_uring_napi_id_unregister(71u);
+        assert(kernel_io_uring_napi_static_delete(
+                   napi_ring_id, 71u) == -EDGE_LINUX_EINVAL);
+        assert(kernel_io_uring_napi_unregister(napi_ring_id) == 0);
+        assert(kernel_io_uring_napi_state_get(
+                   napi_ring_id, &napi_state) == 0);
+        assert(napi_state.busy_poll_to == 0u);
+        assert(napi_state.prefer_busy_poll == 0u);
+        assert(napi_state.tracking_mode == 255u);
+        assert(kernel_io_uring_napi_configure(
+                   napi_ring_id, 1u, 0u, 2u) == -EDGE_LINUX_EINVAL);
+        kernel_io_uring_release(napi_ring_id);
+    }
+    {
         struct edge_linux_io_uring_params invalid_mixed_parameters = {
             .flags = (1u << 10) | (1u << 19),
         };

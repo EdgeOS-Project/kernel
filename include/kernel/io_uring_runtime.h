@@ -27,6 +27,7 @@
 #define KERNEL_IO_URING_MAX_WAIT_REGION_PAGES 64u
 #define KERNEL_IO_URING_REGISTERED_RINGS 16u
 #define KERNEL_IO_URING_MAX_PERSONALITIES 64u
+#define KERNEL_IO_URING_MAX_NAPI_IDS 64u
 #define KERNEL_IO_URING_REGISTERED_RING_ALLOC UINT32_MAX
 #define KERNEL_IO_URING_REGISTER_FILES_SKIP (-2)
 
@@ -78,6 +79,14 @@ typedef struct kernel_io_uring_pbuf_ring {
     uint8_t incremental;
     uint8_t reserved[6];
 } kernel_io_uring_pbuf_ring_t;
+
+typedef struct kernel_io_uring_napi_state {
+    uint32_t busy_poll_to;
+    uint8_t prefer_busy_poll;
+    uint8_t tracking_mode;
+    uint8_t active_id_count;
+    uint8_t reserved;
+} kernel_io_uring_napi_state_t;
 
 typedef int (*kernel_io_uring_waitid_copy_t)(
     uint64_t address_space, uint64_t user_address,
@@ -144,6 +153,16 @@ int kernel_io_uring_personality_unregister(
 int kernel_io_uring_personality_get(
     int32_t ring_id, uint16_t personality_id,
     linux_credential_state_t *credentials);
+int kernel_io_uring_napi_state_get(
+    int32_t ring_id, kernel_io_uring_napi_state_t *state);
+int kernel_io_uring_napi_configure(
+    int32_t ring_id, uint32_t busy_poll_to,
+    uint8_t prefer_busy_poll, uint8_t tracking_mode);
+int kernel_io_uring_napi_static_add(int32_t ring_id, uint32_t napi_id);
+int kernel_io_uring_napi_static_delete(int32_t ring_id, uint32_t napi_id);
+int kernel_io_uring_napi_unregister(int32_t ring_id);
+int kernel_io_uring_napi_id_register(uint32_t napi_id);
+void kernel_io_uring_napi_id_unregister(uint32_t napi_id);
 void kernel_io_uring_capabilities(uint64_t *features,
                                   uint64_t *setup_flags);
 int kernel_io_uring_eventfd_register(int32_t ring_id, int32_t event_id,

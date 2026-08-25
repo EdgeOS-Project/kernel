@@ -32825,6 +32825,11 @@ static int arm64_linux_copy_epoll_event_from_user(
     return 0;
 }
 
+static void arm64_linux_network_poll(void) {
+    lwip_stack_poll();
+    socket_network_wake_readers();
+}
+
 static const edge_linux_syscall_arch_ops_t arm64_linux_syscall_ops = {
     .copy_from_user = arm64_linux_copy_from_user,
     .copy_to_user = arm64_linux_copy_to_user,
@@ -32833,6 +32838,7 @@ static const edge_linux_syscall_arch_ops_t arm64_linux_syscall_ops = {
     .validate_user_range_arch = 0,
     .copy_stat_to_user = edge_arm64_linux_stat_to_user,
     .copy_epoll_event_from_user = arm64_linux_copy_epoll_event_from_user,
+    .network_poll = arm64_linux_network_poll,
     .epoll_event_size = 16u,
     .epoll_event_data_offset = 8u,
     .fcntl_setfl_mask = 0x00050000u, /* O_DIRECT | O_NOATIME */

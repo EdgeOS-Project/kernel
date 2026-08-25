@@ -9129,6 +9129,8 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_REGISTER_SYNC_CANCEL   24u
 #define EDGE_LINUX_IORING_REGISTER_FILE_ALLOC_RANGE 25u
 #define EDGE_LINUX_IORING_REGISTER_PBUF_STATUS   26u
+#define EDGE_LINUX_IORING_REGISTER_NAPI          27u
+#define EDGE_LINUX_IORING_UNREGISTER_NAPI        28u
 #define EDGE_LINUX_IORING_REGISTER_CLOCK         29u
 #define EDGE_LINUX_IORING_REGISTER_CLONE_BUFFERS 30u
 #define EDGE_LINUX_IORING_REGISTER_SEND_MSG_RING 31u
@@ -9148,6 +9150,10 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_QUERY_OPCODES           0u
 #define EDGE_LINUX_IORING_QUERY_OPCODE_COUNT      1u
 #define EDGE_LINUX_IORING_QUERY_MAX_ENTRIES       1000u
+
+#define EDGE_LINUX_IORING_NAPI_REGISTER_OP        0u
+#define EDGE_LINUX_IORING_NAPI_STATIC_ADD_ID      1u
+#define EDGE_LINUX_IORING_NAPI_STATIC_DEL_ID      2u
 
 #define EDGE_LINUX_IORING_MEM_REGION_TYPE_USER   (1u << 0)
 #define EDGE_LINUX_IORING_MEM_REGION_WAIT_ARG    (1u << 0)
@@ -11074,6 +11080,33 @@ static uint64_t edge_linux_io_uring_wait_now(int32_t ring_id) {
     return now_us;
 }
 
+static uint32_t edge_linux_io_uring_napi_busy_poll(
+        edge_linux_syscall_context_t *context, int32_t ring_id,
+        uint32_t minimum) {
+    kernel_io_uring_napi_state_t state;
+    uint64_t deadline;
+    uint32_t completions;
+
+    completions = kernel_io_uring_completion_count(ring_id);
+    if (completions >= minimum ||
+        kernel_io_uring_napi_state_get(ring_id, &state) < 0 ||
+        !state.busy_poll_to || state.tracking_mode == 255u ||
+        (state.tracking_mode == 1u && !state.active_id_count))
+        return completions;
+    deadline = boottime_monotonic_us() + state.busy_poll_to;
+    do {
+        if (context->arch_ops && context->arch_ops->network_poll)
+            context->arch_ops->network_poll();
+        (void)kernel_io_uring_collect(
+            ring_id, boottime_monotonic_us());
+        completions = kernel_io_uring_completion_count(ring_id);
+        if (completions >= minimum ||
+            kernel_current_signal_wake_pending())
+            break;
+    } while (boottime_monotonic_us() < deadline);
+    return completions;
+}
+
 static int64_t edge_linux_io_uring_enter_error(
         kernel_linux_thread_state_t *thread_state, int64_t error) {
     edge_linux_io_uring_wait_state_reset(thread_state);
@@ -11350,7 +11383,8 @@ static int64_t edge_linux_sys_io_uring_enter(
 
             (void)kernel_io_uring_collect(
                 ring_id, boottime_monotonic_us());
-            completion_count = kernel_io_uring_completion_count(ring_id);
+            completion_count = edge_linux_io_uring_napi_busy_poll(
+                context, ring_id, minimum);
             now_us = edge_linux_io_uring_wait_now(ring_id);
             if (completion_count >= minimum &&
                 (!minimum_deadline_us || now_us >= minimum_deadline_us))
@@ -12268,6 +12302,56 @@ static int64_t edge_linux_sys_io_uring_register(
     if (opcode == EDGE_LINUX_IORING_REGISTER_PBUF_STATUS)
         return edge_linux_io_uring_pbuf_status(
             context, ring_id, argument, operation_count);
+    if (opcode == EDGE_LINUX_IORING_REGISTER_NAPI) {
+        struct edge_linux_io_uring_napi napi;
+        kernel_io_uring_napi_state_t previous;
+
+        if (!argument || operation_count != 1u)
+            return -EDGE_LINUX_EINVAL;
+        if (edge_linux_copy_from_user(
+                context, &napi, argument, sizeof(napi)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (napi.padding[0] || napi.padding[1] || napi.reserved)
+            return -EDGE_LINUX_EINVAL;
+        result = kernel_io_uring_napi_state_get(ring_id, &previous);
+        if (result < 0) return result;
+        {
+            struct edge_linux_io_uring_napi output = {0};
+            output.busy_poll_to = previous.busy_poll_to;
+            output.prefer_busy_poll = previous.prefer_busy_poll;
+            output.operation_parameter = previous.tracking_mode;
+            if (edge_linux_copy_to_user(
+                    context, argument, &output, sizeof(output)) < 0)
+                return -EDGE_LINUX_EFAULT;
+        }
+        if (napi.opcode == EDGE_LINUX_IORING_NAPI_REGISTER_OP)
+            return kernel_io_uring_napi_configure(
+                ring_id, napi.busy_poll_to, napi.prefer_busy_poll,
+                (uint8_t)napi.operation_parameter);
+        if (napi.opcode == EDGE_LINUX_IORING_NAPI_STATIC_ADD_ID)
+            return kernel_io_uring_napi_static_add(
+                ring_id, napi.operation_parameter);
+        if (napi.opcode == EDGE_LINUX_IORING_NAPI_STATIC_DEL_ID)
+            return kernel_io_uring_napi_static_delete(
+                ring_id, napi.operation_parameter);
+        return -EDGE_LINUX_EINVAL;
+    }
+    if (opcode == EDGE_LINUX_IORING_UNREGISTER_NAPI) {
+        kernel_io_uring_napi_state_t previous;
+
+        if (operation_count != 1u) return -EDGE_LINUX_EINVAL;
+        result = kernel_io_uring_napi_state_get(ring_id, &previous);
+        if (result < 0) return result;
+        if (argument) {
+            struct edge_linux_io_uring_napi output = {0};
+            output.busy_poll_to = previous.busy_poll_to;
+            output.prefer_busy_poll = previous.prefer_busy_poll;
+            if (edge_linux_copy_to_user(
+                    context, argument, &output, sizeof(output)) < 0)
+                return -EDGE_LINUX_EFAULT;
+        }
+        return kernel_io_uring_napi_unregister(ring_id);
+    }
     if (opcode == EDGE_LINUX_IORING_REGISTER_QUERY)
         return edge_linux_io_uring_query(
             context, argument, operation_count);

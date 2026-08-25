@@ -4797,6 +4797,7 @@ network-core-unit: tools/tests/network_core_unit.c $(SRC)/net/network_core.c inc
 	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fno-builtin \
 		-iquote $(INC) \
 		tools/tests/network_core_unit.c \
+		tools/tests/io_uring_napi_link_stub.c \
 		$(SRC)/net/network_core.c \
 		-o $(OUT)/tests/network_core_unit
 	@$(OUT)/tests/network_core_unit
@@ -4804,6 +4805,7 @@ network-core-unit: tools/tests/network_core_unit.c $(SRC)/net/network_core.c inc
 		-fsanitize=address,undefined -fno-omit-frame-pointer \
 		-iquote $(INC) \
 		tools/tests/network_core_unit.c \
+		tools/tests/io_uring_napi_link_stub.c \
 		$(SRC)/net/network_core.c \
 		-o $(OUT)/tests/network_core_sanitize
 	@ASAN_OPTIONS=detect_leaks=0 $(OUT)/tests/network_core_sanitize
@@ -4813,6 +4815,7 @@ linux-netlink-netfilter-unit: tools/tests/linux_netlink_netfilter_unit.c $(SRC)/
 	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fno-builtin \
 		-iquote $(INC) \
 		tools/tests/linux_netlink_netfilter_unit.c \
+		tools/tests/io_uring_napi_link_stub.c \
 		$(SRC)/kernel/linux_netlink.c \
 		$(SRC)/net/network_core.c \
 		$(SRC)/net/linux_tun.c \
@@ -4835,6 +4838,7 @@ linux-genetlink-unit: tools/tests/linux_genetlink_unit.c $(SRC)/kernel/linux_gen
 		-fsanitize=address,undefined -fno-omit-frame-pointer \
 		-iquote $(INC) \
 		tools/tests/linux_genetlink_unit.c \
+		tools/tests/io_uring_napi_link_stub.c \
 		$(SRC)/kernel/linux_genetlink.c \
 		$(SRC)/kernel/linux_ethtool.c \
 		$(SRC)/net/network_core.c \
@@ -4847,6 +4851,7 @@ linux-ethtool-unit: tools/tests/linux_ethtool_unit.c $(SRC)/kernel/linux_ethtool
 		-fsanitize=address,undefined -fno-omit-frame-pointer \
 		-iquote $(INC) \
 		tools/tests/linux_ethtool_unit.c \
+		tools/tests/io_uring_napi_link_stub.c \
 		$(SRC)/kernel/linux_ethtool.c \
 		$(SRC)/net/network_core.c \
 		-o $(OUT)/tests/linux_ethtool_unit

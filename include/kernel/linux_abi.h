@@ -796,6 +796,15 @@ struct edge_linux_io_uring_clock_register {
     uint32_t reserved[3];
 };
 
+struct edge_linux_io_uring_napi {
+    uint32_t busy_poll_to;
+    uint8_t prefer_busy_poll;
+    uint8_t opcode;
+    uint8_t padding[2];
+    uint32_t operation_parameter;
+    uint32_t reserved;
+};
+
 struct edge_linux_io_uring_buf {
     uint64_t address;
     uint32_t length;
@@ -906,6 +915,8 @@ _Static_assert(sizeof(struct edge_linux_io_uring_file_index_range) == 16,
                "Linux io_uring file allocation range size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_clock_register) == 16,
                "Linux io_uring clock registration size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_uring_napi) == 16,
+               "Linux io_uring NAPI registration size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_buf) == 16,
                "Linux io_uring provided buffer size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_buf_reg) == 40,

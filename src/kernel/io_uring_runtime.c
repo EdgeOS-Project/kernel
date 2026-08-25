@@ -171,6 +171,12 @@ typedef struct kernel_io_uring {
     uint64_t personality_used;
     uint16_t next_personality;
     uint8_t personality_reserved[6];
+    uint32_t napi_ids[KERNEL_IO_URING_MAX_NAPI_IDS];
+    uint32_t napi_busy_poll_to;
+    uint8_t napi_id_count;
+    uint8_t napi_prefer_busy_poll;
+    uint8_t napi_tracking_mode;
+    uint8_t napi_reserved;
     uint32_t sq_entries;
     uint32_t cq_entries;
     uint32_t sq_ring_pages;
@@ -218,6 +224,11 @@ typedef struct kernel_io_uring {
     uint32_t completion_overflow_head;
     uint32_t completion_overflow_count;
 } kernel_io_uring_t;
+
+typedef struct kernel_io_uring_napi_id {
+    uint32_t id;
+    uint32_t references;
+} kernel_io_uring_napi_id_t;
 
 typedef struct kernel_io_uring_task_registry {
     uint8_t used;
@@ -274,6 +285,22 @@ static kernel_io_uring_task_registry_t
     g_io_uring_task_registries[EDGE_RUNTIME_MAX_TASKS];
 static kernel_io_uring_page_allocator_t g_io_uring_allocator;
 static spinlock_t g_io_uring_lock;
+static kernel_io_uring_napi_id_t
+    g_io_uring_napi_ids[KERNEL_IO_URING_MAX_NAPI_IDS];
+
+#define IO_URING_NAPI_TRACKING_DYNAMIC 0u
+#define IO_URING_NAPI_TRACKING_STATIC 1u
+#define IO_URING_NAPI_TRACKING_INACTIVE 255u
+#define IO_URING_NAPI_BUSY_POLL_MAX 10000u
+
+static int io_uring_napi_id_valid_locked(uint32_t napi_id) {
+    for (uint32_t index = 0; index < KERNEL_IO_URING_MAX_NAPI_IDS;
+         ++index)
+        if (g_io_uring_napi_ids[index].references &&
+            g_io_uring_napi_ids[index].id == napi_id)
+            return 1;
+    return 0;
+}
 
 static kernel_io_uring_task_registry_t *io_uring_task_registry_locked(
         int32_t task_id, int create) {
@@ -559,6 +586,7 @@ int kernel_io_uring_create_for_task(
     ring->used = 1u;
     ring->event_id = -1;
     ring->clock_id = LINUX_CLOCK_MONOTONIC;
+    ring->napi_tracking_mode = IO_URING_NAPI_TRACKING_INACTIVE;
     ring->references = 1u;
     ring->disabled =
         (parameters->flags & IORING_SETUP_R_DISABLED) != 0;
@@ -1024,6 +1052,184 @@ int kernel_io_uring_personality_get(
     }
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     return result;
+}
+
+int kernel_io_uring_napi_state_get(
+        int32_t ring_id, kernel_io_uring_napi_state_t *state) {
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    int result = 0;
+
+    if (!state) return -EDGE_LINUX_EINVAL;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) result = -EDGE_LINUX_EBADF;
+    else {
+        memset(state, 0, sizeof(*state));
+        state->busy_poll_to = ring->napi_busy_poll_to;
+        state->prefer_busy_poll = ring->napi_prefer_busy_poll;
+        state->tracking_mode = ring->napi_tracking_mode;
+        state->active_id_count = ring->napi_id_count;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_napi_configure(
+        int32_t ring_id, uint32_t busy_poll_to,
+        uint8_t prefer_busy_poll, uint8_t tracking_mode) {
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    int result = 0;
+
+    if (tracking_mode != IO_URING_NAPI_TRACKING_DYNAMIC &&
+        tracking_mode != IO_URING_NAPI_TRACKING_STATIC)
+        return -EDGE_LINUX_EINVAL;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) result = -EDGE_LINUX_EBADF;
+    else {
+        memset(ring->napi_ids, 0, sizeof(ring->napi_ids));
+        ring->napi_id_count = 0u;
+        ring->napi_busy_poll_to =
+            busy_poll_to > IO_URING_NAPI_BUSY_POLL_MAX ?
+                IO_URING_NAPI_BUSY_POLL_MAX : busy_poll_to;
+        ring->napi_prefer_busy_poll = prefer_busy_poll != 0u;
+        ring->napi_tracking_mode = tracking_mode;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_napi_static_add(int32_t ring_id, uint32_t napi_id) {
+    kernel_io_uring_t *ring;
+    uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
+    int result = 0;
+
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) result = -EDGE_LINUX_EBADF;
+    else if (ring->napi_tracking_mode != IO_URING_NAPI_TRACKING_STATIC ||
+             !io_uring_napi_id_valid_locked(napi_id))
+        result = -EDGE_LINUX_EINVAL;
+    else {
+        for (uint32_t index = 0; index < ring->napi_id_count; ++index)
+            if (ring->napi_ids[index] == napi_id) {
+                result = -EDGE_LINUX_EEXIST;
+                break;
+            }
+        if (result == 0) {
+            if (ring->napi_id_count >= KERNEL_IO_URING_MAX_NAPI_IDS)
+                result = -EDGE_LINUX_ENOMEM;
+            else
+                ring->napi_ids[ring->napi_id_count++] = napi_id;
+        }
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_napi_static_delete(int32_t ring_id, uint32_t napi_id) {
+    kernel_io_uring_t *ring;
+    uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
+    int result = -EDGE_LINUX_ENOENT;
+
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) result = -EDGE_LINUX_EBADF;
+    else if (ring->napi_tracking_mode != IO_URING_NAPI_TRACKING_STATIC ||
+             !io_uring_napi_id_valid_locked(napi_id))
+        result = -EDGE_LINUX_EINVAL;
+    else {
+        for (uint32_t index = 0; index < ring->napi_id_count; ++index) {
+            if (ring->napi_ids[index] != napi_id) continue;
+            --ring->napi_id_count;
+            ring->napi_ids[index] = ring->napi_ids[ring->napi_id_count];
+            ring->napi_ids[ring->napi_id_count] = 0u;
+            result = 0;
+            break;
+        }
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_napi_unregister(int32_t ring_id) {
+    kernel_io_uring_t *ring;
+    uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
+    int result = 0;
+
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) result = -EDGE_LINUX_EBADF;
+    else {
+        memset(ring->napi_ids, 0, sizeof(ring->napi_ids));
+        ring->napi_id_count = 0u;
+        ring->napi_busy_poll_to = 0u;
+        ring->napi_prefer_busy_poll = 0u;
+        ring->napi_tracking_mode = IO_URING_NAPI_TRACKING_INACTIVE;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_napi_id_register(uint32_t napi_id) {
+    kernel_io_uring_napi_id_t *free_slot = 0;
+    uint64_t flags;
+    int result = -EDGE_LINUX_ENOMEM;
+
+    if (!napi_id) return -EDGE_LINUX_EINVAL;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    for (uint32_t index = 0; index < KERNEL_IO_URING_MAX_NAPI_IDS;
+         ++index) {
+        kernel_io_uring_napi_id_t *slot = &g_io_uring_napi_ids[index];
+        if (slot->references && slot->id == napi_id) {
+            if (slot->references == UINT32_MAX)
+                result = -EDGE_LINUX_EOVERFLOW;
+            else {
+                ++slot->references;
+                result = 0;
+            }
+            goto unlock;
+        }
+        if (!slot->references && !free_slot) free_slot = slot;
+    }
+    if (free_slot) {
+        free_slot->id = napi_id;
+        free_slot->references = 1u;
+        result = 0;
+    }
+unlock:
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+void kernel_io_uring_napi_id_unregister(uint32_t napi_id) {
+    uint64_t flags;
+
+    if (!napi_id) return;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    for (uint32_t index = 0; index < KERNEL_IO_URING_MAX_NAPI_IDS;
+         ++index) {
+        kernel_io_uring_napi_id_t *slot = &g_io_uring_napi_ids[index];
+        if (!slot->references || slot->id != napi_id) continue;
+        if (--slot->references == 0u) {
+            memset(slot, 0, sizeof(*slot));
+            for (uint32_t ring_index = 0;
+                 ring_index < KERNEL_IO_URING_MAX_RINGS; ++ring_index) {
+                kernel_io_uring_t *ring = &g_io_urings[ring_index];
+                if (!ring->used) continue;
+                for (uint32_t item = 0; item < ring->napi_id_count;
+                     ++item) {
+                    if (ring->napi_ids[item] != napi_id) continue;
+                    --ring->napi_id_count;
+                    ring->napi_ids[item] =
+                        ring->napi_ids[ring->napi_id_count];
+                    ring->napi_ids[ring->napi_id_count] = 0u;
+                    break;
+                }
+            }
+        }
+        break;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
 }
 
 int kernel_io_uring_setup_flags(int32_t ring_id, uint32_t *setup_flags) {
