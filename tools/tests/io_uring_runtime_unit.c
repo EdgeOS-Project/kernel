@@ -416,6 +416,101 @@ int main(void) {
     assert(kernel_io_uring_clock_set(ring_id, 0u) ==
            -EDGE_LINUX_EINVAL);
     assert(kernel_io_uring_clock_set(ring_id, 1u) == 0);
+
+    {
+        struct edge_linux_io_uring_params resize_setup = {
+            .flags = (1u << 12) | (1u << 13),
+        };
+        struct edge_linux_io_uring_params resize = {
+            .sq_entries = 8u,
+            .cq_entries = 16u,
+            .flags = 1u << 3,
+        };
+        kernel_io_uring_page_t old_sq_ring;
+        kernel_io_uring_page_t old_cq_ring;
+        kernel_io_uring_page_t old_sqes;
+        kernel_io_uring_page_t new_sq_ring;
+        kernel_io_uring_page_t new_cq_ring;
+        kernel_io_uring_page_t new_sqes;
+        struct edge_linux_io_uring_sqe *entry;
+        struct edge_linux_io_uring_cqe *entry_completion;
+        int32_t resize_ring_id;
+
+        assert(kernel_io_uring_create(
+                   4u, &resize_setup, &resize_ring_id) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   resize_ring_id, KERNEL_IO_URING_OFF_SQ_RING,
+                   0u, &old_sq_ring) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   resize_ring_id, KERNEL_IO_URING_OFF_CQ_RING,
+                   0u, &old_cq_ring) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   resize_ring_id, KERNEL_IO_URING_OFF_SQES,
+                   0u, &old_sqes) == 0);
+        page_u32(&old_sq_ring, resize_setup.sq_off.array)[0] = 1u;
+        page_u32(&old_sq_ring, resize_setup.sq_off.array)[1] = 3u;
+        *page_u32(&old_sq_ring, resize_setup.sq_off.tail) = 2u;
+        entry = (struct edge_linux_io_uring_sqe *)(void *)
+            old_sqes.address;
+        entry[1].user_data = 0x1111222233334444ull;
+        entry[3].user_data = 0x5555666677778888ull;
+        assert(kernel_io_uring_completion_add(
+                   resize_ring_id, 0xaaaabbbbccccddddull,
+                   11, 0u) == 0);
+        assert(kernel_io_uring_completion_add(
+                   resize_ring_id, 0xeeeeffff00001111ull,
+                   12, 0u) == 0);
+        assert(kernel_io_uring_resize(resize_ring_id, &resize) == 0);
+        assert(resize.sq_entries == 8u && resize.cq_entries == 16u);
+        assert(resize.sq_off.array == 64u && resize.cq_off.cqes == 64u);
+        assert(kernel_io_uring_mmap_page(
+                   resize_ring_id, KERNEL_IO_URING_OFF_SQ_RING,
+                   0u, &new_sq_ring) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   resize_ring_id, KERNEL_IO_URING_OFF_CQ_RING,
+                   0u, &new_cq_ring) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   resize_ring_id, KERNEL_IO_URING_OFF_SQES,
+                   0u, &new_sqes) == 0);
+        assert(*page_u32(&new_sq_ring, resize.sq_off.head) == 0u);
+        assert(*page_u32(&new_sq_ring, resize.sq_off.tail) == 2u);
+        assert(page_u32(&new_sq_ring, resize.sq_off.array)[0] == 0u);
+        assert(page_u32(&new_sq_ring, resize.sq_off.array)[1] == 1u);
+        entry = (struct edge_linux_io_uring_sqe *)(void *)
+            new_sqes.address;
+        assert(entry[0].user_data == 0x1111222233334444ull);
+        assert(entry[1].user_data == 0x5555666677778888ull);
+        assert(*page_u32(&new_cq_ring, resize.cq_off.head) == 0u);
+        assert(*page_u32(&new_cq_ring, resize.cq_off.tail) == 2u);
+        entry_completion = (struct edge_linux_io_uring_cqe *)(void *)
+            ((uint8_t *)new_cq_ring.address + resize.cq_off.cqes);
+        assert(entry_completion[0].user_data ==
+               0xaaaabbbbccccddddull);
+        assert(entry_completion[0].result == 11);
+        assert(entry_completion[1].user_data ==
+               0xeeeeffff00001111ull);
+        assert(entry_completion[1].result == 12);
+        resize.sq_entries = 1u;
+        resize.cq_entries = 2u;
+        resize.flags = 1u << 3;
+        assert(kernel_io_uring_resize(
+                   resize_ring_id, &resize) == -EDGE_LINUX_EOVERFLOW);
+        test_page_release(0, &old_sq_ring);
+        test_page_release(0, &old_cq_ring);
+        test_page_release(0, &old_sqes);
+        test_page_release(0, &new_sq_ring);
+        test_page_release(0, &new_cq_ring);
+        test_page_release(0, &new_sqes);
+        kernel_io_uring_release(resize_ring_id);
+    }
+
+    {
+        struct edge_linux_io_uring_params resize = {
+            .sq_entries = 8u,
+        };
+        assert(kernel_io_uring_resize(ring_id, &resize) ==
+               -EDGE_LINUX_EINVAL);
+    }
     assert(kernel_io_uring_file_alloc_range_get(
                ring_id, &allocation_offset,
                &allocation_length) == 0);

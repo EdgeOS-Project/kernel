@@ -9132,6 +9132,7 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_REGISTER_CLOCK         29u
 #define EDGE_LINUX_IORING_REGISTER_CLONE_BUFFERS 30u
 #define EDGE_LINUX_IORING_REGISTER_SEND_MSG_RING 31u
+#define EDGE_LINUX_IORING_REGISTER_RESIZE_RINGS   33u
 #define EDGE_LINUX_IORING_REGISTER_MEM_REGION    34u
 #define EDGE_LINUX_IORING_REGISTER_QUERY         35u
 #define EDGE_LINUX_IORING_REGISTER_LAST          38u
@@ -12270,6 +12271,27 @@ static int64_t edge_linux_sys_io_uring_register(
     if (opcode == EDGE_LINUX_IORING_REGISTER_QUERY)
         return edge_linux_io_uring_query(
             context, argument, operation_count);
+    if (opcode == EDGE_LINUX_IORING_REGISTER_RESIZE_RINGS) {
+        struct edge_linux_io_uring_params parameters;
+
+        if (!argument || operation_count != 1u)
+            return -EDGE_LINUX_EINVAL;
+        if (edge_linux_copy_from_user(
+                context, &parameters, argument,
+                sizeof(parameters)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (edge_linux_copy_to_user(
+                context, argument, &parameters,
+                sizeof(parameters)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        result = kernel_io_uring_resize(ring_id, &parameters);
+        if (result < 0) return result;
+        if (edge_linux_copy_to_user(
+                context, argument, &parameters,
+                sizeof(parameters)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        return 0;
+    }
     if (opcode == EDGE_LINUX_IORING_REGISTER_BUFFERS) {
         if (!argument) return -EDGE_LINUX_EFAULT;
         return edge_linux_io_uring_buffers_register_user(

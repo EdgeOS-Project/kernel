@@ -303,6 +303,8 @@ int kernel_io_uring_mmap_info(int32_t ring_id, uint64_t offset,
 int kernel_io_uring_mmap_page(int32_t ring_id, uint64_t offset,
                               uint32_t page_index,
                               kernel_io_uring_page_t *page);
+int kernel_io_uring_resize(
+    int32_t ring_id, struct edge_linux_io_uring_params *parameters);
 int kernel_io_uring_take_submission(
     int32_t ring_id, uint32_t submission_offset,
     uint32_t submission_limit,
