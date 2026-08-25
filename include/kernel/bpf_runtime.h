@@ -38,6 +38,7 @@
 #define KERNEL_BPF_MAP_TYPE_REUSEPORT_SOCKARRAY 20u
 #define KERNEL_BPF_MAP_TYPE_QUEUE 22u
 #define KERNEL_BPF_MAP_TYPE_STACK 23u
+#define KERNEL_BPF_MAP_TYPE_SK_STORAGE 24u
 #define KERNEL_BPF_MAP_TYPE_DEVMAP_HASH 25u
 #define KERNEL_BPF_MAP_TYPE_RINGBUF 27u
 #define KERNEL_BPF_MAP_TYPE_BLOOM_FILTER 30u
@@ -241,6 +242,14 @@ int kernel_bpf_cgrp_storage_update(int object_id,
                                    const void *value, uint64_t flags);
 int kernel_bpf_cgrp_storage_delete(int object_id,
                                    uint64_t cgroup_reference);
+int kernel_bpf_sk_storage_lookup(int object_id,
+                                 uint64_t socket_identity,
+                                 void *value, uint64_t flags);
+int kernel_bpf_sk_storage_update(int object_id,
+                                 uint64_t socket_identity,
+                                 const void *value, uint64_t flags);
+int kernel_bpf_sk_storage_delete(int object_id,
+                                 uint64_t socket_identity);
 int kernel_bpf_map_delete(int object_id, const void *key);
 int kernel_bpf_map_lookup_and_delete(int object_id, const void *key,
                                      void *value);

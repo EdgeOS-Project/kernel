@@ -361,6 +361,19 @@ static int bpf_map_is_cgrp_storage(const kernel_bpf_map_t *map) {
     return map && map->type == KERNEL_BPF_MAP_TYPE_CGRP_STORAGE;
 }
 
+static int bpf_map_is_sk_storage(const kernel_bpf_map_t *map) {
+    return map && map->type == KERNEL_BPF_MAP_TYPE_SK_STORAGE;
+}
+
+static int bpf_map_is_local_storage(const kernel_bpf_map_t *map) {
+    return bpf_map_is_cgrp_storage(map) || bpf_map_is_sk_storage(map);
+}
+
+static int bpf_map_type_is_local_storage(uint32_t type) {
+    return type == KERNEL_BPF_MAP_TYPE_CGRP_STORAGE ||
+           type == KERNEL_BPF_MAP_TYPE_SK_STORAGE;
+}
+
 static int bpf_map_is_insn_array(const kernel_bpf_map_t *map) {
     return map && map->type == KERNEL_BPF_MAP_TYPE_INSN_ARRAY;
 }
@@ -515,9 +528,9 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
         (!request->value_size &&
          !bpf_map_type_is_ringbuf(request->type)) ||
         (request->value_size > KERNEL_BPF_MAX_VALUE_SIZE &&
-         request->type != KERNEL_BPF_MAP_TYPE_CGRP_STORAGE) ||
+         !bpf_map_type_is_local_storage(request->type)) ||
         (!request->max_entries &&
-         request->type != KERNEL_BPF_MAP_TYPE_CGRP_STORAGE))
+         !bpf_map_type_is_local_storage(request->type)))
         return -EDGE_LINUX_EINVAL;
     if ((request->flags &
          (KERNEL_BPF_MAP_RDONLY | KERNEL_BPF_MAP_WRONLY)) ==
@@ -677,7 +690,7 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
             request->btf_present || request->map_extra)
             goto invalid_btf;
         stride = bpf_align8(1u + sizeof(uint64_t));
-    } else if (request->type == KERNEL_BPF_MAP_TYPE_CGRP_STORAGE) {
+    } else if (bpf_map_type_is_local_storage(request->type)) {
         if (request->value_size > BPF_LOCAL_STORAGE_VALUE_LIMIT) {
             status = -EDGE_LINUX_E2BIG;
             goto fail_btf;
@@ -805,7 +818,8 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
     }
     if (request->type == KERNEL_BPF_MAP_TYPE_SOCKMAP ||
         request->type == KERNEL_BPF_MAP_TYPE_SOCKHASH ||
-        request->type == KERNEL_BPF_MAP_TYPE_REUSEPORT_SOCKARRAY) {
+        request->type == KERNEL_BPF_MAP_TYPE_REUSEPORT_SOCKARRAY ||
+        request->type == KERNEL_BPF_MAP_TYPE_SK_STORAGE) {
         status = kernel_file_description_close_observer_register(
             bpf_socket_description_closed);
         if (status < 0) goto fail_btf;
@@ -2224,7 +2238,8 @@ static void bpf_socket_description_closed(uint64_t identity) {
             continue;
         map = &object->value.map;
         if (!bpf_map_is_socket_map(map) &&
-            !bpf_map_is_reuseport_array(map))
+            !bpf_map_is_reuseport_array(map) &&
+            !bpf_map_is_sk_storage(map))
             continue;
         for (uint32_t entry_index = 0;
              entry_index < map->storage_entries; ++entry_index) {
@@ -2908,7 +2923,7 @@ int kernel_bpf_map_lookup_flags(int object_id, const void *key, void *value,
                sizeof(uint64_t));
         goto out;
     }
-    if (bpf_map_is_cgrp_storage(map)) {
+    if (bpf_map_is_local_storage(map)) {
         status = -EDGE_LINUX_EOPNOTSUPP;
         goto out;
     }
@@ -3451,7 +3466,7 @@ int kernel_bpf_map_update(int object_id, const void *key, const void *value,
         status = -EDGE_LINUX_EOPNOTSUPP;
         goto out;
     }
-    if (bpf_map_is_cgrp_storage(map)) {
+    if (bpf_map_is_local_storage(map)) {
         status = -EDGE_LINUX_EOPNOTSUPP;
         goto out;
     }
@@ -3772,29 +3787,28 @@ out:
     return status;
 }
 
-static uint8_t *bpf_cgrp_storage_value(kernel_bpf_map_t *map,
-                                       uint32_t index) {
+static uint8_t *bpf_local_storage_value(kernel_bpf_map_t *map,
+                                        uint32_t index) {
     return bpf_map_entry(map, index) + 1u + sizeof(uint64_t);
 }
 
-static void bpf_cgrp_storage_find_locked(kernel_bpf_map_t *map,
-                                         uint64_t reference,
-                                         uint32_t *index_out,
-                                         uint32_t *free_out) {
+static void bpf_local_storage_find_locked(kernel_bpf_map_t *map,
+                                          uint64_t owner,
+                                          uint32_t *index_out,
+                                          uint32_t *free_out) {
     uint32_t found = UINT32_MAX;
     uint32_t free_slot = UINT32_MAX;
 
     for (uint32_t index = 0; index < map->storage_entries; ++index) {
         uint8_t *entry = bpf_map_entry(map, index);
-        uint64_t stored_reference = 0u;
+        uint64_t stored_owner = 0u;
 
         if (!entry[0]) {
             if (free_slot == UINT32_MAX) free_slot = index;
             continue;
         }
-        memcpy(&stored_reference, entry + 1u,
-               sizeof(stored_reference));
-        if (stored_reference == reference) {
+        memcpy(&stored_owner, entry + 1u, sizeof(stored_owner));
+        if (stored_owner == owner) {
             found = index;
             break;
         }
@@ -3803,16 +3817,16 @@ static void bpf_cgrp_storage_find_locked(kernel_bpf_map_t *map,
     if (free_out) *free_out = free_slot;
 }
 
-int kernel_bpf_cgrp_storage_lookup(int object_id,
-                                   uint64_t cgroup_reference,
-                                   void *value, uint64_t flags) {
+static int bpf_local_storage_lookup(int object_id, uint32_t map_type,
+                                    uint64_t owner, void *value,
+                                    uint64_t flags) {
     kernel_bpf_object_t *object;
     kernel_bpf_map_t *map;
     uint32_t index;
     int status = 0;
 
     if (!value) return -EDGE_LINUX_EFAULT;
-    if (!cgroup_reference) return -EDGE_LINUX_EBADF;
+    if (!owner) return -EDGE_LINUX_EBADF;
     if (flags) return -EDGE_LINUX_EINVAL;
     bpf_lock();
     object = bpf_object_locked(object_id);
@@ -3821,26 +3835,25 @@ int kernel_bpf_cgrp_storage_lookup(int object_id,
         goto out;
     }
     map = &object->value.map;
-    if (!bpf_map_is_cgrp_storage(map)) {
+    if (map->type != map_type || !bpf_map_is_local_storage(map)) {
         status = -EDGE_LINUX_EINVAL;
         goto out;
     }
-    bpf_cgrp_storage_find_locked(
-        map, cgroup_reference, &index, 0);
+    bpf_local_storage_find_locked(map, owner, &index, 0);
     if (index == UINT32_MAX) {
         status = -EDGE_LINUX_ENOENT;
         goto out;
     }
-    memcpy(value, bpf_cgrp_storage_value(map, index),
+    memcpy(value, bpf_local_storage_value(map, index),
            map->value_size);
 out:
     bpf_unlock();
     return status;
 }
 
-int kernel_bpf_cgrp_storage_update(int object_id,
-                                   uint64_t cgroup_reference,
-                                   const void *value, uint64_t flags) {
+static int bpf_local_storage_update(int object_id, uint32_t map_type,
+                                    uint64_t owner, const void *value,
+                                    uint64_t flags) {
     kernel_bpf_object_t *object;
     kernel_bpf_map_t *map;
     uint32_t index;
@@ -3850,11 +3863,13 @@ int kernel_bpf_cgrp_storage_update(int object_id,
     int status;
 
     if (!value) return -EDGE_LINUX_EFAULT;
-    if (!cgroup_reference) return -EDGE_LINUX_EBADF;
+    if (!owner) return -EDGE_LINUX_EBADF;
     if (flags > KERNEL_BPF_EXIST) return -EDGE_LINUX_EINVAL;
-    status = cgroupfs_reference_retain(cgroup_reference);
-    if (status < 0) return status;
-    retained = 1;
+    if (map_type == KERNEL_BPF_MAP_TYPE_CGRP_STORAGE) {
+        status = cgroupfs_reference_retain(owner);
+        if (status < 0) return status;
+        retained = 1;
+    }
 
     bpf_lock();
     object = bpf_object_locked(object_id);
@@ -3863,7 +3878,7 @@ int kernel_bpf_cgrp_storage_update(int object_id,
         goto out;
     }
     map = &object->value.map;
-    if (!bpf_map_is_cgrp_storage(map)) {
+    if (map->type != map_type || !bpf_map_is_local_storage(map)) {
         status = -EDGE_LINUX_EINVAL;
         goto out;
     }
@@ -3871,8 +3886,7 @@ int kernel_bpf_cgrp_storage_update(int object_id,
         status = -EDGE_LINUX_EPERM;
         goto out;
     }
-    bpf_cgrp_storage_find_locked(
-        map, cgroup_reference, &index, &free_slot);
+    bpf_local_storage_find_locked(map, owner, &index, &free_slot);
     replacing = index != UINT32_MAX;
     if (replacing && flags == KERNEL_BPF_NOEXIST) {
         status = -EDGE_LINUX_EEXIST;
@@ -3893,29 +3907,28 @@ int kernel_bpf_cgrp_storage_update(int object_id,
         entry = bpf_map_entry(map, index);
         memset(entry, 0, map->entry_stride);
         entry[0] = 1u;
-        memcpy(entry + 1u, &cgroup_reference,
-               sizeof(cgroup_reference));
+        memcpy(entry + 1u, &owner, sizeof(owner));
         ++map->entry_count;
         retained = 0;
     }
-    memcpy(bpf_cgrp_storage_value(map, index), value,
+    memcpy(bpf_local_storage_value(map, index), value,
            map->value_size);
     status = 0;
 out:
     bpf_unlock();
-    if (retained) cgroupfs_reference_put(cgroup_reference);
+    if (retained) cgroupfs_reference_put(owner);
     return status;
 }
 
-int kernel_bpf_cgrp_storage_delete(int object_id,
-                                   uint64_t cgroup_reference) {
+static int bpf_local_storage_delete(int object_id, uint32_t map_type,
+                                    uint64_t owner) {
     kernel_bpf_object_t *object;
     kernel_bpf_map_t *map;
-    uint64_t released_reference = 0u;
+    uint64_t released_owner = 0u;
     uint32_t index;
     int status = 0;
 
-    if (!cgroup_reference) return -EDGE_LINUX_EBADF;
+    if (!owner) return -EDGE_LINUX_EBADF;
     bpf_lock();
     object = bpf_object_locked(object_id);
     if (!object || object->kind != KERNEL_BPF_OBJECT_MAP) {
@@ -3923,7 +3936,7 @@ int kernel_bpf_cgrp_storage_delete(int object_id,
         goto out;
     }
     map = &object->value.map;
-    if (!bpf_map_is_cgrp_storage(map)) {
+    if (map->type != map_type || !bpf_map_is_local_storage(map)) {
         status = -EDGE_LINUX_EINVAL;
         goto out;
     }
@@ -3931,21 +3944,66 @@ int kernel_bpf_cgrp_storage_delete(int object_id,
         status = -EDGE_LINUX_EPERM;
         goto out;
     }
-    bpf_cgrp_storage_find_locked(
-        map, cgroup_reference, &index, 0);
+    bpf_local_storage_find_locked(map, owner, &index, 0);
     if (index == UINT32_MAX) {
         status = -EDGE_LINUX_ENOENT;
         goto out;
     }
-    memcpy(&released_reference, bpf_map_entry(map, index) + 1u,
-           sizeof(released_reference));
+    memcpy(&released_owner, bpf_map_entry(map, index) + 1u,
+           sizeof(released_owner));
     memset(bpf_map_entry(map, index), 0, map->entry_stride);
     if (map->entry_count) --map->entry_count;
 out:
     bpf_unlock();
-    if (released_reference)
-        cgroupfs_reference_put(released_reference);
+    if (released_owner && map_type == KERNEL_BPF_MAP_TYPE_CGRP_STORAGE)
+        cgroupfs_reference_put(released_owner);
     return status;
+}
+
+int kernel_bpf_cgrp_storage_lookup(int object_id,
+                                   uint64_t cgroup_reference,
+                                   void *value, uint64_t flags) {
+    return bpf_local_storage_lookup(
+        object_id, KERNEL_BPF_MAP_TYPE_CGRP_STORAGE,
+        cgroup_reference, value, flags);
+}
+
+int kernel_bpf_cgrp_storage_update(int object_id,
+                                   uint64_t cgroup_reference,
+                                   const void *value, uint64_t flags) {
+    return bpf_local_storage_update(
+        object_id, KERNEL_BPF_MAP_TYPE_CGRP_STORAGE,
+        cgroup_reference, value, flags);
+}
+
+int kernel_bpf_cgrp_storage_delete(int object_id,
+                                   uint64_t cgroup_reference) {
+    return bpf_local_storage_delete(
+        object_id, KERNEL_BPF_MAP_TYPE_CGRP_STORAGE,
+        cgroup_reference);
+}
+
+int kernel_bpf_sk_storage_lookup(int object_id,
+                                 uint64_t socket_identity,
+                                 void *value, uint64_t flags) {
+    return bpf_local_storage_lookup(
+        object_id, KERNEL_BPF_MAP_TYPE_SK_STORAGE,
+        socket_identity, value, flags);
+}
+
+int kernel_bpf_sk_storage_update(int object_id,
+                                 uint64_t socket_identity,
+                                 const void *value, uint64_t flags) {
+    return bpf_local_storage_update(
+        object_id, KERNEL_BPF_MAP_TYPE_SK_STORAGE,
+        socket_identity, value, flags);
+}
+
+int kernel_bpf_sk_storage_delete(int object_id,
+                                 uint64_t socket_identity) {
+    return bpf_local_storage_delete(
+        object_id, KERNEL_BPF_MAP_TYPE_SK_STORAGE,
+        socket_identity);
 }
 
 int kernel_bpf_map_lookup_and_delete(int object_id, const void *key,
@@ -4020,7 +4078,7 @@ int kernel_bpf_map_lookup_and_delete(int object_id, const void *key,
         status = -EDGE_LINUX_EOPNOTSUPP;
         goto out;
     }
-    if (bpf_map_is_cgrp_storage(map)) {
+    if (bpf_map_is_local_storage(map)) {
         status = -EDGE_LINUX_EOPNOTSUPP;
         goto out;
     }
@@ -4211,7 +4269,7 @@ int kernel_bpf_map_delete(int object_id, const void *key) {
         status = 0;
         goto out;
     }
-    if (bpf_map_is_cgrp_storage(map)) {
+    if (bpf_map_is_local_storage(map)) {
         status = -EDGE_LINUX_EOPNOTSUPP;
         goto out;
     }
@@ -4437,7 +4495,7 @@ int kernel_bpf_map_next_key(int object_id, const void *key, void *next_key) {
         memcpy(next_key, &socket_index, sizeof(socket_index));
         goto out;
     }
-    if (bpf_map_is_cgrp_storage(map)) {
+    if (bpf_map_is_local_storage(map)) {
         status = -EDGE_LINUX_ENOTSUPP;
         goto out;
     }
@@ -4571,7 +4629,7 @@ int kernel_bpf_map_batch_next_flags(int object_id, uint32_t *cursor,
         status = -EDGE_LINUX_ENOTSUPP;
         goto out;
     }
-    if (bpf_map_is_cgrp_storage(map)) {
+    if (bpf_map_is_local_storage(map)) {
         status = -EDGE_LINUX_ENOTSUPP;
         goto out;
     }
