@@ -9918,6 +9918,7 @@ static int maybe_deliver_signal_on_sysret(REGISTERS *r) {
     task_t *t = process_current_task();
     int x32_abi;
     int ia32_abi;
+    int ia32_rt_frame = 0;
     uint64_t blocked = 0;
     uint64_t handler = LINUX_SIG_DFL;
     uint64_t action_mask = 0;
@@ -9937,6 +9938,7 @@ static int maybe_deliver_signal_on_sysret(REGISTERS *r) {
         edge_x86_64_linux_rt_sigframe_t native;
         edge_x86_x32_linux_rt_sigframe_t x32;
         edge_x86_ia32_linux_rt_sigframe_t ia32;
+        edge_x86_ia32_linux_sigframe_t ia32_old;
     } frame;
     void *frame_data;
     struct edge_linux_siginfo_min siginfo;
@@ -9983,6 +9985,14 @@ select_signal:
     action_mask = action->mask;
     action_flags = action->flags;
     action_restorer = action->restorer;
+    ia32_rt_frame = ia32_abi &&
+        (action_flags & EDGE_LINUX_SA_SIGINFO) != 0;
+    if (ia32_abi) {
+        frame_size = ia32_rt_frame ? sizeof(frame.ia32) :
+                                     sizeof(frame.ia32_old);
+        frame_data = ia32_rt_frame ? (void *)&frame.ia32 :
+                                     (void *)&frame.ia32_old;
+    }
     default_disposition =
         edge_linux_signal_default_disposition((uint32_t)sig);
 
@@ -10165,7 +10175,7 @@ select_signal:
     memset(&siginfo, 0, sizeof(siginfo));
     memset(&sigsys_info, 0, sizeof(sigsys_info));
     memset(&native_siginfo, 0, sizeof(native_siginfo));
-    if (ia32_abi) {
+    if (ia32_abi && ia32_rt_frame) {
         static const uint8_t ia32_rt_sigreturn_code[8] = {
             0xb8, 0xad, 0x00, 0x00, 0x00, 0xcd, 0x80, 0x00,
         };
@@ -10199,6 +10209,28 @@ select_signal:
             frame.ia32.ucontext.sigmask[0]);
         memcpy(frame.ia32.retcode, ia32_rt_sigreturn_code,
                sizeof(frame.ia32.retcode));
+    } else if (ia32_abi) {
+        static const uint8_t ia32_sigreturn_code[8] = {
+            0x58, 0xb8, 0x77, 0x00, 0x00, 0x00, 0xcd, 0x80,
+        };
+        uint64_t saved_mask = task_signal_frame_sigmask(t);
+
+        siginfo_u = 0;
+        ucontext_u = 0;
+        if (!((action_flags & EDGE_LINUX_SA_RESTORER) &&
+              user_range_ok(action_restorer, 1) &&
+              action_restorer <= UINT32_MAX)) {
+            restorer = frame_u +
+                offsetof(edge_x86_ia32_linux_sigframe_t, retcode);
+        }
+        frame.ia32_old.pretcode = (uint32_t)restorer;
+        frame.ia32_old.signal = (int32_t)sig;
+        x86_ia32_sigcontext_from_regs(
+            &frame.ia32_old.sigcontext, r, (uint32_t)fpstate_u,
+            (uint32_t)saved_mask);
+        frame.ia32_old.extramask[0] = (uint32_t)(saved_mask >> 32);
+        memcpy(frame.ia32_old.retcode, ia32_sigreturn_code,
+               sizeof(frame.ia32_old.retcode));
     } else if (x32_abi) {
         frame.x32.pretcode = restorer;
         frame.x32.ucontext.flags =
@@ -10243,8 +10275,11 @@ select_signal:
          * userspace frame; rt_sigreturn will use any value written by the
          * handler as the syscall result.
          */
-        if (ia32_abi) {
+        if (ia32_abi && ia32_rt_frame) {
             frame.ia32.ucontext.mcontext.ax =
+                (uint32_t)t->seccomp_sigsys_nr;
+        } else if (ia32_abi) {
+            frame.ia32_old.sigcontext.ax =
                 (uint32_t)t->seccomp_sigsys_nr;
         } else if (x32_abi) {
             frame.x32.ucontext.mcontext.rax =
@@ -10269,7 +10304,7 @@ select_signal:
         siginfo.si_uid = 0;
         memcpy(&native_siginfo, &siginfo, sizeof(siginfo));
     }
-    if (x32_abi || ia32_abi) {
+    if (x32_abi || (ia32_abi && ia32_rt_frame)) {
         edge_linux_native_siginfo_to_compat(
             &native_siginfo, &compat_siginfo);
         if (ia32_abi) {
@@ -10358,8 +10393,8 @@ select_signal:
     r->rflags = (r->rflags | 0x2ull) & ~(1ull << 8);
     if (ia32_abi) {
         r->rax = (uint32_t)sig;
-        r->rdx = (uint32_t)siginfo_u;
-        r->rcx = (uint32_t)ucontext_u;
+        r->rdx = ia32_rt_frame ? (uint32_t)siginfo_u : 0;
+        r->rcx = ia32_rt_frame ? (uint32_t)ucontext_u : 0;
     } else {
         r->rax = 0;
         r->rdi = sig;
@@ -10913,6 +10948,63 @@ static uint64_t do_sys_x32_rt_sigreturn(REGISTERS *r) {
         frame.ucontext.sigmask, 1);
 }
 
+static int x86_ia32_restore_sigcontext(
+        const edge_x86_ia32_linux_sigcontext_t *sigcontext,
+        REGISTERS *current, REGISTERS *restored,
+        uint8_t fxstate[EDGE_X86_64_FPSTATE_SIZE]) {
+    uint64_t fpstate_u;
+    const uint64_t user_rflags = UINT64_C(0x0000000000050dd5);
+
+    if (!sigcontext || !current || !restored || !fxstate ||
+        !user_range_ok(sigcontext->ip, 1) ||
+        !user_range_ok(sigcontext->sp, 1))
+        return -1;
+
+    *restored = *current;
+    restored->rdi = sigcontext->di;
+    restored->rsi = sigcontext->si;
+    restored->rbp = sigcontext->bp;
+    restored->rbx = sigcontext->bx;
+    restored->rdx = sigcontext->dx;
+    restored->rcx = sigcontext->cx;
+    restored->rax = sigcontext->ax;
+    restored->rsp = sigcontext->sp;
+    restored->rip = sigcontext->ip;
+    restored->rflags =
+        (sigcontext->flags & user_rflags) | UINT64_C(0x202);
+    restored->cs = USER32_CS;
+    restored->ss = USER32_DS;
+    restored->err_code = sigcontext->err;
+    restored->int_no = sigcontext->trapno;
+    if (process_x86_compat_set_user_segments(
+            sigcontext->fs <= 3u ? sigcontext->fs :
+                (uint16_t)(sigcontext->fs | 3u),
+            sigcontext->gs <= 3u ? sigcontext->gs :
+                (uint16_t)(sigcontext->gs | 3u)) < 0)
+        return -1;
+
+    fpstate_u = sigcontext->fpstate;
+    if (fpstate_u) {
+        if (fpstate_u > UINT32_MAX - EDGE_X86_IA32_FPSTATE_FRAME_SIZE ||
+            !user_range_ok(fpstate_u,
+                           EDGE_X86_IA32_FPSTATE_FRAME_SIZE) ||
+            copy_from_user(fxstate,
+                           fpstate_u + EDGE_X86_IA32_FXSAVE_OFFSET,
+                           EDGE_X86_64_FPSTATE_SIZE) < 0 ||
+            !x86_64_fxstate_valid(fxstate, 0, 0))
+            return -1;
+    } else {
+        memset(fxstate, 0, EDGE_X86_64_FPSTATE_SIZE);
+        fxstate[0] = 0x7f;
+        fxstate[1] = 0x03;
+        fxstate[24] = 0x80;
+        fxstate[25] = 0x1f;
+        fxstate[28] = 0xbf;
+        fxstate[29] = 0xff;
+    }
+    return 0;
+}
+
 static uint64_t do_sys_ia32_rt_sigreturn(REGISTERS *r) {
     edge_x86_ia32_linux_rt_sigframe_t frame;
     struct edge_linux_stack64 signal_stack;
@@ -10920,8 +11012,6 @@ static uint64_t do_sys_ia32_rt_sigreturn(REGISTERS *r) {
     task_t *t = process_current_task();
     uint8_t fxstate[EDGE_X86_64_FPSTATE_SIZE] __attribute__((aligned(16)));
     uint64_t frame_u;
-    uint64_t fpstate_u;
-    const uint64_t user_rflags = UINT64_C(0x0000000000050dd5);
 
     if (!r || !t || t->linux_abi != EDGE_LINUX_TASK_ABI_IA32 ||
         r->rsp < USER_MIN_ADDR + sizeof(uint32_t) || r->rsp > UINT32_MAX)
@@ -10930,54 +11020,9 @@ static uint64_t do_sys_ia32_rt_sigreturn(REGISTERS *r) {
     if (frame_u > UINT32_MAX || !user_range_ok(frame_u, sizeof(frame)) ||
         copy_from_user(&frame, frame_u, sizeof(frame)) < 0)
         x86_64_sigreturn_badframe(r, frame_u, "ia32-frame");
-    if (!user_range_ok(frame.ucontext.mcontext.ip, 1) ||
-        !user_range_ok(frame.ucontext.mcontext.sp, 1))
-        x86_64_sigreturn_badframe(r, frame_u, "ia32-registers");
-
-    restored = *r;
-    restored.rdi = frame.ucontext.mcontext.di;
-    restored.rsi = frame.ucontext.mcontext.si;
-    restored.rbp = frame.ucontext.mcontext.bp;
-    restored.rbx = frame.ucontext.mcontext.bx;
-    restored.rdx = frame.ucontext.mcontext.dx;
-    restored.rcx = frame.ucontext.mcontext.cx;
-    restored.rax = frame.ucontext.mcontext.ax;
-    restored.rsp = frame.ucontext.mcontext.sp;
-    restored.rip = frame.ucontext.mcontext.ip;
-    restored.rflags =
-        (frame.ucontext.mcontext.flags & user_rflags) | UINT64_C(0x202);
-    restored.cs = USER32_CS;
-    restored.ss = USER32_DS;
-    restored.err_code = frame.ucontext.mcontext.err;
-    restored.int_no = frame.ucontext.mcontext.trapno;
-    if (process_x86_compat_set_user_segments(
-            frame.ucontext.mcontext.fs <= 3u ?
-                frame.ucontext.mcontext.fs :
-                (uint16_t)(frame.ucontext.mcontext.fs | 3u),
-            frame.ucontext.mcontext.gs <= 3u ?
-                frame.ucontext.mcontext.gs :
-                (uint16_t)(frame.ucontext.mcontext.gs | 3u)) < 0)
-        x86_64_sigreturn_badframe(r, frame_u, "ia32-segments");
-
-    fpstate_u = frame.ucontext.mcontext.fpstate;
-    if (fpstate_u) {
-        if (fpstate_u > UINT32_MAX - EDGE_X86_IA32_FPSTATE_FRAME_SIZE ||
-            !user_range_ok(fpstate_u,
-                           EDGE_X86_IA32_FPSTATE_FRAME_SIZE) ||
-            copy_from_user(fxstate,
-                           fpstate_u + EDGE_X86_IA32_FXSAVE_OFFSET,
-                           sizeof(fxstate)) < 0 ||
-            !x86_64_fxstate_valid(fxstate, 0, 0))
-            x86_64_sigreturn_badframe(r, frame_u, "ia32-fpstate");
-    } else {
-        memset(fxstate, 0, sizeof(fxstate));
-        fxstate[0] = 0x7f;
-        fxstate[1] = 0x03;
-        fxstate[24] = 0x80;
-        fxstate[25] = 0x1f;
-        fxstate[28] = 0xbf;
-        fxstate[29] = 0xff;
-    }
+    if (x86_ia32_restore_sigcontext(
+            &frame.ucontext.mcontext, r, &restored, fxstate) < 0)
+        x86_64_sigreturn_badframe(r, frame_u, "ia32-context");
 
     signal_stack.sp = frame.ucontext.stack.sp;
     signal_stack.flags = frame.ucontext.stack.flags;
@@ -10989,6 +11034,42 @@ static uint64_t do_sys_ia32_rt_sigreturn(REGISTERS *r) {
                 ((uint64_t)frame.ucontext.sigmask[1] << 32)),
             &signal_stack) < 0)
         x86_64_sigreturn_badframe(r, frame_u, "ia32-signal-state");
+    task_cancel_wait_sigmask_restore(t);
+    memcpy(t->fxsave_region, fxstate, sizeof(fxstate));
+    x86_64_fxrstor_user_signal(fxstate);
+    if (t->active_signal_frame == frame_u) {
+        t->active_signal_frame = 0;
+        t->active_signal_restorer_rsp = 0;
+    }
+    *r = restored;
+    return r->rax;
+}
+
+static uint64_t do_sys_ia32_sigreturn(REGISTERS *r) {
+    edge_x86_ia32_linux_sigframe_t frame;
+    REGISTERS restored;
+    task_t *t = process_current_task();
+    uint8_t fxstate[EDGE_X86_64_FPSTATE_SIZE] __attribute__((aligned(16)));
+    uint64_t frame_u;
+    uint64_t signal_mask;
+
+    if (!r || !t || t->linux_abi != EDGE_LINUX_TASK_ABI_IA32 ||
+        r->rsp < USER_MIN_ADDR + 2u * sizeof(uint32_t) ||
+        r->rsp > UINT32_MAX)
+        x86_64_sigreturn_badframe(r, r ? r->rsp : 0, "ia32-old-stack");
+    frame_u = r->rsp - 2u * sizeof(uint32_t);
+    if (frame_u > UINT32_MAX || !user_range_ok(frame_u, sizeof(frame)) ||
+        copy_from_user(&frame, frame_u, sizeof(frame)) < 0)
+        x86_64_sigreturn_badframe(r, frame_u, "ia32-old-frame");
+    if (x86_ia32_restore_sigcontext(
+            &frame.sigcontext, r, &restored, fxstate) < 0)
+        x86_64_sigreturn_badframe(r, frame_u, "ia32-old-context");
+
+    signal_mask = frame.sigcontext.oldmask |
+        ((uint64_t)frame.extramask[0] << 32);
+    if (kernel_current_signal_mask_set(
+            edge_linux_signal_sanitize_mask(signal_mask)) < 0)
+        x86_64_sigreturn_badframe(r, frame_u, "ia32-old-signal-state");
     task_cancel_wait_sigmask_restore(t);
     memcpy(t->fxsave_region, fxstate, sizeof(fxstate));
     x86_64_fxrstor_user_signal(fxstate);

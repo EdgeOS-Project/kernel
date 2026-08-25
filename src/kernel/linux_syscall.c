@@ -7379,6 +7379,57 @@ static int64_t edge_linux_sys_signal_action(
     uint64_t sigset_size = context->arguments[3];
     int result;
 
+    if (context->architecture == EDGE_LINUX_ARCH_IA32 &&
+        context->raw_number == 48u) {
+        signal = (uint32_t)context->arguments[0];
+        if (!edge_linux_signal_catchable(signal))
+            return -EDGE_LINUX_EINVAL;
+        result = kernel_current_signal_action_get(signal, &old_action);
+        if (result < 0) return result;
+        memset(&new_action, 0, sizeof(new_action));
+        new_action.handler = (uint32_t)context->arguments[1];
+        new_action.flags = EDGE_LINUX_SA_RESETHAND |
+                           EDGE_LINUX_SA_NODEFER;
+        result = kernel_current_signal_action_set(signal, &new_action);
+        return result < 0 ? result : (int64_t)(uint32_t)old_action.handler;
+    }
+    if (context->architecture == EDGE_LINUX_ARCH_IA32 &&
+        context->raw_number == 67u) {
+        struct edge_linux_compat_old_sigaction old_compat;
+        struct edge_linux_compat_old_sigaction new_compat;
+
+        if (new_user && edge_linux_copy_from_user(
+                context, &new_compat, new_user,
+                sizeof(new_compat)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (!edge_linux_signal_valid(signal)) return -EDGE_LINUX_EINVAL;
+        result = kernel_current_signal_action_get(signal, &old_action);
+        if (result < 0) return result;
+        if (new_user) {
+            if (!edge_linux_signal_catchable(signal))
+                return -EDGE_LINUX_EINVAL;
+            memset(&new_action, 0, sizeof(new_action));
+            new_action.handler = new_compat.handler;
+            new_action.mask = edge_linux_signal_sanitize_mask(
+                new_compat.mask);
+            new_action.flags = new_compat.flags;
+            new_action.restorer = new_compat.restorer;
+            result = kernel_current_signal_action_set(signal, &new_action);
+            if (result < 0) return result;
+        }
+        if (old_user) {
+            old_compat.handler = (uint32_t)old_action.handler;
+            old_compat.mask = (uint32_t)old_action.mask;
+            old_compat.flags = (uint32_t)old_action.flags;
+            old_compat.restorer = (uint32_t)old_action.restorer;
+            if (edge_linux_copy_to_user(
+                    context, old_user, &old_compat,
+                    sizeof(old_compat)) < 0)
+                return -EDGE_LINUX_EFAULT;
+        }
+        return 0;
+    }
+
     if (!edge_linux_signal_valid(signal) || sigset_size != sizeof(uint64_t))
         return -EDGE_LINUX_EINVAL;
     result = kernel_current_signal_action_get(signal, &old_action);
@@ -7436,6 +7487,53 @@ static int64_t edge_linux_sys_signal_mask(
     uint64_t old_user = context->arguments[2];
     int result;
 
+    if (context->architecture == EDGE_LINUX_ARCH_IA32 &&
+        context->raw_number == 68u) {
+        result = kernel_current_signal_mask_get(&old_mask);
+        return result < 0 ? result : (int64_t)(uint32_t)old_mask;
+    }
+    if (context->architecture == EDGE_LINUX_ARCH_IA32 &&
+        context->raw_number == 69u) {
+        result = kernel_current_signal_mask_get(&old_mask);
+        if (result < 0) return result;
+        new_mask = edge_linux_signal_sanitize_mask(
+            (uint32_t)context->arguments[0]);
+        result = kernel_current_signal_mask_set(new_mask);
+        return result < 0 ? result : (int64_t)(uint32_t)old_mask;
+    }
+    if (context->architecture == EDGE_LINUX_ARCH_IA32 &&
+        context->raw_number == 126u) {
+        uint32_t compat_set;
+        uint32_t compat_old;
+
+        result = kernel_current_signal_mask_get(&old_mask);
+        if (result < 0) return result;
+        if (set_user) {
+            if (edge_linux_copy_from_user(
+                    context, &compat_set, set_user,
+                    sizeof(compat_set)) < 0)
+                return -EDGE_LINUX_EFAULT;
+            if (context->arguments[0] > 2u)
+                return -EDGE_LINUX_EINVAL;
+            if (context->arguments[0] == 0u)
+                new_mask = old_mask | compat_set;
+            else if (context->arguments[0] == 1u)
+                new_mask = old_mask & ~(uint64_t)compat_set;
+            else
+                new_mask = (old_mask & UINT64_C(0xffffffff00000000)) |
+                           compat_set;
+            result = kernel_current_signal_mask_set(
+                edge_linux_signal_sanitize_mask(new_mask));
+            if (result < 0) return result;
+        }
+        compat_old = (uint32_t)old_mask;
+        if (old_user && edge_linux_copy_to_user(
+                context, old_user, &compat_old,
+                sizeof(compat_old)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        return 0;
+    }
+
     if (context->arguments[3] != sizeof(uint64_t))
         return -EDGE_LINUX_EINVAL;
     result = kernel_current_signal_mask_get(&old_mask);
@@ -7466,6 +7564,20 @@ static int64_t edge_linux_sys_signal_pending(
     uint64_t pending;
     uint64_t mask;
     int result;
+    if (context->architecture == EDGE_LINUX_ARCH_IA32 &&
+        context->raw_number == 73u) {
+        uint32_t compat_pending;
+
+        if (!context->arguments[0]) return -EDGE_LINUX_EFAULT;
+        result = kernel_current_signal_pending(&pending);
+        if (result < 0) return result;
+        result = kernel_current_signal_mask_get(&mask);
+        if (result < 0) return result;
+        compat_pending = (uint32_t)(pending & mask);
+        return edge_linux_copy_to_user(
+            context, context->arguments[0], &compat_pending,
+            sizeof(compat_pending)) < 0 ? -EDGE_LINUX_EFAULT : 0;
+    }
     if (context->arguments[1] != sizeof(uint64_t))
         return -EDGE_LINUX_EINVAL;
     if (!context->arguments[0]) return -EDGE_LINUX_EFAULT;
@@ -15142,6 +15254,14 @@ static int64_t edge_linux_sys_signal_wait(
     int64_t timeout_microseconds;
     uint64_t now;
     int status;
+
+    if (context->architecture == EDGE_LINUX_ARCH_IA32 &&
+        context->raw_number == 72u) {
+        mask = (uint32_t)context->arguments[2];
+        return kernel_current_signal_suspend(
+            edge_linux_signal_sanitize_mask(mask),
+            context->user_registers);
+    }
 
     if (context->id == EDGE_LINUX_SYS_pause) {
         if (kernel_current_signal_mask_get(&mask) < 0)

@@ -147,6 +147,15 @@ typedef struct edge_x86_ia32_linux_rt_sigframe {
     uint8_t retcode[8];
 } edge_x86_ia32_linux_rt_sigframe_t;
 
+typedef struct edge_x86_ia32_linux_sigframe {
+    uint32_t pretcode;
+    int32_t signal;
+    edge_x86_ia32_linux_sigcontext_t sigcontext;
+    uint8_t fpstate_unused[EDGE_X86_IA32_FPSTATE_FRAME_SIZE];
+    uint32_t extramask[1];
+    uint8_t retcode[8];
+} edge_x86_ia32_linux_sigframe_t;
+
 _Static_assert(sizeof(edge_x86_64_linux_stack_t) == 24,
                "Linux x86_64 stack_t ABI size");
 _Static_assert(sizeof(edge_x86_64_linux_sigcontext_t) == 256,
@@ -193,5 +202,13 @@ _Static_assert(offsetof(edge_x86_ia32_linux_rt_sigframe_t, retcode) == 260,
                "Linux ia32 restorer-code frame offset");
 _Static_assert(sizeof(edge_x86_ia32_linux_rt_sigframe_t) == 268,
                "Linux ia32 rt_sigframe ABI size");
+_Static_assert(offsetof(edge_x86_ia32_linux_sigframe_t, sigcontext) == 8,
+               "Linux ia32 sigcontext frame offset");
+_Static_assert(offsetof(edge_x86_ia32_linux_sigframe_t, extramask) == 720,
+               "Linux ia32 extra signal mask frame offset");
+_Static_assert(offsetof(edge_x86_ia32_linux_sigframe_t, retcode) == 724,
+               "Linux ia32 old restorer-code frame offset");
+_Static_assert(sizeof(edge_x86_ia32_linux_sigframe_t) == 732,
+               "Linux ia32 sigframe ABI size");
 
 #endif

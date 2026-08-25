@@ -461,6 +461,15 @@ void edgeos_x86_64_syscall_dispatch(REGISTERS *r) {
         sigreturn_restored = 1;
         goto syscall_dispatch_complete;
     }
+    if (ia32_abi && nr == 119u) {
+        r->rax = do_sys_ia32_sigreturn(r);
+        sigreturn_restored = 1;
+        goto syscall_dispatch_complete;
+    }
+    if (ia32_abi && nr == 123u) {
+        r->rax = do_sys_modify_ldt(a1, a2, a3);
+        goto syscall_dispatch_complete;
+    }
     if (ia32_abi && nr == 243u) {
         r->rax = do_sys_set_thread_area(a1);
         goto syscall_dispatch_complete;
