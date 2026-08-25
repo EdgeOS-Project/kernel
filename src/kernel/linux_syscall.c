@@ -17289,8 +17289,8 @@ static int64_t edge_linux_sys_exec(
     int status;
 
     memset(&request, 0, sizeof(request));
-    request.vector_word_size = context->architecture ==
-        EDGE_LINUX_ARCH_X32 ? sizeof(uint32_t) : sizeof(uint64_t);
+    request.vector_word_size = edge_linux_architecture_is_compat32(
+        context->architecture) ? sizeof(uint32_t) : sizeof(uint64_t);
     if (context->id == EDGE_LINUX_SYS_execve) {
         user_path = context->arguments[0];
         request.argv_user = context->arguments[1];
@@ -17908,7 +17908,8 @@ static int64_t edge_linux_sys_clone(
         request.exit_signal = (uint32_t)(raw_flags & 0xffu);
         request.child_stack = context->arguments[1];
         request.parent_tid_user = context->arguments[2];
-        if (context->architecture == EDGE_LINUX_ARCH_AARCH64) {
+        if (context->architecture == EDGE_LINUX_ARCH_AARCH64 ||
+            context->architecture == EDGE_LINUX_ARCH_IA32) {
             request.tls = context->arguments[3];
             request.child_tid_user = context->arguments[4];
         } else {

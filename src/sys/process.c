@@ -7863,18 +7863,28 @@ static int task_name_from_path(const char *path, char *out, int out_sz) {
 }
 
 static void process_canonicalize_syscall_frame(edge_trap_frame_t *tf) {
+    uint64_t saved_flags;
+
     if (!tf) return;
     /*
      * Fork/clone children resume through an iret frame copied from the parent.
      * The Linux-visible continuation is always userspace; never let a stale or
      * partially constructed kernel selector survive into the child frame.
      */
-    tf->cs = USER_CS;
-    tf->ss = USER_DS;
-    if (tf->int_no == 6 && tf->rcx >= EDGE_USER_MIN_ADDR && tf->rcx < EDGE_USER_MAX_ADDR) {
+    if (tf->cs == USER32_CS) {
+        tf->cs = USER32_CS;
+        tf->ss = USER32_DS;
+    } else {
+        tf->cs = USER_CS;
+        tf->ss = USER_DS;
+    }
+    if (tf->int_no == 6 && tf->rcx >= EDGE_USER_MIN_ADDR &&
+        tf->rcx < EDGE_USER_MAX_ADDR) {
         tf->rip = tf->rcx;
     }
-    tf->rflags = (tf->r11 | 0x2ull) & ~(1ull << 8);
+    saved_flags = tf->int_no == 256u || tf->int_no == 6u ?
+        tf->r11 : tf->rflags;
+    tf->rflags = (saved_flags | 0x2ull) & ~(1ull << 8);
 }
 
 static int task_build_address_space(task_t *t, int user_mode) {

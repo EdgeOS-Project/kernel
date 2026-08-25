@@ -58,23 +58,110 @@ X32_ARCH_SYSCALLS = {
 }
 
 IA32_SHARED_SYSCALLS = {
+    "access",
+    "brk",
+    "chdir",
+    "clock_getres_time64",
+    "clock_gettime64",
+    "clock_nanosleep_time64",
+    "clone",
     "close",
+    "close_range",
+    "dup",
+    "dup2",
+    "dup3",
+    "epoll_create",
+    "epoll_create1",
+    "epoll_ctl",
+    "epoll_pwait",
+    "epoll_pwait2",
+    "epoll_wait",
+    "eventfd",
+    "eventfd2",
+    "execve",
+    "execveat",
     "exit",
     "exit_group",
+    "faccessat",
+    "faccessat2",
+    "fork",
+    "fstat64",
+    "fstatat64",
+    "futex_time64",
+    "getcwd",
+    "getegid32",
+    "geteuid32",
+    "getgid32",
     "getpid",
     "getppid",
+    "getrandom",
     "gettid",
+    "getuid32",
+    "io_uring_enter",
+    "io_uring_register",
+    "io_uring_setup",
     "kill",
+    "lstat64",
+    "madvise",
+    "membarrier",
+    "mincore",
+    "mmap2",
+    "mprotect",
+    "mremap",
+    "munmap",
+    "openat",
+    "openat2",
+    "pipe2",
+    "poll",
+    "ppoll_time64",
+    "prctl",
     "read",
+    "readlink",
+    "readlinkat",
+    "readv",
+    "rseq",
     "rt_sigaction",
+    "rt_sigpending",
+    "rt_sigprocmask",
+    "rt_sigsuspend",
     "sched_yield",
+    "set_tid_address",
+    "setgid32",
+    "setuid32",
+    "sigaltstack",
+    "stat64",
+    "statx",
+    "uname",
+    "vfork",
     "write",
+    "writev",
 }
 
 IA32_ARCH_SYSCALLS = {
     "get_thread_area",
     "rt_sigreturn",
     "set_thread_area",
+}
+
+IA32_CANONICAL_ALIASES = {
+    "clock_adjtime64": "clock_adjtime",
+    "clock_getres_time64": "clock_getres",
+    "clock_gettime64": "clock_gettime",
+    "clock_nanosleep_time64": "clock_nanosleep",
+    "clock_settime64": "clock_settime",
+    "fstat64": "fstat",
+    "fstatat64": "newfstatat",
+    "futex_time64": "futex",
+    "getegid32": "getegid",
+    "geteuid32": "geteuid",
+    "getgid32": "getgid",
+    "getuid32": "getuid",
+    "lstat64": "lstat",
+    "mmap2": "mmap",
+    "ppoll_time64": "ppoll",
+    "setgid32": "setgid",
+    "setuid32": "setuid",
+    "stat64": "stat",
 }
 
 
@@ -190,7 +277,8 @@ def render_tables(syscalls: list[dict[str, object]]) -> str:
         )
     for mapping in ia32_syscalls:
         name = str(mapping["name"])
-        entry = canonical.get(name)
+        canonical_name = IA32_CANONICAL_ALIASES.get(name, name)
+        entry = canonical.get(canonical_name)
         if entry is None:
             continue
         architectures = entry["architectures"]
@@ -206,7 +294,7 @@ def render_tables(syscalls: list[dict[str, object]]) -> str:
             else "enosys"
         )
         by_architecture["ia32"].append(
-            (int(mapping["number"]), name, status)
+            (int(mapping["number"]), canonical_name, status)
         )
     lines = [
         "/* SPDX-License-Identifier: MPL-2.0 */",

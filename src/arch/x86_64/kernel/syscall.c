@@ -78,6 +78,39 @@ int edge_x86_64_linux_stat_to_user(
            -EDGE_LINUX_EFAULT : 0;
 }
 
+int edge_ia32_linux_stat64_to_user(
+    void *context, edge_linux_copy_to_user_fn copy_to_user,
+    uint64_t user_destination, const kernel_file_metadata_t *metadata) {
+    edge_ia32_linux_stat64_t result = {0};
+
+    if (!copy_to_user || !user_destination || !metadata)
+        return -EDGE_LINUX_EFAULT;
+    if (metadata->size > INT64_MAX || metadata->blocks > INT64_MAX ||
+        metadata->access_time.seconds > UINT32_MAX ||
+        metadata->modification_time.seconds > UINT32_MAX ||
+        metadata->change_time.seconds > UINT32_MAX)
+        return -EDGE_LINUX_EOVERFLOW;
+    result.st_dev = metadata->device;
+    result.legacy_ino = (uint32_t)metadata->inode;
+    result.st_mode = metadata->mode;
+    result.st_nlink = metadata->links;
+    result.st_uid = metadata->uid;
+    result.st_gid = metadata->gid;
+    result.st_rdev = metadata->rdev;
+    result.st_size = (int64_t)metadata->size;
+    result.st_blksize = metadata->block_size;
+    result.st_blocks = metadata->blocks;
+    result.st_atime = (uint32_t)metadata->access_time.seconds;
+    result.st_atime_nsec = metadata->access_time.nanoseconds;
+    result.st_mtime = (uint32_t)metadata->modification_time.seconds;
+    result.st_mtime_nsec = metadata->modification_time.nanoseconds;
+    result.st_ctime = (uint32_t)metadata->change_time.seconds;
+    result.st_ctime_nsec = metadata->change_time.nanoseconds;
+    result.st_ino = metadata->inode;
+    return copy_to_user(context, user_destination, &result, sizeof(result)) < 0 ?
+        -EDGE_LINUX_EFAULT : 0;
+}
+
 static uint64_t x86_rdmsr(uint32_t msr) {
     uint32_t lo;
     uint32_t hi;

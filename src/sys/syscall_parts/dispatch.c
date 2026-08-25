@@ -251,7 +251,7 @@ static const edge_linux_syscall_arch_ops_t ia32_linux_syscall_ops = {
     .user_address_minimum = USER_MIN_ADDR,
     .user_address_limit = UINT32_MAX,
     .validate_user_range_arch = x86_linux_validate_user_range_arch,
-    .copy_stat_to_user = edge_x86_64_linux_stat_to_user,
+    .copy_stat_to_user = edge_ia32_linux_stat64_to_user,
     .copy_epoll_event_from_user = x86_linux_copy_epoll_event_from_user,
     .network_poll = syscall_network_poll,
     .epoll_event_size = 12u,
@@ -480,7 +480,10 @@ void edgeos_x86_64_syscall_dispatch(REGISTERS *r) {
                 (x32_abi ? EDGE_LINUX_ARCH_X32 : EDGE_LINUX_ARCH_X86_64),
             .route_status = EDGE_LINUX_SYSCALL_IMPLEMENTED,
             .raw_number = x32_abi ? nr & ~X32_SYSCALL_BIT : nr,
-            .arguments = {a1, a2, a3, a4, a5, a6},
+            .arguments = {
+                a1, a2, a3, a4, a5,
+                ia32_abi && nr == 192u ? a6 << 12 : a6,
+            },
             .current_task = cur,
             .user_registers = r,
             .arch_ops = ia32_abi ? &ia32_linux_syscall_ops :
