@@ -2703,26 +2703,42 @@ int kernel_io_uring_pbuf_ring_register(
             goto unlock;
         }
     }
-    if (kernel_allocated) {
-        uint32_t allocated = 0u;
+    {
+        uint32_t retained = 0u;
 
         for (uint32_t page = 0;
              page < KERNEL_IO_URING_MAX_PBUF_PAGES &&
-             allocated < page_count; ++page) {
+             retained < page_count; ++page) {
             kernel_io_uring_page_t *storage;
+            int storage_result;
 
             if (ring->pbuf_page_used[page]) continue;
             storage = &ring->pbuf_pages[page];
-            if (g_io_uring_allocator.allocate(
-                    g_io_uring_allocator.context, storage) < 0 ||
-                !storage->address)
+            if (kernel_allocated) {
+                storage_result = g_io_uring_allocator.allocate(
+                    g_io_uring_allocator.context, storage);
+            } else if (g_io_uring_allocator.pin_user) {
+                storage_result = g_io_uring_allocator.pin_user(
+                    g_io_uring_allocator.context, address_space,
+                    address + (uint64_t)retained *
+                        KERNEL_IO_URING_PAGE_SIZE,
+                    storage);
+            } else {
+                storage_result = -EDGE_LINUX_EOPNOTSUPP;
+            }
+            if (storage_result < 0 || !storage->address) {
+                result = storage_result < 0 ? storage_result :
+                    -EDGE_LINUX_ENOMEM;
                 break;
-            memset(storage->address, 0, KERNEL_IO_URING_PAGE_SIZE);
+            }
+            if (kernel_allocated)
+                memset(storage->address, 0,
+                       KERNEL_IO_URING_PAGE_SIZE);
             ring->pbuf_page_groups[page] = group_id;
             ring->pbuf_page_used[page] = 1u;
-            ++allocated;
+            ++retained;
         }
-        if (allocated != page_count) {
+        if (retained != page_count) {
             for (uint32_t page = 0;
                  page < KERNEL_IO_URING_MAX_PBUF_PAGES; ++page) {
                 if (!ring->pbuf_page_used[page] ||
@@ -2737,7 +2753,7 @@ int kernel_io_uring_pbuf_ring_register(
                 ring->pbuf_page_groups[page] = 0u;
             }
             memset(group, 0, sizeof(*group));
-            result = -EDGE_LINUX_ENOMEM;
+            if (result == 0) result = -EDGE_LINUX_ENOMEM;
             goto unlock;
         }
     }
@@ -2745,8 +2761,7 @@ int kernel_io_uring_pbuf_ring_register(
     group->ring_address_space = address_space;
     group->ring_entries = entries;
     group->minimum_left = minimum_left;
-    group->ring_page_count = kernel_allocated ?
-        (uint16_t)page_count : 0u;
+    group->ring_page_count = (uint16_t)page_count;
     group->provided_ring = 1u;
     group->kernel_allocated = kernel_allocated ? 1u : 0u;
     group->incremental = incremental ? 1u : 0u;
@@ -2774,20 +2789,18 @@ int kernel_io_uring_pbuf_ring_unregister(
     } else if (!group->provided_ring) {
         result = -EDGE_LINUX_EINVAL;
     } else {
-        if (group->kernel_allocated) {
-            for (uint32_t page = 0;
-                 page < KERNEL_IO_URING_MAX_PBUF_PAGES; ++page) {
-                if (!ring->pbuf_page_used[page] ||
-                    ring->pbuf_page_groups[page] != group_id)
-                    continue;
-                g_io_uring_allocator.release(
-                    g_io_uring_allocator.context,
-                    &ring->pbuf_pages[page]);
-                memset(&ring->pbuf_pages[page], 0,
-                       sizeof(ring->pbuf_pages[page]));
-                ring->pbuf_page_used[page] = 0u;
-                ring->pbuf_page_groups[page] = 0u;
-            }
+        for (uint32_t page = 0;
+             page < KERNEL_IO_URING_MAX_PBUF_PAGES; ++page) {
+            if (!ring->pbuf_page_used[page] ||
+                ring->pbuf_page_groups[page] != group_id)
+                continue;
+            g_io_uring_allocator.release(
+                g_io_uring_allocator.context,
+                &ring->pbuf_pages[page]);
+            memset(&ring->pbuf_pages[page], 0,
+                   sizeof(ring->pbuf_pages[page]));
+            ring->pbuf_page_used[page] = 0u;
+            ring->pbuf_page_groups[page] = 0u;
         }
         memset(group, 0, sizeof(*group));
     }
@@ -2863,7 +2876,7 @@ int kernel_io_uring_pbuf_ring_read(
         goto unlock;
     }
     group = io_uring_buffer_group_locked(ring, group_id, 0);
-    if (!group || !group->provided_ring || !group->kernel_allocated) {
+    if (!group || !group->provided_ring) {
         result = -EDGE_LINUX_EINVAL;
         goto unlock;
     }
@@ -2937,8 +2950,7 @@ int kernel_io_uring_pbuf_ring_complete(
         goto unlock;
     }
     group = io_uring_buffer_group_locked(ring, group_id, 0);
-    if (!group || !group->provided_ring ||
-        !group->kernel_allocated || !group->incremental) {
+    if (!group || !group->provided_ring || !group->incremental) {
         result = -EDGE_LINUX_EINVAL;
         goto unlock;
     }
@@ -4219,32 +4231,11 @@ static int io_uring_multishot_buffer_select(
     if (result == 0) {
         struct edge_linux_io_uring_buf buffer;
         uint16_t tail;
-        uint64_t entry_address;
 
         if (ring.incremental) return -EDGE_LINUX_EOPNOTSUPP;
-        if (ring.kernel_allocated) {
-            result = kernel_io_uring_pbuf_ring_read(
-                ring_id, group_id, ring.head, &buffer, &tail);
-            if (result < 0) return result;
-        } else {
-            if (kernel_mm_address_space_copy(
-                    ring.address_space,
-                    ring.address + offsetof(
-                        struct edge_linux_io_uring_buf, reserved),
-                    &tail, sizeof(tail),
-                    KERNEL_MM_PROCESS_VM_READ) < 0)
-                return -EDGE_LINUX_EFAULT;
-            if (tail == (uint16_t)ring.head)
-                return -EDGE_LINUX_ENOBUFS;
-            entry_address = ring.address +
-                (uint64_t)(ring.head & (ring.entries - 1u)) *
-                sizeof(buffer);
-            if (kernel_mm_address_space_copy(
-                    ring.address_space, entry_address,
-                    &buffer, sizeof(buffer),
-                    KERNEL_MM_PROCESS_VM_READ) < 0)
-                return -EDGE_LINUX_EFAULT;
-        }
+        result = kernel_io_uring_pbuf_ring_read(
+            ring_id, group_id, ring.head, &buffer, &tail);
+        if (result < 0) return result;
         if (tail == (uint16_t)ring.head)
             return -EDGE_LINUX_ENOBUFS;
         selected->address = buffer.address;

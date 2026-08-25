@@ -12503,30 +12503,16 @@ static int edge_linux_io_uring_select_buffer(
         uint16_t tail;
         uint64_t buffer_address;
 
-        if (ring.kernel_allocated) {
-            result = kernel_io_uring_pbuf_ring_read(
-                ring_id, submission->buffer_index,
-                ring.head, &buffer, &tail);
-            if (result < 0) return result;
-        } else if (kernel_mm_address_space_copy(
-                       ring.address_space,
-                       ring.address + offsetof(
-                           struct edge_linux_io_uring_buf, reserved),
-                       &tail, sizeof(tail),
-                       KERNEL_MM_PROCESS_VM_READ) < 0) {
-            return -EDGE_LINUX_EFAULT;
-        }
+        result = kernel_io_uring_pbuf_ring_read(
+            ring_id, submission->buffer_index,
+            ring.head, &buffer, &tail);
+        if (result < 0) return result;
         if (tail == (uint16_t)ring.head)
             return -EDGE_LINUX_ENOBUFS;
         if (!ring.kernel_allocated) {
             buffer_address = ring.address +
                 (uint64_t)(ring.head & (ring.entries - 1u)) *
                 sizeof(buffer);
-            if (kernel_mm_address_space_copy(
-                    ring.address_space, buffer_address,
-                    &buffer, sizeof(buffer),
-                    KERNEL_MM_PROCESS_VM_READ) < 0)
-                return -EDGE_LINUX_EFAULT;
             selected->ring_entry_address = buffer_address;
             selected->ring_address_space = ring.address_space;
         }
@@ -12580,54 +12566,9 @@ static void edge_linux_io_uring_finish_buffer_selection(
         if (kernel_io_uring_pbuf_ring_snapshot(
                 ring_id, selected->group_id, &ring) == 0 &&
             ring.incremental) {
-            if (ring.kernel_allocated) {
-                (void)kernel_io_uring_pbuf_ring_complete(
-                    ring_id, selected->group_id, provided_ring_head,
-                    (uint32_t)operation_result, &buffer_more);
-            } else if ((uint32_t)operation_result <= selected->capacity) {
-                uint32_t consumed = (uint32_t)operation_result;
-                uint32_t remaining = selected->capacity - consumed;
-
-                if (!consumed) {
-                    buffer_more = 1;
-                } else if (remaining &&
-                           (!ring.minimum_left ||
-                            remaining >= ring.minimum_left)) {
-                    struct {
-                        uint64_t address;
-                        uint32_t length;
-                    } update = {
-                        .address = selected->address + consumed,
-                        .length = remaining,
-                    };
-
-                    if (kernel_mm_address_space_copy(
-                            selected->ring_address_space,
-                            selected->ring_entry_address,
-                            &update, offsetof(
-                                struct edge_linux_io_uring_buf, id),
-                            KERNEL_MM_PROCESS_VM_WRITE) == 0)
-                        buffer_more = 1;
-                    else
-                        (void)kernel_io_uring_pbuf_ring_commit(
-                            ring_id, selected->group_id,
-                            provided_ring_head);
-                } else {
-                    uint32_t zero = 0u;
-
-                    (void)kernel_mm_address_space_copy(
-                            selected->ring_address_space,
-                            selected->ring_entry_address +
-                                offsetof(
-                                    struct edge_linux_io_uring_buf,
-                                    length),
-                            &zero, sizeof(zero),
-                            KERNEL_MM_PROCESS_VM_WRITE);
-                    (void)kernel_io_uring_pbuf_ring_commit(
-                        ring_id, selected->group_id,
-                        provided_ring_head);
-                }
-            }
+            (void)kernel_io_uring_pbuf_ring_complete(
+                ring_id, selected->group_id, provided_ring_head,
+                (uint32_t)operation_result, &buffer_more);
         } else {
             (void)kernel_io_uring_pbuf_ring_commit(
                 ring_id, selected->group_id, provided_ring_head);

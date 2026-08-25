@@ -27,6 +27,8 @@
 
 #define PROT_READ 1
 #define PROT_WRITE 2
+#define MAP_PRIVATE 2
+#define MAP_ANONYMOUS 0x20
 #define MAP_SHARED 1
 #define PAGE_SIZE 4096u
 #define ENOENT 2
@@ -237,6 +239,14 @@ static void *map_ring(long descriptor, uint64_t offset) {
         SYS_mmap, 0, PAGE_SIZE, PROT_READ | PROT_WRITE,
         MAP_SHARED, descriptor, (long)offset);
     return result < 0 && result >= -4095 ? 0 : (void *)(uintptr_t)result;
+}
+
+static void *map_anonymous_page(void) {
+    long result = raw_syscall6(
+        SYS_mmap, 0, PAGE_SIZE, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    return result < 0 && result >= -4095 ? 0 :
+        (void *)(uintptr_t)result;
 }
 
 static int submit(probe_ring_t *ring, const struct io_uring_sqe *request,
@@ -683,6 +693,64 @@ static int run_probe(void) {
         SYS_io_uring_register, ring.descriptor,
         IORING_UNREGISTER_PBUF_RING,
         (long)&registration, 1, 0, 0), 0);
+
+    {
+        uint8_t *detached_ring = map_anonymous_page();
+
+        failures += expect(detached_ring != 0, 1);
+        if (detached_ring) {
+            bytes_zero(detached_ring, PAGE_SIZE);
+            bytes_zero(g_first_buffer, sizeof(g_first_buffer));
+            publish_buffer(
+                detached_ring, 0u, g_first_buffer,
+                sizeof(g_first_buffer), 90u, 1u);
+            bytes_zero(&registration, sizeof(registration));
+            registration.ring_address =
+                (uint64_t)(uintptr_t)detached_ring;
+            registration.ring_entries = 8u;
+            registration.buffer_group = 14u;
+            failures += expect(raw_syscall6(
+                SYS_io_uring_register, ring.descriptor,
+                IORING_REGISTER_PBUF_RING,
+                (long)&registration, 1, 0, 0), 0);
+            failures += expect(raw_syscall6(
+                SYS_munmap, (long)detached_ring,
+                PAGE_SIZE, 0, 0, 0, 0), 0);
+            failures += expect(raw_syscall6(
+                SYS_write, pipes[1], (long)first,
+                sizeof(first) - 1u, 0, 0, 0),
+                sizeof(first) - 1u);
+            bytes_zero(&request, sizeof(request));
+            request.opcode = IORING_OP_READ;
+            request.flags = IOSQE_BUFFER_SELECT;
+            request.descriptor = pipes[0];
+            request.offset = UINT64_MAX;
+            request.length = sizeof(g_first_buffer);
+            request.buffer_index = 14u;
+            request.user_data = 13u;
+            failures += submit(
+                &ring, &request, sizeof(first) - 1u,
+                IORING_CQE_F_BUFFER |
+                    (90u << IORING_CQE_BUFFER_SHIFT));
+            failures += expect(g_first_buffer[0], 'p');
+            failures += expect(g_first_buffer[1], 'b');
+            failures += expect(g_first_buffer[2], 'u');
+            failures += expect(g_first_buffer[3], 'f');
+            bytes_zero(&status, sizeof(status));
+            status.buffer_group = 14u;
+            failures += expect(raw_syscall6(
+                SYS_io_uring_register, ring.descriptor,
+                IORING_REGISTER_PBUF_STATUS,
+                (long)&status, 1, 0, 0), 0);
+            failures += expect(status.head, 1u);
+            bytes_zero(&registration, sizeof(registration));
+            registration.buffer_group = 14u;
+            failures += expect(raw_syscall6(
+                SYS_io_uring_register, ring.descriptor,
+                IORING_UNREGISTER_PBUF_RING,
+                (long)&registration, 1, 0, 0), 0);
+        }
+    }
 
     (void)raw_syscall6(SYS_close, pipes[0], 0, 0, 0, 0, 0);
     (void)raw_syscall6(SYS_close, pipes[1], 0, 0, 0, 0, 0);

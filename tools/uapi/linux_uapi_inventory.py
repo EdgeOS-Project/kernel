@@ -158,10 +158,10 @@ EDGEOS_ASSESSMENTS = [
             "bounded legacy provided-buffer groups with FIFO selection for READ, READV and RECV",
             "PROVIDE_BUFFERS and REMOVE_BUFFERS with Linux buffer IDs and CQE flags",
             "user-provided buffer-ring registration, status, unregistration and 16-bit head wrap",
-            "owner-address-space access for user-provided buffer rings",
+            "retained user-provided buffer-ring pages with lifetime independent of the original mapping",
             "kernel-allocated mmap buffer rings with shared page lifetime",
             "kernel-allocated incremental buffer consumption with min-left thresholds and BUF_MORE completions",
-            "user-provided incremental buffer consumption while the owner address space remains live",
+            "user-provided incremental buffer consumption through retained ring pages",
             "buffer-ring selection for READ, READV and RECV with Linux CQE buffer IDs",
             "per-task registered-ring descriptors for enter and register operations",
             "timeout removal and update with retained clock selection",
@@ -197,7 +197,6 @@ EDGEOS_ASSESSMENTS = [
             "asynchronous worker execution",
             "large fixed-buffer pin lists and pinned transfer for remaining descriptor families",
             "SQPOLL wait control",
-            "provided-buffer page pinning and owner-mm-independent lifetime across unmap and exit",
             "incremental buffer-ring READ_MULTISHOT with partial-buffer BUF_MORE lifetime",
             "remaining supported VFS and socket operations",
             "remaining ia32 and x32 semantic coverage across supported operations",
@@ -275,6 +274,7 @@ EDGEOS_ASSESSMENTS = [
                 "legacy-versus-ring failed-I/O buffer consumption, plus "
                 "incremental address and length updates, min-left retirement "
                 "and BUF_MORE completions on kernel-allocated and user-provided rings, "
+                "including buffer selection after the original user ring mapping is removed, "
                 "plus SEND_ZC and SENDMSG_ZC copied sends, fixed-file and "
                 "fixed-buffer validation, vectorized payloads, notification CQEs "
                 "and report-usage results, plus EPOLL_WAIT validation, retained "
