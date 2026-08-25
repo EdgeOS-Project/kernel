@@ -1,6 +1,16 @@
 # EdgeOS x86 architecture configuration
 
 menu "Processor type and features"
+config X86_X32_ABI
+    bool "x32 ABI for 64-bit processes"
+    depends on ARCH_X86_64
+    default y
+    help
+      Enable Linux x32 system call number decoding. System calls whose
+      argument and result layouts are identical to the native x86-64 ABI use
+      the shared implementation; compatibility structure conversion remains
+      explicit for all other calls.
+
 config MODIFY_LDT_SYSCALL
     bool "Legacy modify_ldt system call"
     depends on ARCH_X86_64

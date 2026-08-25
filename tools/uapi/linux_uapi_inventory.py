@@ -408,6 +408,13 @@ COMPAT_ARCHITECTURES = {
     "x32": "unimplemented",
 }
 
+X32_ARCHITECTURES = {
+    "x86_64": "not-applicable",
+    "aarch64": "not-applicable",
+    "ia32": "unimplemented",
+    "x32": "runtime-verified-partial",
+}
+
 COVERAGE_ASSESSMENTS = [
     coverage_assessment(
         "syscalls-native", "partial", NATIVE_ARCHITECTURES,
@@ -418,8 +425,16 @@ COVERAGE_ASSESSMENTS = [
         ]),
     coverage_assessment("syscalls-ia32", "unimplemented", COMPAT_ARCHITECTURES,
                         kconfig=["COMPAT_IA32"]),
-    coverage_assessment("syscalls-x32", "unimplemented", COMPAT_ARCHITECTURES,
-                        kconfig=["X86_X32_ABI"]),
+    coverage_assessment(
+        "syscalls-x32", "partial", X32_ARCHITECTURES,
+        kconfig=["X86_X32_ABI"],
+        runtime_tests=["tools/tests/x32_scalar_abi_probe.c"],
+        oracle_status="partial",
+        oracle_scope=(
+            "x32 syscall-number mask, scalar identity calls, scheduler yield, "
+            "high-bit pointer rejection, descriptor creation and lifetime, "
+            "and unassigned-number ENOSYS behavior"
+        )),
     coverage_assessment(
         "ioctl-tty", "partial", NATIVE_ARCHITECTURES,
         runtime_tests=["tools/tests/tty_session_unit.c"]),

@@ -334,7 +334,7 @@
     },
     {
       "id": "syscalls-x32",
-      "status": "unimplemented",
+      "status": "partial",
       "kconfig": [
         "X86_X32_ABI"
       ],
@@ -342,12 +342,15 @@
         "x86_64": "not-applicable",
         "aarch64": "not-applicable",
         "ia32": "unimplemented",
-        "x32": "unimplemented"
+        "x32": "runtime-verified-partial"
       },
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/x32_scalar_abi_probe.c"
+      ],
       "linux_oracle": {
-        "status": "required",
-        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
+        "status": "partial",
+        "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa",
+        "scope": "x32 syscall-number mask, scalar identity calls, scheduler yield, high-bit pointer rejection, descriptor creation and lifetime, and unassigned-number ENOSYS behavior"
       }
     },
     {

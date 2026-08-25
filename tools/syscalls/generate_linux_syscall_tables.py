@@ -10,9 +10,65 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 INVENTORY = ROOT / "tools/syscalls/linux_syscall_inventory.json"
+UAPI_INVENTORY = ROOT / "tools/uapi/linux_uapi_inventory.json"
 ID_HEADER = ROOT / "include/generated/linux_syscall_ids.h"
 TABLE_INCLUDE = ROOT / "src/kernel/linux_syscall_tables.inc"
 DISPATCH_INCLUDE = ROOT / "src/kernel/linux_syscall_dispatch.inc"
+
+
+X32_DIRECT_SHARED_SYSCALLS = {
+    "alarm",
+    "close",
+    "close_range",
+    "dup",
+    "dup2",
+    "dup3",
+    "epoll_create",
+    "epoll_create1",
+    "eventfd",
+    "eventfd2",
+    "exit",
+    "exit_group",
+    "fanotify_init",
+    "fchdir",
+    "fdatasync",
+    "flock",
+    "fsync",
+    "getegid",
+    "geteuid",
+    "getgid",
+    "getpgid",
+    "getpgrp",
+    "getpid",
+    "getppid",
+    "getpriority",
+    "getsid",
+    "gettid",
+    "getuid",
+    "inotify_init",
+    "inotify_init1",
+    "kill",
+    "memfd_secret",
+    "nice",
+    "pause",
+    "personality",
+    "pidfd_open",
+    "restart_syscall",
+    "sched_get_priority_max",
+    "sched_get_priority_min",
+    "sched_getscheduler",
+    "sched_yield",
+    "setpgid",
+    "setpriority",
+    "setsid",
+    "sync",
+    "tgkill",
+    "timerfd_create",
+    "tkill",
+    "umask",
+    "userfaultfd",
+    "write",
+}
 
 
 def load_inventory() -> list[dict[str, object]]:
@@ -22,6 +78,16 @@ def load_inventory() -> list[dict[str, object]]:
     syscalls = document.get("syscalls")
     if not isinstance(syscalls, list):
         raise ValueError("Linux syscall inventory has no syscall list")
+    return syscalls
+
+
+def load_x32_syscalls() -> list[dict[str, object]]:
+    document = json.loads(UAPI_INVENTORY.read_text(encoding="utf-8"))
+    if document.get("schema") != 2:
+        raise ValueError("unsupported Linux UAPI inventory schema")
+    syscalls = document["domains"]["syscalls"]["architectures"]["x32"]
+    if not isinstance(syscalls, list):
+        raise ValueError("x32 Linux UAPI syscall inventory is not a list")
     return syscalls
 
 
@@ -53,11 +119,13 @@ def render_tables(syscalls: list[dict[str, object]]) -> str:
     by_architecture: dict[str, list[tuple[int, str, str]]] = {
         "x86_64": [],
         "aarch64": [],
+        "x32": [],
     }
+    canonical = {str(entry["id"]): entry for entry in syscalls}
     for entry in syscalls:
         architectures = entry["architectures"]
         assert isinstance(architectures, dict)
-        for architecture in by_architecture:
+        for architecture in ("x86_64", "aarch64"):
             mapping = architectures.get(architecture)
             if mapping is None:
                 continue
@@ -65,9 +133,28 @@ def render_tables(syscalls: list[dict[str, object]]) -> str:
             by_architecture[architecture].append(
                 (int(mapping["number"]), str(entry["id"]), str(mapping["status"]))
             )
+    for mapping in load_x32_syscalls():
+        name = str(mapping["name"])
+        entry = canonical.get(name)
+        if entry is None:
+            raise ValueError(f"x32 syscall has no canonical ID: {name}")
+        architectures = entry["architectures"]
+        assert isinstance(architectures, dict)
+        native = architectures.get("x86_64")
+        native_implemented = (
+            isinstance(native, dict) and native.get("status") == "implemented"
+        )
+        status = (
+            "implemented"
+            if name in X32_DIRECT_SHARED_SYSCALLS and native_implemented
+            else "enosys"
+        )
+        by_architecture["x32"].append(
+            (int(mapping["number"]), name, status)
+        )
     lines = [
         "/* SPDX-License-Identifier: MPL-2.0 */",
-        "/* Generated from tools/syscalls/linux_syscall_inventory.json. */",
+        "/* Generated from the syscall and Linux UAPI inventories. */",
         "",
     ]
     for architecture, mappings in by_architecture.items():

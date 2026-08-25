@@ -4085,7 +4085,7 @@ boot-root-unit: tools/tests/boot_root_unit.c \
 		-o $(OUT)/tests/boot_root_unit
 	@$(OUT)/tests/boot_root_unit
 
-syscall-inventory-check: tools/syscalls/linux_syscall_inventory.json tools/syscalls/generate_linux_syscall_tables.py tools/tests/arch_syscall_parity.py tools/tests/test_arch_syscall_parity.py tools/tests/test_validate_syscall_inventory.py tools/tests/validate_syscall_inventory.py
+syscall-inventory-check: tools/syscalls/linux_syscall_inventory.json tools/uapi/linux_uapi_inventory.json tools/syscalls/generate_linux_syscall_tables.py tools/tests/arch_syscall_parity.py tools/tests/test_arch_syscall_parity.py tools/tests/test_validate_syscall_inventory.py tools/tests/validate_syscall_inventory.py
 	@python3 -m unittest tools.tests.test_arch_syscall_parity tools.tests.test_validate_syscall_inventory
 	@python3 tools/tests/validate_syscall_inventory.py
 	@python3 tools/syscalls/generate_linux_syscall_tables.py --check

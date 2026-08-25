@@ -252,6 +252,7 @@ static int syscall_ptrace_single_step(const task_t *task) {
 
 void edgeos_x86_64_syscall_dispatch(REGISTERS *r) {
     uint64_t nr = r->rax;
+    const uint64_t x32_syscall_bit = UINT64_C(0x40000000);
     /* Keep IRQs masked for the duration of the kernel-side syscall frame.
      * Re-entering the kernel on the same stack while the frame is live has
      * been corrupting user return state on int80/#UD-emulated syscall paths. */
@@ -416,11 +417,16 @@ void edgeos_x86_64_syscall_dispatch(REGISTERS *r) {
     }
 
     {
+        int x32_abi = 0;
+#ifdef CONFIG_X86_X32_ABI
+        x32_abi = (nr & x32_syscall_bit) != 0u;
+#endif
         edge_linux_syscall_context_t shared = {
             .id = EDGE_LINUX_SYS_INVALID,
-            .architecture = EDGE_LINUX_ARCH_X86_64,
+            .architecture = x32_abi ? EDGE_LINUX_ARCH_X32 :
+                                      EDGE_LINUX_ARCH_X86_64,
             .route_status = EDGE_LINUX_SYSCALL_IMPLEMENTED,
-            .raw_number = nr,
+            .raw_number = x32_abi ? nr & ~x32_syscall_bit : nr,
             .arguments = {a1, a2, a3, a4, a5, a6},
             .current_task = cur,
             .user_registers = r,
