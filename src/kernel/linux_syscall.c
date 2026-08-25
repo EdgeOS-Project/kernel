@@ -5705,6 +5705,27 @@ static int64_t edge_linux_bpf_map_element(
             }
             memcpy(value, &inner_object, sizeof(inner_object));
         }
+        if (info.type == KERNEL_BPF_MAP_TYPE_CPUMAP &&
+            info.value_size == 2u * sizeof(uint32_t)) {
+            int32_t program_descriptor;
+            uint32_t qsize;
+
+            memcpy(&qsize, value, sizeof(qsize));
+            memcpy(&program_descriptor,
+                   (const uint8_t *)value + sizeof(uint32_t),
+                   sizeof(program_descriptor));
+            if (qsize && program_descriptor > 0) {
+                int32_t program_object = kernel_bpf_descriptor_object(
+                    program_descriptor, KERNEL_BPF_OBJECT_PROGRAM);
+
+                if (program_object < 0) {
+                    status = program_object;
+                    goto out;
+                }
+                status = -EDGE_LINUX_EINVAL;
+                goto out;
+            }
+        }
         if (info.type == KERNEL_BPF_MAP_TYPE_PERF_EVENT_ARRAY) {
             int32_t event_descriptor;
             int32_t event_id;
@@ -5934,6 +5955,29 @@ static int64_t edge_linux_bpf_map_batch(
                         break;
                     }
                     memcpy(value, &inner_object, sizeof(inner_object));
+                }
+                if (info.type == KERNEL_BPF_MAP_TYPE_CPUMAP &&
+                    info.value_size == 2u * sizeof(uint32_t)) {
+                    int32_t program_descriptor;
+                    uint32_t qsize;
+
+                    memcpy(&qsize, value, sizeof(qsize));
+                    memcpy(&program_descriptor,
+                           (const uint8_t *)value + sizeof(uint32_t),
+                           sizeof(program_descriptor));
+                    if (qsize && program_descriptor > 0) {
+                        int32_t program_object =
+                            kernel_bpf_descriptor_object(
+                                program_descriptor,
+                                KERNEL_BPF_OBJECT_PROGRAM);
+
+                        if (program_object < 0) {
+                            status = program_object;
+                            break;
+                        }
+                        status = -EDGE_LINUX_EINVAL;
+                        break;
+                    }
                 }
                 status = kernel_bpf_map_update(
                     object_id, key, value, attribute.element_flags);

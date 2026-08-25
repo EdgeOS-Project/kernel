@@ -510,6 +510,108 @@ static void test_stack_trace_map(void) {
     assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_E2BIG);
 }
 
+static void test_cpu_map(void) {
+    struct cpu_map_value {
+        uint32_t qsize;
+        int32_t program_object;
+    } extended = {1u, 9999};
+    kernel_bpf_map_create_request_t request = {
+        .type = KERNEL_BPF_MAP_TYPE_CPUMAP,
+        .key_size = sizeof(uint32_t),
+        .value_size = sizeof(uint32_t),
+        .max_entries = 8u,
+    };
+    kernel_bpf_map_info_t info;
+    uint32_t cursor = 0u;
+    uint32_t key = 0u;
+    uint32_t next_key = UINT32_MAX;
+    uint32_t value = 0u;
+    uint32_t batch_key = UINT32_MAX;
+    uint32_t batch_value = 0u;
+    int has_more = 0;
+    int object;
+
+    strcpy(request.name, "cpu_map");
+    object = kernel_bpf_map_create(&request);
+    assert(object >= 0);
+    assert(kernel_bpf_map_info(object, &info) == 0);
+    assert(info.type == KERNEL_BPF_MAP_TYPE_CPUMAP);
+    assert(kernel_bpf_map_lookup(object, &key, &value) ==
+           -EDGE_LINUX_ENOENT);
+    value = 1u;
+    assert(kernel_bpf_map_update(
+               object, &key, &value, KERNEL_BPF_ANY) == 0);
+    value = 0u;
+    assert(kernel_bpf_map_lookup(object, &key, &value) == 0);
+    assert(value == 1u);
+    assert(kernel_bpf_map_update(
+               object, &key, &value, KERNEL_BPF_NOEXIST) ==
+           -EDGE_LINUX_EEXIST);
+    value = 16385u;
+    assert(kernel_bpf_map_update(
+               object, &key, &value, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_EOVERFLOW);
+    key = 8u;
+    value = 1u;
+    assert(kernel_bpf_map_update(
+               object, &key, &value, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_E2BIG);
+    assert(kernel_bpf_map_delete(object, &key) ==
+           -EDGE_LINUX_EINVAL);
+    key = 4u;
+    assert(kernel_bpf_map_update(
+               object, &key, &value, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_ENODEV);
+    key = 0u;
+    assert(kernel_bpf_map_lookup_and_delete(object, &key, &value) ==
+           -EDGE_LINUX_ENOTSUPP);
+    assert(kernel_bpf_map_next_key(object, 0, &next_key) == 0);
+    assert(next_key == 0u);
+    assert(kernel_bpf_map_batch_next(
+               object, &cursor, &batch_key, &batch_value, 0,
+               &has_more) == -EDGE_LINUX_ENOTSUPP);
+    cursor = 0u;
+    assert(kernel_bpf_map_batch_next(
+               object, &cursor, &batch_key, &batch_value, 1,
+               &has_more) == -EDGE_LINUX_ENOTSUPP);
+    assert(kernel_bpf_map_lookup(object, &key, &value) == 0);
+    assert(kernel_bpf_map_delete(object, &key) == 0);
+    assert(kernel_bpf_map_freeze(object) == 0);
+    key = 8u;
+    value = 16385u;
+    assert(kernel_bpf_map_update(
+               object, &key, &value, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_EPERM);
+    assert(kernel_bpf_map_delete(object, &key) ==
+           -EDGE_LINUX_EPERM);
+    kernel_bpf_object_release(object);
+
+    request.value_size = sizeof(extended);
+    object = kernel_bpf_map_create(&request);
+    assert(object >= 0);
+    key = 0u;
+    assert(kernel_bpf_map_update(
+               object, &key, &extended, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_EBADF);
+    extended.qsize = 0u;
+    assert(kernel_bpf_map_update(
+               object, &key, &extended, KERNEL_BPF_ANY) == 0);
+    extended.qsize = 1u;
+    extended.program_object = -1;
+    assert(kernel_bpf_map_update(
+               object, &key, &extended, KERNEL_BPF_ANY) == 0);
+    memset(&extended, 0xff, sizeof(extended));
+    assert(kernel_bpf_map_lookup(object, &key, &extended) == 0);
+    assert(extended.qsize == 1u && extended.program_object == 0);
+    kernel_bpf_object_release(object);
+
+    request.key_size = sizeof(uint64_t);
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+    request.key_size = sizeof(uint32_t);
+    request.value_size = 16u;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+}
+
 static void test_lpm_trie_map(void) {
     struct lpm_key {
         uint32_t prefix_length;
@@ -1746,6 +1848,7 @@ int main(void) {
     test_lru_hash_map();
     test_queue_stack_maps();
     test_stack_trace_map();
+    test_cpu_map();
     test_lpm_trie_map();
     test_bloom_filter_map();
     test_percpu_maps();

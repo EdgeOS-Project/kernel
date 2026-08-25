@@ -21,6 +21,11 @@
 #define BPF_PAGE_SIZE 4096u
 #define BPF_STACK_MAX_DEPTH 127u
 #define BPF_OBJECT_ALLOCATION_LIMIT (16u * 1024u * 1024u)
+#ifdef CONFIG_NR_CPUS
+#define BPF_CPUMAP_MAX_ENTRIES CONFIG_NR_CPUS
+#else
+#define BPF_CPUMAP_MAX_ENTRIES EDGE_SMP_MAX_CPUS
+#endif
 
 #define BPF_CLASS(code) ((code) & 0x07u)
 #define BPF_SIZE(code)  ((code) & 0x18u)
@@ -307,6 +312,10 @@ static int bpf_map_is_stack_trace(const kernel_bpf_map_t *map) {
     return map && map->type == KERNEL_BPF_MAP_TYPE_STACK_TRACE;
 }
 
+static int bpf_map_is_cpumap(const kernel_bpf_map_t *map) {
+    return map && map->type == KERNEL_BPF_MAP_TYPE_CPUMAP;
+}
+
 static uint32_t bpf_round_power_of_two(uint32_t value) {
     uint32_t rounded = 1u;
 
@@ -554,6 +563,18 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
             request->btf_present || request->map_extra)
             goto invalid_btf;
         storage_entries = bpf_round_power_of_two(request->max_entries);
+        stride = bpf_align8(1u + request->value_size);
+    } else if (request->type == KERNEL_BPF_MAP_TYPE_CPUMAP) {
+        if (request->max_entries > BPF_CPUMAP_MAX_ENTRIES) {
+            status = -EDGE_LINUX_E2BIG;
+            goto fail_btf;
+        }
+        if (request->key_size != sizeof(uint32_t) ||
+            (request->value_size != sizeof(uint32_t) &&
+             request->value_size != 2u * sizeof(uint32_t)) ||
+            (validation_flags & ~KERNEL_BPF_MAP_NUMA_NODE) ||
+            request->btf_present || request->map_extra)
+            goto invalid_btf;
         stride = bpf_align8(1u + request->value_size);
     } else if (request->type == KERNEL_BPF_MAP_TYPE_HASH ||
                request->type == KERNEL_BPF_MAP_TYPE_PERCPU_HASH) {
@@ -2577,6 +2598,31 @@ int kernel_bpf_map_lookup_flags(int object_id, const void *key, void *value,
         memcpy(value, entry + 1u, map->value_size);
         goto out;
     }
+    if (bpf_map_is_cpumap(map)) {
+        uint32_t cpu;
+        uint8_t *entry;
+
+        if (flags) {
+            status = -EDGE_LINUX_EINVAL;
+            goto out;
+        }
+        if (!key) {
+            status = -EDGE_LINUX_EFAULT;
+            goto out;
+        }
+        memcpy(&cpu, key, sizeof(cpu));
+        if (cpu >= map->max_entries) {
+            status = -EDGE_LINUX_ENOENT;
+            goto out;
+        }
+        entry = bpf_map_entry(map, cpu);
+        if (!entry[0]) {
+            status = -EDGE_LINUX_ENOENT;
+            goto out;
+        }
+        memcpy(value, entry + 1u, map->value_size);
+        goto out;
+    }
     status = bpf_map_check_percpu_flags_locked(map, flags);
     if (status < 0 || ((uint32_t)flags & ~KERNEL_BPF_F_CPU)) {
         if (status == 0) status = -EDGE_LINUX_EINVAL;
@@ -2675,6 +2721,68 @@ int kernel_bpf_map_update(int object_id, const void *key, const void *value,
     }
     if (bpf_map_is_stack_trace(map)) {
         status = -EDGE_LINUX_EINVAL;
+        goto out;
+    }
+    if (bpf_map_is_cpumap(map)) {
+        uint32_t cpu;
+        uint32_t qsize;
+        uint8_t *cpu_entry;
+
+        if (map->frozen) {
+            status = -EDGE_LINUX_EPERM;
+            goto out;
+        }
+        if (!key) {
+            status = -EDGE_LINUX_EFAULT;
+            goto out;
+        }
+        if (flags > KERNEL_BPF_EXIST) {
+            status = -EDGE_LINUX_EINVAL;
+            goto out;
+        }
+        memcpy(&cpu, key, sizeof(cpu));
+        if (cpu >= map->max_entries) {
+            status = -EDGE_LINUX_E2BIG;
+            goto out;
+        }
+        if (flags == KERNEL_BPF_NOEXIST) {
+            status = -EDGE_LINUX_EEXIST;
+            goto out;
+        }
+        memcpy(&qsize, value, sizeof(qsize));
+        if (qsize > 16384u) {
+            status = -EDGE_LINUX_EOVERFLOW;
+            goto out;
+        }
+        if (cpu >= edge_smp_nr_cpu_ids()) {
+            status = -EDGE_LINUX_ENODEV;
+            goto out;
+        }
+        if (qsize && map->value_size == 2u * sizeof(uint32_t)) {
+            int32_t program_object;
+
+            memcpy(&program_object,
+                   (const uint8_t *)value + sizeof(uint32_t),
+                   sizeof(program_object));
+            if (program_object > 0) {
+                kernel_bpf_object_t *program =
+                    bpf_object_locked(program_object);
+
+                status = !program ? -EDGE_LINUX_EBADF :
+                    -EDGE_LINUX_EINVAL;
+                goto out;
+            }
+        }
+        cpu_entry = bpf_map_entry(map, cpu);
+        if (!qsize) {
+            if (cpu_entry[0] && map->entry_count) --map->entry_count;
+            memset(cpu_entry, 0, map->entry_stride);
+            goto out;
+        }
+        if (!cpu_entry[0]) ++map->entry_count;
+        memset(cpu_entry, 0, map->entry_stride);
+        cpu_entry[0] = 1u;
+        memcpy(cpu_entry + 1u, &qsize, sizeof(qsize));
         goto out;
     }
     if (bpf_map_is_map_in_map(map) ||
@@ -2965,6 +3073,10 @@ int kernel_bpf_map_lookup_and_delete(int object_id, const void *key,
         if (map->entry_count) --map->entry_count;
         goto out;
     }
+    if (bpf_map_is_cpumap(map)) {
+        status = -EDGE_LINUX_ENOTSUPP;
+        goto out;
+    }
     if (bpf_map_is_bloom_filter(map) || bpf_map_is_lpm_trie(map)) {
         status = -EDGE_LINUX_EOPNOTSUPP;
         goto out;
@@ -3049,6 +3161,20 @@ int kernel_bpf_map_delete(int object_id, const void *key) {
         }
         memset(entry, 0, map->entry_stride);
         if (map->entry_count) --map->entry_count;
+        goto out;
+    }
+    if (bpf_map_is_cpumap(map)) {
+        uint32_t cpu;
+        uint8_t *entry;
+
+        memcpy(&cpu, key, sizeof(cpu));
+        if (cpu >= map->max_entries) {
+            status = -EDGE_LINUX_EINVAL;
+            goto out;
+        }
+        entry = bpf_map_entry(map, cpu);
+        if (entry[0] && map->entry_count) --map->entry_count;
+        memset(entry, 0, map->entry_stride);
         goto out;
     }
     if (bpf_map_is_array(map) && !bpf_map_is_object_array(map) &&
@@ -3172,6 +3298,22 @@ int kernel_bpf_map_next_key(int object_id, const void *key, void *next_key) {
         memcpy(next_key, &bucket, sizeof(bucket));
         goto out;
     }
+    if (bpf_map_is_cpumap(map)) {
+        uint32_t cpu;
+
+        if (key) {
+            memcpy(&cpu, key, sizeof(cpu));
+            cpu = cpu < map->max_entries ? cpu + 1u : 0u;
+        } else {
+            cpu = 0u;
+        }
+        if (cpu >= map->max_entries) {
+            status = -EDGE_LINUX_ENOENT;
+            goto out;
+        }
+        memcpy(next_key, &cpu, sizeof(cpu));
+        goto out;
+    }
     if (bpf_map_is_array(map)) {
         if (key) {
             memcpy(&index, key, sizeof(index));
@@ -3249,6 +3391,10 @@ int kernel_bpf_map_batch_next_flags(int object_id, uint32_t *cursor,
     }
     map = &object->value.map;
     if (bpf_map_is_stack_trace(map)) {
+        status = -EDGE_LINUX_ENOTSUPP;
+        goto out;
+    }
+    if (bpf_map_is_cpumap(map)) {
         status = -EDGE_LINUX_ENOTSUPP;
         goto out;
     }
