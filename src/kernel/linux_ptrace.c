@@ -15,6 +15,7 @@
 #include "kernel/linux_errno.h"
 #include "kernel/linux_ptrace.h"
 #include "kernel/linux_syscall.h"
+#include "kernel/linux_task_abi.h"
 #include "kernel/mm_runtime.h"
 #include "kernel/namespaces.h"
 #include "kernel/process_runtime.h"
@@ -59,6 +60,13 @@ static int ptrace_copy_from_user(edge_linux_syscall_context_t *context,
 }
 
 static int ptrace_uses_compat_layout(
+    const edge_linux_syscall_context_t *context) {
+    return context &&
+        (context->architecture == EDGE_LINUX_ARCH_X32 ||
+         context->architecture == EDGE_LINUX_ARCH_IA32);
+}
+
+static int ptrace_uses_x32_user_area(
     const edge_linux_syscall_context_t *context) {
     return context && context->architecture == EDGE_LINUX_ARCH_X32;
 }
@@ -330,6 +338,7 @@ int kernel_ptrace_task_info(
     information->stopped = runtime.stopped;
     information->zombie = runtime.zombie;
     information->stop_reported = runtime.stop_reported;
+    information->linux_abi = runtime.linux_abi;
     information->stop_signal = runtime.stop_signal;
     information->ptrace = *runtime.ptrace;
     return 0;
@@ -446,7 +455,8 @@ static int64_t ptrace_peek_user(edge_linux_syscall_context_t *context,
                                 uint64_t destination) {
     uint64_t value;
     if (!destination) return -EDGE_LINUX_EFAULT;
-    if (ptrace_uses_compat_layout(context) && offset < 17u * sizeof(uint64_t))
+    if (ptrace_uses_x32_user_area(context) &&
+        offset < 17u * sizeof(uint64_t))
         return -EDGE_LINUX_EIO;
     if (kernel_ptrace_read_user_area(pid, offset, &value) < 0)
         return -EDGE_LINUX_EIO;
@@ -596,10 +606,12 @@ static int64_t ptrace_get_syscall_info(
     if (!target) return -EDGE_LINUX_ESRCH;
     memset(&information, 0, sizeof(information));
     information.op = target->ptrace.syscall_info_op;
-    information.architecture =
-        context->architecture == EDGE_LINUX_ARCH_X86_64 ||
-        context->architecture == EDGE_LINUX_ARCH_X32 ?
-        0xc000003eu : 0xc00000b7u;
+    if (context->architecture == EDGE_LINUX_ARCH_AARCH64)
+        information.architecture = UINT32_C(0xc00000b7);
+    else if (target->linux_abi == EDGE_LINUX_TASK_ABI_IA32)
+        information.architecture = UINT32_C(0x40000003);
+    else
+        information.architecture = UINT32_C(0xc000003e);
     information.instruction_pointer = target->ptrace.instruction_pointer;
     information.stack_pointer = target->ptrace.stack_pointer;
     if (information.op == 1u) {
@@ -693,7 +705,7 @@ int64_t edge_linux_sys_ptrace(edge_linux_syscall_context_t *context) {
             -EDGE_LINUX_EIO : 0;
     }
     case EDGE_LINUX_PTRACE_POKEUSER:
-        if (ptrace_uses_compat_layout(context) &&
+        if (ptrace_uses_x32_user_area(context) &&
             address < 17u * sizeof(uint64_t))
             return -EDGE_LINUX_EIO;
         return kernel_ptrace_write_user_area(pid, address, data) < 0 ?
@@ -741,6 +753,27 @@ int64_t edge_linux_sys_ptrace(edge_linux_syscall_context_t *context) {
     case EDGE_LINUX_PTRACE_SETFPXREGS:
         return ptrace_set_legacy_regset(context, pid,
                                         EDGE_LINUX_PTRACE_LEGACY_FPX, data);
+    case EDGE_LINUX_PTRACE_GET_THREAD_AREA: {
+        uint8_t description[16];
+        if (!data) return -EDGE_LINUX_EFAULT;
+        if (kernel_ptrace_get_thread_area(
+                pid, (uint32_t)address, description,
+                sizeof(description)) < 0)
+            return -EDGE_LINUX_EIO;
+        return ptrace_copy_to_user(
+            context, data, description, sizeof(description)) < 0 ?
+            -EDGE_LINUX_EFAULT : 0;
+    }
+    case EDGE_LINUX_PTRACE_SET_THREAD_AREA: {
+        uint8_t description[16];
+        if (!data) return -EDGE_LINUX_EFAULT;
+        if (ptrace_copy_from_user(
+                context, description, data, sizeof(description)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        return kernel_ptrace_set_thread_area(
+            pid, (uint32_t)address, description,
+            sizeof(description)) < 0 ? -EDGE_LINUX_EIO : 0;
+    }
     case EDGE_LINUX_PTRACE_SETOPTIONS:
         if (data & ~EDGE_LINUX_PTRACE_O_MASK)
             return -EDGE_LINUX_EINVAL;

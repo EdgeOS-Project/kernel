@@ -2862,6 +2862,7 @@ static int edge_process_runtime_fill_view(
     view->zombie = task->state == KERNEL_TASK_ZOMBIE;
     view->stop_reported = task->stop_reported;
     view->stop_signal = task->stop_signal;
+    view->linux_abi = EDGE_LINUX_TASK_ABI_NATIVE64;
     view->comm = task->comm;
     view->linux_thread = &task->linux_thread;
     view->namespaces = &task->namespaces;
@@ -7619,6 +7620,24 @@ int kernel_ptrace_set_regset(int32_t pid, uint32_t note, const void *buffer,
         task->frame.x[8] = task->ptrace.syscall_number;
         return 0;
     }
+    return -LINUX_EIO;
+}
+
+int kernel_ptrace_get_thread_area(int32_t pid, uint32_t entry, void *buffer,
+                                  uint64_t size) {
+    (void)pid;
+    (void)entry;
+    (void)buffer;
+    (void)size;
+    return -LINUX_EIO;
+}
+
+int kernel_ptrace_set_thread_area(int32_t pid, uint32_t entry,
+                                  const void *buffer, uint64_t size) {
+    (void)pid;
+    (void)entry;
+    (void)buffer;
+    (void)size;
     return -LINUX_EIO;
 }
 

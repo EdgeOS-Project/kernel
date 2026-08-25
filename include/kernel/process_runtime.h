@@ -419,6 +419,7 @@ typedef struct kernel_process_native_view {
     uint8_t zombie;
     uint8_t stop_reported;
     uint8_t stop_signal;
+    uint8_t linux_abi;
     const char *comm;
     kernel_linux_thread_state_t *linux_thread;
     edge_namespace_set_t *namespaces;
@@ -685,6 +686,10 @@ int kernel_ptrace_get_regset(int32_t pid, uint32_t note, void *buffer,
                              uint64_t *size);
 int kernel_ptrace_set_regset(int32_t pid, uint32_t note, const void *buffer,
                              uint64_t size);
+int kernel_ptrace_get_thread_area(int32_t pid, uint32_t entry, void *buffer,
+                                  uint64_t size);
+int kernel_ptrace_set_thread_area(int32_t pid, uint32_t entry,
+                                  const void *buffer, uint64_t size);
 int kernel_ptrace_stop_current(void *user_registers,
                                const edge_linux_ptrace_stop_t *stop);
 int kernel_ptrace_consume_syscall_restart(void *user_registers);

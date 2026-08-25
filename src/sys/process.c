@@ -6,6 +6,7 @@
 #include "arch/x86_64/user_layout.h"
 #include "arch/x86_64/syscall.h"
 #include "arch/x86_64/gdt.h"
+#include "arch/x86_64/user_desc.h"
 #include "fb.h"
 #include "fb_console.h"
 #include "dev/fbdev.h"
@@ -10777,6 +10778,7 @@ static int edge_process_runtime_fill_view(
     view->zombie = task->state == TASK_ZOMBIE;
     view->stop_reported = task->stop_reported;
     view->stop_signal = task->stop_signal;
+    view->linux_abi = task->linux_abi;
     view->comm = task->name;
     view->linux_thread = &task->linux_thread;
     view->namespaces = &task->namespaces;
@@ -12218,8 +12220,43 @@ typedef struct edge_x86_64_linux_user_regs {
     uint64_t gs;
 } edge_x86_64_linux_user_regs_t;
 
+typedef struct edge_x86_ia32_linux_user_regs {
+    uint32_t bx;
+    uint32_t cx;
+    uint32_t dx;
+    uint32_t si;
+    uint32_t di;
+    uint32_t bp;
+    uint32_t ax;
+    uint32_t ds;
+    uint32_t es;
+    uint32_t fs;
+    uint32_t gs;
+    uint32_t orig_ax;
+    uint32_t ip;
+    uint32_t cs;
+    uint32_t flags;
+    uint32_t sp;
+    uint32_t ss;
+} edge_x86_ia32_linux_user_regs_t;
+
+typedef struct edge_x86_ia32_linux_user_fpregs {
+    uint32_t cwd;
+    uint32_t swd;
+    uint32_t twd;
+    uint32_t fip;
+    uint32_t fcs;
+    uint32_t foo;
+    uint32_t fos;
+    uint32_t st_space[20];
+} edge_x86_ia32_linux_user_fpregs_t;
+
 _Static_assert(sizeof(edge_x86_64_linux_user_regs_t) == 216,
                "Linux x86_64 ptrace register layout");
+_Static_assert(sizeof(edge_x86_ia32_linux_user_regs_t) == 68,
+               "Linux ia32 ptrace register layout");
+_Static_assert(sizeof(edge_x86_ia32_linux_user_fpregs_t) == 108,
+               "Linux ia32 ptrace floating-point register layout");
 
 static edge_trap_frame_t *process_ptrace_frame(task_t *task) {
     if (!task) return 0;
@@ -12288,6 +12325,158 @@ static void process_ptrace_import_regs(
     task->fs_base = registers->fs_base;
     task->gs_base = registers->gs_base;
     task->ptrace.syscall_number = registers->orig_rax;
+}
+
+static void process_ptrace_export_ia32_regs(
+        const task_t *task, const edge_trap_frame_t *frame,
+        edge_x86_ia32_linux_user_regs_t *registers) {
+    if (!task || !frame || !registers) return;
+    memset(registers, 0, sizeof(*registers));
+    registers->bx = (uint32_t)frame->rbx;
+    registers->cx = (uint32_t)frame->rcx;
+    registers->dx = (uint32_t)frame->rdx;
+    registers->si = (uint32_t)frame->rsi;
+    registers->di = (uint32_t)frame->rdi;
+    registers->bp = (uint32_t)frame->rbp;
+    registers->ax = (uint32_t)frame->rax;
+    registers->ds = USER32_DS;
+    registers->es = USER32_DS;
+    registers->fs = task->x86_fs_selector;
+    registers->gs = task->x86_gs_selector;
+    registers->orig_ax = (uint32_t)task->ptrace.syscall_number;
+    registers->ip = (uint32_t)frame->rip;
+    registers->cs = USER32_CS;
+    registers->flags = (uint32_t)frame->rflags;
+    registers->sp = (uint32_t)frame->rsp;
+    registers->ss = USER32_DS;
+}
+
+static int process_ptrace_import_ia32_regs(
+        task_t *task, edge_trap_frame_t *frame,
+        const edge_x86_ia32_linux_user_regs_t *registers) {
+    const uint64_t user_rflags_mask = UINT64_C(0x0000000000050dd5);
+    uint16_t fs;
+    uint16_t gs;
+
+    if (!task || !frame || !registers ||
+        registers->ip < EDGE_USER_MIN_ADDR ||
+        registers->sp < EDGE_USER_MIN_ADDR)
+        return -1;
+    fs = (uint16_t)registers->fs;
+    gs = (uint16_t)registers->gs;
+    if (!process_x86_compat_selector_valid(fs) ||
+        !process_x86_compat_selector_valid(gs))
+        return -1;
+    frame->rbx = registers->bx;
+    frame->rcx = registers->cx;
+    frame->rdx = registers->dx;
+    frame->rsi = registers->si;
+    frame->rdi = registers->di;
+    frame->rbp = registers->bp;
+    frame->rax = registers->ax;
+    frame->rip = registers->ip;
+    frame->rsp = registers->sp;
+    frame->cs = USER32_CS;
+    frame->ss = USER32_DS;
+    frame->rflags = (frame->rflags & ~user_rflags_mask) |
+                    (registers->flags & user_rflags_mask) | 2u;
+    task->x86_fs_selector = fs;
+    task->x86_gs_selector = gs;
+    task->ptrace.syscall_number = registers->orig_ax;
+    return 0;
+}
+
+static uint16_t process_ptrace_fxsave_u16(
+        const uint8_t *state, uint32_t offset) {
+    uint16_t value;
+    memcpy(&value, state + offset, sizeof(value));
+    return value;
+}
+
+static uint32_t process_ptrace_fxsave_u32(
+        const uint8_t *state, uint32_t offset) {
+    uint32_t value;
+    memcpy(&value, state + offset, sizeof(value));
+    return value;
+}
+
+static uint32_t process_ptrace_ia32_full_tag(const uint8_t *state) {
+    uint32_t top = (process_ptrace_fxsave_u16(state, 2) >> 11) & 7u;
+    uint32_t abbreviated = state[4];
+    uint32_t full = UINT32_C(0xffff0000);
+
+    for (uint32_t index = 0; index < 8u; ++index) {
+        uint32_t tag = 3u;
+        if (abbreviated & (1u << index)) {
+            const uint8_t *value =
+                state + 32u + (((index - top) & 7u) * 16u);
+            uint16_t exponent = process_ptrace_fxsave_u16(value, 8);
+            uint16_t significand[4];
+            memcpy(significand, value, sizeof(significand));
+            if ((exponent & 0x7fffu) == 0x7fffu) {
+                tag = 2u;
+            } else if ((exponent & 0x7fffu) == 0) {
+                tag = significand[0] || significand[1] ||
+                      significand[2] || significand[3] ? 2u : 1u;
+            } else {
+                tag = (significand[3] & 0x8000u) ? 0u : 2u;
+            }
+        }
+        full |= tag << (2u * index);
+    }
+    return full;
+}
+
+static uint16_t process_ptrace_ia32_abbreviated_tag(uint16_t full) {
+    uint32_t value = ~full;
+    value = (value | (value >> 1)) & 0x5555u;
+    value = (value | (value >> 1)) & 0x3333u;
+    value = (value | (value >> 2)) & 0x0f0fu;
+    value = (value | (value >> 4)) & 0x00ffu;
+    return (uint16_t)value;
+}
+
+static void process_ptrace_export_ia32_fpregs(
+        const task_t *task, const edge_trap_frame_t *frame,
+        edge_x86_ia32_linux_user_fpregs_t *registers) {
+    const uint8_t *state;
+    if (!task || !frame || !registers) return;
+    state = task->fxsave_region;
+    memset(registers, 0, sizeof(*registers));
+    registers->cwd = process_ptrace_fxsave_u16(state, 0) | 0xffff0000u;
+    registers->swd = process_ptrace_fxsave_u16(state, 2) | 0xffff0000u;
+    registers->twd = process_ptrace_ia32_full_tag(state);
+    registers->fip = process_ptrace_fxsave_u32(state, 8);
+    registers->fcs = (uint32_t)frame->cs;
+    registers->foo = process_ptrace_fxsave_u32(state, 16);
+    registers->fos = UINT32_C(0xffff0000) | USER32_DS;
+    for (uint32_t index = 0; index < 8u; ++index)
+        memcpy((uint8_t *)registers->st_space + index * 10u,
+               state + 32u + index * 16u, 10u);
+}
+
+static void process_ptrace_import_ia32_fpregs(
+        task_t *task,
+        const edge_x86_ia32_linux_user_fpregs_t *registers) {
+    uint8_t *state;
+    uint16_t value16;
+    uint32_t value32;
+    if (!task || !registers) return;
+    state = task->fxsave_region;
+    value16 = (uint16_t)registers->cwd;
+    memcpy(state, &value16, sizeof(value16));
+    value16 = (uint16_t)registers->swd;
+    memcpy(state + 2u, &value16, sizeof(value16));
+    value16 = process_ptrace_ia32_abbreviated_tag(
+        (uint16_t)registers->twd);
+    memcpy(state + 4u, &value16, sizeof(value16));
+    value32 = registers->fip;
+    memcpy(state + 8u, &value32, sizeof(value32));
+    value32 = registers->foo;
+    memcpy(state + 16u, &value32, sizeof(value32));
+    for (uint32_t index = 0; index < 8u; ++index)
+        memcpy(state + 32u + index * 16u,
+               (const uint8_t *)registers->st_space + index * 10u, 10u);
 }
 
 int arch_ptrace_attach(int32_t pid, int seized) {
@@ -12507,27 +12696,56 @@ int arch_ptrace_kill(int32_t pid) {
 int kernel_ptrace_read_user_area(int32_t pid, uint64_t offset,
                                  uint64_t *value) {
     task_t *task = task_find_by_pid(pid);
-    edge_x86_64_linux_user_regs_t registers;
-    if (!task || !value || (offset & 7u) ||
-        offset > sizeof(registers) - sizeof(*value))
-        return -EDGE_LINUX_EIO;
-    process_ptrace_export_regs(task, process_ptrace_frame(task), &registers);
-    memcpy(value, (const uint8_t *)&registers + offset, sizeof(*value));
+    if (!task || !value) return -EDGE_LINUX_EIO;
+    *value = 0;
+    if (task->linux_abi == EDGE_LINUX_TASK_ABI_IA32) {
+        edge_x86_ia32_linux_user_regs_t registers;
+        if ((offset & 3u) ||
+            offset > sizeof(registers) - sizeof(uint32_t))
+            return -EDGE_LINUX_EIO;
+        process_ptrace_export_ia32_regs(
+            task, process_ptrace_frame(task), &registers);
+        memcpy(value, (const uint8_t *)&registers + offset,
+               sizeof(uint32_t));
+        return 0;
+    }
+    {
+        edge_x86_64_linux_user_regs_t registers;
+        if ((offset & 7u) ||
+            offset > sizeof(registers) - sizeof(*value))
+            return -EDGE_LINUX_EIO;
+        process_ptrace_export_regs(
+            task, process_ptrace_frame(task), &registers);
+        memcpy(value, (const uint8_t *)&registers + offset, sizeof(*value));
+    }
     return 0;
 }
 
 int kernel_ptrace_write_user_area(int32_t pid, uint64_t offset,
                                   uint64_t value) {
     task_t *task = task_find_by_pid(pid);
-    edge_x86_64_linux_user_regs_t registers;
     edge_trap_frame_t *frame;
-    if (!task || (offset & 7u) ||
-        offset > sizeof(registers) - sizeof(value))
-        return -EDGE_LINUX_EIO;
+    if (!task) return -EDGE_LINUX_EIO;
     frame = process_ptrace_frame(task);
-    process_ptrace_export_regs(task, frame, &registers);
-    memcpy((uint8_t *)&registers + offset, &value, sizeof(value));
-    process_ptrace_import_regs(task, frame, &registers);
+    if (task->linux_abi == EDGE_LINUX_TASK_ABI_IA32) {
+        edge_x86_ia32_linux_user_regs_t registers;
+        if ((offset & 3u) ||
+            offset > sizeof(registers) - sizeof(uint32_t))
+            return -EDGE_LINUX_EIO;
+        process_ptrace_export_ia32_regs(task, frame, &registers);
+        memcpy((uint8_t *)&registers + offset, &value, sizeof(uint32_t));
+        return process_ptrace_import_ia32_regs(
+            task, frame, &registers) < 0 ? -EDGE_LINUX_EIO : 0;
+    }
+    {
+        edge_x86_64_linux_user_regs_t registers;
+        if ((offset & 7u) ||
+            offset > sizeof(registers) - sizeof(value))
+            return -EDGE_LINUX_EIO;
+        process_ptrace_export_regs(task, frame, &registers);
+        memcpy((uint8_t *)&registers + offset, &value, sizeof(value));
+        process_ptrace_import_regs(task, frame, &registers);
+    }
     return 0;
 }
 
@@ -12538,11 +12756,29 @@ int kernel_ptrace_get_regset(int32_t pid, uint32_t note, void *buffer,
     if (!task || !buffer || !size) return -EDGE_LINUX_EIO;
     if (note == EDGE_LINUX_NT_PRSTATUS ||
         note == EDGE_LINUX_PTRACE_LEGACY_GPR) {
-        edge_x86_64_linux_user_regs_t registers;
+        if (task->linux_abi == EDGE_LINUX_TASK_ABI_IA32) {
+            edge_x86_ia32_linux_user_regs_t registers;
+            needed = sizeof(registers);
+            if (*size < needed) return -EDGE_LINUX_EIO;
+            process_ptrace_export_ia32_regs(
+                task, process_ptrace_frame(task), &registers);
+            memcpy(buffer, &registers, sizeof(registers));
+        } else {
+            edge_x86_64_linux_user_regs_t registers;
+            needed = sizeof(registers);
+            if (*size < needed) return -EDGE_LINUX_EIO;
+            process_ptrace_export_regs(
+                task, process_ptrace_frame(task), &registers);
+            memcpy(buffer, &registers, sizeof(registers));
+        }
+    } else if (task->linux_abi == EDGE_LINUX_TASK_ABI_IA32 &&
+               (note == EDGE_LINUX_NT_PRFPREG ||
+                note == EDGE_LINUX_PTRACE_LEGACY_FP)) {
+        edge_x86_ia32_linux_user_fpregs_t registers;
         needed = sizeof(registers);
         if (*size < needed) return -EDGE_LINUX_EIO;
-        process_ptrace_export_regs(task, process_ptrace_frame(task),
-                                   &registers);
+        process_ptrace_export_ia32_fpregs(
+            task, process_ptrace_frame(task), &registers);
         memcpy(buffer, &registers, sizeof(registers));
     } else if (note == EDGE_LINUX_NT_PRFPREG ||
                note == EDGE_LINUX_NT_X86_XSTATE ||
@@ -12564,10 +12800,28 @@ int kernel_ptrace_set_regset(int32_t pid, uint32_t note, const void *buffer,
     if (!task || !buffer) return -EDGE_LINUX_EIO;
     if (note == EDGE_LINUX_NT_PRSTATUS ||
         note == EDGE_LINUX_PTRACE_LEGACY_GPR) {
-        if (size != sizeof(edge_x86_64_linux_user_regs_t))
+        if (task->linux_abi == EDGE_LINUX_TASK_ABI_IA32) {
+            if (size != sizeof(edge_x86_ia32_linux_user_regs_t) ||
+                process_ptrace_import_ia32_regs(
+                    task, process_ptrace_frame(task),
+                    (const edge_x86_ia32_linux_user_regs_t *)buffer) < 0)
+                return -EDGE_LINUX_EIO;
+        } else {
+            if (size != sizeof(edge_x86_64_linux_user_regs_t))
+                return -EDGE_LINUX_EIO;
+            process_ptrace_import_regs(task, process_ptrace_frame(task),
+                (const edge_x86_64_linux_user_regs_t *)buffer);
+        }
+        return 0;
+    }
+    if (task->linux_abi == EDGE_LINUX_TASK_ABI_IA32 &&
+        (note == EDGE_LINUX_NT_PRFPREG ||
+         note == EDGE_LINUX_PTRACE_LEGACY_FP)) {
+        if (size != sizeof(edge_x86_ia32_linux_user_fpregs_t))
             return -EDGE_LINUX_EIO;
-        process_ptrace_import_regs(task, process_ptrace_frame(task),
-            (const edge_x86_64_linux_user_regs_t *)buffer);
+        process_ptrace_import_ia32_fpregs(
+            task,
+            (const edge_x86_ia32_linux_user_fpregs_t *)buffer);
         return 0;
     }
     if (note == EDGE_LINUX_NT_PRFPREG ||
@@ -12579,6 +12833,42 @@ int kernel_ptrace_set_regset(int32_t pid, uint32_t note, const void *buffer,
         return 0;
     }
     return -EDGE_LINUX_EIO;
+}
+
+int kernel_ptrace_get_thread_area(int32_t pid, uint32_t entry, void *buffer,
+                                  uint64_t size) {
+    task_t *task = task_find_by_pid(pid);
+    struct edge_x86_user_desc description;
+    uint64_t descriptor;
+
+    if (!task || task->linux_abi != EDGE_LINUX_TASK_ABI_IA32 || !buffer ||
+        size != sizeof(description) ||
+        process_x86_tls_get(task, entry, &descriptor) < 0)
+        return -EDGE_LINUX_EIO;
+    edge_x86_unpack_tls_descriptor(&description, entry, descriptor);
+    memcpy(buffer, &description, sizeof(description));
+    return 0;
+}
+
+int kernel_ptrace_set_thread_area(int32_t pid, uint32_t entry,
+                                  const void *buffer, uint64_t size) {
+    task_t *task = task_find_by_pid(pid);
+    struct edge_x86_user_desc description;
+    uint64_t descriptor;
+
+    if (!task || task->linux_abi != EDGE_LINUX_TASK_ABI_IA32 || !buffer ||
+        size != sizeof(description) || entry < EDGE_X86_TLS_ENTRY_MIN ||
+        entry > EDGE_X86_TLS_ENTRY_MAX)
+        return -EDGE_LINUX_EIO;
+    memcpy(&description, buffer, sizeof(description));
+    description.entry_number = entry;
+    if (!edge_x86_tls_description_valid(&description))
+        return -EDGE_LINUX_EIO;
+    descriptor = edge_x86_user_desc_empty(&description) ||
+                 edge_x86_user_desc_zero(&description) ? 0 :
+        edge_x86_pack_ldt_descriptor(&description, 0);
+    return process_x86_tls_set(task, entry, descriptor) < 0 ?
+        -EDGE_LINUX_EIO : 0;
 }
 
 int arch_ptrace_stop_current(void *user_registers,

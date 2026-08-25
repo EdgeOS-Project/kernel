@@ -31,6 +31,8 @@ enum {
     EDGE_LINUX_PTRACE_GETFPXREGS = 18,
     EDGE_LINUX_PTRACE_SETFPXREGS = 19,
     EDGE_LINUX_PTRACE_SYSCALL = 24,
+    EDGE_LINUX_PTRACE_GET_THREAD_AREA = 25,
+    EDGE_LINUX_PTRACE_SET_THREAD_AREA = 26,
     EDGE_LINUX_PTRACE_SETOPTIONS = 0x4200,
     EDGE_LINUX_PTRACE_GETEVENTMSG = 0x4201,
     EDGE_LINUX_PTRACE_GETSIGINFO = 0x4202,
@@ -177,6 +179,7 @@ typedef struct edge_linux_ptrace_task_info {
     uint8_t stopped;
     uint8_t zombie;
     uint8_t stop_reported;
+    uint8_t linux_abi;
     uint32_t stop_signal;
     edge_linux_ptrace_state_t ptrace;
 } edge_linux_ptrace_task_info_t;
@@ -195,6 +198,7 @@ typedef struct edge_linux_ptrace_task_runtime {
     uint8_t stopped;
     uint8_t zombie;
     uint8_t stop_reported;
+    uint8_t linux_abi;
     uint32_t stop_signal;
     edge_linux_ptrace_state_t *ptrace;
     uint64_t *signal_mask;

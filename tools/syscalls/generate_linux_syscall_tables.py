@@ -408,6 +408,7 @@ IA32_SHARED_SYSCALLS = {
     "gettimeofday",
     "nanosleep",
     "pause",
+    "ptrace",
     "ppoll",
     "pselect6",
     "pselect6_time64",

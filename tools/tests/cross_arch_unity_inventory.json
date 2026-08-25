@@ -73,6 +73,10 @@
       "category": "register ABI conversion",
       "reason": "Exports architecture-specific Linux general-purpose, floating-point, and extension register sets."
     },
+    "kernel_ptrace_get_thread_area": {
+      "category": "register ABI conversion",
+      "reason": "Exports an architecture-specific Linux thread-local descriptor where the architecture provides that facility."
+    },
     "kernel_ptrace_read_user_area": {
       "category": "register ABI conversion",
       "reason": "Reads the architecture-specific Linux ptrace user-register layout at a byte offset."
@@ -80,6 +84,10 @@
     "kernel_ptrace_set_regset": {
       "category": "register ABI conversion",
       "reason": "Imports architecture-specific Linux general-purpose, floating-point, and extension register sets."
+    },
+    "kernel_ptrace_set_thread_area": {
+      "category": "register ABI conversion",
+      "reason": "Imports an architecture-specific Linux thread-local descriptor where the architecture provides that facility."
     },
     "kernel_ptrace_write_user_area": {
       "category": "register ABI conversion",

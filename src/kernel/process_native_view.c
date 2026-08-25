@@ -125,6 +125,7 @@ int kernel_arch_ptrace_task_runtime(
     runtime->stopped = view.stopped;
     runtime->zombie = view.zombie;
     runtime->stop_reported = view.stop_reported;
+    runtime->linux_abi = view.linux_abi;
     runtime->stop_signal = view.stop_signal;
     runtime->ptrace = view.ptrace;
     runtime->signal_mask = view.signal_mask;
