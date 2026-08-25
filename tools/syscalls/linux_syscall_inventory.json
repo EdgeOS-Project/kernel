@@ -3426,6 +3426,20 @@
       }
     },
     {
+      "id": "ipc",
+      "semantic_id": "ipc",
+      "shared_handler": "edge_linux_sys_sysv_ipc",
+      "architecture_exceptions": [
+        "i386 multiplexed SysV IPC argument layout"
+      ],
+      "runtime_tests": [
+        "tools/tests/ia32_sysv_ipc_uapi_probe.c"
+      ],
+      "linux_oracle": "required",
+      "oracle_status": "verified",
+      "architectures": {}
+    },
+    {
       "id": "kcmp",
       "semantic_id": "kcmp",
       "shared_handler": "edge_linux_sys_kcmp",

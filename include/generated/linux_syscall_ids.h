@@ -145,6 +145,7 @@ typedef enum edge_linux_syscall_id {
     EDGE_LINUX_SYS_iopl,
     EDGE_LINUX_SYS_ioprio_get,
     EDGE_LINUX_SYS_ioprio_set,
+    EDGE_LINUX_SYS_ipc,
     EDGE_LINUX_SYS_kcmp,
     EDGE_LINUX_SYS_kexec_file_load,
     EDGE_LINUX_SYS_kexec_load,

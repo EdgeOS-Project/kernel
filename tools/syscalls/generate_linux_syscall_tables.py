@@ -401,10 +401,21 @@ IA32_SHARED_SYSCALLS = {
     "ugetrlimit",
     "wait4",
     "waitid",
+    "semget",
+    "semctl",
+    "shmget",
+    "shmctl",
+    "shmat",
+    "shmdt",
+    "msgget",
+    "msgsnd",
+    "msgrcv",
+    "msgctl",
 }
 
 IA32_ARCH_SYSCALLS = {
     "get_thread_area",
+    "ipc",
     "rt_sigreturn",
     "set_thread_area",
 }

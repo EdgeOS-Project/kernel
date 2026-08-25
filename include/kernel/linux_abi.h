@@ -551,6 +551,37 @@ struct edge_linux_ipc_perm64 {
     int64_t reserved2;
 };
 
+/* Linux i386 IPC_64 permission layout. */
+struct edge_linux_ipc_perm32 {
+    int32_t key;
+    uint32_t uid;
+    uint32_t gid;
+    uint32_t cuid;
+    uint32_t cgid;
+    uint16_t mode;
+    uint16_t mode_padding;
+    uint16_t sequence;
+    uint16_t padding;
+    uint32_t reserved1;
+    uint32_t reserved2;
+};
+
+struct edge_linux_shmid_ds32 {
+    struct edge_linux_ipc_perm32 shm_perm;
+    uint32_t shm_segsz;
+    uint32_t shm_atime;
+    uint32_t shm_atime_high;
+    uint32_t shm_dtime;
+    uint32_t shm_dtime_high;
+    uint32_t shm_ctime;
+    uint32_t shm_ctime_high;
+    int32_t shm_cpid;
+    int32_t shm_lpid;
+    uint32_t shm_nattch;
+    uint32_t reserved1;
+    uint32_t reserved2;
+};
+
 struct edge_linux_shmid_ds64 {
     struct edge_linux_ipc_perm64 shm_perm;
     uint64_t shm_segsz;
@@ -590,6 +621,17 @@ struct edge_linux_semid_ds_aarch64 {
     uint64_t unused4;
 };
 
+struct edge_linux_semid_ds32 {
+    struct edge_linux_ipc_perm32 sem_perm;
+    uint32_t sem_otime;
+    uint32_t sem_otime_high;
+    uint32_t sem_ctime;
+    uint32_t sem_ctime_high;
+    uint32_t sem_nsems;
+    uint32_t unused3;
+    uint32_t unused4;
+};
+
 struct edge_linux_seminfo {
     int32_t semmap;
     int32_t semmni;
@@ -615,6 +657,23 @@ struct edge_linux_msqid_ds64 {
     int32_t msg_lrpid;
     uint64_t unused4;
     uint64_t unused5;
+};
+
+struct edge_linux_msqid_ds32 {
+    struct edge_linux_ipc_perm32 msg_perm;
+    uint32_t msg_stime;
+    uint32_t msg_stime_high;
+    uint32_t msg_rtime;
+    uint32_t msg_rtime_high;
+    uint32_t msg_ctime;
+    uint32_t msg_ctime_high;
+    uint32_t msg_cbytes;
+    uint32_t msg_qnum;
+    uint32_t msg_qbytes;
+    int32_t msg_lspid;
+    int32_t msg_lrpid;
+    uint32_t unused4;
+    uint32_t unused5;
 };
 
 struct edge_linux_msginfo {
@@ -908,6 +967,10 @@ _Static_assert(sizeof(struct edge_linux_ipc_perm64) == 48,
                "Linux ipc_perm size mismatch");
 _Static_assert(offsetof(struct edge_linux_ipc_perm64, mode) == 20,
                "Linux ipc_perm mode offset mismatch");
+_Static_assert(sizeof(struct edge_linux_ipc_perm32) == 36,
+               "Linux i386 ipc_perm size mismatch");
+_Static_assert(offsetof(struct edge_linux_ipc_perm32, sequence) == 24,
+               "Linux i386 ipc_perm sequence offset mismatch");
 _Static_assert(sizeof(struct edge_linux_shmid_ds64) == 112,
                "Linux shmid_ds size mismatch");
 _Static_assert(offsetof(struct edge_linux_shmid_ds64, shm_segsz) == 48,
@@ -916,18 +979,24 @@ _Static_assert(offsetof(struct edge_linux_shmid_ds64, shm_cpid) == 80,
                "Linux shmid_ds creator PID offset mismatch");
 _Static_assert(offsetof(struct edge_linux_shmid_ds64, shm_nattch) == 88,
                "Linux shmid_ds attachment offset mismatch");
+_Static_assert(sizeof(struct edge_linux_shmid_ds32) == 84,
+               "Linux i386 shmid_ds size mismatch");
 _Static_assert(sizeof(struct edge_linux_sembuf) == 6,
                "Linux sembuf size mismatch");
 _Static_assert(sizeof(struct edge_linux_semid_ds_x86_64) == 104,
                "Linux x86_64 semid_ds size mismatch");
 _Static_assert(sizeof(struct edge_linux_semid_ds_aarch64) == 88,
                "Linux AArch64 semid_ds size mismatch");
+_Static_assert(sizeof(struct edge_linux_semid_ds32) == 64,
+               "Linux i386 semid_ds size mismatch");
 _Static_assert(sizeof(struct edge_linux_seminfo) == 40,
                "Linux seminfo size mismatch");
 _Static_assert(sizeof(struct edge_linux_msqid_ds64) == 120,
                "Linux 64-bit msqid_ds size mismatch");
 _Static_assert(offsetof(struct edge_linux_msqid_ds64, msg_cbytes) == 72,
                "Linux msqid_ds byte-count offset mismatch");
+_Static_assert(sizeof(struct edge_linux_msqid_ds32) == 88,
+               "Linux i386 msqid_ds size mismatch");
 _Static_assert(sizeof(struct edge_linux_msginfo) == 32,
                "Linux msginfo size mismatch");
 _Static_assert(sizeof(struct edge_linux_mq_attr) == 32,

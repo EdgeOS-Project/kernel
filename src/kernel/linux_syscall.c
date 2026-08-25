@@ -3221,6 +3221,91 @@ static int64_t edge_linux_sys_namespace(
     return -EDGE_LINUX_ENOSYS;
 }
 
+static void edge_linux_ipc_perm32_from_native(
+        const struct edge_linux_ipc_perm64 *input,
+        struct edge_linux_ipc_perm32 *output) {
+    memset(output, 0, sizeof(*output));
+    output->key = input->key;
+    output->uid = input->uid;
+    output->gid = input->gid;
+    output->cuid = input->cuid;
+    output->cgid = input->cgid;
+    output->mode = input->mode;
+    output->sequence = (uint16_t)input->sequence;
+    output->reserved1 = (uint32_t)input->reserved1;
+    output->reserved2 = (uint32_t)input->reserved2;
+}
+
+static void edge_linux_ipc_perm32_to_native(
+        const struct edge_linux_ipc_perm32 *input,
+        struct edge_linux_ipc_perm64 *output) {
+    memset(output, 0, sizeof(*output));
+    output->key = input->key;
+    output->uid = input->uid;
+    output->gid = input->gid;
+    output->cuid = input->cuid;
+    output->cgid = input->cgid;
+    output->mode = input->mode;
+    output->sequence = input->sequence;
+    output->reserved1 = input->reserved1;
+    output->reserved2 = input->reserved2;
+}
+
+static int edge_linux_shm_status_copy_from_user(
+        edge_linux_syscall_context_t *context, uint64_t user_address,
+        struct edge_linux_shmid_ds64 *status) {
+    if (context->architecture == EDGE_LINUX_ARCH_IA32) {
+        struct edge_linux_shmid_ds32 value;
+        if (edge_linux_copy_from_user(
+                context, &value, user_address, sizeof(value)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        memset(status, 0, sizeof(*status));
+        edge_linux_ipc_perm32_to_native(&value.shm_perm,
+                                        &status->shm_perm);
+        status->shm_segsz = value.shm_segsz;
+        status->shm_atime = (int64_t)((uint64_t)value.shm_atime |
+            ((uint64_t)value.shm_atime_high << 32));
+        status->shm_dtime = (int64_t)((uint64_t)value.shm_dtime |
+            ((uint64_t)value.shm_dtime_high << 32));
+        status->shm_ctime = (int64_t)((uint64_t)value.shm_ctime |
+            ((uint64_t)value.shm_ctime_high << 32));
+        status->shm_cpid = value.shm_cpid;
+        status->shm_lpid = value.shm_lpid;
+        status->shm_nattch = value.shm_nattch;
+        return 0;
+    }
+    return edge_linux_copy_from_user(
+        context, status, user_address, sizeof(*status)) < 0 ?
+        -EDGE_LINUX_EFAULT : 0;
+}
+
+static int edge_linux_shm_status_copy_to_user(
+        edge_linux_syscall_context_t *context, uint64_t user_address,
+        const struct edge_linux_shmid_ds64 *status) {
+    if (context->architecture == EDGE_LINUX_ARCH_IA32) {
+        struct edge_linux_shmid_ds32 value;
+        memset(&value, 0, sizeof(value));
+        edge_linux_ipc_perm32_from_native(&status->shm_perm,
+                                          &value.shm_perm);
+        value.shm_segsz = (uint32_t)status->shm_segsz;
+        value.shm_atime = (uint32_t)status->shm_atime;
+        value.shm_atime_high = (uint32_t)((uint64_t)status->shm_atime >> 32);
+        value.shm_dtime = (uint32_t)status->shm_dtime;
+        value.shm_dtime_high = (uint32_t)((uint64_t)status->shm_dtime >> 32);
+        value.shm_ctime = (uint32_t)status->shm_ctime;
+        value.shm_ctime_high = (uint32_t)((uint64_t)status->shm_ctime >> 32);
+        value.shm_cpid = status->shm_cpid;
+        value.shm_lpid = status->shm_lpid;
+        value.shm_nattch = (uint32_t)status->shm_nattch;
+        return edge_linux_copy_to_user(
+            context, user_address, &value, sizeof(value)) < 0 ?
+            -EDGE_LINUX_EFAULT : 0;
+    }
+    return edge_linux_copy_to_user(
+        context, user_address, status, sizeof(*status)) < 0 ?
+        -EDGE_LINUX_EFAULT : 0;
+}
+
 static int64_t edge_linux_sys_sysv_shm(
     edge_linux_syscall_context_t *context) {
     struct edge_linux_shmid_ds64 information;
@@ -3248,10 +3333,9 @@ static int64_t edge_linux_sys_sysv_shm(
             command = (uint32_t)context->arguments[1];
             if ((command & 0xffu) == KERNEL_SYSV_IPC_SET) {
                 if (!context->arguments[2]) return -EDGE_LINUX_EFAULT;
-                if (edge_linux_copy_from_user(
-                        context, &information, context->arguments[2],
-                        sizeof(information)) < 0)
-                    return -EDGE_LINUX_EFAULT;
+                result = edge_linux_shm_status_copy_from_user(
+                    context, context->arguments[2], &information);
+                if (result < 0) return result;
                 return kernel_sysv_shm_control(
                     (int32_t)context->arguments[0], command, &information);
             }
@@ -3260,11 +3344,8 @@ static int64_t edge_linux_sys_sysv_shm(
                 result = kernel_sysv_shm_control(
                     (int32_t)context->arguments[0], command, &information);
                 if (result < 0) return result;
-                if (edge_linux_copy_to_user(
-                        context, context->arguments[2], &information,
-                        sizeof(information)) < 0)
-                    return -EDGE_LINUX_EFAULT;
-                return 0;
+                return edge_linux_shm_status_copy_to_user(
+                    context, context->arguments[2], &information);
             }
             return kernel_sysv_shm_control(
                 (int32_t)context->arguments[0], command, 0);
@@ -3299,6 +3380,19 @@ static void edge_linux_sem_status_from_arm64(
     output->semaphore_count = input->sem_nsems;
 }
 
+static void edge_linux_sem_status_from_ia32(
+        const struct edge_linux_semid_ds32 *input,
+        kernel_sysv_sem_status_t *output) {
+    memset(output, 0, sizeof(*output));
+    edge_linux_ipc_perm32_to_native(&input->sem_perm,
+                                    &output->permission);
+    output->operation_time = (int64_t)((uint64_t)input->sem_otime |
+        ((uint64_t)input->sem_otime_high << 32));
+    output->change_time = (int64_t)((uint64_t)input->sem_ctime |
+        ((uint64_t)input->sem_ctime_high << 32));
+    output->semaphore_count = input->sem_nsems;
+}
+
 static int edge_linux_sem_status_copy_from_user(
         edge_linux_syscall_context_t *context, uint64_t user_address,
         kernel_sysv_sem_status_t *status) {
@@ -3308,6 +3402,12 @@ static int edge_linux_sem_status_copy_from_user(
                 context, &value, user_address, sizeof(value)) < 0)
             return -EDGE_LINUX_EFAULT;
         edge_linux_sem_status_from_x86(&value, status);
+    } else if (context->architecture == EDGE_LINUX_ARCH_IA32) {
+        struct edge_linux_semid_ds32 value;
+        if (edge_linux_copy_from_user(
+                context, &value, user_address, sizeof(value)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        edge_linux_sem_status_from_ia32(&value, status);
     } else {
         struct edge_linux_semid_ds_aarch64 value;
         if (edge_linux_copy_from_user(
@@ -3328,6 +3428,21 @@ static int edge_linux_sem_status_copy_to_user(
         value.sem_otime = status->operation_time;
         value.sem_ctime = status->change_time;
         value.sem_nsems = status->semaphore_count;
+        return edge_linux_copy_to_user(
+            context, user_address, &value, sizeof(value)) < 0 ?
+            -EDGE_LINUX_EFAULT : 0;
+    } else if (context->architecture == EDGE_LINUX_ARCH_IA32) {
+        struct edge_linux_semid_ds32 value;
+        memset(&value, 0, sizeof(value));
+        edge_linux_ipc_perm32_from_native(&status->permission,
+                                          &value.sem_perm);
+        value.sem_otime = (uint32_t)status->operation_time;
+        value.sem_otime_high =
+            (uint32_t)((uint64_t)status->operation_time >> 32);
+        value.sem_ctime = (uint32_t)status->change_time;
+        value.sem_ctime_high =
+            (uint32_t)((uint64_t)status->change_time >> 32);
+        value.sem_nsems = (uint32_t)status->semaphore_count;
         return edge_linux_copy_to_user(
             context, user_address, &value, sizeof(value)) < 0 ?
             -EDGE_LINUX_EFAULT : 0;
@@ -3372,9 +3487,20 @@ static int64_t edge_linux_sys_semop(
         context->arguments[3]) {
         uint64_t duration;
         uint64_t now;
-        if (edge_linux_copy_from_user(
-                context, &timeout, context->arguments[3],
-                sizeof(timeout)) < 0) {
+        if (context->architecture == EDGE_LINUX_ARCH_IA32 &&
+            context->raw_number == 117u) {
+            linux_timespec32_t compat_timeout;
+            if (edge_linux_copy_from_user(
+                    context, &compat_timeout, context->arguments[3],
+                    sizeof(compat_timeout)) < 0) {
+                arch_vm_free_page(operations);
+                return -EDGE_LINUX_EFAULT;
+            }
+            timeout.tv_sec = compat_timeout.tv_sec;
+            timeout.tv_nsec = compat_timeout.tv_nsec;
+        } else if (edge_linux_copy_from_user(
+                       context, &timeout, context->arguments[3],
+                       sizeof(timeout)) < 0) {
             arch_vm_free_page(operations);
             return -EDGE_LINUX_EFAULT;
         }
@@ -3523,6 +3649,66 @@ static void edge_linux_sysv_msg_free_buffer(void *buffer, uint32_t pages) {
         arch_vm_free_page(base + (uint64_t)page * 4096u);
 }
 
+static int edge_linux_msg_status_copy_from_user(
+        edge_linux_syscall_context_t *context, uint64_t user_address,
+        struct edge_linux_msqid_ds64 *status) {
+    if (context->architecture == EDGE_LINUX_ARCH_IA32) {
+        struct edge_linux_msqid_ds32 value;
+        if (edge_linux_copy_from_user(
+                context, &value, user_address, sizeof(value)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        memset(status, 0, sizeof(*status));
+        edge_linux_ipc_perm32_to_native(&value.msg_perm,
+                                        &status->msg_perm);
+        status->msg_stime = (int64_t)((uint64_t)value.msg_stime |
+            ((uint64_t)value.msg_stime_high << 32));
+        status->msg_rtime = (int64_t)((uint64_t)value.msg_rtime |
+            ((uint64_t)value.msg_rtime_high << 32));
+        status->msg_ctime = (int64_t)((uint64_t)value.msg_ctime |
+            ((uint64_t)value.msg_ctime_high << 32));
+        status->msg_cbytes = value.msg_cbytes;
+        status->msg_qnum = value.msg_qnum;
+        status->msg_qbytes = value.msg_qbytes;
+        status->msg_lspid = value.msg_lspid;
+        status->msg_lrpid = value.msg_lrpid;
+        return 0;
+    }
+    return edge_linux_copy_from_user(
+        context, status, user_address, sizeof(*status)) < 0 ?
+        -EDGE_LINUX_EFAULT : 0;
+}
+
+static int edge_linux_msg_status_copy_to_user(
+        edge_linux_syscall_context_t *context, uint64_t user_address,
+        const struct edge_linux_msqid_ds64 *status) {
+    if (context->architecture == EDGE_LINUX_ARCH_IA32) {
+        struct edge_linux_msqid_ds32 value;
+        memset(&value, 0, sizeof(value));
+        edge_linux_ipc_perm32_from_native(&status->msg_perm,
+                                          &value.msg_perm);
+        value.msg_stime = (uint32_t)status->msg_stime;
+        value.msg_stime_high =
+            (uint32_t)((uint64_t)status->msg_stime >> 32);
+        value.msg_rtime = (uint32_t)status->msg_rtime;
+        value.msg_rtime_high =
+            (uint32_t)((uint64_t)status->msg_rtime >> 32);
+        value.msg_ctime = (uint32_t)status->msg_ctime;
+        value.msg_ctime_high =
+            (uint32_t)((uint64_t)status->msg_ctime >> 32);
+        value.msg_cbytes = (uint32_t)status->msg_cbytes;
+        value.msg_qnum = (uint32_t)status->msg_qnum;
+        value.msg_qbytes = (uint32_t)status->msg_qbytes;
+        value.msg_lspid = status->msg_lspid;
+        value.msg_lrpid = status->msg_lrpid;
+        return edge_linux_copy_to_user(
+            context, user_address, &value, sizeof(value)) < 0 ?
+            -EDGE_LINUX_EFAULT : 0;
+    }
+    return edge_linux_copy_to_user(
+        context, user_address, status, sizeof(*status)) < 0 ?
+        -EDGE_LINUX_EFAULT : 0;
+}
+
 static int64_t edge_linux_sys_msgsnd(
         edge_linux_syscall_context_t *context) {
     uint64_t message_size = context->arguments[2];
@@ -3534,10 +3720,18 @@ static int64_t edge_linux_sys_msgsnd(
     int waited = 0;
 
     if (!context->arguments[1]) return -EDGE_LINUX_EFAULT;
-    if (edge_linux_copy_from_user(
-            context, &message_type, context->arguments[1],
-            sizeof(message_type)) < 0)
+    if (context->architecture == EDGE_LINUX_ARCH_IA32) {
+        int32_t compat_type;
+        if (edge_linux_copy_from_user(
+                context, &compat_type, context->arguments[1],
+                sizeof(compat_type)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        message_type = compat_type;
+    } else if (edge_linux_copy_from_user(
+                   context, &message_type, context->arguments[1],
+                   sizeof(message_type)) < 0) {
         return -EDGE_LINUX_EFAULT;
+    }
     if (message_size > KERNEL_SYSV_MSG_MAX_BYTES)
         return -EDGE_LINUX_EINVAL;
     if (message_size) {
@@ -3546,7 +3740,9 @@ static int64_t edge_linux_sys_msgsnd(
         if (!payload) return -EDGE_LINUX_ENOMEM;
         if (edge_linux_copy_from_user(
                 context, payload,
-                context->arguments[1] + sizeof(message_type),
+                context->arguments[1] +
+                    (context->architecture == EDGE_LINUX_ARCH_IA32 ?
+                     sizeof(int32_t) : sizeof(message_type)),
                 message_size) < 0) {
             edge_linux_sysv_msg_free_buffer(payload, pages);
             return -EDGE_LINUX_EFAULT;
@@ -3606,7 +3802,10 @@ static int64_t edge_linux_sys_msgrcv(
         result = kernel_sysv_msg_receive(
             edge_linux_current_ipc_namespace(),
             (int32_t)context->arguments[0],
-            (int64_t)context->arguments[3], payload, capacity,
+            context->architecture == EDGE_LINUX_ARCH_IA32 ?
+                (int64_t)(int32_t)context->arguments[3] :
+                (int64_t)context->arguments[3],
+            payload, capacity,
             flags, &message_type);
         if (waited && result == -EDGE_LINUX_EINVAL) {
             result = -EDGE_LINUX_EIDRM;
@@ -3628,14 +3827,30 @@ static int64_t edge_linux_sys_msgrcv(
         if (result != -EDGE_LINUX_ENOMSG) continue;
     }
     if (result >= 0) {
-        if (!context->arguments[1] || edge_linux_copy_to_user(
+        int type_copy_status;
+        if (!context->arguments[1]) {
+            result = -EDGE_LINUX_EFAULT;
+            goto out;
+        }
+        if (context->architecture == EDGE_LINUX_ARCH_IA32) {
+            int32_t compat_type = (int32_t)message_type;
+            type_copy_status = edge_linux_copy_to_user(
+                context, context->arguments[1], &compat_type,
+                sizeof(compat_type));
+        } else {
+            type_copy_status = edge_linux_copy_to_user(
                 context, context->arguments[1], &message_type,
-                sizeof(message_type)) < 0 ||
+                sizeof(message_type));
+        }
+        if (type_copy_status < 0 ||
             (result && edge_linux_copy_to_user(
-                context, context->arguments[1] + sizeof(message_type),
+                context, context->arguments[1] +
+                    (context->architecture == EDGE_LINUX_ARCH_IA32 ?
+                     sizeof(int32_t) : sizeof(message_type)),
                 payload, (uint64_t)result) < 0))
             result = -EDGE_LINUX_EFAULT;
     }
+out:
     if (payload) edge_linux_sysv_msg_free_buffer(payload, pages);
     return result;
 }
@@ -3656,9 +3871,10 @@ static int64_t edge_linux_sys_msgctl(
     memset(&status, 0, sizeof(status));
     memset(&information, 0, sizeof(information));
     if (operation == KERNEL_SYSV_IPC_SET) {
-        if (!user_address || edge_linux_copy_from_user(
-                context, &status, user_address, sizeof(status)) < 0)
-            return -EDGE_LINUX_EFAULT;
+        if (!user_address) return -EDGE_LINUX_EFAULT;
+        result = edge_linux_msg_status_copy_from_user(
+            context, user_address, &status);
+        if (result < 0) return result;
     }
     result = kernel_sysv_msg_control(
         edge_linux_current_ipc_namespace(),
@@ -3667,9 +3883,11 @@ static int64_t edge_linux_sys_msgctl(
     if (operation == KERNEL_SYSV_IPC_STAT ||
         operation == KERNEL_SYSV_MSG_STAT ||
         operation == KERNEL_SYSV_MSG_STAT_ANY) {
-        if (!user_address || edge_linux_copy_to_user(
-                context, user_address, &status, sizeof(status)) < 0)
-            return -EDGE_LINUX_EFAULT;
+        int copy_status;
+        if (!user_address) return -EDGE_LINUX_EFAULT;
+        copy_status = edge_linux_msg_status_copy_to_user(
+            context, user_address, &status);
+        if (copy_status < 0) return copy_status;
     } else if (operation == KERNEL_SYSV_IPC_INFO ||
                operation == KERNEL_SYSV_MSG_INFO) {
         if (!user_address || edge_linux_copy_to_user(
@@ -3678,6 +3896,157 @@ static int64_t edge_linux_sys_msgctl(
             return -EDGE_LINUX_EFAULT;
     }
     return result;
+}
+
+#define EDGE_LINUX_IPC_SEMOP 1u
+#define EDGE_LINUX_IPC_SEMGET 2u
+#define EDGE_LINUX_IPC_SEMCTL 3u
+#define EDGE_LINUX_IPC_SEMTIMEDOP 4u
+#define EDGE_LINUX_IPC_MSGSND 11u
+#define EDGE_LINUX_IPC_MSGRCV 12u
+#define EDGE_LINUX_IPC_MSGGET 13u
+#define EDGE_LINUX_IPC_MSGCTL 14u
+#define EDGE_LINUX_IPC_SHMAT 21u
+#define EDGE_LINUX_IPC_SHMDT 22u
+#define EDGE_LINUX_IPC_SHMGET 23u
+#define EDGE_LINUX_IPC_SHMCTL 24u
+
+struct edge_linux_compat_ipc_kludge {
+    uint32_t message;
+    int32_t type;
+};
+
+static int64_t edge_linux_sys_sysv_msg(
+    edge_linux_syscall_context_t *context);
+
+static int64_t edge_linux_sys_sysv_ipc(
+        edge_linux_syscall_context_t *context) {
+    edge_linux_syscall_context_t request;
+    uint32_t call;
+    uint32_t version;
+    int32_t first;
+    int32_t second;
+    uint32_t third;
+    uint32_t pointer;
+    uint32_t fifth;
+
+    if (!context || context->architecture != EDGE_LINUX_ARCH_IA32)
+        return -EDGE_LINUX_ENOSYS;
+    call = (uint32_t)context->arguments[0];
+    version = call >> 16;
+    call &= 0xffffu;
+    first = (int32_t)context->arguments[1];
+    second = (int32_t)context->arguments[2];
+    third = (uint32_t)context->arguments[3];
+    pointer = (uint32_t)context->arguments[4];
+    fifth = (uint32_t)context->arguments[5];
+    request = *context;
+    memset(request.arguments, 0, sizeof(request.arguments));
+
+    switch (call) {
+    case EDGE_LINUX_IPC_SEMOP:
+        request.id = EDGE_LINUX_SYS_semop;
+        request.arguments[0] = (uint32_t)first;
+        request.arguments[1] = pointer;
+        request.arguments[2] = (uint32_t)second;
+        return edge_linux_sys_sysv_sem(&request);
+    case EDGE_LINUX_IPC_SEMTIMEDOP:
+        request.id = EDGE_LINUX_SYS_semtimedop;
+        request.arguments[0] = (uint32_t)first;
+        request.arguments[1] = pointer;
+        request.arguments[2] = (uint32_t)second;
+        request.arguments[3] = fifth;
+        return edge_linux_sys_sysv_sem(&request);
+    case EDGE_LINUX_IPC_SEMGET:
+        request.id = EDGE_LINUX_SYS_semget;
+        request.arguments[0] = (uint32_t)first;
+        request.arguments[1] = (uint32_t)second;
+        request.arguments[2] = third;
+        return edge_linux_sys_sysv_sem(&request);
+    case EDGE_LINUX_IPC_SEMCTL: {
+        uint32_t argument;
+        if (!pointer) return -EDGE_LINUX_EINVAL;
+        if (edge_linux_copy_from_user(
+                context, &argument, pointer, sizeof(argument)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        request.id = EDGE_LINUX_SYS_semctl;
+        request.arguments[0] = (uint32_t)first;
+        request.arguments[1] = (uint32_t)second;
+        request.arguments[2] = third;
+        request.arguments[3] = argument;
+        return edge_linux_sys_sysv_sem(&request);
+    }
+    case EDGE_LINUX_IPC_MSGSND:
+        request.id = EDGE_LINUX_SYS_msgsnd;
+        request.arguments[0] = (uint32_t)first;
+        request.arguments[1] = pointer;
+        request.arguments[2] = (uint32_t)second;
+        request.arguments[3] = third;
+        return edge_linux_sys_sysv_msg(&request);
+    case EDGE_LINUX_IPC_MSGRCV:
+        request.id = EDGE_LINUX_SYS_msgrcv;
+        request.arguments[0] = (uint32_t)first;
+        request.arguments[2] = (uint32_t)second;
+        request.arguments[4] = third;
+        if (first < 0 || second < 0) return -EDGE_LINUX_EINVAL;
+        if (!version) {
+            struct edge_linux_compat_ipc_kludge legacy;
+            if (!pointer) return -EDGE_LINUX_EINVAL;
+            if (edge_linux_copy_from_user(
+                    context, &legacy, pointer, sizeof(legacy)) < 0)
+                return -EDGE_LINUX_EFAULT;
+            request.arguments[1] = legacy.message;
+            request.arguments[3] = (uint32_t)legacy.type;
+        } else {
+            request.arguments[1] = pointer;
+            request.arguments[3] = fifth;
+        }
+        return edge_linux_sys_sysv_msg(&request);
+    case EDGE_LINUX_IPC_MSGGET:
+        request.id = EDGE_LINUX_SYS_msgget;
+        request.arguments[0] = (uint32_t)first;
+        request.arguments[1] = (uint32_t)second;
+        return edge_linux_sys_sysv_msg(&request);
+    case EDGE_LINUX_IPC_MSGCTL:
+        request.id = EDGE_LINUX_SYS_msgctl;
+        request.arguments[0] = (uint32_t)first;
+        request.arguments[1] = (uint32_t)second;
+        request.arguments[2] = pointer;
+        return edge_linux_sys_sysv_msg(&request);
+    case EDGE_LINUX_IPC_SHMAT: {
+        uint32_t result_address;
+        int64_t result;
+        if (version == 1u) return -EDGE_LINUX_EINVAL;
+        request.id = EDGE_LINUX_SYS_shmat;
+        request.arguments[0] = (uint32_t)first;
+        request.arguments[1] = pointer;
+        request.arguments[2] = (uint32_t)second;
+        result = edge_linux_sys_sysv_shm(&request);
+        if (result < 0) return result;
+        result_address = (uint32_t)result;
+        return edge_linux_copy_to_user(
+            context, (uint32_t)context->arguments[3], &result_address,
+            sizeof(result_address)) < 0 ? -EDGE_LINUX_EFAULT : 0;
+    }
+    case EDGE_LINUX_IPC_SHMDT:
+        request.id = EDGE_LINUX_SYS_shmdt;
+        request.arguments[0] = pointer;
+        return edge_linux_sys_sysv_shm(&request);
+    case EDGE_LINUX_IPC_SHMGET:
+        request.id = EDGE_LINUX_SYS_shmget;
+        request.arguments[0] = (uint32_t)first;
+        request.arguments[1] = (uint32_t)second;
+        request.arguments[2] = third;
+        return edge_linux_sys_sysv_shm(&request);
+    case EDGE_LINUX_IPC_SHMCTL:
+        request.id = EDGE_LINUX_SYS_shmctl;
+        request.arguments[0] = (uint32_t)first;
+        request.arguments[1] = (uint32_t)second;
+        request.arguments[2] = pointer;
+        return edge_linux_sys_sysv_shm(&request);
+    default:
+        return -EDGE_LINUX_ENOSYS;
+    }
 }
 
 static int64_t edge_linux_sys_sysv_msg(
