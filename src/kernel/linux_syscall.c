@@ -3688,6 +3688,56 @@ static int edge_linux_posix_mq_descriptor(
     return 0;
 }
 
+static int edge_linux_mq_attr_copy_from_user(
+        edge_linux_syscall_context_t *context, uint64_t source,
+        struct edge_linux_mq_attr *attributes) {
+    if (edge_linux_architecture_is_compat32(context->architecture)) {
+        struct edge_linux_mq_attr32 compat_attributes;
+
+        if (edge_linux_copy_from_user(
+                context, &compat_attributes, source,
+                sizeof(compat_attributes)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        attributes->mq_flags = compat_attributes.mq_flags;
+        attributes->mq_maxmsg = compat_attributes.mq_maxmsg;
+        attributes->mq_msgsize = compat_attributes.mq_msgsize;
+        attributes->mq_curmsgs = compat_attributes.mq_curmsgs;
+        return 0;
+    }
+    return edge_linux_copy_from_user(
+        context, attributes, source, sizeof(*attributes)) < 0 ?
+        -EDGE_LINUX_EFAULT : 0;
+}
+
+static int edge_linux_mq_attr_copy_to_user(
+        edge_linux_syscall_context_t *context, uint64_t destination,
+        const struct edge_linux_mq_attr *attributes) {
+    if (edge_linux_architecture_is_compat32(context->architecture)) {
+        struct edge_linux_mq_attr32 compat_attributes;
+
+        if (attributes->mq_flags < INT32_MIN ||
+            attributes->mq_flags > INT32_MAX ||
+            attributes->mq_maxmsg < INT32_MIN ||
+            attributes->mq_maxmsg > INT32_MAX ||
+            attributes->mq_msgsize < INT32_MIN ||
+            attributes->mq_msgsize > INT32_MAX ||
+            attributes->mq_curmsgs < INT32_MIN ||
+            attributes->mq_curmsgs > INT32_MAX)
+            return -EDGE_LINUX_EOVERFLOW;
+        memset(&compat_attributes, 0, sizeof(compat_attributes));
+        compat_attributes.mq_flags = (int32_t)attributes->mq_flags;
+        compat_attributes.mq_maxmsg = (int32_t)attributes->mq_maxmsg;
+        compat_attributes.mq_msgsize = (int32_t)attributes->mq_msgsize;
+        compat_attributes.mq_curmsgs = (int32_t)attributes->mq_curmsgs;
+        return edge_linux_copy_to_user(
+            context, destination, &compat_attributes,
+            sizeof(compat_attributes)) < 0 ? -EDGE_LINUX_EFAULT : 0;
+    }
+    return edge_linux_copy_to_user(
+        context, destination, attributes, sizeof(*attributes)) < 0 ?
+        -EDGE_LINUX_EFAULT : 0;
+}
+
 static int64_t edge_linux_sys_mq_open(
         edge_linux_syscall_context_t *context) {
     struct edge_linux_mq_attr attributes;
@@ -3711,10 +3761,9 @@ static int64_t edge_linux_sys_mq_open(
         EDGE_LINUX_ENAMETOOLONG);
     if (result < 0) return result;
     if (context->arguments[3]) {
-        if (edge_linux_copy_from_user(
-                context, &attributes, context->arguments[3],
-                sizeof(attributes)) < 0)
-            return -EDGE_LINUX_EFAULT;
+        result = edge_linux_mq_attr_copy_from_user(
+            context, context->arguments[3], &attributes);
+        if (result < 0) return result;
         attributes_pointer = &attributes;
     }
     queue_id = kernel_posix_mq_open(
@@ -3754,9 +3803,8 @@ static int edge_linux_posix_mq_deadline(
     *has_timeout = 0;
     *deadline = 0;
     if (!user_timeout) return 0;
-    if (edge_linux_copy_from_user(
-            context, &timeout, user_timeout, sizeof(timeout)) < 0)
-        return -EDGE_LINUX_EFAULT;
+    result = edge_linux_import_timespec(context, user_timeout, &timeout);
+    if (result < 0) return result;
     result = edge_linux_timespec_microseconds(&timeout, &absolute);
     if (result < 0) return result;
     realtime_now = boottime_realtime_us();
@@ -3932,10 +3980,9 @@ static int64_t edge_linux_sys_mq_getsetattr(
 
     memset(&replacement, 0, sizeof(replacement));
     if (context->arguments[1]) {
-        if (edge_linux_copy_from_user(
-                context, &replacement, context->arguments[1],
-                sizeof(replacement)) < 0)
-            return -EDGE_LINUX_EFAULT;
+        result = edge_linux_mq_attr_copy_from_user(
+            context, context->arguments[1], &replacement);
+        if (result < 0) return result;
         if ((uint64_t)replacement.mq_flags &
             ~(uint64_t)KERNEL_POSIX_MQ_O_NONBLOCK)
             return -EDGE_LINUX_EINVAL;
@@ -3961,10 +4008,11 @@ static int64_t edge_linux_sys_mq_getsetattr(
             (uint32_t)replacement.mq_flags);
         if (result < 0) return result;
     }
-    if (context->arguments[2] && edge_linux_copy_to_user(
-            context, context->arguments[2], &current,
-            sizeof(current)) < 0)
-        return -EDGE_LINUX_EFAULT;
+    if (context->arguments[2]) {
+        result = edge_linux_mq_attr_copy_to_user(
+            context, context->arguments[2], &current);
+        if (result < 0) return result;
+    }
     return 0;
 }
 

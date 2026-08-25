@@ -636,6 +636,14 @@ struct edge_linux_mq_attr {
     int64_t mq_curmsgs;
 };
 
+struct edge_linux_mq_attr32 {
+    int32_t mq_flags;
+    int32_t mq_maxmsg;
+    int32_t mq_msgsize;
+    int32_t mq_curmsgs;
+    int32_t reserved[4];
+};
+
 /* Legacy Linux native asynchronous I/O UAPI shared by 64-bit targets. */
 struct edge_linux_io_event {
     uint64_t data;
@@ -924,6 +932,8 @@ _Static_assert(sizeof(struct edge_linux_msginfo) == 32,
                "Linux msginfo size mismatch");
 _Static_assert(sizeof(struct edge_linux_mq_attr) == 32,
                "Linux mq_attr size mismatch");
+_Static_assert(sizeof(struct edge_linux_mq_attr32) == 32,
+               "Linux i386 mq_attr size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_event) == 32,
                "Linux io_event size mismatch");
 _Static_assert(sizeof(struct edge_linux_iocb) == 64,
