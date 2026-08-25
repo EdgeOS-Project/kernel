@@ -225,7 +225,8 @@ static int bpf_map_is_hash(const kernel_bpf_map_t *map) {
          map->type == KERNEL_BPF_MAP_TYPE_PERCPU_HASH ||
          map->type == KERNEL_BPF_MAP_TYPE_LRU_HASH ||
          map->type == KERNEL_BPF_MAP_TYPE_LRU_PERCPU_HASH ||
-         map->type == KERNEL_BPF_MAP_TYPE_HASH_OF_MAPS);
+         map->type == KERNEL_BPF_MAP_TYPE_HASH_OF_MAPS ||
+         map->type == KERNEL_BPF_MAP_TYPE_RHASH);
 }
 
 static int bpf_map_is_array(const kernel_bpf_map_t *map) {
@@ -635,6 +636,22 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
             bpf_align8(1u + request->key_size) +
                 value_stride * possible_cpu_count :
             bpf_align8(1u + request->key_size + request->value_size);
+    } else if (request->type == KERNEL_BPF_MAP_TYPE_RHASH) {
+        if (!(validation_flags & KERNEL_BPF_MAP_NO_PREALLOC) ||
+            (validation_flags & KERNEL_BPF_MAP_ZERO_SEED) ||
+            (validation_flags & ~(KERNEL_BPF_MAP_NO_PREALLOC |
+                                  KERNEL_BPF_MAP_NUMA_NODE)))
+            goto invalid_btf;
+        if (request->map_extra >> 32u)
+            goto invalid_btf;
+        if ((uint32_t)request->map_extra > UINT16_MAX) {
+            status = -EDGE_LINUX_E2BIG;
+            goto fail_btf;
+        }
+        if ((uint32_t)request->map_extra > request->max_entries)
+            goto invalid_btf;
+        stride = bpf_align8(
+            1u + request->key_size + request->value_size);
     } else if (request->type == KERNEL_BPF_MAP_TYPE_LRU_HASH ||
                request->type == KERNEL_BPF_MAP_TYPE_LRU_PERCPU_HASH) {
         if (validation_flags & KERNEL_BPF_MAP_NO_PREALLOC)

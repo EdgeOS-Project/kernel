@@ -5483,7 +5483,8 @@ static int64_t edge_linux_bpf_map_create(
         attribute.interface_index ||
         attribute.btf_vmlinux_value_type_id ||
         (attribute.map_extra &&
-         attribute.map_type != KERNEL_BPF_MAP_TYPE_BLOOM_FILTER))
+         attribute.map_type != KERNEL_BPF_MAP_TYPE_BLOOM_FILTER &&
+         attribute.map_type != KERNEL_BPF_MAP_TYPE_RHASH))
         return -EDGE_LINUX_EINVAL;
     if ((!attribute.btf_descriptor &&
          (attribute.btf_key_type_id || attribute.btf_value_type_id)) ||

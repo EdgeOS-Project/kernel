@@ -368,11 +368,13 @@ EDGEOS_ASSESSMENTS = [
             "device-map and device-hash creation, network-interface validation, entry lifecycle, capacity, iteration and program descriptor behavior",
             "XSK-map creation, syscall lookup rejection, socket descriptor and family error behavior, deletion, key iteration and unsupported batch behavior",
             "instruction-array creation, offset update and zeroing behavior, lookup, iteration, freeze and unsupported delete and batch operations",
+            "resizable-hash creation flag and size-hint validation, element operations, iteration, lookup-and-delete, batch operations and freeze behavior",
             "ia32 and x32 fixed-width map-create and map-element attribute layouts",
         ],
         "missing": [
             "remaining map types, stack-trace helper population, CPU-map packet redirect execution, device-map packet redirect execution and AF_XDP socket-backed XSK-map entries",
-            "remaining specialized map families and their concurrency semantics, plus instruction-array verifier and jump-table integration",
+            "resizable-hash concurrent dynamic resizing and full Linux key and value size range",
+            "remaining specialized map-family concurrency semantics, plus instruction-array verifier and jump-table integration",
             "additional attachment families and program types",
             "complete allow-override and multi-position attachment semantics",
             "complete BTF type-graph validation and program integration",
@@ -385,6 +387,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/bpf_devmap_abi_probe.c",
             "tools/tests/bpf_xskmap_abi_probe.c",
             "tools/tests/bpf_insn_array_abi_probe.c",
+            "tools/tests/bpf_rhash_abi_probe.c",
             "tools/tests/bpf_stack_trace_abi_probe.c",
             "tools/tests/bpf_runtime_unit.c",
         ],
@@ -414,6 +417,8 @@ EDGEOS_ASSESSMENTS = [
                 "unsupported batch behavior, "
                 "instruction-array creation, offset updates, lookup, "
                 "iteration, freeze and unsupported delete and batch behavior, "
+                "resizable-hash creation flags, size hints, element and batch "
+                "operations, iteration, lookup-and-delete and freeze behavior, "
                 "plus ia32 "
                 "and x32 page-boundary map-create, "
                 "map-update and map-lookup attribute layouts"

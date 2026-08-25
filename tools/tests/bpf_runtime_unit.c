@@ -301,6 +301,70 @@ static void test_hash_map(void) {
     assert(kernel_bpf_map_info(object, &info) < 0);
 }
 
+static void test_resizable_hash_map(void) {
+    kernel_bpf_map_create_request_t request = {
+        .type = KERNEL_BPF_MAP_TYPE_RHASH,
+        .key_size = sizeof(uint32_t),
+        .value_size = sizeof(uint64_t),
+        .max_entries = 2u,
+        .flags = KERNEL_BPF_MAP_NO_PREALLOC,
+        .map_extra = 1u,
+    };
+    kernel_bpf_map_info_t info;
+    uint32_t keys[] = {10u, 20u, 30u};
+    uint64_t values[] = {100u, 200u, 300u};
+    uint64_t output = 0u;
+    uint32_t cursor = 0u;
+    uint32_t batch_key = 0u;
+    int has_more = 0;
+    int object;
+
+    strcpy(request.name, "rhash_map");
+    object = kernel_bpf_map_create(&request);
+    assert(object >= 0);
+    assert(kernel_bpf_map_info(object, &info) == 0);
+    assert(info.type == KERNEL_BPF_MAP_TYPE_RHASH);
+    assert(info.map_extra == 1u);
+    assert(kernel_bpf_map_update(
+               object, &keys[0], &values[0], KERNEL_BPF_NOEXIST) == 0);
+    assert(kernel_bpf_map_update(
+               object, &keys[0], &values[1], KERNEL_BPF_NOEXIST) ==
+           -EDGE_LINUX_EEXIST);
+    assert(kernel_bpf_map_update(
+               object, &keys[1], &values[1], KERNEL_BPF_EXIST) ==
+           -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_map_update(
+               object, &keys[1], &values[1], KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_update(
+               object, &keys[2], &values[2], KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_E2BIG);
+    assert(kernel_bpf_map_lookup(object, &keys[0], &output) == 0);
+    assert(output == values[0]);
+    assert(kernel_bpf_map_lookup_and_delete(
+               object, &keys[0], &output) == 0);
+    assert(output == values[0]);
+    assert(kernel_bpf_map_batch_next(
+               object, &cursor, &batch_key, &output, 0,
+               &has_more) == 0);
+    assert(batch_key == keys[1] && output == values[1] && !has_more);
+    assert(kernel_bpf_map_delete(object, &keys[1]) == 0);
+    kernel_bpf_object_release(object);
+
+    request.flags = 0u;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+    request.flags = KERNEL_BPF_MAP_NO_PREALLOC |
+        KERNEL_BPF_MAP_ZERO_SEED;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+    request.flags = KERNEL_BPF_MAP_NO_PREALLOC;
+    request.map_extra = 3u;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+    request.map_extra = (uint64_t)UINT16_MAX + 1u;
+    request.max_entries = UINT16_MAX + 1u;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_E2BIG);
+    request.map_extra = 1ull << 32u;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+}
+
 static void test_lru_hash_map(void) {
     kernel_bpf_map_create_request_t invalid = {
         .type = KERNEL_BPF_MAP_TYPE_LRU_HASH,
@@ -2113,6 +2177,7 @@ int main(void) {
     test_cgroup_array();
     test_map_access_flags();
     test_hash_map();
+    test_resizable_hash_map();
     test_lru_hash_map();
     test_queue_stack_maps();
     test_stack_trace_map();
