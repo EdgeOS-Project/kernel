@@ -10747,6 +10747,7 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_OP_FGETXATTR 43u
 #define EDGE_LINUX_IORING_OP_GETXATTR  44u
 #define EDGE_LINUX_IORING_OP_SOCKET    45u
+#define EDGE_LINUX_IORING_OP_URING_CMD 46u
 #define EDGE_LINUX_IORING_OP_SEND_ZC   47u
 #define EDGE_LINUX_IORING_OP_SENDMSG_ZC 48u
 #define EDGE_LINUX_IORING_OP_READ_MULTISHOT 49u
@@ -10758,6 +10759,7 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_OP_FTRUNCATE 55u
 #define EDGE_LINUX_IORING_OP_BIND      56u
 #define EDGE_LINUX_IORING_OP_LISTEN    57u
+#define EDGE_LINUX_IORING_OP_RECV_ZC   58u
 #define EDGE_LINUX_IORING_OP_EPOLL_WAIT 59u
 #define EDGE_LINUX_IORING_OP_READV_FIXED 60u
 #define EDGE_LINUX_IORING_OP_WRITEV_FIXED 61u
@@ -10784,6 +10786,19 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_CQE_F_NOTIF  (1u << 3)
 #define EDGE_LINUX_IORING_CQE_F_BUF_MORE (1u << 4)
 #define EDGE_LINUX_IORING_CQE_BUFFER_SHIFT 16u
+
+#define EDGE_LINUX_IORING_URING_CMD_FIXED     (1u << 0)
+#define EDGE_LINUX_IORING_URING_CMD_MULTISHOT (1u << 1)
+#define EDGE_LINUX_IORING_URING_CMD_MASK \
+    (EDGE_LINUX_IORING_URING_CMD_FIXED | \
+     EDGE_LINUX_IORING_URING_CMD_MULTISHOT)
+
+#define EDGE_LINUX_SOCKET_URING_OP_SIOCINQ     0u
+#define EDGE_LINUX_SOCKET_URING_OP_SIOCOUTQ    1u
+#define EDGE_LINUX_SOCKET_URING_OP_GETSOCKOPT  2u
+#define EDGE_LINUX_SOCKET_URING_OP_SETSOCKOPT  3u
+#define EDGE_LINUX_SOCKET_URING_OP_TX_TIMESTAMP 4u
+#define EDGE_LINUX_SOCKET_URING_OP_GETSOCKNAME 5u
 
 #define EDGE_LINUX_IORING_ASYNC_CANCEL_ALL      (1u << 0)
 #define EDGE_LINUX_IORING_ASYNC_CANCEL_FD       (1u << 1)
@@ -11806,6 +11821,15 @@ typedef struct edge_linux_io_uring_notification {
     uint8_t present;
 } edge_linux_io_uring_notification_t;
 
+static int64_t edge_linux_socket_option_get(
+    edge_linux_syscall_context_t *context,
+    const kernel_socket_descriptor_info_t *info,
+    uint32_t direct_capacity, uint32_t *direct_length);
+static int64_t edge_linux_sys_socket_option(
+    edge_linux_syscall_context_t *context);
+static int64_t edge_linux_sys_socket_address(
+    edge_linux_syscall_context_t *context);
+
 static int edge_linux_io_uring_zc_fixed_message_validate(
         int32_t ring_id, uint16_t buffer_index,
         const kernel_socket_user_message_t *message) {
@@ -11917,6 +11941,71 @@ static int64_t edge_linux_io_uring_execute_send_zc(
     return kernel_socket_message_execute(&message_request);
 }
 
+static int64_t edge_linux_io_uring_execute_uring_cmd(
+        edge_linux_syscall_context_t *context,
+        const struct edge_linux_io_uring_sqe *submission) {
+    edge_linux_syscall_context_t nested = *context;
+    kernel_socket_descriptor_info_t descriptor_info;
+    uint32_t command = (uint32_t)submission->offset;
+    uint32_t command_flags = submission->operation_flags;
+    uint32_t level = (uint32_t)submission->address;
+    uint32_t option = (uint32_t)(submission->address >> 32u);
+    uint32_t option_length = (uint32_t)submission->splice_descriptor;
+    uint32_t actual_length = 0u;
+    int result;
+
+    if ((submission->offset >> 32u) != 0u ||
+        (command_flags & ~EDGE_LINUX_IORING_URING_CMD_MASK) != 0u ||
+        ((command_flags & EDGE_LINUX_IORING_URING_CMD_FIXED) &&
+         (command_flags & EDGE_LINUX_IORING_URING_CMD_MULTISHOT)) ||
+        (((command_flags & EDGE_LINUX_IORING_URING_CMD_MULTISHOT) != 0u) !=
+         ((submission->flags & EDGE_LINUX_IOSQE_BUFFER_SELECT) != 0u)))
+        return -EDGE_LINUX_EINVAL;
+
+    result = kernel_socket_describe_descriptor(
+        submission->descriptor, &descriptor_info);
+    if (result == -EDGE_LINUX_ENOTSOCK)
+        return -EDGE_LINUX_EOPNOTSUPP;
+    if (result < 0) return result;
+
+    memset(nested.arguments, 0, sizeof(nested.arguments));
+    nested.route_status = EDGE_LINUX_SYSCALL_IMPLEMENTED;
+    nested.arguments[0] = (uint32_t)submission->descriptor;
+    switch (command) {
+    case EDGE_LINUX_SOCKET_URING_OP_GETSOCKOPT:
+        if (level != EDGE_LINUX_SOL_SOCKET)
+            return -EDGE_LINUX_EOPNOTSUPP;
+        nested.id = EDGE_LINUX_SYS_getsockopt;
+        nested.arguments[1] = level;
+        nested.arguments[2] = option;
+        nested.arguments[3] = submission->address3;
+        result = (int)edge_linux_socket_option_get(
+            &nested, &descriptor_info, option_length, &actual_length);
+        return result < 0 ? result : (int64_t)actual_length;
+    case EDGE_LINUX_SOCKET_URING_OP_SETSOCKOPT:
+        nested.id = EDGE_LINUX_SYS_setsockopt;
+        nested.arguments[1] = level;
+        nested.arguments[2] = option;
+        nested.arguments[3] = submission->address3;
+        nested.arguments[4] = option_length;
+        return edge_linux_sys_socket_option(&nested);
+    case EDGE_LINUX_SOCKET_URING_OP_GETSOCKNAME:
+        if (submission->ioprio || submission->length || command_flags ||
+            option_length > 1u)
+            return -EDGE_LINUX_EINVAL;
+        nested.id = option_length ? EDGE_LINUX_SYS_getpeername :
+                                    EDGE_LINUX_SYS_getsockname;
+        nested.arguments[1] = submission->address;
+        nested.arguments[2] = submission->address3;
+        return edge_linux_sys_socket_address(&nested);
+    case EDGE_LINUX_SOCKET_URING_OP_SIOCINQ:
+    case EDGE_LINUX_SOCKET_URING_OP_SIOCOUTQ:
+    case EDGE_LINUX_SOCKET_URING_OP_TX_TIMESTAMP:
+    default:
+        return -EDGE_LINUX_EOPNOTSUPP;
+    }
+}
+
 static int32_t edge_linux_io_uring_waitid(
         int32_t ring_id, const struct edge_linux_io_uring_sqe *submission) {
     kernel_process_wait_request_t request;
@@ -12010,7 +12099,9 @@ static int32_t edge_linux_io_uring_execute_descriptor(
         submission->opcode != EDGE_LINUX_IORING_OP_FUTEX_WAIT &&
         submission->opcode != EDGE_LINUX_IORING_OP_FUTEX_WAKE &&
         submission->opcode != EDGE_LINUX_IORING_OP_SEND_ZC &&
-        submission->opcode != EDGE_LINUX_IORING_OP_SENDMSG_ZC)
+        submission->opcode != EDGE_LINUX_IORING_OP_SENDMSG_ZC &&
+        submission->opcode != EDGE_LINUX_IORING_OP_URING_CMD &&
+        submission->opcode != EDGE_LINUX_IORING_OP_URING_CMD128)
         return -EDGE_LINUX_EINVAL;
     switch (submission->opcode) {
     case EDGE_LINUX_IORING_OP_NOP:
@@ -12301,6 +12392,11 @@ static int32_t edge_linux_io_uring_execute_descriptor(
             context, ring_id, submission, completion_flags,
             notification);
         break;
+    case EDGE_LINUX_IORING_OP_URING_CMD:
+    case EDGE_LINUX_IORING_OP_URING_CMD128:
+        result = edge_linux_io_uring_execute_uring_cmd(
+            context, submission);
+        break;
     default:
         result = -EDGE_LINUX_EINVAL;
         break;
@@ -12340,6 +12436,8 @@ static int edge_linux_io_uring_fixed_file_supported(uint8_t opcode) {
     case EDGE_LINUX_IORING_OP_SPLICE:
     case EDGE_LINUX_IORING_OP_MSG_RING:
     case EDGE_LINUX_IORING_OP_EPOLL_WAIT:
+    case EDGE_LINUX_IORING_OP_URING_CMD:
+    case EDGE_LINUX_IORING_OP_URING_CMD128:
         return 1;
     default:
         return 0;
@@ -13176,6 +13274,8 @@ static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
            opcode == EDGE_LINUX_IORING_OP_LINKAT ||
            opcode == EDGE_LINUX_IORING_OP_MSG_RING ||
            opcode == EDGE_LINUX_IORING_OP_SOCKET ||
+           opcode == EDGE_LINUX_IORING_OP_URING_CMD ||
+           opcode == EDGE_LINUX_IORING_OP_URING_CMD128 ||
            opcode == EDGE_LINUX_IORING_OP_BIND ||
            opcode == EDGE_LINUX_IORING_OP_LISTEN ||
            opcode == EDGE_LINUX_IORING_OP_EPOLL_WAIT ||
@@ -16520,12 +16620,17 @@ static int edge_linux_socket_option_applicable(
 
 static int64_t edge_linux_socket_option_copy_out(
     edge_linux_syscall_context_t *context, const void *value,
-    uint32_t value_length, uint32_t capacity) {
+    uint32_t value_length, uint32_t capacity,
+    uint32_t *direct_length) {
     uint32_t copied = capacity < value_length ? capacity : value_length;
     if (copied && (!context->arguments[3] ||
                    edge_linux_copy_to_user(
                        context, context->arguments[3], value, copied) < 0))
         return -EDGE_LINUX_EFAULT;
+    if (direct_length) {
+        *direct_length = copied;
+        return 0;
+    }
     if (edge_linux_copy_to_user(context, context->arguments[4], &copied,
                                 sizeof(copied)) < 0)
         return -EDGE_LINUX_EFAULT;
@@ -16888,7 +16993,7 @@ static int64_t edge_linux_socket_option_set(
 
 static int64_t edge_linux_socket_option_get_peer_groups(
     edge_linux_syscall_context_t *context, int32_t descriptor,
-    uint32_t capacity) {
+    uint32_t capacity, uint32_t *direct_length) {
     uint32_t count;
     uint32_t required;
     uint32_t index;
@@ -16898,6 +17003,10 @@ static int64_t edge_linux_socket_option_get_peer_groups(
     if (count > UINT32_MAX / sizeof(uint32_t)) return -EDGE_LINUX_EOVERFLOW;
     required = count * sizeof(uint32_t);
     if (capacity < required) {
+        if (direct_length) {
+            *direct_length = required;
+            return -EDGE_LINUX_ERANGE;
+        }
         if (edge_linux_copy_to_user(
                 context, context->arguments[4], &required,
                 sizeof(required)) < 0)
@@ -16916,15 +17025,19 @@ static int64_t edge_linux_socket_option_get_peer_groups(
                 &group_id, sizeof(group_id)) < 0)
             return -EDGE_LINUX_EFAULT;
     }
-    if (edge_linux_copy_to_user(context, context->arguments[4], &required,
-                                sizeof(required)) < 0)
+    if (direct_length)
+        *direct_length = required;
+    else if (edge_linux_copy_to_user(
+                 context, context->arguments[4], &required,
+                 sizeof(required)) < 0)
         return -EDGE_LINUX_EFAULT;
     return 0;
 }
 
 static int64_t edge_linux_socket_option_get(
     edge_linux_syscall_context_t *context,
-    const kernel_socket_descriptor_info_t *info) {
+    const kernel_socket_descriptor_info_t *info,
+    uint32_t direct_capacity, uint32_t *direct_length) {
     const edge_linux_socket_integer_option_t *option;
     uint32_t level = (uint32_t)context->arguments[1];
     uint32_t name = (uint32_t)context->arguments[2];
@@ -16934,10 +17047,15 @@ static int64_t edge_linux_socket_option_get(
     int32_t integer;
     int status;
 
-    if (!context->arguments[4] ||
-        edge_linux_copy_from_user(context, &capacity,
-            context->arguments[4], sizeof(capacity)) < 0)
-        return -EDGE_LINUX_EFAULT;
+    if (direct_length) {
+        capacity = direct_capacity;
+        *direct_length = 0u;
+    } else {
+        if (!context->arguments[4] ||
+            edge_linux_copy_from_user(context, &capacity,
+                context->arguments[4], sizeof(capacity)) < 0)
+            return -EDGE_LINUX_EFAULT;
+    }
     if ((int32_t)capacity < 0) return -EDGE_LINUX_EINVAL;
 
     if (level == EDGE_LINUX_SOL_IP &&
@@ -16961,7 +17079,8 @@ static int64_t edge_linux_socket_option_get(
             revision.revision, &highest);
         if (status < 0) return status;
         return edge_linux_socket_option_copy_out(
-            context, &revision, sizeof(revision), capacity);
+            context, &revision, sizeof(revision), capacity,
+            direct_length);
     }
 
     if (level == EDGE_LINUX_IPPROTO_ICMPV6 &&
@@ -16972,7 +17091,7 @@ static int64_t edge_linux_socket_option_get(
             descriptor, filter);
         if (status < 0) return status;
         return edge_linux_socket_option_copy_out(
-            context, filter, sizeof(filter), capacity);
+            context, filter, sizeof(filter), capacity, direct_length);
     }
 
     if (level == EDGE_LINUX_SOL_IP &&
@@ -16986,7 +17105,7 @@ static int64_t edge_linux_socket_option_get(
         if (status < 0) return status;
         return edge_linux_socket_option_copy_out(
             context, &interface_address,
-            sizeof(interface_address), capacity);
+            sizeof(interface_address), capacity, direct_length);
     }
 
     if (level == EDGE_LINUX_SOL_IPV6 &&
@@ -17000,7 +17119,7 @@ static int64_t edge_linux_socket_option_get(
         if (status < 0) return status;
         return edge_linux_socket_option_copy_out(
             context, &interface_index,
-            sizeof(interface_index), capacity);
+            sizeof(interface_index), capacity, direct_length);
     }
 
     if (level == EDGE_LINUX_SOL_NETLINK) {
@@ -17015,7 +17134,8 @@ static int64_t edge_linux_socket_option_get(
             if (status < 0) return status;
             integer = (int32_t)value;
             return edge_linux_socket_option_copy_out(
-                context, &integer, sizeof(integer), capacity);
+                context, &integer, sizeof(integer), capacity,
+                direct_length);
         }
         if (name == EDGE_LINUX_NETLINK_LIST_MEMBERSHIPS) {
             status = kernel_socket_netlink_memberships_get(
@@ -17023,7 +17143,7 @@ static int64_t edge_linux_socket_option_get(
             if (status < 0) return status;
             actual = groups ? (uint32_t)sizeof(groups) : 0u;
             return edge_linux_socket_option_copy_out(
-                context, &groups, actual, capacity);
+                context, &groups, actual, capacity, direct_length);
         }
         return -EDGE_LINUX_ENOPROTOOPT;
     }
@@ -17044,7 +17164,7 @@ static int64_t edge_linux_socket_option_get(
             descriptor, name, output, sizeof(output), &actual);
         if (status < 0) return status;
         return edge_linux_socket_option_copy_out(
-            context, output, actual, capacity);
+            context, output, actual, capacity, direct_length);
     }
 
     if (level == EDGE_LINUX_SOL_SOCKET) {
@@ -17065,7 +17185,8 @@ static int64_t edge_linux_socket_option_get(
                 descriptor, &credentials);
             if (status < 0) return status;
             return edge_linux_socket_option_copy_out(
-                context, &credentials, sizeof(credentials), capacity);
+                context, &credentials, sizeof(credentials), capacity,
+                direct_length);
         } else if (name == EDGE_LINUX_SO_PEERPIDFD) {
             int64_t peer_descriptor;
             int64_t result;
@@ -17074,12 +17195,13 @@ static int64_t edge_linux_socket_option_get(
             if (peer_descriptor < 0) return peer_descriptor;
             integer = (int32_t)peer_descriptor;
             result = edge_linux_socket_option_copy_out(
-                context, &integer, sizeof(integer), capacity);
+                context, &integer, sizeof(integer), capacity,
+                direct_length);
             if (result < 0) (void)kernel_fd_close(integer);
             return result;
         } else if (name == EDGE_LINUX_SO_PEERGROUPS) {
             return edge_linux_socket_option_get_peer_groups(
-                context, descriptor, capacity);
+                context, descriptor, capacity, direct_length);
         } else if (name == EDGE_LINUX_SO_PEERSEC) {
             return -EDGE_LINUX_ENOPROTOOPT;
         } else if (name == EDGE_LINUX_SO_BINDTODEVICE) {
@@ -17090,7 +17212,7 @@ static int64_t edge_linux_socket_option_get(
                 descriptor, device, sizeof(device), &actual);
             if (status < 0) return status;
             return edge_linux_socket_option_copy_out(
-                context, device, actual, capacity);
+                context, device, actual, capacity, direct_length);
         } else if (name == EDGE_LINUX_SO_RCVTIMEO ||
                    name == EDGE_LINUX_SO_SNDTIMEO ||
                    name == EDGE_LINUX_SO_RCVTIMEO_NEW ||
@@ -17107,7 +17229,8 @@ static int64_t edge_linux_socket_option_get(
             timeout.tv_sec = value / 1000000;
             timeout.tv_usec = value % 1000000;
             return edge_linux_socket_option_copy_out(
-                context, &timeout, sizeof(timeout), capacity);
+                context, &timeout, sizeof(timeout), capacity,
+                direct_length);
         } else if (name == EDGE_LINUX_SO_LINGER) {
             struct edge_linux_linger linger;
             status = kernel_socket_option_get_integer(
@@ -17119,7 +17242,8 @@ static int64_t edge_linux_socket_option_get(
             if (status < 0) return status;
             linger.seconds = (int32_t)value;
             return edge_linux_socket_option_copy_out(
-                context, &linger, sizeof(linger), capacity);
+                context, &linger, sizeof(linger), capacity,
+                direct_length);
         } else {
             option = edge_linux_socket_integer_option_find(level, name);
             if (!option) return -EDGE_LINUX_ENOPROTOOPT;
@@ -17129,7 +17253,8 @@ static int64_t edge_linux_socket_option_get(
             integer = (int32_t)value;
         }
         return edge_linux_socket_option_copy_out(
-            context, &integer, sizeof(integer), capacity);
+            context, &integer, sizeof(integer), capacity,
+            direct_length);
     }
 
     if (level == EDGE_LINUX_SOL_IP && name == EDGE_LINUX_IP_MTU) {
@@ -17138,7 +17263,8 @@ static int64_t edge_linux_socket_option_get(
         status = kernel_socket_option_get_mtu(descriptor, &integer);
         if (status < 0) return status;
         return edge_linux_socket_option_copy_out(
-            context, &integer, sizeof(integer), capacity);
+            context, &integer, sizeof(integer), capacity,
+            direct_length);
     }
 
     option = edge_linux_socket_integer_option_find(level, name);
@@ -17150,7 +17276,7 @@ static int64_t edge_linux_socket_option_get(
     if (status < 0) return status;
     integer = (int32_t)value;
     return edge_linux_socket_option_copy_out(
-        context, &integer, sizeof(integer), capacity);
+        context, &integer, sizeof(integer), capacity, direct_length);
 }
 
 static int64_t edge_linux_sys_socket_option(
@@ -17165,7 +17291,7 @@ static int64_t edge_linux_sys_socket_option(
     if (context->id == EDGE_LINUX_SYS_setsockopt)
         return edge_linux_socket_option_set(context, &info);
     if (context->id == EDGE_LINUX_SYS_getsockopt)
-        return edge_linux_socket_option_get(context, &info);
+        return edge_linux_socket_option_get(context, &info, 0u, 0);
     return -EDGE_LINUX_ENOSYS;
 }
 
