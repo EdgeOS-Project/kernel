@@ -33,6 +33,7 @@ X32_DIRECT_SHARED_SYSCALLS = {
     "fchdir",
     "fdatasync",
     "flock",
+    "fork",
     "fsync",
     "getegid",
     "geteuid",
@@ -42,6 +43,7 @@ X32_DIRECT_SHARED_SYSCALLS = {
     "getpid",
     "getppid",
     "getpriority",
+    "getrusage",
     "get_robust_list",
     "getsockopt",
     "getsid",
@@ -93,6 +95,8 @@ X32_DIRECT_SHARED_SYSCALLS = {
     "userfaultfd",
     "write",
     "writev",
+    "wait4",
+    "waitid",
 }
 
 

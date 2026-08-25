@@ -7325,6 +7325,21 @@ static void edge_linux_wait_information_build(
         (int64_t)(result->usage.sys_time_us / 10000u);
 }
 
+static int edge_linux_wait_information_copy(
+        edge_linux_syscall_context_t *context, uint64_t destination,
+        const struct edge_linux_siginfo_child *information) {
+    if (context->architecture == EDGE_LINUX_ARCH_X32) {
+        struct edge_linux_compat_siginfo compat;
+
+        edge_linux_native_siginfo_to_compat(
+            (const struct edge_linux_siginfo *)information, &compat);
+        return edge_linux_copy_to_user(
+            context, destination, &compat, sizeof(compat));
+    }
+    return edge_linux_copy_to_user(
+        context, destination, information, sizeof(*information));
+}
+
 static int edge_linux_io_uring_waitid_copy(
         uint64_t address_space, uint64_t user_address,
         const kernel_process_wait_result_t *result,
@@ -7512,9 +7527,8 @@ static int64_t edge_linux_sys_wait(
         if (information_user) {
             struct edge_linux_siginfo_child information;
             memset(&information, 0, sizeof(information));
-            if (edge_linux_copy_to_user(
-                    context, information_user, &information,
-                    sizeof(information)) < 0)
+            if (edge_linux_wait_information_copy(
+                    context, information_user, &information) < 0)
                 return -EDGE_LINUX_EFAULT;
         }
         return 0;
@@ -7527,9 +7541,8 @@ static int64_t edge_linux_sys_wait(
     } else if (information_user) {
         struct edge_linux_siginfo_child information;
         edge_linux_wait_information_build(&result, &information);
-        if (edge_linux_copy_to_user(
-                context, information_user, &information,
-                sizeof(information)) < 0)
+        if (edge_linux_wait_information_copy(
+                context, information_user, &information) < 0)
             return -EDGE_LINUX_EFAULT;
     }
     if (usage_user) {
