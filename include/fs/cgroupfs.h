@@ -17,6 +17,10 @@ int cgroupfs_proc_pid_snapshot(int32_t pid, char *buffer,
                                uint32_t capacity);
 int cgroupfs_directory_valid(vfs_superblock_t *sb,
                              const vfs_inode_t *inode);
+int cgroupfs_reference_get(vfs_superblock_t *sb,
+                           const vfs_inode_t *inode,
+                           uint64_t *reference);
+void cgroupfs_reference_put(uint64_t reference);
 int cgroupfs_bpf_program_attach(vfs_superblock_t *sb,
                                 const vfs_inode_t *inode,
                                 int object_id, uint32_t flags,

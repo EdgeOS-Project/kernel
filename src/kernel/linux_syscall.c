@@ -4804,6 +4804,26 @@ static int64_t edge_linux_bpf_map_element(
             status = event_id < 0 ? event_id :
                 kernel_bpf_perf_event_array_update(
                     object_id, key, event_id, attribute.flags);
+        } else if (info.type == KERNEL_BPF_MAP_TYPE_CGROUP_ARRAY) {
+            int32_t cgroup_descriptor;
+            kernel_vfs_descriptor_t target;
+            uint64_t reference;
+
+            memcpy(&cgroup_descriptor, value,
+                   sizeof(cgroup_descriptor));
+            status = kernel_vfs_describe_descriptor(
+                cgroup_descriptor, &target);
+            if (status < 0) goto out;
+            if (!target.superblock || !target.inode) {
+                status = -EDGE_LINUX_EBADF;
+                goto out;
+            }
+            status = cgroupfs_reference_get(
+                target.superblock, target.inode, &reference);
+            if (status < 0) goto out;
+            status = kernel_bpf_cgroup_array_update(
+                object_id, key, reference, attribute.flags);
+            if (status < 0) cgroupfs_reference_put(reference);
         } else {
             status = kernel_bpf_map_update(
                 object_id, key, value, attribute.flags);
@@ -4908,7 +4928,8 @@ static int64_t edge_linux_bpf_map_batch(
     if (status < 0) return status;
     status = kernel_bpf_map_info(object_id, &info);
     if (status < 0) return status;
-    if (info.type == KERNEL_BPF_MAP_TYPE_PERF_EVENT_ARRAY)
+    if (info.type == KERNEL_BPF_MAP_TYPE_PERF_EVENT_ARRAY ||
+        info.type == KERNEL_BPF_MAP_TYPE_CGROUP_ARRAY)
         return -EDGE_LINUX_ENOTSUPP;
     if (!info.key_size) return -EDGE_LINUX_ENOTSUPP;
     status = kernel_bpf_map_value_buffer_size(

@@ -76,6 +76,8 @@ static uint32_t g_test_current_cpu;
 static uint32_t g_perf_event_references[8];
 static uint32_t g_ringbuf_notifications;
 static uint64_t g_monotonic_time_us;
+static uint64_t g_cgroup_references_released[8];
+static uint32_t g_cgroup_reference_release_count;
 
 uint64_t boottime_monotonic_us(void) {
     return ++g_monotonic_time_us;
@@ -83,6 +85,15 @@ uint64_t boottime_monotonic_us(void) {
 
 void kernel_bpf_ringbuf_state_changed(void) {
     ++g_ringbuf_notifications;
+}
+
+void cgroupfs_reference_put(uint64_t reference) {
+    assert(reference != 0u);
+    assert(g_cgroup_reference_release_count <
+           sizeof(g_cgroup_references_released) /
+               sizeof(g_cgroup_references_released[0]));
+    g_cgroup_references_released[g_cgroup_reference_release_count++] =
+        reference;
 }
 
 uint32_t edge_smp_current_cpu(void) {
@@ -152,6 +163,68 @@ static void test_array_map(void) {
     assert(kernel_bpf_map_next_key(object, &key, &next) < 0);
     kernel_bpf_object_release(object);
     assert(kernel_bpf_map_info(object, &info) < 0);
+}
+
+static void test_cgroup_array(void) {
+    kernel_bpf_map_create_request_t request = {
+        .type = KERNEL_BPF_MAP_TYPE_CGROUP_ARRAY,
+        .key_size = sizeof(uint32_t),
+        .value_size = sizeof(uint32_t),
+        .max_entries = 2u,
+    };
+    kernel_bpf_map_info_t info;
+    uint32_t key = 0u;
+    uint32_t value = 0u;
+    uint64_t first_reference = 0x100000001ull;
+    uint64_t second_reference = 0x200000002ull;
+    int object;
+
+    g_cgroup_reference_release_count = 0u;
+    memset(g_cgroup_references_released, 0,
+           sizeof(g_cgroup_references_released));
+    object = kernel_bpf_map_create(&request);
+    assert(object >= 0);
+    assert(kernel_bpf_map_info(object, &info) == 0);
+    assert(info.type == KERNEL_BPF_MAP_TYPE_CGROUP_ARRAY);
+    assert(info.key_size == sizeof(uint32_t));
+    assert(info.value_size == sizeof(uint32_t));
+    assert(kernel_bpf_map_lookup(object, &key, &value) ==
+           -EDGE_LINUX_ENOTSUPP);
+    assert(kernel_bpf_map_update(
+               object, &key, &value, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_ENOTSUPP);
+    assert(kernel_bpf_map_delete(object, &key) ==
+           -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_cgroup_array_update(
+               object, &key, first_reference,
+               KERNEL_BPF_EXIST) == -EDGE_LINUX_EINVAL);
+    assert(kernel_bpf_cgroup_array_update(
+               object, &key, first_reference,
+               KERNEL_BPF_ANY) == 0);
+    assert(g_cgroup_reference_release_count == 0u);
+    assert(kernel_bpf_cgroup_array_update(
+               object, &key, second_reference,
+               KERNEL_BPF_ANY) == 0);
+    assert(g_cgroup_reference_release_count == 1u);
+    assert(g_cgroup_references_released[0] == first_reference);
+    assert(kernel_bpf_map_delete(object, &key) == 0);
+    assert(g_cgroup_reference_release_count == 2u);
+    assert(g_cgroup_references_released[1] == second_reference);
+    assert(kernel_bpf_map_delete(object, &key) ==
+           -EDGE_LINUX_ENOENT);
+    key = 1u;
+    assert(kernel_bpf_cgroup_array_update(
+               object, &key, first_reference,
+               KERNEL_BPF_ANY) == 0);
+    kernel_bpf_object_release(object);
+    assert(g_cgroup_reference_release_count == 3u);
+    assert(g_cgroup_references_released[2] == first_reference);
+
+    request.value_size = sizeof(uint64_t);
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+    request.value_size = sizeof(uint32_t);
+    request.key_size = sizeof(uint64_t);
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
 }
 
 static void test_map_access_flags(void) {
@@ -1613,6 +1686,7 @@ static void test_pinned_object_lifetime(void) {
 
 int main(void) {
     test_array_map();
+    test_cgroup_array();
     test_map_access_flags();
     test_hash_map();
     test_lru_hash_map();

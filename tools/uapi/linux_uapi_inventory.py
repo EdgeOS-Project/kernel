@@ -328,6 +328,7 @@ EDGEOS_ASSESSMENTS = [
             "BTF-backed map creation with retained BTF object lifetime",
             "cgroup link objects with descriptor lifetime, ID enumeration, information queries, program replacement, explicit detach and close-time detach",
             "kernel and user ring-buffer maps with mmap, poll and cgroup-device output execution",
+            "cgroup array maps with retained cgroup lifetime, replacement and deletion semantics",
             "BPF filesystem mounting, object pinning, access-restricted reopening and unlink lifetime",
             "explicit map binding to program lifetime with program map-ID reporting",
             "runtime statistics enable descriptors with close-time disable semantics",
@@ -343,6 +344,7 @@ EDGEOS_ASSESSMENTS = [
         ],
         "runtime_tests": [
             "tools/tests/bpf_abi_probe.c",
+            "tools/tests/bpf_cgroup_array_abi_probe.c",
             "tools/tests/bpf_runtime_unit.c",
         ],
         "linux_oracle": {
@@ -358,6 +360,7 @@ EDGEOS_ASSESSMENTS = [
                 "program loading, attachment, detachment and query behavior, "
                 "plus cgroup link object creation, replacement, information, "
                 "ID enumeration and lifetime, kernel and user ring buffers, "
+                "cgroup array descriptors and retained cgroup lifetime, "
                 "BPF filesystem object pinning, explicit program-map binding, "
                 "runtime statistics descriptors and supported program-test "
                 "error behavior"

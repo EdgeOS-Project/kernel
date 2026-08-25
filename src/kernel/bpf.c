@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 
+#include "fs/cgroupfs.h"
 #include "kernel/anonymous_fd.h"
 #include "kernel/bpf_runtime.h"
 #include "kernel/linux_errno.h"
@@ -226,6 +227,7 @@ static int bpf_map_is_array(const kernel_bpf_map_t *map) {
          map->type == KERNEL_BPF_MAP_TYPE_PERCPU_ARRAY ||
          map->type == KERNEL_BPF_MAP_TYPE_PROG_ARRAY ||
          map->type == KERNEL_BPF_MAP_TYPE_PERF_EVENT_ARRAY ||
+         map->type == KERNEL_BPF_MAP_TYPE_CGROUP_ARRAY ||
          map->type == KERNEL_BPF_MAP_TYPE_ARRAY_OF_MAPS);
 }
 
@@ -240,6 +242,10 @@ static int bpf_map_is_object_array(const kernel_bpf_map_t *map) {
 
 static int bpf_map_is_perf_event_array(const kernel_bpf_map_t *map) {
     return map && map->type == KERNEL_BPF_MAP_TYPE_PERF_EVENT_ARRAY;
+}
+
+static int bpf_map_is_cgroup_array(const kernel_bpf_map_t *map) {
+    return map && map->type == KERNEL_BPF_MAP_TYPE_CGROUP_ARRAY;
 }
 
 static int bpf_map_type_has_descriptor_slots(uint32_t type) {
@@ -508,6 +514,13 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
             request->map_extra || request->btf_present)
             goto invalid_btf;
         stride = sizeof(int32_t);
+    } else if (request->type == KERNEL_BPF_MAP_TYPE_CGROUP_ARRAY) {
+        if (request->key_size != sizeof(uint32_t) ||
+            request->value_size != sizeof(uint32_t) ||
+            validation_flags || request->map_extra ||
+            request->btf_present)
+            goto invalid_btf;
+        stride = sizeof(uint64_t);
     } else if (request->type == KERNEL_BPF_MAP_TYPE_HASH ||
                request->type == KERNEL_BPF_MAP_TYPE_PERCPU_HASH) {
         if (validation_flags & ~KERNEL_BPF_MAP_NO_PREALLOC)
@@ -1297,6 +1310,16 @@ void kernel_bpf_object_release(int object_id) {
 
             memcpy(&event_id, entry, sizeof(event_id));
             if (event_id >= 0) kernel_perf_event_release(event_id);
+        }
+    }
+    if (storage && map_type == KERNEL_BPF_MAP_TYPE_CGROUP_ARRAY) {
+        for (uint32_t index = 0; index < map_entries; ++index) {
+            uint8_t *entry = (uint8_t *)storage +
+                (uint64_t)index * map_stride;
+            uint64_t reference = 0u;
+
+            memcpy(&reference, entry, sizeof(reference));
+            if (reference) cgroupfs_reference_put(reference);
         }
     }
     if (map_btf_object >= 0)
@@ -2486,6 +2509,10 @@ int kernel_bpf_map_lookup_flags(int object_id, const void *key, void *value,
         status = -EDGE_LINUX_ENOTSUPP;
         goto out;
     }
+    if (bpf_map_is_cgroup_array(map)) {
+        status = -EDGE_LINUX_ENOTSUPP;
+        goto out;
+    }
     if (bpf_map_is_perf_event_array(map)) {
         status = -EDGE_LINUX_ENOTSUPP;
         goto out;
@@ -2579,6 +2606,10 @@ int kernel_bpf_map_update(int object_id, const void *key, const void *value,
         goto out;
     }
     if (bpf_map_is_perf_event_array(map)) {
+        status = -EDGE_LINUX_ENOTSUPP;
+        goto out;
+    }
+    if (bpf_map_is_cgroup_array(map)) {
         status = -EDGE_LINUX_ENOTSUPP;
         goto out;
     }
@@ -2776,6 +2807,48 @@ out:
     return status;
 }
 
+int kernel_bpf_cgroup_array_update(int object_id, const void *key,
+                                   uint64_t cgroup_reference,
+                                   uint64_t flags) {
+    kernel_bpf_object_t *object;
+    kernel_bpf_map_t *map;
+    uint64_t released_reference = 0u;
+    uint32_t index;
+    int status;
+
+    if (!key) return -EDGE_LINUX_EFAULT;
+    if (!cgroup_reference) return -EDGE_LINUX_EBADF;
+    if (flags != KERNEL_BPF_ANY) return -EDGE_LINUX_EINVAL;
+
+    bpf_lock();
+    object = bpf_object_locked(object_id);
+    if (!object || object->kind != KERNEL_BPF_OBJECT_MAP) {
+        status = -EDGE_LINUX_EBADF;
+        goto out;
+    }
+    map = &object->value.map;
+    if (!bpf_map_is_cgroup_array(map)) {
+        status = -EDGE_LINUX_EINVAL;
+        goto out;
+    }
+    if (map->frozen) {
+        status = -EDGE_LINUX_EPERM;
+        goto out;
+    }
+    status = bpf_map_array_index(map, key, &index);
+    if (status < 0) goto out;
+    memcpy(&released_reference, bpf_map_value(map, index),
+           sizeof(released_reference));
+    memcpy(bpf_map_value(map, index), &cgroup_reference,
+           sizeof(cgroup_reference));
+    status = 0;
+out:
+    bpf_unlock();
+    if (status == 0 && released_reference)
+        cgroupfs_reference_put(released_reference);
+    return status;
+}
+
 int kernel_bpf_map_lookup_and_delete(int object_id, const void *key,
                                      void *value) {
     kernel_bpf_object_t *object;
@@ -2847,6 +2920,7 @@ int kernel_bpf_map_delete(int object_id, const void *key) {
     uint32_t free_slot;
     int32_t released_inner = -1;
     int32_t released_event = -1;
+    uint64_t released_cgroup = 0u;
     int status = 0;
 
     bpf_lock();
@@ -2873,7 +2947,8 @@ int kernel_bpf_map_delete(int object_id, const void *key) {
         goto out;
     }
     if (bpf_map_is_array(map) && !bpf_map_is_object_array(map) &&
-        !bpf_map_is_perf_event_array(map)) {
+        !bpf_map_is_perf_event_array(map) &&
+        !bpf_map_is_cgroup_array(map)) {
         status = -EDGE_LINUX_EINVAL;
         goto out;
     }
@@ -2906,6 +2981,20 @@ int kernel_bpf_map_delete(int object_id, const void *key) {
         memcpy(bpf_map_value(map, index), &empty, sizeof(empty));
         goto out;
     }
+    if (bpf_map_is_cgroup_array(map)) {
+        uint64_t empty = 0u;
+
+        status = bpf_map_array_index(map, key, &index);
+        if (status < 0) goto out;
+        memcpy(&released_cgroup, bpf_map_value(map, index),
+               sizeof(released_cgroup));
+        if (!released_cgroup) {
+            status = -EDGE_LINUX_ENOENT;
+            goto out;
+        }
+        memcpy(bpf_map_value(map, index), &empty, sizeof(empty));
+        goto out;
+    }
     if (bpf_map_is_lpm_trie(map)) {
         status = bpf_map_lpm_find_exact(
             map, key, &index, &free_slot);
@@ -2928,6 +3017,8 @@ out:
         kernel_bpf_object_release(released_inner);
     if (released_event >= 0)
         kernel_perf_event_release(released_event);
+    if (released_cgroup)
+        cgroupfs_reference_put(released_cgroup);
     return status;
 }
 

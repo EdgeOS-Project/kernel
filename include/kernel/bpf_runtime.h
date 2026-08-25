@@ -23,6 +23,7 @@
 #define KERNEL_BPF_MAP_TYPE_PERF_EVENT_ARRAY 4u
 #define KERNEL_BPF_MAP_TYPE_PERCPU_HASH 5u
 #define KERNEL_BPF_MAP_TYPE_PERCPU_ARRAY 6u
+#define KERNEL_BPF_MAP_TYPE_CGROUP_ARRAY 8u
 #define KERNEL_BPF_MAP_TYPE_LRU_HASH 9u
 #define KERNEL_BPF_MAP_TYPE_LRU_PERCPU_HASH 10u
 #define KERNEL_BPF_MAP_TYPE_LPM_TRIE 11u
@@ -203,6 +204,9 @@ int kernel_bpf_map_update(int object_id, const void *key, const void *value,
                           uint64_t flags);
 int kernel_bpf_perf_event_array_update(int object_id, const void *key,
                                        int32_t event_id, uint64_t flags);
+int kernel_bpf_cgroup_array_update(int object_id, const void *key,
+                                   uint64_t cgroup_reference,
+                                   uint64_t flags);
 int kernel_bpf_map_delete(int object_id, const void *key);
 int kernel_bpf_map_lookup_and_delete(int object_id, const void *key,
                                      void *value);

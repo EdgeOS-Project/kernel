@@ -140,6 +140,7 @@ typedef struct {
 
 typedef struct {
     uint8_t used;
+    uint8_t linked;
     uint8_t populated;
     uint8_t populated_known;
     uint8_t frozen;
@@ -151,6 +152,7 @@ typedef struct {
     uint32_t uid;
     uint32_t gid;
     uint32_t generation;
+    uint32_t bpf_reference_count;
     uint32_t parent;
     uint32_t max_depth;
     uint32_t max_descendants;
@@ -402,6 +404,7 @@ static void cgroupfs_initialize(void) {
         g_cgroupfs.next_generation = 1;
         root = &g_cgroupfs.nodes[0];
         root->used = 1;
+        root->linked = 1;
         root->mode = 0755;
         root->generation = 1;
         root->parent = 0;
@@ -718,7 +721,7 @@ static int cgroupfs_find_child(uint32_t parent, const char *name) {
     if (!name) return -1;
     for (uint32_t index = 1; index < CGROUPFS_MAX_NODES; ++index) {
         cgroupfs_node_t *node = &g_cgroupfs.nodes[index];
-        if (node->used && node->parent == parent &&
+        if (node->used && node->linked && node->parent == parent &&
             strcmp(node->name, name) == 0)
             return (int)index;
     }
@@ -784,6 +787,7 @@ static uint32_t cgroupfs_descendant_count(uint32_t node) {
     uint32_t count = 0;
     for (uint32_t index = 1; index < CGROUPFS_MAX_NODES; ++index)
         if (index != node && g_cgroupfs.nodes[index].used &&
+            g_cgroupfs.nodes[index].linked &&
             cgroupfs_is_descendant(index, node))
             ++count;
     return count;
@@ -795,6 +799,7 @@ static uint32_t cgroupfs_subtree_height(uint32_t node) {
     for (uint32_t index = 1; index < CGROUPFS_MAX_NODES; ++index) {
         uint32_t depth;
         if (!g_cgroupfs.nodes[index].used ||
+            !g_cgroupfs.nodes[index].linked ||
             !cgroupfs_is_descendant(index, node))
             continue;
         depth = cgroupfs_node_depth(index);
@@ -3440,6 +3445,7 @@ static int cgroupfs_alloc_node(uint32_t uid, uint32_t gid) {
         memset(&g_cgroupfs.nodes[index], 0,
                sizeof(g_cgroupfs.nodes[index]));
         g_cgroupfs.nodes[index].used = 1;
+        g_cgroupfs.nodes[index].linked = 1;
         g_cgroupfs.nodes[index].populated_known = 1u;
         if (!++g_cgroupfs.next_generation) ++g_cgroupfs.next_generation;
         g_cgroupfs.nodes[index].generation = g_cgroupfs.next_generation;
@@ -3565,7 +3571,13 @@ static int cgroupfs_rmdir(vfs_superblock_t *sb, vfs_inode_t *dir,
         return VFS_PATH_ERR_BUSY;
     }
     kernel_bpf_cgroup_release((uint32_t)child);
-    memset(&g_cgroupfs.nodes[child], 0, sizeof(g_cgroupfs.nodes[child]));
+    if (g_cgroupfs.nodes[child].bpf_reference_count) {
+        g_cgroupfs.nodes[child].linked = 0;
+        g_cgroupfs.nodes[child].name[0] = 0;
+    } else {
+        memset(&g_cgroupfs.nodes[child], 0,
+               sizeof(g_cgroupfs.nodes[child]));
+    }
     cgroupfs_unlock(&g_cgroupfs_lock);
     return 0;
 }
@@ -3685,6 +3697,7 @@ static int cgroupfs_readdir(vfs_superblock_t *sb, vfs_inode_t *dir,
     child_ordinal = index - visible_interfaces;
     for (uint32_t child = 1; child < CGROUPFS_MAX_NODES; ++child) {
         if (!g_cgroupfs.nodes[child].used ||
+            !g_cgroupfs.nodes[child].linked ||
             g_cgroupfs.nodes[child].parent != node)
             continue;
         if (child_ordinal) {
@@ -3850,6 +3863,45 @@ int cgroupfs_directory_valid(vfs_superblock_t *sb,
             cgroupfs_inode_node(inode, &node) == 0;
     cgroupfs_unlock(&g_cgroupfs_lock);
     return valid;
+}
+
+int cgroupfs_reference_get(vfs_superblock_t *sb,
+                           const vfs_inode_t *inode,
+                           uint64_t *reference) {
+    uint32_t node;
+    int result = -EDGE_LINUX_EBADF;
+
+    if (!reference || !sb || sb->ops != &g_cgroupfs_ops ||
+        sb->fs_private != &g_cgroupfs || !inode)
+        return -EDGE_LINUX_EBADF;
+    cgroupfs_initialize();
+    cgroupfs_lock(&g_cgroupfs_lock);
+    if (inode->fs_private[0] == CGROUPFS_INODE_DIRECTORY &&
+        cgroupfs_inode_node(inode, &node) == 0 &&
+        g_cgroupfs.nodes[node].bpf_reference_count != UINT32_MAX) {
+        ++g_cgroupfs.nodes[node].bpf_reference_count;
+        *reference = ((uint64_t)g_cgroupfs.nodes[node].generation << 32u) |
+                     node;
+        result = 0;
+    }
+    cgroupfs_unlock(&g_cgroupfs_lock);
+    return result;
+}
+
+void cgroupfs_reference_put(uint64_t reference) {
+    uint32_t node = (uint32_t)reference;
+    uint32_t generation = (uint32_t)(reference >> 32u);
+
+    cgroupfs_initialize();
+    cgroupfs_lock(&g_cgroupfs_lock);
+    if (cgroupfs_node_valid(node, generation) &&
+        g_cgroupfs.nodes[node].bpf_reference_count) {
+        if (!--g_cgroupfs.nodes[node].bpf_reference_count &&
+            !g_cgroupfs.nodes[node].linked && node != 0u)
+            memset(&g_cgroupfs.nodes[node], 0,
+                   sizeof(g_cgroupfs.nodes[node]));
+    }
+    cgroupfs_unlock(&g_cgroupfs_lock);
 }
 
 static int cgroupfs_bpf_target_node_locked(
