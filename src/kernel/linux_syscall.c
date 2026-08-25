@@ -13410,6 +13410,39 @@ static int edge_linux_io_uring_buffer_access_validate(
     return 0;
 }
 
+struct edge_linux_compat_iovec32 {
+    uint32_t base;
+    uint32_t length;
+};
+
+static int edge_linux_io_uring_copy_iovec_from_user(
+        edge_linux_syscall_context_t *context, uint64_t user_buffers,
+        uint32_t index, struct edge_linux_iovec *buffer) {
+    uint64_t element_size = sizeof(*buffer);
+    uint64_t source;
+
+    if (edge_linux_architecture_is_compat32(context->architecture))
+        element_size = sizeof(struct edge_linux_compat_iovec32);
+    if ((uint64_t)index > (UINT64_MAX - user_buffers) / element_size)
+        return -EDGE_LINUX_EFAULT;
+    source = user_buffers + (uint64_t)index * element_size;
+    if (element_size == sizeof(struct edge_linux_compat_iovec32)) {
+        struct edge_linux_compat_iovec32 compat_buffer;
+
+        if (edge_linux_copy_from_user(
+                context, &compat_buffer, source,
+                sizeof(compat_buffer)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        buffer->iov_base = compat_buffer.base;
+        buffer->iov_len = compat_buffer.length;
+        return 0;
+    }
+    if (edge_linux_copy_from_user(
+            context, buffer, source, sizeof(*buffer)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    return 0;
+}
+
 static int edge_linux_io_uring_buffers_register_user(
         edge_linux_syscall_context_t *context, int32_t ring_id,
         uint64_t user_buffers, uint64_t user_tags, uint32_t count) {
@@ -13437,12 +13470,9 @@ static int edge_linux_io_uring_buffers_register_user(
         int result;
 
         if (user_buffers) {
-            source = user_buffers +
-                     (uint64_t)index * sizeof(buffers[index]);
-            if (source < user_buffers || edge_linux_copy_from_user(
-                    context, &buffers[index], source,
-                    sizeof(buffers[index])) < 0)
-                return -EDGE_LINUX_EFAULT;
+            result = edge_linux_io_uring_copy_iovec_from_user(
+                context, user_buffers, index, &buffers[index]);
+            if (result < 0) return result;
         }
         result = edge_linux_io_uring_buffer_access_validate(
             context, &buffers[index]);
@@ -13475,14 +13505,11 @@ static int64_t edge_linux_io_uring_buffers_update_user(
     for (; processed < count; ++processed) {
         struct edge_linux_iovec buffer;
         uint64_t tag = 0u;
-        uint64_t source = user_buffers +
-            (uint64_t)processed * sizeof(buffer);
+        uint64_t source;
 
-        if (source < user_buffers || edge_linux_copy_from_user(
-                context, &buffer, source, sizeof(buffer)) < 0) {
-            result = -EDGE_LINUX_EFAULT;
-            break;
-        }
+        result = edge_linux_io_uring_copy_iovec_from_user(
+            context, user_buffers, processed, &buffer);
+        if (result < 0) break;
         result = edge_linux_io_uring_buffer_access_validate(
             context, &buffer);
         if (result < 0) break;

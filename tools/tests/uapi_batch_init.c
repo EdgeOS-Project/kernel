@@ -193,6 +193,9 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
 #elif defined(UAPI_BATCH_KEYCTL_COMPAT_ONLY)
         "ia32_keyctl_compat_uapi_probe",
         "x32_keyctl_compat_uapi_probe",
+#elif defined(UAPI_BATCH_IO_URING_COMPAT_ONLY)
+        "ia32_io_uring_iovec_uapi_probe",
+        "x32_io_uring_iovec_uapi_probe",
 #else
 #ifndef UAPI_BATCH_FREESTANDING_ONLY
         "restart_syscall_abi_probe",

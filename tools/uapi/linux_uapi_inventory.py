@@ -114,8 +114,8 @@ EDGEOS_ASSESSMENTS = [
         "architectures": {
             "x86_64": "runtime-verified",
             "aarch64": "runtime-verified",
-            "ia32": "unimplemented",
-            "x32": "unimplemented",
+            "ia32": "runtime-verified-partial",
+            "x32": "runtime-verified-partial",
         },
         "implemented": [
             "setup and mapped submission/completion rings",
@@ -148,6 +148,7 @@ EDGEOS_ASSESSMENTS = [
             "fixed-file installation with Linux close-on-exec policy",
             "FILES2 sparse registration, UPDATE2 layouts and resource tag completion events",
             "bounded fixed-buffer registration, sparse entries, updates, tags and range validation",
+            "ia32 and x32 fixed-buffer registration and update iovec conversion",
             "bounded fixed-buffer user-page pinning with retained lifetime across unmap",
             "READ_FIXED and WRITE_FIXED through pinned pages for regular files and pipes",
             "READV_FIXED and WRITEV_FIXED with pinned registered-buffer ranges for regular files and pipes",
@@ -196,7 +197,7 @@ EDGEOS_ASSESSMENTS = [
             "provided-buffer page pinning and owner-mm-independent lifetime across unmap and exit",
             "incremental buffer-ring READ_MULTISHOT with partial-buffer BUF_MORE lifetime",
             "remaining supported VFS and socket operations",
-            "ia32 and x32 compatibility layouts",
+            "remaining ia32 and x32 runtime coverage outside fixed-buffer registration",
         ],
         "runtime_tests": [
             "tools/tests/io_uring_abi_probe.c",
@@ -225,6 +226,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/io_uring_resize_abi_probe.c",
             "tools/tests/io_uring_napi_abi_probe.c",
             "tools/tests/io_uring_user_region_abi_probe.c",
+            "tools/tests/compat_io_uring_iovec_uapi_probe.c",
             "tools/tests/io_uring_runtime_unit.c",
         ],
         "linux_oracle": {
@@ -296,7 +298,8 @@ EDGEOS_ASSESSMENTS = [
                 "configuration behavior from the frozen oracle, with enabled "
                 "busy-poll state and enter behavior verified on EdgeOS, plus "
                 "user-provided pinned parameter regions, handback, duplicate "
-                "registration, mmap rejection and registered wait arguments"
+                "registration, mmap rejection and registered wait arguments, "
+                "plus ia32 and x32 fixed-buffer iovec boundary handling"
             ),
         },
     },
