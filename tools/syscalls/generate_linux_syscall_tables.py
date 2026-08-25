@@ -64,9 +64,15 @@ IA32_SHARED_SYSCALLS = {
     "getpid",
     "getppid",
     "gettid",
+    "kill",
     "read",
+    "rt_sigaction",
     "sched_yield",
     "write",
+}
+
+IA32_ARCH_SYSCALLS = {
+    "rt_sigreturn",
 }
 
 
@@ -193,7 +199,8 @@ def render_tables(syscalls: list[dict[str, object]]) -> str:
         )
         status = (
             "implemented"
-            if native_implemented and name in IA32_SHARED_SYSCALLS
+            if native_implemented and
+            (name in IA32_SHARED_SYSCALLS or name in IA32_ARCH_SYSCALLS)
             else "enosys"
         )
         by_architecture["ia32"].append(

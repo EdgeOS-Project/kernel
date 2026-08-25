@@ -233,6 +233,12 @@ int edge_linux_syscall_map(edge_linux_syscall_architecture_t architecture,
     return -1;
 }
 
+static int edge_linux_architecture_is_compat32(
+        edge_linux_syscall_architecture_t architecture) {
+    return architecture == EDGE_LINUX_ARCH_X32 ||
+           architecture == EDGE_LINUX_ARCH_IA32;
+}
+
 static int edge_linux_copy_to_user(edge_linux_syscall_context_t *context,
                                    uint64_t destination,
                                    const void *source, uint64_t size) {
@@ -750,7 +756,7 @@ static int edge_linux_import_sigevent(
     linux_sigevent64_t *event) {
     if (!context || !event || !user_address) return -EDGE_LINUX_EFAULT;
     memset(event, 0, sizeof(*event));
-    if (context->architecture == EDGE_LINUX_ARCH_X32) {
+    if (edge_linux_architecture_is_compat32(context->architecture)) {
         linux_sigevent32_t compat_event;
         if (user_address > UINT32_MAX || edge_linux_copy_from_user(
                 context, &compat_event, user_address,
@@ -1872,7 +1878,7 @@ static int64_t edge_linux_sys_robust_list(
 
     if (context->id == EDGE_LINUX_SYS_set_robust_list) {
         uint64_t expected_length =
-            context->architecture == EDGE_LINUX_ARCH_X32 ?
+            edge_linux_architecture_is_compat32(context->architecture) ?
                 EDGE_LINUX_COMPAT_ROBUST_LIST_HEAD_SIZE :
                 EDGE_LINUX_ROBUST_LIST_HEAD_SIZE;
         if (context->arguments[1] != expected_length)
@@ -1899,7 +1905,7 @@ static int64_t edge_linux_sys_robust_list(
         return -EDGE_LINUX_EPERM;
     if (kernel_process_robust_list_get(pid, &head, &length) < 0)
         return -EDGE_LINUX_ESRCH;
-    if (context->architecture == EDGE_LINUX_ARCH_X32) {
+    if (edge_linux_architecture_is_compat32(context->architecture)) {
         uint32_t compat_head = (uint32_t)head;
         uint32_t compat_length = EDGE_LINUX_COMPAT_ROBUST_LIST_HEAD_SIZE;
 
@@ -5949,7 +5955,7 @@ static int edge_linux_import_iovec_array(
     if (!vector_count) return 0;
     if (!user_address) return -EDGE_LINUX_EFAULT;
 
-    if (context->architecture == EDGE_LINUX_ARCH_X32) {
+    if (edge_linux_architecture_is_compat32(context->architecture)) {
         if (user_address > UINT32_MAX ||
             vector_count >
                 (UINT64_MAX - user_address) /
@@ -6459,7 +6465,7 @@ static int64_t edge_linux_sys_pidfd_send_signal(
         return -EDGE_LINUX_ESRCH;
 
     if (information_user) {
-        if (context->architecture == EDGE_LINUX_ARCH_X32) {
+        if (edge_linux_architecture_is_compat32(context->architecture)) {
             struct edge_linux_compat_siginfo compat_information;
 
             if (edge_linux_copy_from_user(
@@ -6541,7 +6547,7 @@ static int64_t edge_linux_sys_queued_signal(
     if (tgid <= 0 || tid <= 0 || signal > EDGE_LINUX_SIGNAL_MAX)
         return -EDGE_LINUX_EINVAL;
     if (!information_user) return -EDGE_LINUX_EFAULT;
-    if (context->architecture == EDGE_LINUX_ARCH_X32) {
+    if (edge_linux_architecture_is_compat32(context->architecture)) {
         struct edge_linux_compat_siginfo compat_information;
 
         if (edge_linux_copy_from_user(
@@ -6595,7 +6601,7 @@ static int64_t edge_linux_sys_signal_action(
     result = kernel_current_signal_action_get(signal, &old_action);
     if (result < 0) return result;
     if (new_user) {
-        if (context->architecture == EDGE_LINUX_ARCH_X32) {
+        if (edge_linux_architecture_is_compat32(context->architecture)) {
             struct edge_linux_compat_sigaction compat_action;
 
             if (edge_linux_copy_from_user(
@@ -6618,7 +6624,7 @@ static int64_t edge_linux_sys_signal_action(
         if (result < 0) return result;
     }
     if (old_user) {
-        if (context->architecture == EDGE_LINUX_ARCH_X32) {
+        if (edge_linux_architecture_is_compat32(context->architecture)) {
             struct edge_linux_compat_sigaction compat_action;
 
             compat_action.handler = (uint32_t)old_action.handler;
@@ -7374,7 +7380,7 @@ static void edge_linux_wait_information_build(
 static int edge_linux_wait_information_copy(
         edge_linux_syscall_context_t *context, uint64_t destination,
         const struct edge_linux_siginfo_child *information) {
-    if (context->architecture == EDGE_LINUX_ARCH_X32) {
+    if (edge_linux_architecture_is_compat32(context->architecture)) {
         struct edge_linux_compat_siginfo compat;
 
         edge_linux_native_siginfo_to_compat(
@@ -14032,7 +14038,7 @@ static int64_t edge_linux_sys_signal_wait(
         deadline = (uint64_t)timeout_microseconds > UINT64_MAX - now ?
             UINT64_MAX : now + (uint64_t)timeout_microseconds;
     }
-    if (context->architecture == EDGE_LINUX_ARCH_X32) {
+    if (edge_linux_architecture_is_compat32(context->architecture)) {
         return kernel_current_signal_timed_wait(
             edge_linux_signal_sanitize_mask(mask), context->arguments[1],
             deadline, edge_linux_copy_x32_siginfo_to_user,
@@ -14056,7 +14062,7 @@ static int64_t edge_linux_sys_signal_altstack(
     edge_linux_signal_altstack_status_t status;
 
     if (new_user) {
-        if (context->architecture == EDGE_LINUX_ARCH_X32) {
+        if (edge_linux_architecture_is_compat32(context->architecture)) {
             struct edge_linux_stack32 compat_stack;
 
             if (edge_linux_copy_from_user(
@@ -14098,7 +14104,7 @@ static int64_t edge_linux_sys_signal_altstack(
         }
     }
     if (old_user) {
-        if (context->architecture == EDGE_LINUX_ARCH_X32) {
+        if (edge_linux_architecture_is_compat32(context->architecture)) {
             struct edge_linux_stack32 compat_stack;
 
             compat_stack.sp = (uint32_t)old_stack.sp;

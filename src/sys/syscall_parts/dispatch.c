@@ -455,6 +455,11 @@ void edgeos_x86_64_syscall_dispatch(REGISTERS *r) {
         sigreturn_restored = 1;
         goto syscall_dispatch_complete;
     }
+    if (ia32_abi && nr == 173u) {
+        r->rax = do_sys_ia32_rt_sigreturn(r);
+        sigreturn_restored = 1;
+        goto syscall_dispatch_complete;
+    }
 
     {
         int x32_abi = 0;
