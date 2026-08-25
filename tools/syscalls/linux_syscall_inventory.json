@@ -8167,6 +8167,20 @@
       }
     },
     {
+      "id": "socketcall",
+      "semantic_id": "socketcall",
+      "shared_handler": "edge_linux_sys_socketcall",
+      "architecture_exceptions": [
+        "i386 multiplexed socket argument layout"
+      ],
+      "runtime_tests": [
+        "tools/tests/ia32_socketcall_uapi_probe.c"
+      ],
+      "linux_oracle": "required",
+      "oracle_status": "verified",
+      "architectures": {}
+    },
+    {
       "id": "socketpair",
       "semantic_id": "socketpair",
       "shared_handler": "edge_linux_sys_socket_core",

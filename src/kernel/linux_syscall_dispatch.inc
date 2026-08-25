@@ -545,6 +545,9 @@ case EDGE_LINUX_SYS_getsockopt:
 case EDGE_LINUX_SYS_setsockopt:
     context->result = edge_linux_sys_socket_option(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_socketcall:
+    context->result = edge_linux_sys_socketcall(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_splice:
     context->result = edge_linux_sys_splice(context);
     return EDGE_LINUX_SYSCALL_HANDLED;

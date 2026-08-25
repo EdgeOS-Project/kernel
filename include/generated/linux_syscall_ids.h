@@ -338,6 +338,7 @@ typedef enum edge_linux_syscall_id {
     EDGE_LINUX_SYS_signalfd,
     EDGE_LINUX_SYS_signalfd4,
     EDGE_LINUX_SYS_socket,
+    EDGE_LINUX_SYS_socketcall,
     EDGE_LINUX_SYS_socketpair,
     EDGE_LINUX_SYS_splice,
     EDGE_LINUX_SYS_stat,

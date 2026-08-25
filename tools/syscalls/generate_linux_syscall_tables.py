@@ -418,6 +418,7 @@ IA32_ARCH_SYSCALLS = {
     "ipc",
     "rt_sigreturn",
     "set_thread_area",
+    "socketcall",
 }
 
 IA32_CANONICAL_ALIASES = {

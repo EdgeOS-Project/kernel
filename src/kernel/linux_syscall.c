@@ -15822,9 +15822,32 @@ static int64_t edge_linux_sys_socket_mmsg(
     (void)info;
     if (!vector_length) return 0;
     if (context->id == EDGE_LINUX_SYS_recvmmsg) {
-        status = kernel_socket_mmsg_timeout_import(
-            context->current_task, context->arch_ops->copy_from_user,
-            context->arguments[4], &timeout_deadline);
+        if (context->architecture == EDGE_LINUX_ARCH_IA32 &&
+            (context->raw_number == 102u || context->raw_number == 337u) &&
+            context->arguments[4]) {
+            linux_timespec32_t timeout;
+            uint64_t duration;
+            uint64_t now;
+
+            if (edge_linux_copy_from_user(
+                    context, &timeout, context->arguments[4],
+                    sizeof(timeout)) < 0)
+                return -EDGE_LINUX_EFAULT;
+            if (timeout.tv_sec < 0 || timeout.tv_nsec < 0 ||
+                timeout.tv_nsec >= 1000000000L)
+                return -EDGE_LINUX_EINVAL;
+            duration = (uint64_t)(uint32_t)timeout.tv_sec * 1000000ULL +
+                       (uint64_t)(uint32_t)timeout.tv_nsec / 1000ULL;
+            now = boottime_monotonic_us();
+            if (duration > UINT64_MAX - now)
+                return -EDGE_LINUX_EINVAL;
+            timeout_deadline = now + duration;
+            status = 0;
+        } else {
+            status = kernel_socket_mmsg_timeout_import(
+                context->current_task, context->arch_ops->copy_from_user,
+                context->arguments[4], &timeout_deadline);
+        }
         if (status < 0) return status;
     }
 
@@ -16662,6 +16685,118 @@ static int64_t edge_linux_sys_socket_option(
     if (context->id == EDGE_LINUX_SYS_getsockopt)
         return edge_linux_socket_option_get(context, &info);
     return -EDGE_LINUX_ENOSYS;
+}
+
+enum edge_linux_ia32_socketcall_operation {
+    EDGE_LINUX_SOCKETCALL_SOCKET = 1,
+    EDGE_LINUX_SOCKETCALL_BIND = 2,
+    EDGE_LINUX_SOCKETCALL_CONNECT = 3,
+    EDGE_LINUX_SOCKETCALL_LISTEN = 4,
+    EDGE_LINUX_SOCKETCALL_ACCEPT = 5,
+    EDGE_LINUX_SOCKETCALL_GETSOCKNAME = 6,
+    EDGE_LINUX_SOCKETCALL_GETPEERNAME = 7,
+    EDGE_LINUX_SOCKETCALL_SOCKETPAIR = 8,
+    EDGE_LINUX_SOCKETCALL_SEND = 9,
+    EDGE_LINUX_SOCKETCALL_RECV = 10,
+    EDGE_LINUX_SOCKETCALL_SENDTO = 11,
+    EDGE_LINUX_SOCKETCALL_RECVFROM = 12,
+    EDGE_LINUX_SOCKETCALL_SHUTDOWN = 13,
+    EDGE_LINUX_SOCKETCALL_SETSOCKOPT = 14,
+    EDGE_LINUX_SOCKETCALL_GETSOCKOPT = 15,
+    EDGE_LINUX_SOCKETCALL_SENDMSG = 16,
+    EDGE_LINUX_SOCKETCALL_RECVMSG = 17,
+    EDGE_LINUX_SOCKETCALL_ACCEPT4 = 18,
+    EDGE_LINUX_SOCKETCALL_RECVMMSG = 19,
+    EDGE_LINUX_SOCKETCALL_SENDMMSG = 20,
+};
+
+static int64_t edge_linux_sys_socketcall(
+        edge_linux_syscall_context_t *context) {
+    static const uint8_t argument_counts[] = {
+        0, 3, 3, 3, 2, 3, 3, 3, 4, 4, 4,
+        6, 6, 2, 5, 5, 3, 3, 4, 5, 4,
+    };
+    edge_linux_syscall_context_t nested;
+    uint32_t arguments[6] = {0, 0, 0, 0, 0, 0};
+    int32_t operation = (int32_t)context->arguments[0];
+    uint32_t count;
+    uint32_t index;
+
+    if (context->architecture != EDGE_LINUX_ARCH_IA32)
+        return -EDGE_LINUX_ENOSYS;
+    if (operation < EDGE_LINUX_SOCKETCALL_SOCKET ||
+        operation > EDGE_LINUX_SOCKETCALL_SENDMMSG)
+        return -EDGE_LINUX_EINVAL;
+    count = argument_counts[operation];
+    if (edge_linux_copy_from_user(
+            context, arguments, context->arguments[1],
+            count * sizeof(arguments[0])) < 0)
+        return -EDGE_LINUX_EFAULT;
+
+    nested = *context;
+    for (index = 0; index < 6u; ++index)
+        nested.arguments[index] = arguments[index];
+
+    switch (operation) {
+        case EDGE_LINUX_SOCKETCALL_SOCKET:
+            nested.id = EDGE_LINUX_SYS_socket;
+            return edge_linux_sys_socket_core(&nested);
+        case EDGE_LINUX_SOCKETCALL_BIND:
+            nested.id = EDGE_LINUX_SYS_bind;
+            return edge_linux_sys_socket_address(&nested);
+        case EDGE_LINUX_SOCKETCALL_CONNECT:
+            nested.id = EDGE_LINUX_SYS_connect;
+            return edge_linux_sys_socket_address(&nested);
+        case EDGE_LINUX_SOCKETCALL_LISTEN:
+            nested.id = EDGE_LINUX_SYS_listen;
+            return edge_linux_sys_socket_core(&nested);
+        case EDGE_LINUX_SOCKETCALL_ACCEPT:
+            nested.id = EDGE_LINUX_SYS_accept;
+            return edge_linux_sys_socket_accept(&nested);
+        case EDGE_LINUX_SOCKETCALL_GETSOCKNAME:
+            nested.id = EDGE_LINUX_SYS_getsockname;
+            return edge_linux_sys_socket_address(&nested);
+        case EDGE_LINUX_SOCKETCALL_GETPEERNAME:
+            nested.id = EDGE_LINUX_SYS_getpeername;
+            return edge_linux_sys_socket_address(&nested);
+        case EDGE_LINUX_SOCKETCALL_SOCKETPAIR:
+            nested.id = EDGE_LINUX_SYS_socketpair;
+            return edge_linux_sys_socket_core(&nested);
+        case EDGE_LINUX_SOCKETCALL_SEND:
+        case EDGE_LINUX_SOCKETCALL_SENDTO:
+            nested.id = EDGE_LINUX_SYS_sendto;
+            return edge_linux_sys_socket_buffer(&nested);
+        case EDGE_LINUX_SOCKETCALL_RECV:
+        case EDGE_LINUX_SOCKETCALL_RECVFROM:
+            nested.id = EDGE_LINUX_SYS_recvfrom;
+            return edge_linux_sys_socket_buffer(&nested);
+        case EDGE_LINUX_SOCKETCALL_SHUTDOWN:
+            nested.id = EDGE_LINUX_SYS_shutdown;
+            return edge_linux_sys_socket_core(&nested);
+        case EDGE_LINUX_SOCKETCALL_SETSOCKOPT:
+            nested.id = EDGE_LINUX_SYS_setsockopt;
+            return edge_linux_sys_socket_option(&nested);
+        case EDGE_LINUX_SOCKETCALL_GETSOCKOPT:
+            nested.id = EDGE_LINUX_SYS_getsockopt;
+            return edge_linux_sys_socket_option(&nested);
+        case EDGE_LINUX_SOCKETCALL_SENDMSG:
+            nested.id = EDGE_LINUX_SYS_sendmsg;
+            return edge_linux_sys_socket_message(&nested);
+        case EDGE_LINUX_SOCKETCALL_RECVMSG:
+            nested.id = EDGE_LINUX_SYS_recvmsg;
+            return edge_linux_sys_socket_message(&nested);
+        case EDGE_LINUX_SOCKETCALL_ACCEPT4:
+            nested.id = EDGE_LINUX_SYS_accept4;
+            return edge_linux_sys_socket_accept(&nested);
+        case EDGE_LINUX_SOCKETCALL_RECVMMSG:
+            nested.id = EDGE_LINUX_SYS_recvmmsg;
+            return edge_linux_sys_socket_mmsg(&nested);
+        case EDGE_LINUX_SOCKETCALL_SENDMMSG:
+            nested.id = EDGE_LINUX_SYS_sendmmsg;
+            return edge_linux_sys_socket_mmsg(&nested);
+        default:
+            return -EDGE_LINUX_EINVAL;
+    }
 }
 
 static int64_t edge_linux_sys_timerfd(
