@@ -1281,6 +1281,8 @@ static int x86_socket_describe_entry(
     info->protocol = (uint32_t)socket->protocol;
     info->connected = socket->connected ? 1u : 0u;
     info->listening = socket->listening ? 1u : 0u;
+    info->bound = socket->bind_len ? 1u : 0u;
+    info->reuse_port = socket->option_state.reuse_port ? 1u : 0u;
     return 0;
 }
 

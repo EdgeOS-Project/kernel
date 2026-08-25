@@ -44,6 +44,8 @@ typedef struct kernel_socket_descriptor_info {
     uint32_t protocol;
     uint8_t connected;
     uint8_t listening;
+    uint8_t bound;
+    uint8_t reuse_port;
 } kernel_socket_descriptor_info_t;
 
 /*

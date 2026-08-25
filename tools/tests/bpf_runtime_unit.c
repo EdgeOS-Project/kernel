@@ -83,6 +83,7 @@ static uint64_t g_cgroup_references_released[8];
 static uint32_t g_cgroup_reference_release_count;
 static uint32_t g_socket_lease_references;
 static kernel_file_description_close_observer_fn g_close_observer;
+static kernel_socket_descriptor_info_t g_socket_description;
 
 int kernel_file_description_close_observer_register(
         kernel_file_description_close_observer_fn observer) {
@@ -133,9 +134,7 @@ int64_t kernel_fd_operation_socket(
         request->operation != KERNEL_SOCKET_OPERATION_DESCRIBE)
         return -EDGE_LINUX_EINVAL;
     memset(result, 0, sizeof(*result));
-    result->output.description.domain = EDGE_LINUX_AF_UNIX;
-    result->output.description.type = EDGE_LINUX_SOCK_STREAM;
-    result->output.description.connected = 1u;
+    result->output.description = g_socket_description;
     return 0;
 }
 
@@ -2273,6 +2272,10 @@ static void test_socket_maps(void) {
     int map;
 
     g_socket_lease_references = 0u;
+    memset(&g_socket_description, 0, sizeof(g_socket_description));
+    g_socket_description.domain = EDGE_LINUX_AF_UNIX;
+    g_socket_description.type = EDGE_LINUX_SOCK_STREAM;
+    g_socket_description.connected = 1u;
     map = kernel_bpf_map_create(&request);
     assert(map >= 0);
     assert(kernel_bpf_map_lookup(map, &array_key, &cookie) ==
@@ -2349,6 +2352,68 @@ static void test_socket_maps(void) {
     assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_E2BIG);
 }
 
+static void test_reuseport_socket_array(void) {
+    kernel_bpf_map_create_request_t request = {
+        .type = KERNEL_BPF_MAP_TYPE_REUSEPORT_SOCKARRAY,
+        .key_size = sizeof(uint32_t),
+        .value_size = sizeof(uint64_t),
+        .max_entries = 3u,
+    };
+    uint32_t key = 1u;
+    uint32_t next_key = UINT32_MAX;
+    uint64_t cookie = 0u;
+    int map;
+
+    memset(&g_socket_description, 0, sizeof(g_socket_description));
+    g_socket_description.domain = EDGE_LINUX_AF_INET;
+    g_socket_description.type = EDGE_LINUX_SOCK_STREAM;
+    g_socket_description.protocol = EDGE_LINUX_IPPROTO_TCP;
+    g_socket_description.listening = 1u;
+    g_socket_description.bound = 1u;
+    g_socket_description.reuse_port = 1u;
+
+    map = kernel_bpf_map_create(&request);
+    assert(map >= 0);
+    assert(kernel_bpf_reuseport_array_update(
+               map, &key, 10u, KERNEL_BPF_EXIST) ==
+           -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_reuseport_array_update(
+               map, &key, 10u, KERNEL_BPF_ANY) == 0);
+    assert(g_socket_lease_references == 0u);
+    assert(kernel_bpf_map_lookup(map, &key, &cookie) == 0);
+    assert(cookie == 0x1122334455667788ull);
+    assert(kernel_bpf_reuseport_array_update(
+               map, &key, 10u, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_EBUSY);
+    assert(kernel_bpf_map_next_key(map, &key, &next_key) == 0);
+    assert(next_key == 2u);
+    assert(kernel_bpf_map_delete(map, &key) == 0);
+    assert(kernel_bpf_map_delete(map, &key) == -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_reuseport_array_update(
+               map, &key, 10u, KERNEL_BPF_ANY) == 0);
+    g_close_observer(0x1122334455667788ull);
+    assert(kernel_bpf_map_lookup(map, &key, &cookie) ==
+           -EDGE_LINUX_ENOENT);
+
+    g_socket_description.reuse_port = 0u;
+    assert(kernel_bpf_reuseport_array_update(
+               map, &key, 10u, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_EINVAL);
+    g_socket_description.reuse_port = 1u;
+    g_socket_description.domain = EDGE_LINUX_AF_UNIX;
+    assert(kernel_bpf_reuseport_array_update(
+               map, &key, 10u, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_ENOTSUPP);
+    kernel_bpf_object_release(map);
+
+    request.value_size = sizeof(uint32_t);
+    map = kernel_bpf_map_create(&request);
+    assert(map >= 0);
+    kernel_bpf_object_release(map);
+    request.value_size = 16u;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+}
+
 int main(void) {
     test_array_map();
     test_cgroup_array();
@@ -2379,6 +2444,7 @@ int main(void) {
     test_ids();
     test_pinned_object_lifetime();
     test_socket_maps();
+    test_reuseport_socket_array();
     puts("bpf_runtime_unit: PASS");
     return 0;
 }

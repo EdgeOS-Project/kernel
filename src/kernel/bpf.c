@@ -350,6 +350,11 @@ static int bpf_map_is_socket_map(const kernel_bpf_map_t *map) {
     return bpf_map_is_sockmap(map) || bpf_map_is_sockhash(map);
 }
 
+static int bpf_map_is_reuseport_array(const kernel_bpf_map_t *map) {
+    return map &&
+        map->type == KERNEL_BPF_MAP_TYPE_REUSEPORT_SOCKARRAY;
+}
+
 static int bpf_map_is_insn_array(const kernel_bpf_map_t *map) {
     return map && map->type == KERNEL_BPF_MAP_TYPE_INSN_ARRAY;
 }
@@ -655,6 +660,15 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
         stride = request->type == KERNEL_BPF_MAP_TYPE_SOCKMAP ?
             bpf_align8(1u + sizeof(uint64_t)) :
             bpf_align8(1u + request->key_size + sizeof(uint64_t));
+    } else if (request->type ==
+               KERNEL_BPF_MAP_TYPE_REUSEPORT_SOCKARRAY) {
+        if (request->key_size != sizeof(uint32_t) ||
+            (request->value_size != sizeof(uint32_t) &&
+             request->value_size != sizeof(uint64_t)) ||
+            (validation_flags & ~KERNEL_BPF_MAP_NUMA_NODE) ||
+            request->btf_present || request->map_extra)
+            goto invalid_btf;
+        stride = bpf_align8(1u + sizeof(uint64_t));
     } else if (request->type == KERNEL_BPF_MAP_TYPE_INSN_ARRAY) {
         if (request->key_size != sizeof(uint32_t) ||
             request->value_size != 4u * sizeof(uint32_t) ||
@@ -765,7 +779,8 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
         goto invalid_btf;
     }
     if (request->type == KERNEL_BPF_MAP_TYPE_SOCKMAP ||
-        request->type == KERNEL_BPF_MAP_TYPE_SOCKHASH) {
+        request->type == KERNEL_BPF_MAP_TYPE_SOCKHASH ||
+        request->type == KERNEL_BPF_MAP_TYPE_REUSEPORT_SOCKARRAY) {
         status = kernel_file_description_close_observer_register(
             bpf_socket_description_closed);
         if (status < 0) goto fail_btf;
@@ -1876,7 +1891,8 @@ int kernel_bpf_map_value_buffer_size(int object_id, uint64_t flags,
         return -EDGE_LINUX_EBADF;
     }
     map = &object->value.map;
-    status = (bpf_map_is_xskmap(map) || bpf_map_is_socket_map(map)) ? 0 :
+    status = (bpf_map_is_xskmap(map) || bpf_map_is_socket_map(map) ||
+              bpf_map_is_reuseport_array(map)) ? 0 :
         bpf_map_check_percpu_flags_locked(map, flags);
     if (status < 0) {
         bpf_unlock();
@@ -2169,7 +2185,9 @@ static void bpf_socket_description_closed(uint64_t identity) {
             object->kind != KERNEL_BPF_OBJECT_MAP)
             continue;
         map = &object->value.map;
-        if (!bpf_map_is_socket_map(map)) continue;
+        if (!bpf_map_is_socket_map(map) &&
+            !bpf_map_is_reuseport_array(map))
+            continue;
         for (uint32_t entry_index = 0;
              entry_index < map->storage_entries; ++entry_index) {
             uint8_t *entry = bpf_map_entry(map, entry_index);
@@ -2814,7 +2832,7 @@ int kernel_bpf_map_lookup_flags(int object_id, const void *key, void *value,
         status = -EDGE_LINUX_EOPNOTSUPP;
         goto out;
     }
-    if (bpf_map_is_socket_map(map)) {
+    if (bpf_map_is_socket_map(map) || bpf_map_is_reuseport_array(map)) {
         uint8_t *entry;
 
         if (flags) {
@@ -2829,7 +2847,8 @@ int kernel_bpf_map_lookup_flags(int object_id, const void *key, void *value,
             status = -EDGE_LINUX_ENOSPC;
             goto out;
         }
-        if (bpf_map_is_sockmap(map)) {
+        if (bpf_map_is_sockmap(map) ||
+            bpf_map_is_reuseport_array(map)) {
             memcpy(&index, key, sizeof(index));
             if (index >= map->max_entries) {
                 status = -EDGE_LINUX_ENOENT;
@@ -3047,6 +3066,151 @@ release:
     return status;
 }
 
+static int bpf_reuseport_descriptor_validate(
+        const kernel_socket_descriptor_info_t *info) {
+    uint32_t protocol;
+    uint32_t socket_type;
+
+    if (!info) return -EDGE_LINUX_EINVAL;
+    if (info->domain != EDGE_LINUX_AF_INET &&
+        info->domain != EDGE_LINUX_AF_INET6)
+        return -EDGE_LINUX_ENOTSUPP;
+    socket_type = info->type & 0xfu;
+    if (socket_type != EDGE_LINUX_SOCK_STREAM &&
+        socket_type != EDGE_LINUX_SOCK_DGRAM)
+        return -EDGE_LINUX_ENOTSUPP;
+    protocol = info->protocol;
+    if (!protocol)
+        protocol = socket_type == EDGE_LINUX_SOCK_STREAM ?
+            EDGE_LINUX_IPPROTO_TCP : EDGE_LINUX_IPPROTO_UDP;
+    if (protocol != EDGE_LINUX_IPPROTO_TCP &&
+        protocol != EDGE_LINUX_IPPROTO_UDP)
+        return -EDGE_LINUX_ENOTSUPP;
+    return info->bound && info->reuse_port ? 0 : -EDGE_LINUX_EINVAL;
+}
+
+static int bpf_reuseport_cookie_in_use_locked(uint64_t cookie) {
+    for (uint32_t object_index = 0;
+         object_index < BPF_OBJECT_CAPACITY; ++object_index) {
+        kernel_bpf_object_t *object = &g_bpf_objects[object_index];
+        kernel_bpf_map_t *map;
+
+        if (!object->used || object->kind != KERNEL_BPF_OBJECT_MAP)
+            continue;
+        map = &object->value.map;
+        if (!bpf_map_is_reuseport_array(map)) continue;
+        for (uint32_t entry_index = 0;
+             entry_index < map->storage_entries; ++entry_index) {
+            uint8_t *entry = bpf_map_entry(map, entry_index);
+            uint64_t stored_cookie = 0u;
+
+            if (!entry[0]) continue;
+            memcpy(&stored_cookie,
+                   bpf_socket_map_cookie(map, entry_index),
+                   sizeof(stored_cookie));
+            if (stored_cookie == cookie) return 1;
+        }
+    }
+    return 0;
+}
+
+int kernel_bpf_reuseport_array_update(int object_id, const void *key,
+                                      uint64_t socket_descriptor,
+                                      uint64_t flags) {
+    kernel_fd_operation_lease_t new_lease = {0};
+    kernel_socket_operation_request_t describe_request = {
+        .operation = KERNEL_SOCKET_OPERATION_DESCRIBE,
+    };
+    kernel_socket_operation_result_t describe_result;
+    kernel_bpf_object_t *object;
+    kernel_bpf_map_t *map;
+    uint64_t cookie;
+    uint32_t index;
+    uint8_t *entry;
+    int replacing;
+    int status;
+
+    if (!key) return -EDGE_LINUX_EFAULT;
+    if (flags > KERNEL_BPF_EXIST) return -EDGE_LINUX_EINVAL;
+    memcpy(&index, key, sizeof(index));
+
+    bpf_lock();
+    object = bpf_object_locked(object_id);
+    if (!object || object->kind != KERNEL_BPF_OBJECT_MAP) {
+        status = -EDGE_LINUX_EBADF;
+        goto unlock_initial;
+    }
+    map = &object->value.map;
+    if (!bpf_map_is_reuseport_array(map)) {
+        status = -EDGE_LINUX_EINVAL;
+        goto unlock_initial;
+    }
+    if (index >= map->max_entries) {
+        status = -EDGE_LINUX_E2BIG;
+        goto unlock_initial;
+    }
+    bpf_unlock();
+
+    if (socket_descriptor > INT32_MAX) return -EDGE_LINUX_EINVAL;
+
+    status = kernel_fd_operation_acquire(
+        (int32_t)socket_descriptor, &new_lease);
+    if (status < 0) return status;
+    if (!kernel_fd_operation_socket_supported(&new_lease)) {
+        status = -EDGE_LINUX_ENOTSOCK;
+        goto release;
+    }
+    status = (int)kernel_fd_operation_socket(
+        &new_lease, &describe_request, &describe_result);
+    if (status < 0) goto release;
+    status = bpf_reuseport_descriptor_validate(
+        &describe_result.output.description);
+    if (status < 0) goto release;
+    status = kernel_fd_operation_description_id(&new_lease, &cookie);
+    if (status < 0) goto release;
+
+    bpf_lock();
+    object = bpf_object_locked(object_id);
+    if (!object || object->kind != KERNEL_BPF_OBJECT_MAP ||
+        !bpf_map_is_reuseport_array(&object->value.map)) {
+        status = -EDGE_LINUX_EBADF;
+        goto unlock_update;
+    }
+    map = &object->value.map;
+    if (map->frozen) {
+        status = -EDGE_LINUX_EPERM;
+        goto unlock_update;
+    }
+    entry = bpf_map_entry(map, index);
+    replacing = entry[0] != 0u;
+    if (replacing && flags == KERNEL_BPF_NOEXIST) {
+        status = -EDGE_LINUX_EEXIST;
+        goto unlock_update;
+    }
+    if (!replacing && flags == KERNEL_BPF_EXIST) {
+        status = -EDGE_LINUX_ENOENT;
+        goto unlock_update;
+    }
+    if (bpf_reuseport_cookie_in_use_locked(cookie)) {
+        status = -EDGE_LINUX_EBUSY;
+        goto unlock_update;
+    }
+    memset(entry, 0, map->entry_stride);
+    entry[0] = 1u;
+    memcpy(bpf_socket_map_cookie(map, index), &cookie, sizeof(cookie));
+    if (!replacing) ++map->entry_count;
+    status = 0;
+unlock_update:
+    bpf_unlock();
+release:
+    if (kernel_fd_operation_view(&new_lease))
+        (void)kernel_fd_operation_release(&new_lease);
+    return status;
+unlock_initial:
+    bpf_unlock();
+    return status;
+}
+
 static int bpf_devmap_update_locked(kernel_bpf_map_t *map,
                                     const void *key, const void *value,
                                     uint64_t flags, int ifindex_valid,
@@ -3238,6 +3402,10 @@ int kernel_bpf_map_update(int object_id, const void *key, const void *value,
         goto out;
     }
     if (bpf_map_is_socket_map(map)) {
+        status = -EDGE_LINUX_EOPNOTSUPP;
+        goto out;
+    }
+    if (bpf_map_is_reuseport_array(map)) {
         status = -EDGE_LINUX_EOPNOTSUPP;
         goto out;
     }
@@ -3626,6 +3794,10 @@ int kernel_bpf_map_lookup_and_delete(int object_id, const void *key,
         status = -EDGE_LINUX_EOPNOTSUPP;
         goto out;
     }
+    if (bpf_map_is_reuseport_array(map)) {
+        status = -EDGE_LINUX_EOPNOTSUPP;
+        goto out;
+    }
     if (bpf_map_is_insn_array(map)) {
         status = -EDGE_LINUX_ENOTSUPP;
         goto out;
@@ -3788,6 +3960,24 @@ int kernel_bpf_map_delete(int object_id, const void *key) {
         if (!entry[0]) {
             status = bpf_map_is_sockmap(map) ?
                 -EDGE_LINUX_EINVAL : -EDGE_LINUX_ENOENT;
+            goto out;
+        }
+        memset(entry, 0, map->entry_stride);
+        if (map->entry_count) --map->entry_count;
+        status = 0;
+        goto out;
+    }
+    if (bpf_map_is_reuseport_array(map)) {
+        uint8_t *entry;
+
+        memcpy(&index, key, sizeof(index));
+        if (index >= map->max_entries) {
+            status = -EDGE_LINUX_E2BIG;
+            goto out;
+        }
+        entry = bpf_map_entry(map, index);
+        if (!entry[0]) {
+            status = -EDGE_LINUX_ENOENT;
             goto out;
         }
         memset(entry, 0, map->entry_stride);
@@ -4000,6 +4190,23 @@ int kernel_bpf_map_next_key(int object_id, const void *key, void *next_key) {
         memcpy(next_key, &socket_index, sizeof(socket_index));
         goto out;
     }
+    if (bpf_map_is_reuseport_array(map)) {
+        uint32_t socket_index;
+
+        if (key) {
+            memcpy(&socket_index, key, sizeof(socket_index));
+            socket_index = socket_index < map->max_entries ?
+                socket_index + 1u : 0u;
+        } else {
+            socket_index = 0u;
+        }
+        if (socket_index >= map->max_entries) {
+            status = -EDGE_LINUX_ENOENT;
+            goto out;
+        }
+        memcpy(next_key, &socket_index, sizeof(socket_index));
+        goto out;
+    }
     if (bpf_map_is_sockhash(map)) {
         if (key) bpf_map_hash_find(map, key, &index, &free_slot);
         next = index == UINT32_MAX ? 0u : index + 1u;
@@ -4123,6 +4330,10 @@ int kernel_bpf_map_batch_next_flags(int object_id, uint32_t *cursor,
         goto out;
     }
     if (bpf_map_is_socket_map(map)) {
+        status = -EDGE_LINUX_ENOTSUPP;
+        goto out;
+    }
+    if (bpf_map_is_reuseport_array(map)) {
         status = -EDGE_LINUX_ENOTSUPP;
         goto out;
     }

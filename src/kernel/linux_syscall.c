@@ -5734,7 +5734,13 @@ static int64_t edge_linux_bpf_map_element(
                 goto out;
             }
         }
-        if (info.type == KERNEL_BPF_MAP_TYPE_SOCKMAP ||
+        if (info.type == KERNEL_BPF_MAP_TYPE_REUSEPORT_SOCKARRAY) {
+            uint64_t socket_value = 0u;
+
+            memcpy(&socket_value, value, info.value_size);
+            status = kernel_bpf_reuseport_array_update(
+                object_id, key, socket_value, attribute.flags);
+        } else if (info.type == KERNEL_BPF_MAP_TYPE_SOCKMAP ||
             info.type == KERNEL_BPF_MAP_TYPE_SOCKHASH) {
             uint64_t socket_value = 0u;
 
@@ -5926,6 +5932,7 @@ static int64_t edge_linux_bpf_map_batch(
         info.type == KERNEL_BPF_MAP_TYPE_XSKMAP ||
         info.type == KERNEL_BPF_MAP_TYPE_SOCKMAP ||
         info.type == KERNEL_BPF_MAP_TYPE_SOCKHASH ||
+        info.type == KERNEL_BPF_MAP_TYPE_REUSEPORT_SOCKARRAY ||
         info.type == KERNEL_BPF_MAP_TYPE_INSN_ARRAY)
         return -EDGE_LINUX_ENOTSUPP;
     if (!info.key_size) return -EDGE_LINUX_ENOTSUPP;
