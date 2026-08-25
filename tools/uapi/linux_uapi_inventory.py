@@ -439,6 +439,7 @@ COVERAGE_ASSESSMENTS = [
             "tools/tests/x32_signal_registration_abi_probe.c",
             "tools/tests/x32_signal_info_abi_probe.c",
             "tools/tests/x32_process_observation_abi_probe.c",
+            "tools/tests/x32_time_abi_probe.c",
         ],
         oracle_status="partial",
         oracle_scope=(
@@ -456,6 +457,7 @@ COVERAGE_ASSESSMENTS = [
             "signals, timed-wait delivery, and pidfd signal metadata, and "
             "compat waitid child information with native x32 wait4 and "
             "getrusage layouts, and "
+            "native x32 64-bit time, interval-timer and timerfd layouts, and "
             "unassigned-number ENOSYS behavior"
         )),
     coverage_assessment(
