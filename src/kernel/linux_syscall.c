@@ -4848,12 +4848,15 @@ static int64_t edge_linux_sys_mount(
         return status < 0 ? status : -EDGE_LINUX_EIO;
 
     if (context->id == EDGE_LINUX_SYS_umount2) {
+        uint64_t flags =
+            context->architecture == EDGE_LINUX_ARCH_IA32 &&
+            context->raw_number == 22u ? 0u : context->arguments[1];
         status = edge_linux_copy_user_string(
             context, context->arguments[0], scratch.target,
             scratch.capacity, EDGE_LINUX_ENAMETOOLONG);
         if (status < 0) return status;
         return kernel_linux_umount(
-            scratch.target, context->arguments[1], scratch.workspace,
+            scratch.target, flags, scratch.workspace,
             scratch.capacity);
     }
     if (context->id == EDGE_LINUX_SYS_pivot_root) {
@@ -7777,15 +7780,20 @@ static int64_t edge_linux_sys_setpriority(
     uint32_t cursor = 0;
     uint32_t matched = 0;
     uint32_t applied = 0;
-    int which = (int32_t)(uint32_t)context->arguments[0];
-    int requested = (int32_t)(uint32_t)context->arguments[2];
+    int legacy_nice = context->architecture == EDGE_LINUX_ARCH_IA32 &&
+        context->raw_number == 34u;
+    int which = legacy_nice ? EDGE_LINUX_PRIO_PROCESS :
+        (int32_t)(uint32_t)context->arguments[0];
+    int requested = (int32_t)(uint32_t)context->arguments[
+        legacy_nice ? 0u : 2u];
+    uint32_t who = legacy_nice ? 0u :
+        (uint32_t)context->arguments[1];
     int can_raise;
     if (requested < -20) requested = -20;
     if (requested > 19) requested = 19;
     if (kernel_current_linux_identity(&caller) < 0)
         return -EDGE_LINUX_ESRCH;
-    if (edge_linux_nice_selector(&caller, which,
-                                 (uint32_t)context->arguments[1],
+    if (edge_linux_nice_selector(&caller, which, who,
                                  &selector) < 0)
         return -EDGE_LINUX_EINVAL;
     can_raise = (caller.effective_capabilities &
@@ -8329,7 +8337,8 @@ static int64_t edge_linux_sys_wait(
         request.selector = (int32_t)context->arguments[0];
         request.flags = KERNEL_PROCESS_WAIT_EXITED;
         status_user = context->arguments[1];
-        usage_user = context->arguments[3];
+        usage_user = context->architecture == EDGE_LINUX_ARCH_IA32 &&
+            context->raw_number == 7u ? 0u : context->arguments[3];
     } else if (context->id == EDGE_LINUX_SYS_waitid) {
         uint32_t id_type = (uint32_t)context->arguments[0];
         uint64_t id = context->arguments[1];
@@ -9296,6 +9305,16 @@ static int64_t edge_linux_sys_file_sync(
     } else if (context->id == EDGE_LINUX_SYS_syncfs) {
         operation = KERNEL_VFS_SYNC_FILESYSTEM;
     } else if (context->id == EDGE_LINUX_SYS_sync_file_range) {
+        if (context->architecture == EDGE_LINUX_ARCH_IA32 &&
+            context->raw_number == 314u) {
+            uint64_t offset = (uint32_t)context->arguments[1] |
+                ((uint64_t)(uint32_t)context->arguments[2] << 32);
+            uint64_t length = (uint32_t)context->arguments[3] |
+                ((uint64_t)(uint32_t)context->arguments[4] << 32);
+            return kernel_vfs_sync_descriptor_range(
+                (int32_t)context->arguments[0], offset, length,
+                (uint32_t)context->arguments[5]);
+        }
         return kernel_vfs_sync_descriptor_range(
             (int32_t)context->arguments[0], context->arguments[1],
             context->arguments[2], (uint32_t)context->arguments[3]);
@@ -9309,6 +9328,7 @@ static int64_t edge_linux_sys_file_sync(
 static int64_t edge_linux_sys_file_advice(
     edge_linux_syscall_context_t *context) {
     kernel_vfs_descriptor_t descriptor;
+    uint64_t offset;
     uint64_t length;
     uint32_t advice;
     int result;
@@ -9319,13 +9339,21 @@ static int64_t edge_linux_sys_file_advice(
     if (result < 0) return result;
 
     if (context->id == EDGE_LINUX_SYS_readahead) {
+        offset = context->arguments[1];
+        length = context->arguments[2];
+        if (context->architecture == EDGE_LINUX_ARCH_IA32 &&
+            context->raw_number == 225u) {
+            offset = (uint32_t)context->arguments[1] |
+                ((uint64_t)(uint32_t)context->arguments[2] << 32);
+            length = (uint32_t)context->arguments[3];
+        }
         if (!descriptor.readable) return -EDGE_LINUX_EBADF;
         if (descriptor.kind == KERNEL_VFS_DESCRIPTOR_MEMORY) return 0;
         if (descriptor.kind != KERNEL_VFS_DESCRIPTOR_REGULAR)
             return -EDGE_LINUX_EINVAL;
         result = vfs_readahead_inode(
             descriptor.superblock, descriptor.inode,
-            context->arguments[1], context->arguments[2],
+            offset, length,
             descriptor.scratch, descriptor.scratch_capacity);
         return result == VFS_READAHEAD_ERR_INVALID ? -EDGE_LINUX_EINVAL :
                result == VFS_READAHEAD_ERR_IO ? -EDGE_LINUX_EIO : 0;
@@ -9333,9 +9361,24 @@ static int64_t edge_linux_sys_file_advice(
     if (context->id != EDGE_LINUX_SYS_fadvise64)
         return -EDGE_LINUX_ENOSYS;
 
+    offset = context->arguments[1];
     length = context->arguments[2];
     advice = (uint32_t)context->arguments[3];
-    if ((int64_t)length < 0 || context->arguments[3] > 5u)
+    if (context->architecture == EDGE_LINUX_ARCH_IA32 &&
+        context->raw_number == 250u) {
+        offset = (uint32_t)context->arguments[1] |
+            ((uint64_t)(uint32_t)context->arguments[2] << 32);
+        length = (uint32_t)context->arguments[3];
+        advice = (uint32_t)context->arguments[4];
+    } else if (context->architecture == EDGE_LINUX_ARCH_IA32 &&
+               context->raw_number == 272u) {
+        offset = (uint32_t)context->arguments[1] |
+            ((uint64_t)(uint32_t)context->arguments[2] << 32);
+        length = (uint32_t)context->arguments[3] |
+            ((uint64_t)(uint32_t)context->arguments[4] << 32);
+        advice = (uint32_t)context->arguments[5];
+    }
+    if ((int64_t)length < 0 || advice > 5u)
         return -EDGE_LINUX_EINVAL;
     if (descriptor.kind == KERNEL_VFS_DESCRIPTOR_PIPE ||
         descriptor.kind == KERNEL_VFS_DESCRIPTOR_TERMINAL ||
@@ -9348,7 +9391,7 @@ static int64_t edge_linux_sys_file_advice(
         if (!length) length = UINT64_MAX;
         result = vfs_readahead_inode(
             descriptor.superblock, descriptor.inode,
-            context->arguments[1], length,
+            offset, length,
             descriptor.scratch, descriptor.scratch_capacity);
         if (result == VFS_READAHEAD_ERR_IO) return -EDGE_LINUX_EIO;
         if (result == VFS_READAHEAD_ERR_INVALID)
@@ -9431,6 +9474,13 @@ static int64_t edge_linux_sys_fallocate(
     uint32_t mode;
     int result;
 
+    if (context->architecture == EDGE_LINUX_ARCH_IA32 &&
+        context->raw_number == 324u) {
+        offset = (uint32_t)context->arguments[2] |
+            ((uint64_t)(uint32_t)context->arguments[3] << 32);
+        length = (uint32_t)context->arguments[4] |
+            ((uint64_t)(uint32_t)context->arguments[5] << 32);
+    }
     if (context->arguments[0] > INT32_MAX)
         return -EDGE_LINUX_EBADF;
     result = kernel_vfs_describe_descriptor(
@@ -9641,9 +9691,16 @@ static int64_t edge_linux_sys_scalar_io(
     int result;
 
     if (positioned) {
-        if ((int64_t)context->arguments[3] < 0)
+        if (context->architecture == EDGE_LINUX_ARCH_IA32 &&
+            (context->raw_number == 180u ||
+             context->raw_number == 181u)) {
+            offset = (uint32_t)context->arguments[3] |
+                ((uint64_t)(uint32_t)context->arguments[4] << 32);
+        } else {
+            offset = context->arguments[3];
+        }
+        if ((int64_t)offset < 0)
             return -EDGE_LINUX_EINVAL;
-        offset = context->arguments[3];
     }
     if (context->arguments[0] > INT32_MAX)
         return -EDGE_LINUX_EBADF;
@@ -14070,12 +14127,24 @@ static int64_t edge_linux_sys_sendfile(
     int explicit_offset;
     int status;
     int64_t result = 0;
+    int compat_offset32 = context->architecture == EDGE_LINUX_ARCH_IA32 &&
+        context->raw_number == 187u;
 
     explicit_offset = context->arguments[2] != 0;
-    if (explicit_offset && edge_linux_copy_from_user(
-            context, &input_offset, context->arguments[2],
-            sizeof(input_offset)) < 0)
-        return -EDGE_LINUX_EFAULT;
+    if (explicit_offset) {
+        if (compat_offset32) {
+            int32_t compat_offset;
+            if (edge_linux_copy_from_user(
+                    context, &compat_offset, context->arguments[2],
+                    sizeof(compat_offset)) < 0)
+                return -EDGE_LINUX_EFAULT;
+            input_offset = compat_offset;
+        } else if (edge_linux_copy_from_user(
+                       context, &input_offset, context->arguments[2],
+                       sizeof(input_offset)) < 0) {
+            return -EDGE_LINUX_EFAULT;
+        }
+    }
     if (context->arguments[0] > INT32_MAX ||
         context->arguments[1] > INT32_MAX) {
         result = -EDGE_LINUX_EBADF;
@@ -14181,10 +14250,19 @@ static int64_t edge_linux_sys_sendfile(
     }
 
 copy_offset_back:
-    if (explicit_offset && edge_linux_copy_to_user(
-            context, context->arguments[2], &input_offset,
-            sizeof(input_offset)) < 0)
-        return -EDGE_LINUX_EFAULT;
+    if (explicit_offset) {
+        if (compat_offset32) {
+            int32_t compat_offset = (int32_t)input_offset;
+            if (edge_linux_copy_to_user(
+                    context, context->arguments[2], &compat_offset,
+                    sizeof(compat_offset)) < 0)
+                return -EDGE_LINUX_EFAULT;
+        } else if (edge_linux_copy_to_user(
+                       context, context->arguments[2], &input_offset,
+                       sizeof(input_offset)) < 0) {
+            return -EDGE_LINUX_EFAULT;
+        }
+    }
     return result;
 }
 
@@ -17294,6 +17372,11 @@ static int64_t edge_linux_sys_truncate(
     uint64_t length = context->arguments[1];
     int result;
 
+    if (context->architecture == EDGE_LINUX_ARCH_IA32 &&
+        (context->raw_number == 193u ||
+         context->raw_number == 194u))
+        length = (uint32_t)context->arguments[1] |
+            ((uint64_t)(uint32_t)context->arguments[2] << 32);
     if ((int64_t)length < 0) return -EDGE_LINUX_EINVAL;
     if (length > UINT32_MAX) return -EDGE_LINUX_EFBIG;
 
