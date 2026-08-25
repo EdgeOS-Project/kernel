@@ -365,10 +365,11 @@ EDGEOS_ASSESSMENTS = [
             "program test-run and unknown-command error ordering for the supported program family",
             "stack-trace map creation, build-ID value layouts, rounded bucket addressing and empty syscall operations",
             "CPU-map creation, CPU and queue validation, entry lifecycle, optional program descriptor rejection and Linux unsupported-operation behavior",
+            "device-map and device-hash creation, network-interface validation, entry lifecycle, capacity, iteration and program descriptor behavior",
             "ia32 and x32 fixed-width map-create and map-element attribute layouts",
         ],
         "missing": [
-            "remaining map types, stack-trace helper population and CPU-map packet redirect execution",
+            "remaining map types, stack-trace helper population, CPU-map packet redirect execution and device-map packet redirect execution",
             "remaining specialized map families and their concurrency semantics",
             "additional attachment families and program types",
             "complete allow-override and multi-position attachment semantics",
@@ -379,6 +380,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/compat_bpf_uapi_probe.c",
             "tools/tests/bpf_cgroup_array_abi_probe.c",
             "tools/tests/bpf_cpumap_abi_probe.c",
+            "tools/tests/bpf_devmap_abi_probe.c",
             "tools/tests/bpf_stack_trace_abi_probe.c",
             "tools/tests/bpf_runtime_unit.c",
         ],
@@ -401,7 +403,9 @@ EDGEOS_ASSESSMENTS = [
                 "error behavior, stack-trace map creation, value-depth limits, "
                 "rounded bucket addressing and empty map operations, CPU-map "
                 "creation, qsize state, CPU bounds, program descriptor errors "
-                "and unsupported operations, plus ia32 "
+                "and unsupported operations, device-map and device-hash "
+                "interface validation, lifecycle, capacity and iteration, "
+                "plus ia32 "
                 "and x32 page-boundary map-create, "
                 "map-update and map-lookup attribute layouts"
             ),

@@ -30,9 +30,11 @@
 #define KERNEL_BPF_MAP_TYPE_LPM_TRIE 11u
 #define KERNEL_BPF_MAP_TYPE_ARRAY_OF_MAPS 12u
 #define KERNEL_BPF_MAP_TYPE_HASH_OF_MAPS 13u
+#define KERNEL_BPF_MAP_TYPE_DEVMAP 14u
 #define KERNEL_BPF_MAP_TYPE_CPUMAP 16u
 #define KERNEL_BPF_MAP_TYPE_QUEUE 22u
 #define KERNEL_BPF_MAP_TYPE_STACK 23u
+#define KERNEL_BPF_MAP_TYPE_DEVMAP_HASH 25u
 #define KERNEL_BPF_MAP_TYPE_RINGBUF 27u
 #define KERNEL_BPF_MAP_TYPE_BLOOM_FILTER 30u
 #define KERNEL_BPF_MAP_TYPE_USER_RINGBUF 31u
@@ -44,6 +46,7 @@
 #define KERNEL_BPF_MAP_WRONLY (1u << 4)
 #define KERNEL_BPF_MAP_STACK_BUILD_ID (1u << 5)
 #define KERNEL_BPF_MAP_ZERO_SEED (1u << 6)
+#define KERNEL_BPF_MAP_RDONLY_PROGRAM (1u << 7)
 #define KERNEL_BPF_MAP_PRESERVE_ELEMS (1u << 11)
 #define KERNEL_BPF_MAP_RB_OVERWRITE (1u << 19)
 
@@ -205,6 +208,9 @@ int kernel_bpf_map_lookup_flags(int object_id, const void *key, void *value,
 int kernel_bpf_map_lookup(int object_id, const void *key, void *value);
 int kernel_bpf_map_update(int object_id, const void *key, const void *value,
                           uint64_t flags);
+int kernel_bpf_devmap_update(int object_id, const void *key,
+                             const void *value, uint64_t flags,
+                             int ifindex_valid, int program_status);
 int kernel_bpf_perf_event_array_update(int object_id, const void *key,
                                        int32_t event_id, uint64_t flags);
 int kernel_bpf_cgroup_array_update(int object_id, const void *key,

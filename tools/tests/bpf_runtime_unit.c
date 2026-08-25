@@ -612,6 +612,116 @@ static void test_cpu_map(void) {
     assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
 }
 
+static void test_device_maps(void) {
+    struct devmap_value {
+        uint32_t ifindex;
+        int32_t program_object;
+    } extended = {1u, -1};
+    kernel_bpf_map_create_request_t request = {
+        .type = KERNEL_BPF_MAP_TYPE_DEVMAP,
+        .key_size = sizeof(uint32_t),
+        .value_size = sizeof(uint32_t),
+        .max_entries = 2u,
+    };
+    kernel_bpf_map_info_t info;
+    uint32_t key = 0u;
+    uint32_t next = UINT32_MAX;
+    uint32_t value = 1u;
+    uint32_t cursor = 0u;
+    int has_more = 0;
+    int object;
+
+    strcpy(request.name, "dev_map");
+    object = kernel_bpf_map_create(&request);
+    assert(object >= 0);
+    assert(kernel_bpf_map_info(object, &info) == 0);
+    assert((info.flags & KERNEL_BPF_MAP_RDONLY_PROGRAM) != 0u);
+    assert(kernel_bpf_map_lookup(object, &key, &value) ==
+           -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_map_update(
+               object, &key, &value, KERNEL_BPF_NOEXIST) ==
+           -EDGE_LINUX_EEXIST);
+    assert(kernel_bpf_map_update(
+               object, &key, &value, KERNEL_BPF_ANY) == 0);
+    value = 0u;
+    assert(kernel_bpf_map_lookup(object, &key, &value) == 0);
+    assert(value == 1u);
+    value = UINT32_MAX;
+    assert(kernel_bpf_devmap_update(
+               object, &key, &value, KERNEL_BPF_ANY, 0, 0) ==
+           -EDGE_LINUX_EINVAL);
+    value = 0u;
+    assert(kernel_bpf_map_update(
+               object, &key, &value, KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_delete(object, &key) == 0);
+    assert(kernel_bpf_map_next_key(object, 0, &next) == 0);
+    assert(next == 0u);
+    key = 2u;
+    value = 1u;
+    assert(kernel_bpf_map_update(
+               object, &key, &value, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_E2BIG);
+    assert(kernel_bpf_map_delete(object, &key) ==
+           -EDGE_LINUX_EINVAL);
+    key = 0u;
+    assert(kernel_bpf_map_lookup_and_delete(
+               object, &key, &value) == -EDGE_LINUX_ENOTSUPP);
+    assert(kernel_bpf_map_batch_next(
+               object, &cursor, &key, &value, 0, &has_more) ==
+           -EDGE_LINUX_ENOTSUPP);
+    kernel_bpf_object_release(object);
+
+    request.value_size = sizeof(extended);
+    object = kernel_bpf_map_create(&request);
+    assert(object >= 0);
+    key = 0u;
+    assert(kernel_bpf_map_update(
+               object, &key, &extended, KERNEL_BPF_ANY) == 0);
+    memset(&extended, 0xff, sizeof(extended));
+    assert(kernel_bpf_map_lookup(object, &key, &extended) == 0);
+    assert(extended.ifindex == 1u && extended.program_object == 0);
+    extended.ifindex = 0u;
+    extended.program_object = 99;
+    assert(kernel_bpf_map_update(
+               object, &key, &extended, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_EINVAL);
+    kernel_bpf_object_release(object);
+
+    request.type = KERNEL_BPF_MAP_TYPE_DEVMAP_HASH;
+    request.value_size = sizeof(uint32_t);
+    request.max_entries = 1u;
+    object = kernel_bpf_map_create(&request);
+    assert(object >= 0);
+    key = 42u;
+    value = 1u;
+    assert(kernel_bpf_map_update(
+               object, &key, &value, KERNEL_BPF_NOEXIST) == 0);
+    assert(kernel_bpf_map_update(
+               object, &key, &value, KERNEL_BPF_NOEXIST) ==
+           -EDGE_LINUX_EEXIST);
+    key = 43u;
+    assert(kernel_bpf_map_update(
+               object, &key, &value, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_E2BIG);
+    key = 42u;
+    assert(kernel_bpf_map_update(
+               object, &key, &value, KERNEL_BPF_EXIST) == 0);
+    assert(kernel_bpf_map_delete(object, &key) == 0);
+    assert(kernel_bpf_map_delete(object, &key) ==
+           -EDGE_LINUX_ENOENT);
+    value = 0u;
+    assert(kernel_bpf_map_update(
+               object, &key, &value, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_EINVAL);
+    kernel_bpf_object_release(object);
+
+    request.key_size = sizeof(uint64_t);
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+    request.key_size = sizeof(uint32_t);
+    request.value_size = 16u;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+}
+
 static void test_lpm_trie_map(void) {
     struct lpm_key {
         uint32_t prefix_length;
@@ -1849,6 +1959,7 @@ int main(void) {
     test_queue_stack_maps();
     test_stack_trace_map();
     test_cpu_map();
+    test_device_maps();
     test_lpm_trie_map();
     test_bloom_filter_map();
     test_percpu_maps();

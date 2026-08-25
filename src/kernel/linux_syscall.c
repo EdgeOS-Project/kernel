@@ -83,6 +83,7 @@
 #include "kernel/tty_session.h"
 #include "kernel/vfs_runtime.h"
 #include "mm/arch_vm.h"
+#include "net/network_core.h"
 #include "sys/boottime.h"
 #include "sys/bootlog.h"
 #include "sys/spinlock.h"
@@ -3468,6 +3469,12 @@ static uint32_t edge_linux_current_ipc_namespace(void) {
     return namespaces ? namespaces->ipc : 0u;
 }
 
+static uint32_t edge_linux_current_network_namespace(void) {
+    const edge_namespace_set_t *namespaces =
+        kernel_arch_current_namespace_set();
+    return namespaces ? namespaces->net : 0u;
+}
+
 static void edge_linux_sem_status_from_x86(
         const struct edge_linux_semid_ds_x86_64 *input,
         kernel_sysv_sem_status_t *output) {
@@ -5726,7 +5733,35 @@ static int64_t edge_linux_bpf_map_element(
                 goto out;
             }
         }
-        if (info.type == KERNEL_BPF_MAP_TYPE_PERF_EVENT_ARRAY) {
+        if (info.type == KERNEL_BPF_MAP_TYPE_DEVMAP ||
+            info.type == KERNEL_BPF_MAP_TYPE_DEVMAP_HASH) {
+            edge_net_device_snapshot_t snapshot;
+            uint32_t ifindex;
+            int ifindex_valid = 1;
+            int program_status = 0;
+
+            memcpy(&ifindex, value, sizeof(ifindex));
+            if (ifindex) {
+                ifindex_valid = edge_net_route_interface_snapshot(
+                    (int32_t)ifindex,
+                    edge_linux_current_network_namespace(),
+                    &snapshot) == EDGE_NET_OK;
+                if (ifindex_valid &&
+                    info.value_size == 2u * sizeof(uint32_t)) {
+                    int32_t program_descriptor;
+
+                    memcpy(&program_descriptor,
+                           (const uint8_t *)value + sizeof(uint32_t),
+                           sizeof(program_descriptor));
+                    if (program_descriptor > 0) {
+                        program_status = -EDGE_LINUX_EINVAL;
+                    }
+                }
+            }
+            status = kernel_bpf_devmap_update(
+                object_id, key, value, attribute.flags,
+                ifindex_valid, program_status);
+        } else if (info.type == KERNEL_BPF_MAP_TYPE_PERF_EVENT_ARRAY) {
             int32_t event_descriptor;
             int32_t event_id;
 
@@ -5860,7 +5895,9 @@ static int64_t edge_linux_bpf_map_batch(
     status = kernel_bpf_map_info(object_id, &info);
     if (status < 0) return status;
     if (info.type == KERNEL_BPF_MAP_TYPE_PERF_EVENT_ARRAY ||
-        info.type == KERNEL_BPF_MAP_TYPE_CGROUP_ARRAY)
+        info.type == KERNEL_BPF_MAP_TYPE_CGROUP_ARRAY ||
+        info.type == KERNEL_BPF_MAP_TYPE_DEVMAP ||
+        info.type == KERNEL_BPF_MAP_TYPE_DEVMAP_HASH)
         return -EDGE_LINUX_ENOTSUPP;
     if (!info.key_size) return -EDGE_LINUX_ENOTSUPP;
     status = kernel_bpf_map_value_buffer_size(
