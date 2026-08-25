@@ -175,11 +175,12 @@ EDGEOS_ASSESSMENTS = [
             "DEFER_TASKRUN ring resizing with Linux-compatible old mapping lifetime and pending SQ/CQ preservation",
             "NAPI busy-poll configuration, state handback, static receive-context IDs and bounded enter polling",
             "scheduler-native enter suspension without an initial busy-poll window",
+            "user-provided pinned parameter regions with writable-page validation, retained lifetime and registered wait arguments",
         ],
         "missing": [
             "asynchronous worker execution",
             "fixed buffers with user-page pinning",
-            "user-provided pinned wait regions and SQPOLL wait control",
+            "SQPOLL wait control",
             "notification-pipe semantics",
             "application-provided ring memory",
             "provided-buffer page pinning and owner-mm-independent lifetime across unmap and exit",
@@ -211,6 +212,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/io_uring_send_msg_ring_abi_probe.c",
             "tools/tests/io_uring_resize_abi_probe.c",
             "tools/tests/io_uring_napi_abi_probe.c",
+            "tools/tests/io_uring_user_region_abi_probe.c",
             "tools/tests/io_uring_runtime_unit.c",
         ],
         "linux_oracle": {
@@ -277,7 +279,9 @@ EDGEOS_ASSESSMENTS = [
                 "and CQ preservation and shrink-overflow behavior, plus NAPI "
                 "registration layouts, state handback, validation and disabled-"
                 "configuration behavior from the frozen oracle, with enabled "
-                "busy-poll state and enter behavior verified on EdgeOS"
+                "busy-poll state and enter behavior verified on EdgeOS, plus "
+                "user-provided pinned parameter regions, handback, duplicate "
+                "registration, mmap rejection and registered wait arguments"
             ),
         },
     },

@@ -330,6 +330,28 @@ static int test_page_retain(void *context,
     return 0;
 }
 
+static int test_page_pin_user(
+        void *context, uint64_t address_space, uint64_t user_address,
+        kernel_io_uring_page_t *page) {
+    const uint64_t base = 0x700000u;
+    uint32_t ordinal;
+    uint32_t index;
+
+    (void)context;
+    if (!page || address_space != 0xabc000u || user_address < base ||
+        ((user_address - base) & (KERNEL_IO_URING_PAGE_SIZE - 1u)))
+        return -EDGE_LINUX_EFAULT;
+    ordinal = (uint32_t)(
+        (user_address - base) / KERNEL_IO_URING_PAGE_SIZE);
+    if (ordinal >= 2u) return -EDGE_LINUX_EFAULT;
+    index = TEST_PAGE_COUNT - 2u + ordinal;
+    if (g_references[index]) return -EDGE_LINUX_EBUSY;
+    g_references[index] = 1u;
+    page->address = g_pages[index];
+    page->cookie = index;
+    return 0;
+}
+
 static void test_page_release(void *context,
                               const kernel_io_uring_page_t *page) {
     (void)context;
@@ -347,6 +369,7 @@ int main(void) {
     kernel_io_uring_page_allocator_t allocator = {
         .allocate = test_page_allocate,
         .retain = test_page_retain,
+        .pin_user = test_page_pin_user,
         .release = test_page_release,
     };
     struct edge_linux_io_uring_params parameters = {0};
@@ -585,6 +608,43 @@ int main(void) {
         assert(kernel_io_uring_region_unregister(second_ring_id) == 0);
         assert(kernel_io_uring_region_registered(second_ring_id) == 0);
         test_page_release(0, &wait_region);
+        kernel_io_uring_release(second_ring_id);
+    }
+    {
+        struct edge_linux_io_uring_params wait_parameters = {
+            .flags = 1u << 6,
+        };
+        struct edge_linux_io_uring_reg_wait wait_value = {
+            .timeout_seconds = 7,
+            .timeout_nanoseconds = 8000,
+            .minimum_wait_microseconds = 91,
+            .flags = 1,
+        };
+        struct edge_linux_io_uring_reg_wait wait_copy = {0};
+        const uint32_t pinned_index = TEST_PAGE_COUNT - 2u;
+
+        assert(g_references[pinned_index] == 0u);
+        assert(g_references[pinned_index + 1u] == 0u);
+        memcpy(g_pages[pinned_index], &wait_value, sizeof(wait_value));
+        assert(kernel_io_uring_create(
+                   2u, &wait_parameters, &second_ring_id) == 0);
+        assert(kernel_io_uring_region_register_user(
+                   second_ring_id, 0xabc000u, 0x700000u, 3u, 1) ==
+               -EDGE_LINUX_EFAULT);
+        assert(g_references[pinned_index] == 0u);
+        assert(g_references[pinned_index + 1u] == 0u);
+        assert(kernel_io_uring_region_register_user(
+                   second_ring_id, 0xabc000u, 0x700000u, 1u, 1) == 0);
+        assert(g_references[pinned_index] == 1u);
+        assert(kernel_io_uring_mmap_info(
+                   second_ring_id, KERNEL_IO_URING_OFF_PARAM_REGION,
+                   KERNEL_IO_URING_PAGE_SIZE, &pages) ==
+               -EDGE_LINUX_EINVAL);
+        assert(kernel_io_uring_registered_wait_read(
+                   second_ring_id, 0u, &wait_copy) == 0);
+        assert(memcmp(&wait_copy, &wait_value, sizeof(wait_value)) == 0);
+        assert(kernel_io_uring_region_unregister(second_ring_id) == 0);
+        assert(g_references[pinned_index] == 0u);
         kernel_io_uring_release(second_ring_id);
     }
     {

@@ -195,6 +195,8 @@ typedef struct kernel_io_uring {
     uint32_t wait_region_pages;
     uint8_t region_registered;
     uint8_t region_wait_argument;
+    uint8_t region_user_provided;
+    uint8_t region_reserved;
     kernel_io_uring_page_t fixed_file_pages[IO_URING_FIXED_FILE_PAGES];
     uint8_t fixed_file_used[KERNEL_IO_URING_MAX_FIXED_FILES];
     uint32_t fixed_file_reservations[KERNEL_IO_URING_MAX_FIXED_FILES];
@@ -405,6 +407,32 @@ static int io_uring_allocate_pages(kernel_io_uring_page_t *pages,
         memset(&pages[page], 0, sizeof(pages[page]));
     }
     return -EDGE_LINUX_ENOMEM;
+}
+
+static int io_uring_pin_user_pages(
+        kernel_io_uring_page_t *pages, uint64_t address_space,
+        uint64_t user_address, uint32_t count) {
+    uint32_t page;
+
+    if (!g_io_uring_allocator.pin_user)
+        return -EDGE_LINUX_EOPNOTSUPP;
+    for (page = 0; page < count; ++page) {
+        int result = g_io_uring_allocator.pin_user(
+            g_io_uring_allocator.context, address_space,
+            user_address + (uint64_t)page * KERNEL_IO_URING_PAGE_SIZE,
+            &pages[page]);
+
+        if (result < 0 || !pages[page].address) {
+            while (page) {
+                --page;
+                g_io_uring_allocator.release(
+                    g_io_uring_allocator.context, &pages[page]);
+                memset(&pages[page], 0, sizeof(pages[page]));
+            }
+            return result < 0 ? result : -EDGE_LINUX_EFAULT;
+        }
+    }
+    return 0;
 }
 
 static void io_uring_release_pages(kernel_io_uring_page_t *pages,
@@ -1345,6 +1373,53 @@ int kernel_io_uring_region_register(int32_t ring_id, uint32_t page_count,
         ring->wait_region_pages = page_count;
         ring->region_registered = 1u;
         ring->region_wait_argument = wait_argument != 0;
+        ring->region_user_provided = 0u;
+        result = 0;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    io_uring_release_pages(pages, page_count);
+    return result;
+}
+
+int kernel_io_uring_region_register_user(
+        int32_t ring_id, uint64_t address_space, uint64_t user_address,
+        uint32_t page_count, int wait_argument) {
+    kernel_io_uring_page_t
+        pages[KERNEL_IO_URING_MAX_WAIT_REGION_PAGES] = {{0}};
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    int result;
+
+    if (!page_count) return -EDGE_LINUX_EINVAL;
+    if (page_count > KERNEL_IO_URING_MAX_WAIT_REGION_PAGES)
+        return -EDGE_LINUX_E2BIG;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) result = -EDGE_LINUX_EBADF;
+    else if (ring->region_registered) result = -EDGE_LINUX_EBUSY;
+    else if (wait_argument && !ring->disabled)
+        result = -EDGE_LINUX_EINVAL;
+    else result = 0;
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (result < 0) return result;
+
+    result = io_uring_pin_user_pages(
+        pages, address_space, user_address, page_count);
+    if (result < 0) return result;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) result = -EDGE_LINUX_EBADF;
+    else if (ring->region_registered) result = -EDGE_LINUX_EBUSY;
+    else if (wait_argument && !ring->disabled)
+        result = -EDGE_LINUX_EINVAL;
+    else {
+        memcpy(ring->wait_region, pages,
+               page_count * sizeof(pages[0]));
+        memset(pages, 0, page_count * sizeof(pages[0]));
+        ring->wait_region_pages = page_count;
+        ring->region_registered = 1u;
+        ring->region_wait_argument = wait_argument != 0;
+        ring->region_user_provided = 1u;
         result = 0;
     }
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
@@ -1371,6 +1446,7 @@ int kernel_io_uring_region_unregister(int32_t ring_id) {
         ring->wait_region_pages = 0;
         ring->region_registered = 0;
         ring->region_wait_argument = 0;
+        ring->region_user_provided = 0;
     }
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     io_uring_release_pages(pages, page_count);
@@ -4229,7 +4305,8 @@ static int io_uring_region(kernel_io_uring_t *ring, uint64_t offset,
         *pages = ring->sqes;
         *page_count = ring->sqe_pages;
     } else if (offset == KERNEL_IO_URING_OFF_PARAM_REGION &&
-               ring->region_registered) {
+               ring->region_registered &&
+               !ring->region_user_provided) {
         *pages = ring->wait_region;
         *page_count = ring->wait_region_pages;
     } else {

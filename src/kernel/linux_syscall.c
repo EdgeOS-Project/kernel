@@ -12548,18 +12548,24 @@ static int64_t edge_linux_sys_io_uring_register(
             return -EDGE_LINUX_EINVAL;
         if (region.user_address > UINT64_MAX - region.size)
             return -EDGE_LINUX_EOVERFLOW;
-        if (region.flags & EDGE_LINUX_IORING_MEM_REGION_TYPE_USER)
-            return -EDGE_LINUX_EOPNOTSUPP;
         if ((region.size / KERNEL_IO_URING_PAGE_SIZE) > UINT32_MAX)
             return -EDGE_LINUX_E2BIG;
         page_count = (uint32_t)(
             region.size / KERNEL_IO_URING_PAGE_SIZE);
-        result = kernel_io_uring_region_register(
-            ring_id, page_count,
-            (registration.flags &
-             EDGE_LINUX_IORING_MEM_REGION_WAIT_ARG) != 0);
+        if (region.flags & EDGE_LINUX_IORING_MEM_REGION_TYPE_USER)
+            result = kernel_io_uring_region_register_user(
+                ring_id, arch_mm_current_address_space(),
+                region.user_address, page_count,
+                (registration.flags &
+                 EDGE_LINUX_IORING_MEM_REGION_WAIT_ARG) != 0);
+        else
+            result = kernel_io_uring_region_register(
+                ring_id, page_count,
+                (registration.flags &
+                 EDGE_LINUX_IORING_MEM_REGION_WAIT_ARG) != 0);
         if (result < 0) return result;
-        region.mmap_offset = KERNEL_IO_URING_OFF_PARAM_REGION;
+        if (!(region.flags & EDGE_LINUX_IORING_MEM_REGION_TYPE_USER))
+            region.mmap_offset = KERNEL_IO_URING_OFF_PARAM_REGION;
         if (edge_linux_copy_to_user(
                 context, registration.region, &region,
                 sizeof(region)) < 0) {

@@ -11535,6 +11535,32 @@ static int x86_io_uring_page_retain(
     return 0;
 }
 
+static int x86_io_uring_page_pin_user(
+        void *context, uint64_t address_space, uint64_t user_address,
+        kernel_io_uring_page_t *page) {
+    uint64_t physical;
+    uint32_t protection;
+    int index;
+
+    (void)context;
+    if (!page || kernel_mm_resolve_user_page(
+            address_space, user_address, ARCH_VM_PROT_WRITE) <= 0 ||
+        arch_vm_translate(
+            address_space, user_address, &physical, 0) < 0 ||
+        arch_vm_user_page_protection(
+            address_space, user_address, &protection) < 0 ||
+        !(protection & ARCH_VM_PROT_WRITE))
+        return -EFAULT;
+    index = process_user_mmap_backing_page_index(
+        (const void *)(uintptr_t)physical);
+    if (index < 0 || !process_user_mmap_backing_page_active(index))
+        return -EFAULT;
+    process_user_mmap_retain_backing_page(index);
+    page->address = process_user_mmap_backing_page_ptr(index);
+    page->cookie = (uint32_t)index;
+    return page->address ? 0 : -EFAULT;
+}
+
 static void x86_io_uring_page_release(
         void *context, const kernel_io_uring_page_t *page) {
     (void)context;
@@ -11546,6 +11572,7 @@ static const kernel_io_uring_page_allocator_t
     x86_io_uring_page_allocator = {
         .allocate = x86_io_uring_page_allocate,
         .retain = x86_io_uring_page_retain,
+        .pin_user = x86_io_uring_page_pin_user,
         .release = x86_io_uring_page_release,
     };
 

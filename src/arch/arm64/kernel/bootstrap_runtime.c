@@ -11765,6 +11765,32 @@ static int arm64_io_uring_page_retain(
            -LINUX_ENOMEM : 0;
 }
 
+static int arm64_io_uring_page_pin_user(
+        void *context, uint64_t address_space, uint64_t user_address,
+        kernel_io_uring_page_t *page) {
+    uint64_t physical;
+    uint32_t protection;
+
+    (void)context;
+    if (!page) return -LINUX_EFAULT;
+    if (arch_vm_translate(
+            address_space, user_address, &physical, 0) < 0 &&
+        (kernel_mm_resolve_user_page(
+             address_space, user_address, ARCH_VM_PROT_WRITE) <= 0 ||
+         arch_vm_translate(
+             address_space, user_address, &physical, 0) < 0))
+        return -LINUX_EFAULT;
+    if (arch_vm_user_page_protection(
+            address_space, user_address, &protection) < 0 ||
+        !(protection & ARCH_VM_PROT_WRITE))
+        return -LINUX_EFAULT;
+    if (arch_vm_retain_page((void *)(uintptr_t)physical) < 0)
+        return -LINUX_EFAULT;
+    page->address = (void *)(uintptr_t)physical;
+    page->cookie = physical;
+    return 0;
+}
+
 static void arm64_io_uring_page_release(
         void *context, const kernel_io_uring_page_t *page) {
     (void)context;
@@ -11775,6 +11801,7 @@ static const kernel_io_uring_page_allocator_t
     arm64_io_uring_page_allocator = {
         .allocate = arm64_io_uring_page_allocate,
         .retain = arm64_io_uring_page_retain,
+        .pin_user = arm64_io_uring_page_pin_user,
         .release = arm64_io_uring_page_release,
     };
 

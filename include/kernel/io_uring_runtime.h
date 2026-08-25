@@ -47,6 +47,9 @@ typedef struct kernel_io_uring_page {
 typedef struct kernel_io_uring_page_allocator {
     int (*allocate)(void *context, kernel_io_uring_page_t *page);
     int (*retain)(void *context, const kernel_io_uring_page_t *page);
+    int (*pin_user)(void *context, uint64_t address_space,
+                    uint64_t user_address,
+                    kernel_io_uring_page_t *page);
     void (*release)(void *context, const kernel_io_uring_page_t *page);
     void *context;
 } kernel_io_uring_page_allocator_t;
@@ -171,6 +174,9 @@ int kernel_io_uring_eventfd_unregister(int32_t ring_id);
 int kernel_io_uring_region_registered(int32_t ring_id);
 int kernel_io_uring_region_register(int32_t ring_id, uint32_t page_count,
                                     int wait_argument);
+int kernel_io_uring_region_register_user(
+    int32_t ring_id, uint64_t address_space, uint64_t user_address,
+    uint32_t page_count, int wait_argument);
 int kernel_io_uring_region_unregister(int32_t ring_id);
 int kernel_io_uring_registered_wait_read(
     int32_t ring_id, uint64_t offset,
