@@ -1330,9 +1330,13 @@ int kernel_socket_timestamp_control_receive_append(
         KERNEL_SOCKET_MESSAGE_ABI_NATIVE);
 }
 
-int kernel_socket_mmsg_import(uint64_t user_messages, uint64_t requested_count,
-                              uint32_t *effective_count) {
+int kernel_socket_mmsg_import_abi(
+    uint64_t user_messages, uint64_t requested_count,
+    uint32_t *effective_count, kernel_socket_message_abi_t abi) {
     uint64_t count;
+    uint64_t entry_size = abi == KERNEL_SOCKET_MESSAGE_ABI_X32 ?
+        sizeof(struct edge_linux_x32_mmsghdr) :
+        sizeof(struct edge_linux_mmsghdr);
 
     if (!effective_count) return -EDGE_LINUX_EIO;
     *effective_count = 0;
@@ -1340,11 +1344,17 @@ int kernel_socket_mmsg_import(uint64_t user_messages, uint64_t requested_count,
     if (!user_messages) return -EDGE_LINUX_EFAULT;
     count = requested_count > KERNEL_SOCKET_IOV_MAX ?
         KERNEL_SOCKET_IOV_MAX : requested_count;
-    if (count > (UINT64_MAX - user_messages) /
-                    sizeof(struct edge_linux_mmsghdr))
+    if (count > (UINT64_MAX - user_messages) / entry_size)
         return -EDGE_LINUX_EFAULT;
     *effective_count = (uint32_t)count;
     return 0;
+}
+
+int kernel_socket_mmsg_import(uint64_t user_messages, uint64_t requested_count,
+                              uint32_t *effective_count) {
+    return kernel_socket_mmsg_import_abi(
+        user_messages, requested_count, effective_count,
+        KERNEL_SOCKET_MESSAGE_ABI_NATIVE);
 }
 
 int kernel_socket_mmsg_timeout_import(
@@ -1406,8 +1416,16 @@ int64_t kernel_socket_mmsg_run(
         return -EDGE_LINUX_EIO;
 
     while (completed < request->vector_length) {
+        uint64_t entry_size =
+            request->abi == KERNEL_SOCKET_MESSAGE_ABI_X32 ?
+                sizeof(struct edge_linux_x32_mmsghdr) :
+                sizeof(struct edge_linux_mmsghdr);
+        uint64_t length_offset =
+            request->abi == KERNEL_SOCKET_MESSAGE_ABI_X32 ?
+                offsetof(struct edge_linux_x32_mmsghdr, msg_len) :
+                offsetof(struct edge_linux_mmsghdr, msg_len);
         uint64_t entry = request->user_messages +
-            (uint64_t)completed * sizeof(struct edge_linux_mmsghdr);
+            (uint64_t)completed * entry_size;
         uint32_t call_flags = request->flags;
         uint32_t message_length;
 
@@ -1423,7 +1441,7 @@ int64_t kernel_socket_mmsg_run(
         message_length = (uint32_t)result;
         if (request->copy_to_user(
                 request->copy_context,
-                entry + offsetof(struct edge_linux_mmsghdr, msg_len),
+                entry + length_offset,
                 &message_length, sizeof(message_length)) < 0) {
             result = completed ? (int64_t)completed :
                                  -EDGE_LINUX_EFAULT;

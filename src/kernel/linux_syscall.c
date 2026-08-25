@@ -14466,15 +14466,18 @@ static int64_t edge_linux_sys_socket_mmsg(
     int32_t descriptor;
     int status;
 
-    status = kernel_socket_mmsg_import(
-        context->arguments[1], context->arguments[2], &vector_length);
+    status = kernel_socket_mmsg_import_abi(
+        context->arguments[1], context->arguments[2], &vector_length,
+        context->architecture == EDGE_LINUX_ARCH_X32 ?
+            KERNEL_SOCKET_MESSAGE_ABI_X32 :
+            KERNEL_SOCKET_MESSAGE_ABI_NATIVE);
     if (status < 0) return status;
-    if (!vector_length) return 0;
     status = edge_linux_fd_number(context->arguments[0], &descriptor);
     if (status < 0) return status;
     status = kernel_socket_describe_descriptor(descriptor, &info);
     if (status < 0) return status;
     (void)info;
+    if (!vector_length) return 0;
     if (context->id == EDGE_LINUX_SYS_recvmmsg) {
         status = kernel_socket_mmsg_timeout_import(
             context->current_task, context->arch_ops->copy_from_user,
@@ -14488,6 +14491,9 @@ static int64_t edge_linux_sys_socket_mmsg(
     request.user_messages = context->arguments[1];
     request.vector_length = vector_length;
     request.receiving = context->id == EDGE_LINUX_SYS_recvmmsg;
+    request.abi = context->architecture == EDGE_LINUX_ARCH_X32 ?
+        KERNEL_SOCKET_MESSAGE_ABI_X32 :
+        KERNEL_SOCKET_MESSAGE_ABI_NATIVE;
     request.user_timeout = request.receiving ? context->arguments[4] : 0u;
     request.timeout_deadline_us = timeout_deadline;
     request.user_registers = context->user_registers;

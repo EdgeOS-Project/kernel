@@ -1731,6 +1731,11 @@ struct edge_linux_mmsghdr {
     uint32_t __pad;
 };
 
+struct edge_linux_x32_mmsghdr {
+    struct edge_linux_x32_msghdr msg_hdr;
+    uint32_t msg_len;
+};
+
 struct edge_futex_waitv {
     uint64_t val;
     uint64_t uaddr;
@@ -1867,6 +1872,8 @@ _Static_assert(offsetof(struct edge_linux_msghdr, msg_flags) == 48,
                "Linux msghdr flags offset");
 _Static_assert(sizeof(struct edge_linux_mmsghdr) == 64,
                "Linux mmsghdr ABI layout");
+_Static_assert(sizeof(struct edge_linux_x32_mmsghdr) == 32,
+               "Linux x32 mmsghdr ABI layout");
 _Static_assert(sizeof(struct edge_futex_waitv) == 24,
                "Linux futex_waitv ABI layout");
 _Static_assert(offsetof(struct edge_futex_waitv, uaddr) == 8,

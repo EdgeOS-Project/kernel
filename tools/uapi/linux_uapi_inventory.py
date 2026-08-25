@@ -433,6 +433,7 @@ COVERAGE_ASSESSMENTS = [
             "tools/tests/x32_iovec_abi_probe.c",
             "tools/tests/x32_socket_message_abi_probe.c",
             "tools/tests/x32_socket_control_abi_probe.c",
+            "tools/tests/x32_mmsg_abi_probe.c",
         ],
         oracle_status="partial",
         oracle_scope=(
@@ -441,7 +442,8 @@ COVERAGE_ASSESSMENTS = [
             "x32 iovec conversion for vector, positioned and cross-process "
             "I/O, sendmsg and recvmsg compat-header conversion, x32 control "
             "message alignment, SCM_RIGHTS and SCM_CREDENTIALS delivery, "
-            "and unassigned-number ENOSYS behavior"
+            "sendmmsg and recvmmsg arrays with time64 timeout writeback, and "
+            "unassigned-number ENOSYS behavior"
         )),
     coverage_assessment(
         "ioctl-tty", "partial", NATIVE_ARCHITECTURES,

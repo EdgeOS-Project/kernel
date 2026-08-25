@@ -135,6 +135,7 @@ typedef struct kernel_socket_mmsg_request {
     uint32_t vector_length;
     uint8_t receiving;
     uint8_t reserved[3];
+    kernel_socket_message_abi_t abi;
     uint64_t user_timeout;
     uint64_t timeout_deadline_us;
     void *user_registers;
@@ -387,6 +388,9 @@ int kernel_socket_timestamp_control_receive_append_abi(
 /* Linux caps mmsg vector counts to UIO_MAXIOV and accepts a null vector at 0. */
 int kernel_socket_mmsg_import(uint64_t user_messages, uint64_t requested_count,
                               uint32_t *effective_count);
+int kernel_socket_mmsg_import_abi(
+    uint64_t user_messages, uint64_t requested_count,
+    uint32_t *effective_count, kernel_socket_message_abi_t abi);
 
 int kernel_socket_mmsg_timeout_import(
     void *copy_context, edge_linux_copy_from_user_fn copy_from_user,

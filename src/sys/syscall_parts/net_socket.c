@@ -5452,6 +5452,7 @@ int64_t edge_socket_runtime_message_execute(
 typedef struct x86_socket_mmsg_call_context {
     uint8_t receiving;
     void *owner;
+    kernel_socket_message_abi_t abi;
 } x86_socket_mmsg_call_context_t;
 
 static int64_t x86_socket_mmsg_call(
@@ -5460,11 +5461,11 @@ static int64_t x86_socket_mmsg_call(
     x86_socket_mmsg_call_context_t *context =
         (x86_socket_mmsg_call_context_t *)opaque;
     if (!context) return -EIO;
-    return kernel_socket_message_invoke(
+    return kernel_socket_message_invoke_abi(
         descriptor, user_message, flags, context->receiving,
         user_registers, context->owner,
         x86_socket_message_copy_from_user,
-        x86_socket_message_copy_to_user);
+        x86_socket_message_copy_to_user, context->abi);
 }
 
 int64_t arch_socket_message_batch(
@@ -5479,6 +5480,7 @@ int64_t arch_socket_message_batch(
     if (!request) return -EIO;
     context.receiving = request->receiving;
     context.owner = request->copy_context;
+    context.abi = request->abi;
     if (!request->receiving || !request->user_timeout)
         return kernel_socket_mmsg_run(
             request, 0u, 0, x86_socket_mmsg_call, &context, &completed);
