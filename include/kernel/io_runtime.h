@@ -100,6 +100,9 @@ int64_t kernel_io_user_vector_transfer(
 int64_t kernel_io_kernel_write_current(int32_t descriptor,
                                        const void *buffer, uint32_t length,
                                        void *user_registers);
+int64_t kernel_io_kernel_read_current(int32_t descriptor,
+                                      void *buffer, uint32_t length,
+                                      void *user_registers);
 int64_t kernel_io_pipe_tee_current(int32_t input_descriptor,
                                    int32_t output_descriptor,
                                    uint64_t length, uint32_t flags,
@@ -129,6 +132,9 @@ int64_t arch_io_user_vector_transfer(
 int64_t arch_io_kernel_write_current(int32_t descriptor,
                                      const void *buffer, uint32_t length,
                                      void *user_registers);
+int64_t arch_io_kernel_read_current(int32_t descriptor,
+                                    void *buffer, uint32_t length,
+                                    void *user_registers);
 int64_t arch_io_pipe_tee_current(int32_t input_descriptor,
                                  int32_t output_descriptor,
                                  uint64_t length, uint32_t flags,

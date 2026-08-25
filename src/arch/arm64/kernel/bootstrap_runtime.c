@@ -26151,6 +26151,69 @@ int64_t arch_io_user_vector_transfer(
     task_resume_next();
 }
 
+int64_t arch_io_kernel_read_current(int32_t descriptor,
+                                    void *buffer, uint32_t length,
+                                    void *user_registers) {
+    kernel_task_t *task = current_task();
+    arch_user_frame_t *frame = (arch_user_frame_t *)user_registers;
+    bootstrap_fd_t *file;
+    kernel_socket_t *socket;
+    uint64_t offset;
+    int64_t result;
+
+    if (!task || descriptor < 0 ||
+        (uint32_t)descriptor >= KERNEL_BOOTSTRAP_FD_MAX ||
+        !fd_slot_is_open(task, (uint32_t)descriptor))
+        return -LINUX_EBADF;
+    if (!buffer && length) return -LINUX_EFAULT;
+    if (!length) return 0;
+    file = &task->fds[descriptor];
+    if (file->kind == KERNEL_FD_NULL) return 0;
+    if (file->kind == KERNEL_FD_PIPE_WRITE) return -LINUX_EBADF;
+    if (file->kind == KERNEL_FD_PIPE_READ ||
+        file->kind == KERNEL_FD_PIPE_RW) {
+        kernel_pipe_t *pipe;
+        kernel_pipe_io_decision_t decision;
+        uint32_t received;
+
+        if (file->pipe_index >= g_pipe_capacity ||
+            !g_pipes[file->pipe_index].used)
+            return -LINUX_EBADF;
+        pipe = &g_pipes[file->pipe_index];
+        decision = kernel_pipe_read_decide(pipe, 1);
+        if (decision == KERNEL_PIPE_IO_COMPLETE) return 0;
+        if (decision == KERNEL_PIPE_IO_WOULD_BLOCK ||
+            decision == KERNEL_PIPE_IO_WAIT)
+            return -LINUX_EAGAIN;
+        if (decision != KERNEL_PIPE_IO_READY)
+            return -LINUX_EBADF;
+        received = kernel_pipe_read_kernel(pipe, buffer, length);
+        if (received) {
+            pipe_wake_writers(file->pipe_index);
+            pipe_poll_wake_waiters(file->pipe_index);
+        }
+        return received;
+    }
+    if (file->kind != KERNEL_FD_SOCKET) return -LINUX_EINVAL;
+    socket = fd_socket(file);
+    if (!socket || socket->type != LINUX_SOCK_STREAM)
+        return -LINUX_EINVAL;
+    offset = fd_description_offset(file);
+    result = fd_splice_read_kernel(
+        task, file, buffer, length, &offset, 0);
+    if (result != -LINUX_EAGAIN ||
+        (file->status_flags & LINUX_O_NONBLOCK))
+        return result;
+    if (!frame) return -LINUX_EINVAL;
+    arch_copy_frame(&task->frame, frame);
+    task->socket_wait_index = file->socket_index;
+    task->socket_wait_shutdown_generation =
+        socket->shutdown_read_generation;
+    task->socket_wait_mode = KERNEL_SOCKET_READ_RESTART_SYSCALL;
+    task_state_set(task, KERNEL_TASK_WAITING_SOCKET_READ);
+    task_resume_next();
+}
+
 int64_t arch_io_kernel_write_current(int32_t descriptor,
                                      const void *buffer, uint32_t length,
                                      void *user_registers) {

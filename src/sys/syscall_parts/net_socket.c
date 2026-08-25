@@ -4102,7 +4102,8 @@ static uint64_t x86_socket_sendto_raw(uint64_t fd_u, uint64_t buf_u,
 static uint64_t socket_recvfrom_entry_internal(
     int fd, edge_fd_t *e, uint64_t buf_u, uint64_t len_u,
     uint64_t flags_u, uint64_t addr_u, uint64_t addrlen_u,
-    kernel_socket_rights_record_handle_t *received_rights) {
+    kernel_socket_rights_record_handle_t *received_rights,
+    void *kernel_buffer) {
     task_t *cur = process_current_task();
     edge_socket_t *s = socket_from_fd_entry(e);
     uint32_t len = (uint32_t)len_u;
@@ -4256,7 +4257,8 @@ socket_recv_need_data:
     int unix_address_prepared = 0;
     if (s->domain == LINUX_AF_UNIX) {
         unix_prepared_length = s->rx_len < len ? s->rx_len : len;
-        if (!user_access_ok(buf_u, unix_prepared_length, 1))
+        if (!kernel_buffer &&
+            !user_access_ok(buf_u, unix_prepared_length, 1))
             return (uint64_t)-EFAULT;
         if (addr_u && addrlen_u) {
             if (copy_from_user(
@@ -4386,7 +4388,9 @@ socket_recv_need_data:
             spin_unlock_irqrestore(&s->io_lock, unix_io_flags);
         return (uint64_t)-EAGAIN;
     }
-    if (copy_to_user(buf_u, s->rx_buf, n) < 0) {
+    if (kernel_buffer)
+        memcpy(kernel_buffer, s->rx_buf, n);
+    else if (copy_to_user(buf_u, s->rx_buf, n) < 0) {
         if (unix_io_locked)
             spin_unlock_irqrestore(&s->io_lock, unix_io_flags);
         return (uint64_t)-EFAULT;
@@ -4495,6 +4499,16 @@ socket_recv_need_data:
     return n;
 }
 
+static int64_t socket_stream_receive_kernel(
+        int fd, edge_fd_t *descriptor, void *buffer, uint32_t length) {
+    edge_socket_t *socket = socket_from_fd_entry(descriptor);
+
+    if (!socket || socket->type != LINUX_SOCK_STREAM)
+        return -EINVAL;
+    return (int64_t)socket_recvfrom_entry_internal(
+        fd, descriptor, 0u, length, 0u, 0u, 0u, 0, buffer);
+}
+
 static uint64_t socket_recvfrom_internal(
     uint64_t fd_u, uint64_t buf_u, uint64_t len_u,
     uint64_t flags_u, uint64_t addr_u, uint64_t addrlen_u,
@@ -4513,7 +4527,7 @@ static uint64_t socket_recvfrom_internal(
     }
     result = socket_recvfrom_entry_internal(
         (int)fd_u, entry, buf_u, len_u, flags_u, addr_u, addrlen_u,
-        received_rights);
+        received_rights, 0);
     (void)kernel_fd_operation_release(&lease);
     return result;
 }
@@ -4582,7 +4596,7 @@ static uint64_t x86_socket_recvfrom_entry_raw(
         return ret;
     }
     return socket_recvfrom_entry_internal(
-        fd, fde, buf_u, len_u, flags_u, addr_u, addrlen_u, 0);
+        fd, fde, buf_u, len_u, flags_u, addr_u, addrlen_u, 0, 0);
 }
 
 static uint64_t x86_socket_recvfrom_raw(

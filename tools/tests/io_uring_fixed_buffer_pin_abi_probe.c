@@ -10,6 +10,7 @@
 #define SYS_mmap 9
 #define SYS_munmap 11
 #define SYS_exit 60
+#define SYS_socketpair 53
 #define SYS_pipe2 293
 #elif defined(__aarch64__)
 #define SYS_close 57
@@ -17,6 +18,7 @@
 #define SYS_read 63
 #define SYS_write 64
 #define SYS_exit 93
+#define SYS_socketpair 199
 #define SYS_munmap 215
 #define SYS_mmap 222
 #else
@@ -45,6 +47,8 @@
 #define IORING_OFF_SQ_RING 0x00000000ull
 #define IORING_OFF_CQ_RING 0x08000000ull
 #define IORING_OFF_SQES 0x10000000ull
+#define AF_UNIX 1
+#define SOCK_STREAM 1
 
 struct linux_iovec {
     uint64_t base;
@@ -152,6 +156,13 @@ static uint32_t text_length(const char *text) {
     return length;
 }
 
+static int require_result(long actual, long expected, const char *failure) {
+    if (actual == expected) return 0;
+    (void)raw_syscall6(
+        SYS_write, 1, (long)failure, text_length(failure), 0, 0, 0);
+    return 1;
+}
+
 static int bytes_equal(const void *left, const void *right,
                        uint32_t length) {
     const uint8_t *a = left;
@@ -223,12 +234,14 @@ static int run_probe(void) {
     struct linux_iovec buffer;
     int32_t input_pipe[2] = {-1, -1};
     int32_t output_pipe[2] = {-1, -1};
+    int32_t sockets[2] = {-1, -1};
     uint8_t observed[64];
     struct io_uring_sqe *sqes = 0;
     void *sq_ring = 0;
     void *cq_ring = 0;
     void *page = 0;
     long ring;
+    long result;
     int failures = 0;
 
     bytes_zero(&parameters, sizeof(parameters));
@@ -305,6 +318,74 @@ static int run_probe(void) {
         SYS_read, output_pipe[0], (long)observed,
         sizeof(second), 0, 0, 0) != (long)sizeof(second);
     failures += !bytes_equal(observed, second, sizeof(second));
+
+    result = raw_syscall6(
+        SYS_socketpair, AF_UNIX, SOCK_STREAM, 0,
+        (long)sockets, 0, 0);
+    failures += require_result(
+        result, 0, "IO_URING_FIXED_BUFFER_PIN_SOCKETPAIR_FAIL\n");
+    if (!failures) {
+        result = submit(
+            ring, &parameters, sq_ring, cq_ring, sqes,
+            IORING_OP_WRITE_FIXED, sockets[0],
+            buffer.base + FIRST_OFFSET, sizeof(first),
+            0x534f434b57524954ull);
+        failures += require_result(
+            result, sizeof(first),
+            "IO_URING_FIXED_BUFFER_PIN_SOCKET_FIXED_WRITE_FAIL\n");
+        bytes_zero(observed, sizeof(observed));
+        result = raw_syscall6(
+            SYS_read, sockets[1], (long)observed,
+            sizeof(first), 0, 0, 0);
+        failures += require_result(
+            result, sizeof(first),
+            "IO_URING_FIXED_BUFFER_PIN_SOCKET_READ_FAIL\n");
+        if (!bytes_equal(observed, first, sizeof(first))) {
+            static const char mismatch[] =
+                "IO_URING_FIXED_BUFFER_PIN_SOCKET_WRITE_DATA_FAIL\n";
+            (void)raw_syscall6(
+                SYS_write, 1, (long)mismatch, text_length(mismatch),
+                0, 0, 0);
+            ++failures;
+        }
+        result = raw_syscall6(
+            SYS_write, sockets[1], (long)second,
+            sizeof(second), 0, 0, 0);
+        failures += require_result(
+            result, sizeof(second),
+            "IO_URING_FIXED_BUFFER_PIN_SOCKET_WRITE_FAIL\n");
+        result = submit(
+            ring, &parameters, sq_ring, cq_ring, sqes,
+            IORING_OP_READ_FIXED, sockets[0],
+            buffer.base + SECOND_OFFSET, sizeof(second),
+            0x534f434b52454144ull);
+        failures += require_result(
+            result, sizeof(second),
+            "IO_URING_FIXED_BUFFER_PIN_SOCKET_FIXED_READ_FAIL\n");
+        result = submit(
+            ring, &parameters, sq_ring, cq_ring, sqes,
+            IORING_OP_WRITE_FIXED, sockets[0],
+            buffer.base + SECOND_OFFSET, sizeof(second),
+            0x534f434b56455249ull);
+        failures += require_result(
+            result, sizeof(second),
+            "IO_URING_FIXED_BUFFER_PIN_SOCKET_VERIFY_WRITE_FAIL\n");
+        bytes_zero(observed, sizeof(observed));
+        result = raw_syscall6(
+            SYS_read, sockets[1], (long)observed,
+            sizeof(second), 0, 0, 0);
+        failures += require_result(
+            result, sizeof(second),
+            "IO_URING_FIXED_BUFFER_PIN_SOCKET_VERIFY_READ_FAIL\n");
+        if (!bytes_equal(observed, second, sizeof(second))) {
+            static const char mismatch[] =
+                "IO_URING_FIXED_BUFFER_PIN_SOCKET_READ_DATA_FAIL\n";
+            (void)raw_syscall6(
+                SYS_write, 1, (long)mismatch, text_length(mismatch),
+                0, 0, 0);
+            ++failures;
+        }
+    }
     failures += raw_syscall6(
         SYS_io_uring_register, ring, IORING_UNREGISTER_BUFFERS,
         0, 0, 0, 0) != 0;
@@ -318,6 +399,10 @@ cleanup:
         (void)raw_syscall6(SYS_close, output_pipe[0], 0, 0, 0, 0, 0);
     if (output_pipe[1] >= 0)
         (void)raw_syscall6(SYS_close, output_pipe[1], 0, 0, 0, 0, 0);
+    if (sockets[0] >= 0)
+        (void)raw_syscall6(SYS_close, sockets[0], 0, 0, 0, 0, 0);
+    if (sockets[1] >= 0)
+        (void)raw_syscall6(SYS_close, sockets[1], 0, 0, 0, 0, 0);
     if (page)
         (void)raw_syscall6(
             SYS_munmap, (long)page, FIXED_BUFFER_SIZE, 0, 0, 0, 0);

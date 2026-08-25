@@ -2506,12 +2506,11 @@ unlock_snapshot:
 
     result = kernel_io_file_range_query(descriptor, &information);
     if (result < 0) goto release_snapshot;
-    if (information.kind != KERNEL_IO_FILE_REGULAR &&
-        information.kind != KERNEL_IO_FILE_PIPE) {
+    if (information.kind == KERNEL_IO_FILE_DIRECTORY) {
         result = KERNEL_IO_VECTOR_SCALAR_FALLBACK;
         goto release_snapshot;
     }
-    if (information.kind == KERNEL_IO_FILE_PIPE && positional) {
+    if (information.kind != KERNEL_IO_FILE_REGULAR && positional) {
         result = -EDGE_LINUX_ESPIPE;
         goto release_snapshot;
     }
@@ -2545,8 +2544,12 @@ unlock_snapshot:
         }
         if ((uint64_t)chunk > length - transferred)
             chunk = (uint32_t)(length - transferred);
-        if (information.kind == KERNEL_IO_FILE_PIPE && writing)
+        if (information.kind != KERNEL_IO_FILE_REGULAR && writing)
             completed = kernel_io_kernel_write_current(
+                descriptor, (uint8_t *)entry->address + within,
+                chunk, user_registers);
+        else if (information.kind != KERNEL_IO_FILE_REGULAR)
+            completed = kernel_io_kernel_read_current(
                 descriptor, (uint8_t *)entry->address + within,
                 chunk, user_registers);
         else if (writing)

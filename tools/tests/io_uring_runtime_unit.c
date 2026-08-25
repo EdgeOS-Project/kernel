@@ -246,6 +246,12 @@ int kernel_io_file_range_query(
         information->writable = 1u;
         return 0;
     }
+    if (descriptor == 72) {
+        information->kind = KERNEL_IO_FILE_OTHER;
+        information->readable = 1u;
+        information->writable = 1u;
+        return 0;
+    }
     return -EDGE_LINUX_EBADF;
 }
 
@@ -279,7 +285,7 @@ int kernel_io_file_range_commit_offset(
 }
 
 void kernel_io_file_range_complete_write(int32_t descriptor) {
-    assert(descriptor == 70 || descriptor == 71);
+    assert(descriptor == 70 || descriptor == 71 || descriptor == 72);
     ++g_file_write_completions;
 }
 
@@ -287,9 +293,20 @@ int64_t kernel_io_kernel_write_current(
         int32_t descriptor, const void *buffer,
         uint32_t length, void *user_registers) {
     (void)user_registers;
-    if (descriptor != 71 || !buffer) return -EDGE_LINUX_EBADF;
+    if ((descriptor != 71 && descriptor != 72) || !buffer)
+        return -EDGE_LINUX_EBADF;
     if (length > sizeof(g_file_data)) length = sizeof(g_file_data);
     memcpy(g_file_data, buffer, length);
+    return length;
+}
+
+int64_t kernel_io_kernel_read_current(
+        int32_t descriptor, void *buffer,
+        uint32_t length, void *user_registers) {
+    (void)user_registers;
+    if (descriptor != 72 || !buffer) return -EDGE_LINUX_EBADF;
+    if (length > sizeof(g_file_data)) length = sizeof(g_file_data);
+    memcpy(buffer, g_file_data, length);
     return length;
 }
 
@@ -2115,6 +2132,23 @@ int main(void) {
                    second_ring_id, 0u, input_address,
                    sizeof(input), 70, 64u,
                    KERNEL_IO_READ_POSITIONAL, 0u, 0) ==
+               (int64_t)sizeof(input));
+        assert(memcmp(
+                   &g_pages[first_page][0x180u],
+                   input, sizeof(input)) == 0);
+
+        memset(g_file_data, 0, sizeof(g_file_data));
+        assert(kernel_io_uring_fixed_buffer_transfer(
+                   second_ring_id, 0u, output_address,
+                   sizeof(output), 72, 0u,
+                   KERNEL_IO_WRITE_CURRENT, 0u, 0) ==
+               (int64_t)sizeof(output));
+        assert(memcmp(g_file_data, output, sizeof(output)) == 0);
+        memcpy(g_file_data, input, sizeof(input));
+        assert(kernel_io_uring_fixed_buffer_transfer(
+                   second_ring_id, 0u, input_address,
+                   sizeof(input), 72, 0u,
+                   KERNEL_IO_READ_CURRENT, 0u, 0) ==
                (int64_t)sizeof(input));
         assert(memcmp(
                    &g_pages[first_page][0x180u],

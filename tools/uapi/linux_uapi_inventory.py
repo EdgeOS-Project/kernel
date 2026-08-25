@@ -153,7 +153,7 @@ EDGEOS_ASSESSMENTS = [
             "ia32 and x32 fixed-buffer registration and update iovec conversion",
             "ia32 and x32 setup, mapped SQ/CQ/SQE rings, NOP completion and compat READV iovec conversion",
             "bounded fixed-buffer user-page pinning with retained lifetime across unmap",
-            "READ_FIXED and WRITE_FIXED through pinned pages for regular files and pipes",
+            "READ_FIXED and WRITE_FIXED through pinned pages for regular files, pipes and stream sockets",
             "READV_FIXED and WRITEV_FIXED with pinned registered-buffer ranges for regular files and pipes",
             "bounded legacy provided-buffer groups with FIFO selection for READ, READV and RECV",
             "PROVIDE_BUFFERS and REMOVE_BUFFERS with Linux buffer IDs and CQE flags",
@@ -196,7 +196,7 @@ EDGEOS_ASSESSMENTS = [
         ],
         "missing": [
             "asynchronous worker execution",
-            "pinned transfer for remaining descriptor families",
+            "pinned transfer for TTY and remaining character-device descriptors",
             "SQPOLL wait control",
             "remaining supported VFS and socket operations",
             "remaining ia32 and x32 semantic coverage across supported operations",

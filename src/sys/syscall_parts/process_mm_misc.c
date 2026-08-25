@@ -11231,6 +11231,21 @@ int64_t arch_io_kernel_write_current(int32_t descriptor,
     return fd_write_kernel((uint64_t)descriptor, buffer, length);
 }
 
+int64_t arch_io_kernel_read_current(int32_t descriptor,
+                                    void *buffer, uint32_t length,
+                                    void *user_registers) {
+    edge_fd_proc_t *process = fd_proc_with_stdio();
+    edge_fd_t *entry = process ? fd_get(process, descriptor) : 0;
+
+    (void)user_registers;
+    if (!entry) return -EBADF;
+    if (!buffer && length) return -EFAULT;
+    if (entry->kind == FD_SOCKET)
+        return socket_stream_receive_kernel(
+            descriptor, entry, buffer, length);
+    return fd_read_kernel((uint64_t)descriptor, buffer, length);
+}
+
 int64_t arch_io_pipe_tee_current(int32_t input_descriptor,
                                  int32_t output_descriptor,
                                  uint64_t length, uint32_t flags,

@@ -60,6 +60,17 @@ int64_t kernel_io_kernel_write_current(int32_t descriptor,
         descriptor, buffer, length, user_registers);
 }
 
+int64_t kernel_io_kernel_read_current(int32_t descriptor,
+                                      void *buffer, uint32_t length,
+                                      void *user_registers) {
+    if (descriptor < 0)
+        return -EDGE_LINUX_EBADF;
+    if (!buffer && length)
+        return -EDGE_LINUX_EFAULT;
+    return arch_io_kernel_read_current(
+        descriptor, buffer, length, user_registers);
+}
+
 int64_t kernel_io_pipe_tee_current(int32_t input_descriptor,
                                    int32_t output_descriptor,
                                    uint64_t length, uint32_t flags,
