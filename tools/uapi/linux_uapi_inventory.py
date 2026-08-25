@@ -441,6 +441,7 @@ COVERAGE_ASSESSMENTS = [
             "tools/tests/x32_process_observation_abi_probe.c",
             "tools/tests/x32_time_abi_probe.c",
             "tools/tests/x32_basic_io_abi_probe.c",
+            "tools/tests/x32_common_entry_abi_probe.c",
         ],
         oracle_status="partial",
         oracle_scope=(
@@ -462,6 +463,8 @@ COVERAGE_ASSESSMENTS = [
             "basic file, path, offset, stat, pipe and UNIX socket I/O, and "
             "UTS data, CPU placement, affinity and random "
             "data queries, and "
+            "Linux-designated common syscall entries including memory, "
+            "resource limits, futex, poll and packed epoll layouts, and "
             "unassigned-number ENOSYS behavior"
         )),
     coverage_assessment(

@@ -16,153 +16,30 @@ TABLE_INCLUDE = ROOT / "src/kernel/linux_syscall_tables.inc"
 DISPATCH_INCLUDE = ROOT / "src/kernel/linux_syscall_dispatch.inc"
 
 
-X32_DIRECT_SHARED_SYSCALLS = {
-    "alarm",
-    "accept",
-    "accept4",
-    "access",
-    "bind",
-    "chdir",
-    "chmod",
-    "chown",
-    "close",
-    "close_range",
-    "clock_getres",
-    "clock_gettime",
-    "clock_nanosleep",
-    "connect",
-    "creat",
-    "dup",
-    "dup2",
-    "dup3",
-    "epoll_create",
-    "epoll_create1",
-    "eventfd",
-    "eventfd2",
-    "exit",
-    "exit_group",
-    "fanotify_init",
-    "fchdir",
-    "fchmod",
-    "fchmodat",
-    "fchmodat2",
-    "fchown",
-    "fchownat",
-    "faccessat",
-    "faccessat2",
-    "fdatasync",
-    "fstat",
-    "ftruncate",
-    "flock",
-    "fork",
-    "fsync",
-    "getegid",
-    "gettimeofday",
-    "geteuid",
-    "getgid",
-    "getcwd",
-    "getpeername",
-    "getpgid",
-    "getpgrp",
-    "getpid",
-    "getppid",
-    "getpriority",
-    "getrandom",
-    "getrusage",
+X32_COMPAT_SHARED_SYSCALLS = {
     "get_robust_list",
     "getsockopt",
-    "getsockname",
-    "getsid",
-    "getcpu",
-    "gettid",
-    "getuid",
-    "inotify_init",
-    "inotify_init1",
-    "kill",
-    "lchown",
-    "link",
-    "linkat",
-    "listen",
-    "lseek",
-    "lstat",
-    "mkdir",
-    "mkdirat",
-    "memfd_secret",
-    "nice",
-    "nanosleep",
-    "open",
-    "openat",
-    "pause",
-    "personality",
-    "pidfd_open",
-    "pidfd_send_signal",
-    "pipe",
-    "pipe2",
-    "pread64",
     "preadv",
     "preadv2",
     "process_vm_readv",
     "process_vm_writev",
     "pwritev",
     "pwritev2",
-    "pwrite64",
-    "read",
-    "readlink",
-    "readlinkat",
     "recvfrom",
     "readv",
     "recvmsg",
     "recvmmsg",
-    "restart_syscall",
-    "rename",
-    "renameat",
-    "renameat2",
-    "rmdir",
     "rt_sigaction",
     "rt_sigpending",
-    "rt_sigprocmask",
     "rt_sigqueueinfo",
-    "rt_sigsuspend",
     "rt_sigtimedwait",
     "rt_tgsigqueueinfo",
-    "sched_get_priority_max",
-    "sched_get_priority_min",
-    "sched_getaffinity",
-    "sched_getscheduler",
-    "sched_getscheduler",
-    "sched_yield",
     "sendmsg",
     "sendmmsg",
     "sigaltstack",
-    "setpgid",
-    "setpriority",
     "set_robust_list",
     "setsockopt",
-    "sendto",
-    "setsid",
-    "shutdown",
-    "socket",
-    "socketpair",
-    "stat",
-    "sync",
-    "symlink",
-    "symlinkat",
-    "time",
-    "tgkill",
-    "timerfd_create",
-    "timerfd_gettime",
-    "timerfd_settime",
-    "tkill",
-    "times",
-    "truncate",
-    "umask",
-    "uname",
-    "unlink",
-    "unlinkat",
-    "userfaultfd",
-    "write",
     "writev",
-    "wait4",
     "waitid",
 }
 
@@ -218,6 +95,18 @@ def render_tables(syscalls: list[dict[str, object]]) -> str:
         "x32": [],
     }
     canonical = {str(entry["id"]): entry for entry in syscalls}
+    x32_syscalls = load_x32_syscalls()
+    x32_abis = {str(entry["name"]): entry.get("abi")
+                for entry in x32_syscalls}
+    invalid_compat = sorted(
+        name for name in X32_COMPAT_SHARED_SYSCALLS
+        if x32_abis.get(name) != "x32"
+    )
+    if invalid_compat:
+        raise ValueError(
+            "x32 compat allowlist contains non-x32 entries: " +
+            ", ".join(invalid_compat)
+        )
     for entry in syscalls:
         architectures = entry["architectures"]
         assert isinstance(architectures, dict)
@@ -229,7 +118,7 @@ def render_tables(syscalls: list[dict[str, object]]) -> str:
             by_architecture[architecture].append(
                 (int(mapping["number"]), str(entry["id"]), str(mapping["status"]))
             )
-    for mapping in load_x32_syscalls():
+    for mapping in x32_syscalls:
         name = str(mapping["name"])
         entry = canonical.get(name)
         if entry is None:
@@ -242,7 +131,10 @@ def render_tables(syscalls: list[dict[str, object]]) -> str:
         )
         status = (
             "implemented"
-            if name in X32_DIRECT_SHARED_SYSCALLS and native_implemented
+            if native_implemented and (
+                mapping.get("abi") == "common" or
+                name in X32_COMPAT_SHARED_SYSCALLS
+            )
             else "enosys"
         )
         by_architecture["x32"].append(
