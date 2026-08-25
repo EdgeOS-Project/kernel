@@ -11053,12 +11053,188 @@ int arch_mm_process_vm_copy(
     return -EINVAL;
 }
 
+static int64_t fd_pty_read_kernel(edge_fd_t *entry, void *buffer,
+                                  uint32_t length) {
+    edge_pty_t *pty;
+    uint8_t *source;
+    uint8_t *destination = (uint8_t *)buffer;
+    uint32_t *read_position;
+    uint32_t *count;
+    int peer_references;
+    uint32_t copied = 0u;
+
+    if (!entry || (entry->kind != FD_PTY_MASTER &&
+                   entry->kind != FD_PTY_SLAVE))
+        return -EINVAL;
+    if (!buffer && length) return -EFAULT;
+    if (entry->pipe_id < 0 || entry->pipe_id >= EDGE_MAX_PTYS)
+        return -EBADF;
+    pty = &g_ptys[entry->pipe_id];
+    if (!pty->used) return -EBADF;
+    if (entry->kind == FD_PTY_MASTER) {
+        source = pty->s2m_buf;
+        read_position = &pty->s2m_rpos;
+        count = &pty->s2m_count;
+        peer_references = pty->refs_slave;
+    } else {
+        source = pty->m2s_buf;
+        read_position = &pty->m2s_rpos;
+        count = &pty->m2s_count;
+        peer_references = pty->refs_master;
+    }
+    while (!*count ||
+           (entry->kind == FD_PTY_SLAVE &&
+            (pty->termios.c_lflag & LINUX_ICANON) != 0 &&
+            !pty_slave_input_have_canonical_line(pty))) {
+        if (peer_references <= 0) return 0;
+        if ((entry->flags & LINUX_O_NONBLOCK) != 0) return -EAGAIN;
+        if (signal_pending_interrupt())
+            return (int64_t)tty_interrupt_current_ret();
+        wait_blocking_step();
+        peer_references = entry->kind == FD_PTY_MASTER ?
+            pty->refs_slave : pty->refs_master;
+    }
+    if (entry->kind == FD_PTY_MASTER && pty->packet_mode && length) {
+        destination[copied++] = 0u;
+        if (copied == length) return copied;
+    }
+    if (entry->kind == FD_PTY_SLAVE)
+        length = pty_slave_read_limit(pty, length, *count);
+    else if (length - copied > *count)
+        length = copied + *count;
+    while (copied < length && *count) {
+        destination[copied++] = source[*read_position];
+        *read_position = (*read_position + 1u) % EDGE_PTY_BUF_SIZE;
+        --*count;
+    }
+    return copied;
+}
+
+static int64_t fd_pty_write_kernel(edge_fd_t *entry, const void *buffer,
+                                   uint32_t length) {
+    edge_pty_t *pty;
+    uint8_t *destination;
+    const uint8_t *source = (const uint8_t *)buffer;
+    uint32_t *write_position;
+    uint32_t *count;
+    int peer_references;
+    uint32_t copied = 0u;
+
+    if (!entry || (entry->kind != FD_PTY_MASTER &&
+                   entry->kind != FD_PTY_SLAVE))
+        return -EINVAL;
+    if (!buffer && length) return -EFAULT;
+    if (entry->pipe_id < 0 || entry->pipe_id >= EDGE_MAX_PTYS)
+        return -EBADF;
+    pty = &g_ptys[entry->pipe_id];
+    if (!pty->used) return -EBADF;
+    if (entry->kind == FD_PTY_MASTER) {
+        destination = pty->m2s_buf;
+        write_position = &pty->m2s_wpos;
+        count = &pty->m2s_count;
+        peer_references = pty->refs_slave;
+    } else {
+        destination = pty->s2m_buf;
+        write_position = &pty->s2m_wpos;
+        count = &pty->s2m_count;
+        peer_references = pty->refs_master;
+    }
+    while (copied < length) {
+        char character;
+        uint32_t required = 1u;
+
+        while (*count >= EDGE_PTY_BUF_SIZE) {
+            if (peer_references <= 0)
+                return copied ? (int64_t)copied : -EPIPE;
+            if ((entry->flags & LINUX_O_NONBLOCK) != 0)
+                return copied ? (int64_t)copied : -EAGAIN;
+            if (signal_pending_interrupt())
+                return copied ? (int64_t)copied :
+                    (int64_t)tty_interrupt_current_ret();
+            wait_blocking_step();
+            peer_references = entry->kind == FD_PTY_MASTER ?
+                pty->refs_slave : pty->refs_master;
+        }
+        character = (char)source[copied];
+        if (entry->kind == FD_PTY_MASTER) {
+            if (character == '\r') {
+                if ((pty->termios.c_iflag & LINUX_IGNCR) != 0) {
+                    ++copied;
+                    continue;
+                }
+                if ((pty->termios.c_iflag & LINUX_ICRNL) != 0)
+                    character = '\n';
+            } else if (character == '\n' &&
+                       (pty->termios.c_iflag & LINUX_INLCR) != 0) {
+                character = '\r';
+            }
+        }
+        if (entry->kind == FD_PTY_SLAVE && character == '\n' &&
+            (pty->termios.c_oflag & LINUX_OPOST) != 0 &&
+            (pty->termios.c_oflag & LINUX_ONLCR) != 0)
+            required = 2u;
+        if (EDGE_PTY_BUF_SIZE - *count < required)
+            return copied ? (int64_t)copied : -EAGAIN;
+        if (entry->kind == FD_PTY_MASTER &&
+            (pty->termios.c_lflag & LINUX_ISIG) != 0 &&
+            (uint8_t)character == 3u) {
+            int foreground = pty->session.foreground_pgid;
+            if (foreground <= 0) foreground = process_getpgid(0);
+            if (foreground > 0)
+                (void)do_sys_kill(
+                    (uint64_t)(int64_t)-foreground, LINUX_SIGINT);
+            if ((pty->termios.c_lflag & LINUX_ECHO) != 0)
+                pty_echo_seq_to_master(pty, "^C\n", 3u);
+            ++copied;
+            continue;
+        }
+        if (entry->kind == FD_PTY_MASTER &&
+            (pty->termios.c_lflag & LINUX_ICANON) != 0 &&
+            (uint8_t)character == pty->termios.c_cc[LINUX_VERASE]) {
+            if (pty->m2s_count) {
+                uint32_t previous =
+                    (pty->m2s_wpos + EDGE_PTY_BUF_SIZE - 1u) %
+                    EDGE_PTY_BUF_SIZE;
+                if (pty->m2s_buf[previous] != '\n') {
+                    pty->m2s_wpos = previous;
+                    --pty->m2s_count;
+                    if ((pty->termios.c_lflag & LINUX_ECHO) != 0)
+                        pty_echo_seq_to_master(pty, "\b \b", 3u);
+                }
+            }
+            ++copied;
+            continue;
+        }
+        if (entry->kind == FD_PTY_SLAVE && required == 2u) {
+            destination[*write_position] = '\r';
+            *write_position = (*write_position + 1u) % EDGE_PTY_BUF_SIZE;
+            ++*count;
+        }
+        if (entry->kind == FD_PTY_MASTER &&
+            (pty->termios.c_lflag & LINUX_ECHO) != 0) {
+            if ((character == '\r' || character == '\n') &&
+                (pty->termios.c_oflag & LINUX_OPOST) != 0 &&
+                (pty->termios.c_oflag & LINUX_ONLCR) != 0)
+                pty_echo_seq_to_master(pty, "\r\n", 2u);
+            else
+                pty_echo_to_master(pty, (uint8_t)character);
+        }
+        destination[*write_position] = (uint8_t)character;
+        *write_position = (*write_position + 1u) % EDGE_PTY_BUF_SIZE;
+        ++*count;
+        ++copied;
+    }
+    return copied;
+}
+
 static int64_t fd_read_kernel(uint64_t fd_u, void *buf, uint32_t len) {
     edge_fd_proc_t *p = fd_proc_with_stdio();
     edge_fd_t *e = p ? fd_get(p, (int)fd_u) : 0;
     int r;
     if (!buf && len) return -EFAULT;
     if (!e) return -EBADF;
+    if (e->kind == FD_PTY_MASTER || e->kind == FD_PTY_SLAVE)
+        return fd_pty_read_kernel(e, buf, len);
     if (e->kind == FD_PIPE_R || e->kind == FD_PIPE_RW) {
         edge_pipe_t *pp;
         kernel_pipe_io_decision_t decision;
@@ -11102,6 +11278,8 @@ static int64_t fd_write_kernel(uint64_t fd_u, const void *buf, uint32_t len) {
     uint64_t write_offset;
     if (!buf && len) return -EFAULT;
     if (!e) return -EBADF;
+    if (e->kind == FD_PTY_MASTER || e->kind == FD_PTY_SLAVE)
+        return fd_pty_write_kernel(e, buf, len);
     if (e->kind == FD_PIPE_W || e->kind == FD_PIPE_RW) {
         edge_pipe_t *pp;
         uint32_t done = 0;

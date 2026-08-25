@@ -9,10 +9,20 @@
 #define SYS_close 3
 #define SYS_mmap 9
 #define SYS_munmap 11
+#define SYS_ioctl 16
 #define SYS_exit 60
 #define SYS_socketpair 53
+#define SYS_mount 165
+#define SYS_openat 257
+#define SYS_mkdirat 258
+#define SYS_mknodat 259
 #define SYS_pipe2 293
 #elif defined(__aarch64__)
+#define SYS_ioctl 29
+#define SYS_mknodat 33
+#define SYS_mkdirat 34
+#define SYS_mount 40
+#define SYS_openat 56
 #define SYS_close 57
 #define SYS_pipe2 59
 #define SYS_read 63
@@ -49,6 +59,12 @@
 #define IORING_OFF_SQES 0x10000000ull
 #define AF_UNIX 1
 #define SOCK_STREAM 1
+#define AT_FDCWD -100
+#define O_RDWR 2
+#define O_NOCTTY 0x100
+#define S_IFCHR 0020000
+#define TIOCGPTN 0x80045430u
+#define TIOCSPTLCK 0x40045431u
 
 struct linux_iovec {
     uint64_t base;
@@ -163,6 +179,75 @@ static int require_result(long actual, long expected, const char *failure) {
     return 1;
 }
 
+static int result_is_error(long result) {
+    return result < 0 && result >= -4095;
+}
+
+static void append_decimal(char *text, uint32_t *length, uint32_t value) {
+    char digits[10];
+    uint32_t count = 0u;
+
+    do {
+        digits[count++] = (char)('0' + value % 10u);
+        value /= 10u;
+    } while (value);
+    while (count) text[(*length)++] = digits[--count];
+    text[*length] = '\0';
+}
+
+static long open_pty_pair(int32_t descriptors[2]) {
+    static const char dev[] = "/dev";
+    static const char pts[] = "/dev/pts";
+    static const char ptmx[] = "/dev/ptmx";
+    static const char devpts[] = "devpts";
+    char slave_path[32] = "/dev/pts/";
+    uint32_t path_length = 9u;
+    uint32_t number = 0u;
+    int32_t unlocked = 0;
+    long master;
+    long slave;
+
+    master = raw_syscall6(
+        SYS_openat, AT_FDCWD, (long)ptmx,
+        O_RDWR | O_NOCTTY, 0, 0, 0);
+    if (result_is_error(master)) {
+        (void)raw_syscall6(
+            SYS_mkdirat, AT_FDCWD, (long)dev, 0755, 0, 0, 0);
+        (void)raw_syscall6(
+            SYS_mkdirat, AT_FDCWD, (long)pts, 0755, 0, 0, 0);
+        (void)raw_syscall6(
+            SYS_mknodat, AT_FDCWD, (long)ptmx,
+            S_IFCHR | 0666, 0x502, 0, 0);
+        (void)raw_syscall6(
+            SYS_mount, (long)devpts, (long)pts,
+            (long)devpts, 0, 0, 0);
+        master = raw_syscall6(
+            SYS_openat, AT_FDCWD, (long)ptmx,
+            O_RDWR | O_NOCTTY, 0, 0, 0);
+    }
+    if (result_is_error(master)) return master;
+    if (raw_syscall6(
+            SYS_ioctl, master, TIOCSPTLCK,
+            (long)&unlocked, 0, 0, 0) != 0 ||
+        raw_syscall6(
+            SYS_ioctl, master, TIOCGPTN,
+            (long)&number, 0, 0, 0) != 0) {
+        (void)raw_syscall6(SYS_close, master, 0, 0, 0, 0, 0);
+        return -1;
+    }
+    append_decimal(slave_path, &path_length, number);
+    slave = raw_syscall6(
+        SYS_openat, AT_FDCWD, (long)slave_path,
+        O_RDWR | O_NOCTTY, 0, 0, 0);
+    if (result_is_error(slave)) {
+        (void)raw_syscall6(SYS_close, master, 0, 0, 0, 0, 0);
+        return slave;
+    }
+    descriptors[0] = (int32_t)master;
+    descriptors[1] = (int32_t)slave;
+    return 0;
+}
+
 static int bytes_equal(const void *left, const void *right,
                        uint32_t length) {
     const uint8_t *a = left;
@@ -228,13 +313,14 @@ static int submit(
 }
 
 static int run_probe(void) {
-    static const char first[] = "registered-before-unmap";
-    static const char second[] = "read-after-unmap";
+    static const char first[] = "registered-before-unmap\n";
+    static const char second[] = "read-after-unmap\n";
     struct io_uring_params parameters;
     struct linux_iovec buffer;
     int32_t input_pipe[2] = {-1, -1};
     int32_t output_pipe[2] = {-1, -1};
     int32_t sockets[2] = {-1, -1};
+    int32_t pty[2] = {-1, -1};
     uint8_t observed[64];
     struct io_uring_sqe *sqes = 0;
     void *sq_ring = 0;
@@ -386,6 +472,71 @@ static int run_probe(void) {
             ++failures;
         }
     }
+    result = open_pty_pair(pty);
+    failures += require_result(
+        result, 0, "IO_URING_FIXED_BUFFER_PIN_PTY_OPEN_FAIL\n");
+    if (!failures) {
+        result = submit(
+            ring, &parameters, sq_ring, cq_ring, sqes,
+            IORING_OP_WRITE_FIXED, pty[0],
+            buffer.base + FIRST_OFFSET, sizeof(first) - 1u,
+            0x5054595752495445ull);
+        failures += require_result(
+            result, sizeof(first) - 1u,
+            "IO_URING_FIXED_BUFFER_PIN_PTY_FIXED_WRITE_FAIL\n");
+        bytes_zero(observed, sizeof(observed));
+        result = raw_syscall6(
+            SYS_read, pty[1], (long)observed,
+            sizeof(first) - 1u, 0, 0, 0);
+        failures += require_result(
+            result, sizeof(first) - 1u,
+            "IO_URING_FIXED_BUFFER_PIN_PTY_READ_FAIL\n");
+        if (!bytes_equal(observed, first, sizeof(first) - 1u)) {
+            static const char mismatch[] =
+                "IO_URING_FIXED_BUFFER_PIN_PTY_WRITE_DATA_FAIL\n";
+            (void)raw_syscall6(
+                SYS_write, 1, (long)mismatch, text_length(mismatch),
+                0, 0, 0);
+            ++failures;
+        }
+        result = raw_syscall6(
+            SYS_write, pty[0], (long)second,
+            sizeof(second) - 1u, 0, 0, 0);
+        failures += require_result(
+            result, sizeof(second) - 1u,
+            "IO_URING_FIXED_BUFFER_PIN_PTY_WRITE_FAIL\n");
+        result = submit(
+            ring, &parameters, sq_ring, cq_ring, sqes,
+            IORING_OP_READ_FIXED, pty[1],
+            buffer.base + SECOND_OFFSET, sizeof(second) - 1u,
+            0x50545952454144ull);
+        failures += require_result(
+            result, sizeof(second) - 1u,
+            "IO_URING_FIXED_BUFFER_PIN_PTY_FIXED_READ_FAIL\n");
+        result = submit(
+            ring, &parameters, sq_ring, cq_ring, sqes,
+            IORING_OP_WRITE_FIXED, output_pipe[1],
+            buffer.base + SECOND_OFFSET, sizeof(second) - 1u,
+            0x5054595645524946ull);
+        failures += require_result(
+            result, sizeof(second) - 1u,
+            "IO_URING_FIXED_BUFFER_PIN_PTY_VERIFY_WRITE_FAIL\n");
+        bytes_zero(observed, sizeof(observed));
+        result = raw_syscall6(
+            SYS_read, output_pipe[0], (long)observed,
+            sizeof(second) - 1u, 0, 0, 0);
+        failures += require_result(
+            result, sizeof(second) - 1u,
+            "IO_URING_FIXED_BUFFER_PIN_PTY_VERIFY_READ_FAIL\n");
+        if (!bytes_equal(observed, second, sizeof(second) - 1u)) {
+            static const char mismatch[] =
+                "IO_URING_FIXED_BUFFER_PIN_PTY_READ_DATA_FAIL\n";
+            (void)raw_syscall6(
+                SYS_write, 1, (long)mismatch, text_length(mismatch),
+                0, 0, 0);
+            ++failures;
+        }
+    }
     failures += raw_syscall6(
         SYS_io_uring_register, ring, IORING_UNREGISTER_BUFFERS,
         0, 0, 0, 0) != 0;
@@ -403,6 +554,10 @@ cleanup:
         (void)raw_syscall6(SYS_close, sockets[0], 0, 0, 0, 0, 0);
     if (sockets[1] >= 0)
         (void)raw_syscall6(SYS_close, sockets[1], 0, 0, 0, 0, 0);
+    if (pty[0] >= 0)
+        (void)raw_syscall6(SYS_close, pty[0], 0, 0, 0, 0, 0);
+    if (pty[1] >= 0)
+        (void)raw_syscall6(SYS_close, pty[1], 0, 0, 0, 0, 0);
     if (page)
         (void)raw_syscall6(
             SYS_munmap, (long)page, FIXED_BUFFER_SIZE, 0, 0, 0, 0);

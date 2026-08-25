@@ -23647,8 +23647,9 @@ static void tty_wake_readers(void) {
         while (virtio_input_getchar() >= 0) {}
 }
 
-static int64_t pty_read_now(kernel_task_t *task, uint8_t pty_index,
-                            int master, uint64_t buffer, uint64_t length) {
+static int64_t pty_read_now_internal(
+        kernel_task_t *task, uint8_t pty_index, int master,
+        uint64_t user_buffer, uint8_t *kernel_buffer, uint64_t length) {
     kernel_pty_t *pty;
     uint8_t *data;
     uint32_t *read_position;
@@ -23671,13 +23672,19 @@ static int64_t pty_read_now(kernel_task_t *task, uint8_t pty_index,
         return -LINUX_EAGAIN;
     if (master && pty->packet_mode && length) {
         uint8_t status = 0;
-        if (arch_copy_to_user(task->ttbr0, buffer, &status, 1u) < 0)
+        if (kernel_buffer)
+            kernel_buffer[0] = status;
+        else if (arch_copy_to_user(
+                     task->ttbr0, user_buffer, &status, 1u) < 0)
             return -LINUX_EFAULT;
         ++copied;
     }
     while (copied < length && *count) {
         uint8_t byte = data[*read_position];
-        if (arch_copy_to_user(task->ttbr0, buffer + copied, &byte, 1u) < 0)
+        if (kernel_buffer)
+            kernel_buffer[copied] = byte;
+        else if (arch_copy_to_user(
+                     task->ttbr0, user_buffer + copied, &byte, 1u) < 0)
             return copied ? (int64_t)copied : -LINUX_EFAULT;
         *read_position = (*read_position + 1u) % KERNEL_PTY_CAPACITY;
         --*count;
@@ -23685,6 +23692,18 @@ static int64_t pty_read_now(kernel_task_t *task, uint8_t pty_index,
         if (!master && (pty->tty.termios.lflag & 2u) && byte == '\n') break;
     }
     return (int64_t)copied;
+}
+
+static int64_t pty_read_now(kernel_task_t *task, uint8_t pty_index,
+                            int master, uint64_t buffer, uint64_t length) {
+    return pty_read_now_internal(
+        task, pty_index, master, buffer, 0, length);
+}
+
+static int64_t pty_read_kernel(kernel_task_t *task, uint8_t pty_index,
+                               int master, void *buffer, uint64_t length) {
+    return pty_read_now_internal(
+        task, pty_index, master, 0, buffer, length);
 }
 
 static void pty_wake_readers(uint8_t pty_index) {
@@ -23733,8 +23752,9 @@ static void pty_wake_readers(uint8_t pty_index) {
     poll_wake_waiters();
 }
 
-static int64_t pty_write_user(kernel_task_t *task, bootstrap_fd_t *fd,
-                              uint64_t buffer, uint64_t length) {
+static int64_t pty_write_internal(
+        kernel_task_t *task, bootstrap_fd_t *fd, uint64_t user_buffer,
+        const uint8_t *kernel_buffer, uint64_t length) {
     kernel_pty_t *pty;
     uint8_t *data;
     uint32_t *write_position;
@@ -23750,7 +23770,10 @@ static int64_t pty_write_user(kernel_task_t *task, bootstrap_fd_t *fd,
     count = master ? &pty->slave_count : &pty->master_count;
     while (copied < length && *count < KERNEL_PTY_CAPACITY) {
         uint8_t byte;
-        if (arch_copy_from_user(task->ttbr0, &byte, buffer + copied, 1u) < 0)
+        if (kernel_buffer)
+            byte = kernel_buffer[copied];
+        else if (arch_copy_from_user(
+                     task->ttbr0, &byte, user_buffer + copied, 1u) < 0)
             return copied ? (int64_t)copied : -LINUX_EFAULT;
         if (master && byte == '\r' && (pty->tty.termios.iflag & 0x100u)) byte = '\n';
         if (!master && byte == '\n' && (pty->tty.termios.oflag & 5u) == 5u &&
@@ -23773,6 +23796,16 @@ static int64_t pty_write_user(kernel_task_t *task, bootstrap_fd_t *fd,
     }
     if (copied) pty_wake_readers(fd->pipe_index);
     return copied ? (int64_t)copied : -LINUX_EAGAIN;
+}
+
+static int64_t pty_write_user(kernel_task_t *task, bootstrap_fd_t *fd,
+                              uint64_t buffer, uint64_t length) {
+    return pty_write_internal(task, fd, buffer, 0, length);
+}
+
+static int64_t pty_write_kernel(kernel_task_t *task, bootstrap_fd_t *fd,
+                                const void *buffer, uint64_t length) {
+    return pty_write_internal(task, fd, 0, buffer, length);
 }
 
 static int arm64_tun_copy_from_user(
@@ -26194,6 +26227,12 @@ int64_t arch_io_kernel_read_current(int32_t descriptor,
         }
         return received;
     }
+    if (file->kind == KERNEL_FD_PTY_MASTER ||
+        file->kind == KERNEL_FD_PTY_SLAVE)
+        return pty_read_kernel(
+            task, file->pipe_index,
+            file->kind == KERNEL_FD_PTY_MASTER,
+            buffer, length);
     if (file->kind != KERNEL_FD_SOCKET) return -LINUX_EINVAL;
     socket = fd_socket(file);
     if (!socket || socket->type != LINUX_SOCK_STREAM)
@@ -26228,6 +26267,9 @@ int64_t arch_io_kernel_write_current(int32_t descriptor,
     if (!length) return 0;
     file = &task->fds[descriptor];
     if (file->kind == KERNEL_FD_NULL) return length;
+    if (file->kind == KERNEL_FD_PTY_MASTER ||
+        file->kind == KERNEL_FD_PTY_SLAVE)
+        return pty_write_kernel(task, file, buffer, length);
     if (file->kind == KERNEL_FD_PIPE_READ) return -LINUX_EBADF;
     if (file->kind == KERNEL_FD_PIPE_WRITE ||
         file->kind == KERNEL_FD_PIPE_RW) {
