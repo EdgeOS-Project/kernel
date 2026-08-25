@@ -12,6 +12,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define EDGE_X86_64_UC_FP_XSTATE 0x1ULL
 #define EDGE_X86_64_UC_SIGCONTEXT_SS 0x2ULL
 #define EDGE_X86_64_UC_STRICT_RESTORE_SS 0x4ULL
 #define EDGE_X86_64_FPSTATE_SIZE 512ULL
@@ -73,6 +74,27 @@ typedef struct edge_x86_64_linux_rt_sigframe {
     uint8_t siginfo[128];
 } edge_x86_64_linux_rt_sigframe_t;
 
+typedef struct edge_x86_x32_linux_stack {
+    uint32_t sp;
+    int32_t flags;
+    uint32_t size;
+} edge_x86_x32_linux_stack_t;
+
+typedef struct edge_x86_x32_linux_ucontext {
+    uint32_t flags;
+    uint32_t link;
+    edge_x86_x32_linux_stack_t stack;
+    uint32_t padding;
+    edge_x86_64_linux_sigcontext_t mcontext;
+    uint64_t sigmask;
+} edge_x86_x32_linux_ucontext_t;
+
+typedef struct edge_x86_x32_linux_rt_sigframe {
+    uint64_t pretcode;
+    edge_x86_x32_linux_ucontext_t ucontext;
+    uint8_t siginfo[128];
+} edge_x86_x32_linux_rt_sigframe_t;
+
 _Static_assert(sizeof(edge_x86_64_linux_stack_t) == 24,
                "Linux x86_64 stack_t ABI size");
 _Static_assert(sizeof(edge_x86_64_linux_sigcontext_t) == 256,
@@ -89,5 +111,19 @@ _Static_assert(offsetof(edge_x86_64_linux_rt_sigframe_t, siginfo) == 312,
                "Linux x86_64 siginfo frame offset");
 _Static_assert(sizeof(edge_x86_64_linux_rt_sigframe_t) == 440,
                "Linux x86_64 rt_sigframe ABI size");
+_Static_assert(sizeof(edge_x86_x32_linux_stack_t) == 12,
+               "Linux x32 stack_t ABI size");
+_Static_assert(offsetof(edge_x86_x32_linux_ucontext_t, mcontext) == 24,
+               "Linux x32 mcontext ABI offset");
+_Static_assert(offsetof(edge_x86_x32_linux_ucontext_t, sigmask) == 280,
+               "Linux x32 signal-mask ABI offset");
+_Static_assert(sizeof(edge_x86_x32_linux_ucontext_t) == 288,
+               "Linux x32 ucontext ABI size");
+_Static_assert(offsetof(edge_x86_x32_linux_rt_sigframe_t, ucontext) == 8,
+               "Linux x32 ucontext frame offset");
+_Static_assert(offsetof(edge_x86_x32_linux_rt_sigframe_t, siginfo) == 296,
+               "Linux x32 siginfo frame offset");
+_Static_assert(sizeof(edge_x86_x32_linux_rt_sigframe_t) == 424,
+               "Linux x32 rt_sigframe ABI size");
 
 #endif

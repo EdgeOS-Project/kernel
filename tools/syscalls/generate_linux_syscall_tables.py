@@ -53,6 +53,10 @@ X32_COMPAT_SHARED_SYSCALLS = {
     "waitid",
 }
 
+X32_ARCH_SYSCALLS = {
+    "rt_sigreturn",
+}
+
 
 def load_inventory() -> list[dict[str, object]]:
     document = json.loads(INVENTORY.read_text(encoding="utf-8"))
@@ -117,6 +121,15 @@ def render_tables(syscalls: list[dict[str, object]]) -> str:
             "x32 compat allowlist contains non-x32 entries: " +
             ", ".join(invalid_compat)
         )
+    invalid_arch = sorted(
+        name for name in X32_ARCH_SYSCALLS
+        if x32_abis.get(name) != "x32"
+    )
+    if invalid_arch:
+        raise ValueError(
+            "x32 architecture allowlist contains non-x32 entries: " +
+            ", ".join(invalid_arch)
+        )
     for entry in syscalls:
         architectures = entry["architectures"]
         assert isinstance(architectures, dict)
@@ -143,7 +156,8 @@ def render_tables(syscalls: list[dict[str, object]]) -> str:
             "implemented"
             if native_implemented and (
                 mapping.get("abi") == "common" or
-                name in X32_COMPAT_SHARED_SYSCALLS
+                name in X32_COMPAT_SHARED_SYSCALLS or
+                name in X32_ARCH_SYSCALLS
             )
             else "enosys"
         )

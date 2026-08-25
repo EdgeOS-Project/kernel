@@ -9862,6 +9862,7 @@ static int task_signal_info_consume(task_t *task, uint64_t signal) {
 
 static int maybe_deliver_signal_on_sysret(REGISTERS *r) {
     task_t *t = process_current_task();
+    int x32_abi;
     uint64_t blocked = 0;
     uint64_t handler = LINUX_SIG_DFL;
     uint64_t action_mask = 0;
@@ -9871,13 +9872,22 @@ static int maybe_deliver_signal_on_sysret(REGISTERS *r) {
     edge_linux_signal_action_t *action = 0;
     edge_linux_signal_default_disposition_t default_disposition;
     uint64_t old_rsp, stack_top, frame_u, fpstate_u;
+    uint64_t siginfo_u;
+    uint64_t ucontext_u;
+    uint64_t frame_size;
     const uint64_t x86_64_redzone = 128;
     uint64_t restorer = EDGE_SIGTRAMP_ADDR;
     int entering_altstack = 0;
-    edge_x86_64_linux_rt_sigframe_t frame;
+    union {
+        edge_x86_64_linux_rt_sigframe_t native;
+        edge_x86_x32_linux_rt_sigframe_t x32;
+    } frame;
+    void *frame_data;
     struct edge_linux_siginfo_min siginfo;
     struct edge_linux_siginfo_min queued_siginfo;
     struct edge_linux_siginfo_sigsys sigsys_info;
+    struct edge_linux_siginfo native_siginfo;
+    struct edge_linux_compat_siginfo compat_siginfo;
     int queued_siginfo_valid;
     uint8_t fpstate_frame[EDGE_X86_64_FPSTATE_FRAME_SIZE]
         __attribute__((aligned(64)));
@@ -9887,6 +9897,9 @@ static int maybe_deliver_signal_on_sysret(REGISTERS *r) {
     static int signal_trace_budget = EDGE_GUI_DEEP_TRACE ? 128 : 0;
 
     if (!t || !r) return 0;
+    x32_abi = t->linux_abi == EDGE_LINUX_TASK_ABI_X32;
+    frame_size = x32_abi ? sizeof(frame.x32) : sizeof(frame.native);
+    frame_data = x32_abi ? (void *)&frame.x32 : (void *)&frame.native;
     task_timer_poll();
 select_signal:
     blocked = t->sigmask;
@@ -9981,7 +9994,7 @@ select_signal:
         scheduler_kill_current_group_and_yield(128 + (int)sig);
         return 0;
     }
-    if (!user_range_ok(handler, 1)) {
+    if (!user_range_ok(handler, 1) || (x32_abi && handler > UINT32_MAX)) {
         if (gui_signal_fail_budget > 0 && signal_delivery_diag_task(t, sig)) {
             gui_signal_fail_budget--;
             printf("[signal-gui] pid=%d cmd=%s sig=%u why=bad-handler handler=0x%x flags=0x%x restorer=0x%x blocked=0x%x pending=0x%x rip=0x%x rsp=0x%x budget=%d\n",
@@ -9994,9 +10007,10 @@ select_signal:
         return 0;
     }
     if ((action_flags & EDGE_LINUX_SA_RESTORER) &&
-        user_range_ok(action_restorer, 1)) {
+        user_range_ok(action_restorer, 1) &&
+        (!x32_abi || action_restorer <= UINT32_MAX)) {
         restorer = action_restorer;
-    } else if (install_user_sig_stub(t) < 0) {
+    } else if (x32_abi || install_user_sig_stub(t) < 0) {
         if (gui_signal_fail_budget > 0 && signal_delivery_diag_task(t, sig)) {
             gui_signal_fail_budget--;
             printf("[signal-gui] pid=%d cmd=%s sig=%u why=stub handler=0x%x flags=0x%x restorer=0x%x blocked=0x%x pending=0x%x budget=%d\n",
@@ -10031,8 +10045,8 @@ select_signal:
         stack_top -= x86_64_redzone;
     }
     if (stack_top < USER_MIN_ADDR + EDGE_X86_64_FPSTATE_FRAME_SIZE +
-                    sizeof(frame) + 64 ||
-        stack_top > USER_MAX_ADDR) {
+                    frame_size + 64 ||
+        stack_top > USER_MAX_ADDR || (x32_abi && stack_top > UINT32_MAX)) {
         if (gui_signal_fail_budget > 0 && signal_delivery_diag_task(t, sig)) {
             gui_signal_fail_budget--;
             printf("[signal-gui] pid=%d cmd=%s sig=%u why=bad-oldrsp handler=0x%x flags=0x%x oldrsp=0x%x blocked=0x%x pending=0x%x budget=%d\n",
@@ -10046,9 +10060,10 @@ select_signal:
 
     fpstate_u = (stack_top - EDGE_X86_64_FPSTATE_FRAME_SIZE) &
                 ~(EDGE_X86_64_FPSTATE_ALIGN - 1ULL);
-    frame_u = ((fpstate_u - sizeof(frame)) & ~15ULL) - 8ULL;
-    if (!user_range_ok(frame_u, sizeof(frame)) ||
+    frame_u = ((fpstate_u - frame_size) & ~15ULL) - 8ULL;
+    if (!user_range_ok(frame_u, frame_size) ||
         !user_range_ok(fpstate_u, EDGE_X86_64_FPSTATE_FRAME_SIZE) ||
+        (x32_abi && (frame_u > UINT32_MAX || fpstate_u > UINT32_MAX)) ||
         (frame_u & 15ULL) != 8ULL) {
         if (gui_signal_fail_budget > 0 && signal_delivery_diag_task(t, sig)) {
             gui_signal_fail_budget--;
@@ -10074,15 +10089,41 @@ select_signal:
     memset(&frame, 0, sizeof(frame));
     memset(&siginfo, 0, sizeof(siginfo));
     memset(&sigsys_info, 0, sizeof(sigsys_info));
-    frame.pretcode = restorer;
-    frame.ucontext.flags = EDGE_X86_64_UC_SIGCONTEXT_SS |
-                           EDGE_X86_64_UC_STRICT_RESTORE_SS;
-    frame.ucontext.stack.sp = t->sigaltstack_sp;
-    frame.ucontext.stack.size = t->sigaltstack_size;
-    frame.ucontext.stack.flags = (int32_t)x86_64_saved_sigaltstack_flags(t, old_rsp);
-    frame.ucontext.sigmask = task_signal_frame_sigmask(t);
-    x86_64_sigcontext_from_regs(&frame.ucontext.mcontext, r, fpstate_u,
-                                frame.ucontext.sigmask);
+    memset(&native_siginfo, 0, sizeof(native_siginfo));
+    if (x32_abi) {
+        frame.x32.pretcode = restorer;
+        frame.x32.ucontext.flags =
+            EDGE_X86_64_UC_SIGCONTEXT_SS |
+            EDGE_X86_64_UC_STRICT_RESTORE_SS;
+        frame.x32.ucontext.stack.sp = (uint32_t)t->sigaltstack_sp;
+        frame.x32.ucontext.stack.size = (uint32_t)t->sigaltstack_size;
+        frame.x32.ucontext.stack.flags =
+            (int32_t)x86_64_saved_sigaltstack_flags(t, old_rsp);
+        frame.x32.ucontext.sigmask = task_signal_frame_sigmask(t);
+        x86_64_sigcontext_from_regs(
+            &frame.x32.ucontext.mcontext, r, fpstate_u,
+            frame.x32.ucontext.sigmask);
+        siginfo_u = frame_u +
+            offsetof(edge_x86_x32_linux_rt_sigframe_t, siginfo);
+        ucontext_u = frame_u +
+            offsetof(edge_x86_x32_linux_rt_sigframe_t, ucontext);
+    } else {
+        frame.native.pretcode = restorer;
+        frame.native.ucontext.flags = EDGE_X86_64_UC_SIGCONTEXT_SS |
+                                      EDGE_X86_64_UC_STRICT_RESTORE_SS;
+        frame.native.ucontext.stack.sp = t->sigaltstack_sp;
+        frame.native.ucontext.stack.size = t->sigaltstack_size;
+        frame.native.ucontext.stack.flags =
+            (int32_t)x86_64_saved_sigaltstack_flags(t, old_rsp);
+        frame.native.ucontext.sigmask = task_signal_frame_sigmask(t);
+        x86_64_sigcontext_from_regs(
+            &frame.native.ucontext.mcontext, r, fpstate_u,
+            frame.native.ucontext.sigmask);
+        siginfo_u = frame_u +
+            offsetof(edge_x86_64_linux_rt_sigframe_t, siginfo);
+        ucontext_u = frame_u +
+            offsetof(edge_x86_64_linux_rt_sigframe_t, ucontext);
+    }
     if (sig == LINUX_SIGSYS && t->seccomp_sigsys_valid) {
         /*
          * SECCOMP_RET_TRAP exposes the interrupted syscall register image.
@@ -10093,23 +10134,36 @@ select_signal:
          * userspace frame; rt_sigreturn will use any value written by the
          * handler as the syscall result.
          */
-        frame.ucontext.mcontext.rax =
-            (uint64_t)(uint32_t)t->seccomp_sigsys_nr;
+        if (x32_abi) {
+            frame.x32.ucontext.mcontext.rax =
+                (uint64_t)(uint32_t)t->seccomp_sigsys_nr;
+        } else {
+            frame.native.ucontext.mcontext.rax =
+                (uint64_t)(uint32_t)t->seccomp_sigsys_nr;
+        }
         sigsys_info.si_signo = LINUX_SIGSYS;
         sigsys_info.si_errno = t->seccomp_sigsys_errno;
         sigsys_info.si_code = 1; /* SYS_SECCOMP */
         sigsys_info.si_call_addr = t->seccomp_sigsys_call_addr;
         sigsys_info.si_syscall = t->seccomp_sigsys_nr;
         sigsys_info.si_arch = t->seccomp_sigsys_arch;
-        memcpy(frame.siginfo, &sigsys_info, sizeof(sigsys_info));
+        memcpy(&native_siginfo, &sigsys_info, sizeof(sigsys_info));
     } else if (queued_siginfo_valid) {
-        memcpy(frame.siginfo, &queued_siginfo, sizeof(queued_siginfo));
+        memcpy(&native_siginfo, &queued_siginfo, sizeof(queued_siginfo));
     } else {
         siginfo.si_signo = (int32_t)sig;
         siginfo.si_code = 0;
         siginfo.si_pid = 0;
         siginfo.si_uid = 0;
-        memcpy(frame.siginfo, &siginfo, sizeof(siginfo));
+        memcpy(&native_siginfo, &siginfo, sizeof(siginfo));
+    }
+    if (x32_abi) {
+        edge_linux_native_siginfo_to_compat(
+            &native_siginfo, &compat_siginfo);
+        memcpy(frame.x32.siginfo, &compat_siginfo, sizeof(compat_siginfo));
+    } else {
+        memcpy(frame.native.siginfo, &native_siginfo,
+               sizeof(native_siginfo));
     }
     /*
      * Linux reserves the complete extended-state signal area even when the
@@ -10121,7 +10175,7 @@ select_signal:
      */
     memset(fpstate_frame, 0, sizeof(fpstate_frame));
     x86_64_fxsave_user_signal(fpstate_frame);
-    if (copy_to_user(frame_u, &frame, sizeof(frame)) < 0 ||
+    if (copy_to_user(frame_u, frame_data, frame_size) < 0 ||
         copy_to_user(fpstate_u, fpstate_frame, sizeof(fpstate_frame)) < 0) {
         if (gui_signal_fail_budget > 0 && signal_delivery_diag_task(t, sig)) {
             gui_signal_fail_budget--;
@@ -10183,8 +10237,8 @@ select_signal:
     r->rflags = (r->rflags | 0x2ull) & ~(1ull << 8);
     r->rax = 0;
     r->rdi = sig;
-    r->rsi = frame_u + (uint64_t)__builtin_offsetof(edge_x86_64_linux_rt_sigframe_t, siginfo);
-    r->rdx = frame_u + (uint64_t)__builtin_offsetof(edge_x86_64_linux_rt_sigframe_t, ucontext);
+    r->rsi = siginfo_u;
+    r->rdx = ucontext_u;
     return 1;
 }
 
@@ -10493,31 +10547,23 @@ static __attribute__((noreturn)) void x86_64_sigreturn_badframe(REGISTERS *r,
     for (;;) __asm__ __volatile__("sti; hlt");
 }
 
-static uint64_t do_sys_rt_sigreturn(REGISTERS *r) {
-    edge_x86_64_linux_rt_sigframe_t frame;
-    edge_x86_64_linux_sigcontext_t *sc = &frame.ucontext.mcontext;
-    struct edge_linux_stack64 signal_stack;
+static uint64_t x86_64_restore_rt_signal_state(
+        REGISTERS *r, uint64_t frame_u,
+        const edge_x86_64_linux_sigcontext_t *sc,
+        const struct edge_linux_stack64 *signal_stack,
+        uint64_t signal_mask, int x32_abi) {
     REGISTERS restored;
     task_t *t = process_current_task();
-    uint64_t frame_u;
-    uint64_t restored_mask;
     uint32_t mxcsr = 0;
     uint32_t supported_mxcsr_mask = 0;
     uint8_t fxstate[EDGE_X86_64_FPSTATE_SIZE] __attribute__((aligned(16)));
 
-    if (!r || !t || r->rsp < USER_MIN_ADDR + sizeof(uint64_t)) {
-        x86_64_sigreturn_badframe(r, r ? r->rsp : 0, "stack");
-    }
-    /* The handler's RET consumed pretcode, leaving RSP at frame + 8. */
-    frame_u = r->rsp - sizeof(uint64_t);
-    if (!user_range_ok(frame_u, sizeof(frame)) ||
-        copy_from_user(&frame, frame_u, sizeof(frame)) < 0) {
-        x86_64_sigreturn_badframe(r, frame_u, "frame");
-    }
-    if ((frame.ucontext.flags &
-         ~(EDGE_X86_64_UC_SIGCONTEXT_SS | EDGE_X86_64_UC_STRICT_RESTORE_SS)) != 0) {
-        x86_64_sigreturn_badframe(r, frame_u, "ucontext-flags");
-    }
+    if (!r || !t || !sc || !signal_stack)
+        x86_64_sigreturn_badframe(r, frame_u, "state");
+    if (x32_abi &&
+        (sc->rip > UINT32_MAX || sc->rsp > UINT32_MAX ||
+         sc->fpstate > UINT32_MAX))
+        x86_64_sigreturn_badframe(r, frame_u, "x32-registers");
     restored = *r;
     if (x86_64_regs_from_sigcontext(&restored, sc) < 0) {
         x86_64_sigreturn_badframe(r, frame_u, "registers");
@@ -10544,13 +10590,9 @@ static uint64_t do_sys_rt_sigreturn(REGISTERS *r) {
         fxstate[28] = 0xbf;
         fxstate[29] = 0xff;
     }
-    signal_stack.sp = frame.ucontext.stack.sp;
-    signal_stack.flags = frame.ucontext.stack.flags;
-    signal_stack.padding = 0;
-    signal_stack.size = frame.ucontext.stack.size;
-    restored_mask = edge_linux_signal_sanitize_mask(frame.ucontext.sigmask);
     if (edge_linux_signal_frame_restore(
-            r, restored_mask, &signal_stack) < 0)
+            r, edge_linux_signal_sanitize_mask(signal_mask),
+            signal_stack) < 0)
         x86_64_sigreturn_badframe(r, frame_u, "signal-state");
     task_cancel_wait_sigmask_restore(t);
     memcpy(t->fxsave_region, fxstate, sizeof(fxstate));
@@ -10562,6 +10604,60 @@ static uint64_t do_sys_rt_sigreturn(REGISTERS *r) {
     *r = restored;
 
     return r->rax;
+}
+
+static uint64_t do_sys_rt_sigreturn(REGISTERS *r) {
+    edge_x86_64_linux_rt_sigframe_t frame;
+    struct edge_linux_stack64 signal_stack;
+    task_t *t = process_current_task();
+    uint64_t frame_u;
+
+    if (!r || !t || r->rsp < USER_MIN_ADDR + sizeof(uint64_t))
+        x86_64_sigreturn_badframe(r, r ? r->rsp : 0, "stack");
+    /* The handler's RET consumed pretcode, leaving RSP at frame + 8. */
+    frame_u = r->rsp - sizeof(uint64_t);
+    if (!user_range_ok(frame_u, sizeof(frame)) ||
+        copy_from_user(&frame, frame_u, sizeof(frame)) < 0)
+        x86_64_sigreturn_badframe(r, frame_u, "frame");
+    if ((frame.ucontext.flags &
+         ~(EDGE_X86_64_UC_FP_XSTATE |
+           EDGE_X86_64_UC_SIGCONTEXT_SS |
+           EDGE_X86_64_UC_STRICT_RESTORE_SS)) != 0)
+        x86_64_sigreturn_badframe(r, frame_u, "ucontext-flags");
+    signal_stack.sp = frame.ucontext.stack.sp;
+    signal_stack.flags = frame.ucontext.stack.flags;
+    signal_stack.padding = 0;
+    signal_stack.size = frame.ucontext.stack.size;
+    return x86_64_restore_rt_signal_state(
+        r, frame_u, &frame.ucontext.mcontext, &signal_stack,
+        frame.ucontext.sigmask, 0);
+}
+
+static uint64_t do_sys_x32_rt_sigreturn(REGISTERS *r) {
+    edge_x86_x32_linux_rt_sigframe_t frame;
+    struct edge_linux_stack64 signal_stack;
+    task_t *t = process_current_task();
+    uint64_t frame_u;
+
+    if (!r || !t || t->linux_abi != EDGE_LINUX_TASK_ABI_X32 ||
+        r->rsp < USER_MIN_ADDR + sizeof(uint64_t) || r->rsp > UINT32_MAX)
+        x86_64_sigreturn_badframe(r, r ? r->rsp : 0, "x32-stack");
+    frame_u = r->rsp - sizeof(uint64_t);
+    if (frame_u > UINT32_MAX || !user_range_ok(frame_u, sizeof(frame)) ||
+        copy_from_user(&frame, frame_u, sizeof(frame)) < 0)
+        x86_64_sigreturn_badframe(r, frame_u, "x32-frame");
+    if ((frame.ucontext.flags &
+         ~(EDGE_X86_64_UC_FP_XSTATE |
+           EDGE_X86_64_UC_SIGCONTEXT_SS |
+           EDGE_X86_64_UC_STRICT_RESTORE_SS)) != 0)
+        x86_64_sigreturn_badframe(r, frame_u, "x32-ucontext-flags");
+    signal_stack.sp = frame.ucontext.stack.sp;
+    signal_stack.flags = frame.ucontext.stack.flags;
+    signal_stack.padding = 0;
+    signal_stack.size = frame.ucontext.stack.size;
+    return x86_64_restore_rt_signal_state(
+        r, frame_u, &frame.ucontext.mcontext, &signal_stack,
+        frame.ucontext.sigmask, 1);
 }
 
 int arch_namespace_descriptor_get(

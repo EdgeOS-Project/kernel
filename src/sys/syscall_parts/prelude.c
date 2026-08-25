@@ -653,6 +653,8 @@
 #define SYS_rt_sigaction 13
 #define SYS_rt_sigprocmask 14
 #define SYS_rt_sigreturn 15
+#define X32_SYSCALL_BIT UINT64_C(0x40000000)
+#define SYS_x32_rt_sigreturn (X32_SYSCALL_BIT + UINT64_C(513))
 #define SYS_rt_sigpending 127
 #define SYS_rt_sigtimedwait 128
 #define SYS_rt_sigqueueinfo 129
