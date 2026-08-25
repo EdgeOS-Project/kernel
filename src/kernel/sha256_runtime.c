@@ -105,6 +105,21 @@ void kernel_sha256_init(kernel_sha256_context_t *context) {
     memset(context->block, 0, sizeof(context->block));
 }
 
+void kernel_sha224_init(kernel_sha256_context_t *context) {
+    if (!context) return;
+    context->state[0] = 0xc1059ed8u;
+    context->state[1] = 0x367cd507u;
+    context->state[2] = 0x3070dd17u;
+    context->state[3] = 0xf70e5939u;
+    context->state[4] = 0xffc00b31u;
+    context->state[5] = 0x68581511u;
+    context->state[6] = 0x64f98fa7u;
+    context->state[7] = 0xbefa4fa4u;
+    context->length = 0u;
+    context->block_length = 0u;
+    memset(context->block, 0, sizeof(context->block));
+}
+
 void kernel_sha256_update(kernel_sha256_context_t *context,
                           const void *data, uint32_t length) {
     const uint8_t *bytes = (const uint8_t *)data;
@@ -126,8 +141,8 @@ void kernel_sha256_update(kernel_sha256_context_t *context,
     }
 }
 
-void kernel_sha256_final(kernel_sha256_context_t *context,
-                         uint8_t digest[32]) {
+static void sha256_final_words(kernel_sha256_context_t *context,
+                              uint8_t *digest, uint32_t length) {
     uint64_t bits;
 
     if (!context || !digest) return;
@@ -145,9 +160,19 @@ void kernel_sha256_final(kernel_sha256_context_t *context,
         context->block[63u - index] =
             (uint8_t)(bits >> (index * 8u));
     sha256_transform(context->state, context->block);
-    for (uint32_t index = 0; index < 32u; ++index)
+    for (uint32_t index = 0; index < length; ++index)
         digest[index] = (uint8_t)(
             context->state[index / 4u] >>
             (24u - (index % 4u) * 8u));
     memset(context, 0, sizeof(*context));
+}
+
+void kernel_sha256_final(kernel_sha256_context_t *context,
+                         uint8_t digest[32]) {
+    sha256_final_words(context, digest, 32u);
+}
+
+void kernel_sha224_final(kernel_sha256_context_t *context,
+                         uint8_t digest[28]) {
+    sha256_final_words(context, digest, 28u);
 }

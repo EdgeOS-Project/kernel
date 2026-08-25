@@ -780,6 +780,8 @@ static int64_t keyctl_dh_compute(
     uint32_t limbs;
     uint32_t base_limbs;
     uint32_t exponent_bits;
+    uint32_t digest_length = 32u;
+    int use_sha224 = 0;
     int use_kdf = arguments[3] != 0u;
     int result;
 
@@ -806,8 +808,12 @@ static int64_t keyctl_dh_compute(
         result = key_copy_user_string(
             access, kdf.hash_name, hash_name, sizeof(hash_name), 0);
         if (result < 0) return result;
-        if (strcmp(hash_name, "sha256"))
+        if (!strcmp(hash_name, "sha224")) {
+            use_sha224 = 1;
+            digest_length = 28u;
+        } else if (strcmp(hash_name, "sha256")) {
             return -EDGE_LINUX_ENOENT;
+        }
     }
 
     key_lock(&g_key_copy_lock);
@@ -903,14 +909,16 @@ static int64_t keyctl_dh_compute(
             };
             uint32_t copy = (uint32_t)arguments[2] - produced;
 
-            if (copy > sizeof(digest)) copy = sizeof(digest);
-            kernel_sha256_init(&hash);
+            if (copy > digest_length) copy = digest_length;
+            if (use_sha224) kernel_sha224_init(&hash);
+            else kernel_sha256_init(&hash);
             kernel_sha256_update(
                 &hash, encoded_counter, sizeof(encoded_counter));
             kernel_sha256_update(&hash, g_key_dh_secret, prime_length);
             kernel_sha256_update(
                 &hash, g_key_kdf_otherinfo, kdf.other_info_length);
-            kernel_sha256_final(&hash, digest);
+            if (use_sha224) kernel_sha224_final(&hash, digest);
+            else kernel_sha256_final(&hash, digest);
             memcpy(g_key_kdf_output + produced, digest, copy);
             memset(digest, 0, sizeof(digest));
             produced += copy;

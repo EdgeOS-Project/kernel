@@ -14,9 +14,12 @@ typedef struct kernel_sha256_context {
 } kernel_sha256_context_t;
 
 void kernel_sha256_init(kernel_sha256_context_t *context);
+void kernel_sha224_init(kernel_sha256_context_t *context);
 void kernel_sha256_update(kernel_sha256_context_t *context,
                           const void *data, uint32_t length);
 void kernel_sha256_final(kernel_sha256_context_t *context,
                          uint8_t digest[32]);
+void kernel_sha224_final(kernel_sha256_context_t *context,
+                         uint8_t digest[28]);
 
 #endif

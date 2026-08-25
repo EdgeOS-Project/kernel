@@ -130,6 +130,14 @@ START_ATTRIBUTES void _start(void) {
         0x49u, 0x36u, 0x21u, 0xdeu, 0x31u, 0x31u, 0x7eu, 0x43u,
         0xecu, 0xd1u, 0xcdu, 0x70u, 0xffu, 0x78u, 0x6cu, 0x1bu,
     };
+    static const unsigned char kdf_sha224_expected[44] = {
+        0xcfu, 0xa4u, 0xf2u, 0x23u, 0x6bu, 0xe1u, 0x85u, 0x11u,
+        0x34u, 0x66u, 0x72u, 0xbfu, 0x46u, 0x8fu, 0xa6u, 0x03u,
+        0xc4u, 0xe2u, 0x99u, 0xabu, 0x3eu, 0xd0u, 0x4au, 0x73u,
+        0x5eu, 0xc5u, 0x08u, 0x25u, 0xccu, 0x76u, 0xb1u, 0x68u,
+        0xe8u, 0x12u, 0x59u, 0xe5u, 0xa7u, 0xf5u, 0xd8u, 0x62u,
+        0x46u, 0xbdu, 0x5bu, 0xb7u,
+    };
     static const char kdf_otherinfo[] = "edge-kdf";
     static const unsigned char prime_value[] =
     "\xff\xff\xff\xff\xff\xff\xff\xff\xad\xf8\x54\x58\xa2\xbb\x4a\x9a"
@@ -236,6 +244,21 @@ START_ATTRIBUTES void _start(void) {
         for (unsigned long index = 0; index < sizeof(derived); ++index) {
             if (derived[index] == kdf_expected[index]) continue;
             print_text("FAIL kdf-value\n");
+            ++failures;
+            break;
+        }
+        kdf.hashname = "sha224";
+        failures += expect_result(
+            "kdf-sha224-compute",
+            raw_syscall6(
+                SYS_keyctl, KEYCTL_DH_COMPUTE,
+                (long)&parameters, (long)derived,
+                sizeof(kdf_sha224_expected), (long)&kdf, 0),
+            sizeof(kdf_sha224_expected));
+        for (unsigned long index = 0;
+             index < sizeof(kdf_sha224_expected); ++index) {
+            if (derived[index] == kdf_sha224_expected[index]) continue;
+            print_text("FAIL kdf-sha224-value\n");
             ++failures;
             break;
         }

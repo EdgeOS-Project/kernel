@@ -178,6 +178,14 @@ int main(void) {
             0x49u, 0x36u, 0x21u, 0xdeu, 0x31u, 0x31u, 0x7eu, 0x43u,
             0xecu, 0xd1u, 0xcdu, 0x70u, 0xffu, 0x78u, 0x6cu, 0x1bu,
         };
+        static const uint8_t kdf_sha224_expected[44] = {
+            0xcfu, 0xa4u, 0xf2u, 0x23u, 0x6bu, 0xe1u, 0x85u, 0x11u,
+            0x34u, 0x66u, 0x72u, 0xbfu, 0x46u, 0x8fu, 0xa6u, 0x03u,
+            0xc4u, 0xe2u, 0x99u, 0xabu, 0x3eu, 0xd0u, 0x4au, 0x73u,
+            0x5eu, 0xc5u, 0x08u, 0x25u, 0xccu, 0x76u, 0xb1u, 0x68u,
+            0xe8u, 0x12u, 0x59u, 0xe5u, 0xa7u, 0xf5u, 0xd8u, 0x62u,
+            0x46u, 0xbdu, 0x5bu, 0xb7u,
+        };
         static const char other_info[] = "edge-kdf";
         test_keyctl_dh_params_t parameters;
         test_keyctl_kdf_params_t kdf;
@@ -231,6 +239,14 @@ int main(void) {
                    arguments) == (int64_t)sizeof(derived_value));
         assert(memcmp(derived_value, kdf_expected,
                       sizeof(derived_value)) == 0);
+        kdf.hash_name = (uint64_t)(uintptr_t)"sha224";
+        memset(derived_value, 0, sizeof(derived_value));
+        arguments[2] = sizeof(kdf_sha224_expected);
+        assert(kernel_keyring_keyctl(
+                   &parent, &access, EDGE_LINUX_KEYCTL_DH_COMPUTE,
+                   arguments) == (int64_t)sizeof(kdf_sha224_expected));
+        assert(memcmp(derived_value, kdf_sha224_expected,
+                      sizeof(kdf_sha224_expected)) == 0);
         kdf.spare[0] = 1u;
         assert(kernel_keyring_keyctl(
                    &parent, &access, EDGE_LINUX_KEYCTL_DH_COMPUTE,
