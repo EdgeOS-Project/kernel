@@ -121,6 +121,11 @@ typedef struct kernel_io_uring_fixed_buffer {
     uint64_t address;
     uint64_t length;
     uint64_t tag;
+    uint64_t address_space;
+    uint32_t page_count;
+    uint32_t reserved;
+    kernel_io_uring_page_t pages[
+        KERNEL_IO_URING_MAX_FIXED_BUFFER_PAGES];
 } kernel_io_uring_fixed_buffer_t;
 
 typedef struct kernel_io_uring_provided_buffer {
@@ -445,6 +450,78 @@ static void io_uring_release_pages(kernel_io_uring_page_t *pages,
     }
 }
 
+static void io_uring_fixed_buffer_release(
+        kernel_io_uring_fixed_buffer_t *buffer) {
+    if (!buffer) return;
+    io_uring_release_pages(buffer->pages, buffer->page_count);
+    memset(buffer, 0, sizeof(*buffer));
+}
+
+static int io_uring_fixed_buffer_pin(
+        kernel_io_uring_fixed_buffer_t *destination,
+        uint64_t address_space,
+        const struct edge_linux_iovec *source, uint64_t tag) {
+    uint64_t page_address;
+    uint64_t page_bytes;
+    uint64_t required_pages;
+    uint64_t first_offset;
+    uint32_t page_count;
+    int result;
+
+    if (!destination || !source) return -EDGE_LINUX_EINVAL;
+    memset(destination, 0, sizeof(*destination));
+    destination->address = source->iov_base;
+    destination->length = source->iov_len;
+    destination->tag = tag;
+    destination->address_space = address_space;
+    if (!source->iov_base) return 0;
+    page_address = source->iov_base &
+        ~(uint64_t)(KERNEL_IO_URING_PAGE_SIZE - 1u);
+    first_offset = source->iov_base - page_address;
+    if (source->iov_len > UINT64_MAX - first_offset)
+        return -EDGE_LINUX_EOVERFLOW;
+    page_bytes = first_offset + source->iov_len;
+    required_pages =
+        (page_bytes + KERNEL_IO_URING_PAGE_SIZE - 1u) /
+        KERNEL_IO_URING_PAGE_SIZE;
+    if (required_pages > KERNEL_IO_URING_MAX_FIXED_BUFFER_PAGES)
+        return -EDGE_LINUX_E2BIG;
+    page_count = (uint32_t)required_pages;
+    result = io_uring_pin_user_pages(
+        destination->pages, address_space, page_address, page_count);
+    if (result < 0) {
+        memset(destination, 0, sizeof(*destination));
+        return result;
+    }
+    destination->page_count = page_count;
+    return 0;
+}
+
+static int io_uring_fixed_buffer_retain(
+        kernel_io_uring_fixed_buffer_t *destination,
+        const kernel_io_uring_fixed_buffer_t *source) {
+    uint32_t page;
+
+    if (!destination || !source) return -EDGE_LINUX_EINVAL;
+    memset(destination, 0, sizeof(*destination));
+    destination->address = source->address;
+    destination->length = source->length;
+    destination->tag = source->tag;
+    destination->address_space = source->address_space;
+    for (page = 0; page < source->page_count; ++page) {
+        int result = g_io_uring_allocator.retain(
+            g_io_uring_allocator.context, &source->pages[page]);
+        if (result < 0) {
+            io_uring_release_pages(destination->pages, page);
+            memset(destination, 0, sizeof(*destination));
+            return result;
+        }
+        destination->pages[page] = source->pages[page];
+    }
+    destination->page_count = source->page_count;
+    return 0;
+}
+
 static kernel_fd_operation_lease_t *io_uring_fixed_file_lease(
         kernel_io_uring_page_t *pages, uint32_t index) {
     uint32_t page = index / IO_URING_FIXED_FILES_PER_PAGE;
@@ -477,6 +554,9 @@ static void io_uring_release_storage(kernel_io_uring_t *ring) {
     io_uring_release_fixed_files(
         ring->fixed_file_pages, ring->fixed_file_used,
         ring->fixed_file_count, ring->fixed_file_page_count);
+    for (uint32_t index = 0;
+         index < ring->fixed_buffer_count; ++index)
+        io_uring_fixed_buffer_release(&ring->fixed_buffers[index]);
     for (uint32_t slot = 0;
          slot < KERNEL_IO_URING_MAX_PENDING; ++slot) {
         kernel_io_uring_pending_t *pending = &ring->pending[slot];
@@ -1771,9 +1851,10 @@ static int io_uring_fixed_buffer_validate_registration(
     return 0;
 }
 
-int kernel_io_uring_buffers_register(
-        int32_t ring_id, const struct edge_linux_iovec *buffers,
-        const uint64_t *tags, uint32_t count) {
+static int io_uring_buffers_register(
+        int32_t ring_id, uint64_t address_space,
+        const struct edge_linux_iovec *buffers,
+        const uint64_t *tags, uint32_t count, int pin_user) {
     kernel_io_uring_t *ring;
     uint64_t flags;
     int result = 0;
@@ -1797,17 +1878,46 @@ int kernel_io_uring_buffers_register(
         result = -EDGE_LINUX_EBUSY;
     else {
         for (uint32_t index = 0; index < count; ++index) {
-            ring->fixed_buffers[index].address =
-                buffers[index].iov_base;
-            ring->fixed_buffers[index].length =
-                buffers[index].iov_len;
-            ring->fixed_buffers[index].tag =
-                tags ? tags[index] : 0u;
+            kernel_io_uring_fixed_buffer_t *buffer =
+                &ring->fixed_buffers[index];
+
+            if (pin_user) {
+                result = io_uring_fixed_buffer_pin(
+                    buffer, address_space, &buffers[index],
+                    tags ? tags[index] : 0u);
+                if (result < 0) {
+                    while (index) {
+                        --index;
+                        io_uring_fixed_buffer_release(
+                            &ring->fixed_buffers[index]);
+                    }
+                    break;
+                }
+            } else {
+                buffer->address = buffers[index].iov_base;
+                buffer->length = buffers[index].iov_len;
+                buffer->tag = tags ? tags[index] : 0u;
+            }
         }
-        ring->fixed_buffer_count = count;
+        if (result == 0) ring->fixed_buffer_count = count;
     }
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     return result;
+}
+
+int kernel_io_uring_buffers_register(
+        int32_t ring_id, const struct edge_linux_iovec *buffers,
+        const uint64_t *tags, uint32_t count) {
+    return io_uring_buffers_register(
+        ring_id, 0u, buffers, tags, count, 0);
+}
+
+int kernel_io_uring_buffers_register_user(
+        int32_t ring_id, uint64_t address_space,
+        const struct edge_linux_iovec *buffers,
+        const uint64_t *tags, uint32_t count) {
+    return io_uring_buffers_register(
+        ring_id, address_space, buffers, tags, count, 1);
 }
 
 int kernel_io_uring_buffers_unregister(int32_t ring_id) {
@@ -1830,9 +1940,9 @@ int kernel_io_uring_buffers_unregister(int32_t ring_id) {
                 io_uring_completion_add_locked(
                     ring, ring->fixed_buffers[index].tag, 0, 0) == 0)
                 notify = 1;
+            io_uring_fixed_buffer_release(
+                &ring->fixed_buffers[index]);
         }
-        memset(ring->fixed_buffers, 0,
-               sizeof(ring->fixed_buffers));
         ring->fixed_buffer_count = 0u;
         if (notify)
             event_id = io_uring_event_retain_locked(ring, 0);
@@ -1845,10 +1955,10 @@ int kernel_io_uring_buffers_unregister(int32_t ring_id) {
     return result;
 }
 
-int kernel_io_uring_buffers_update(
-        int32_t ring_id, uint32_t offset,
+static int io_uring_buffers_update(
+        int32_t ring_id, uint64_t address_space, uint32_t offset,
         const struct edge_linux_iovec *buffers,
-        const uint64_t *tags, uint32_t count) {
+        const uint64_t *tags, uint32_t count, int pin_user) {
     kernel_io_uring_t *ring;
     int32_t event_id = -1;
     uint32_t done;
@@ -1876,6 +1986,7 @@ int kernel_io_uring_buffers_update(
     }
     for (done = 0; done < count; ++done) {
         const struct edge_linux_iovec *buffer = &buffers[done];
+        kernel_io_uring_fixed_buffer_t replacement;
         uint64_t tag = tags ? tags[done] : 0u;
         uint32_t index = offset + done;
 
@@ -1885,13 +1996,22 @@ int kernel_io_uring_buffers_update(
             result = -EDGE_LINUX_EINVAL;
             break;
         }
+        memset(&replacement, 0, sizeof(replacement));
+        if (pin_user) {
+            result = io_uring_fixed_buffer_pin(
+                &replacement, address_space, buffer, tag);
+            if (result < 0) break;
+        } else {
+            replacement.address = buffer->iov_base;
+            replacement.length = buffer->iov_len;
+            replacement.tag = tag;
+        }
         if (ring->fixed_buffers[index].tag &&
             io_uring_completion_add_locked(
                 ring, ring->fixed_buffers[index].tag, 0, 0) == 0)
             notify = 1;
-        ring->fixed_buffers[index].address = buffer->iov_base;
-        ring->fixed_buffers[index].length = buffer->iov_len;
-        ring->fixed_buffers[index].tag = tag;
+        io_uring_fixed_buffer_release(&ring->fixed_buffers[index]);
+        ring->fixed_buffers[index] = replacement;
     }
     if (done) result = (int)done;
     else if (result >= 0) result = (int)count;
@@ -1905,6 +2025,22 @@ unlock:
         kernel_eventfd_release(event_id);
     }
     return result;
+}
+
+int kernel_io_uring_buffers_update(
+        int32_t ring_id, uint32_t offset,
+        const struct edge_linux_iovec *buffers,
+        const uint64_t *tags, uint32_t count) {
+    return io_uring_buffers_update(
+        ring_id, 0u, offset, buffers, tags, count, 0);
+}
+
+int kernel_io_uring_buffers_update_user(
+        int32_t ring_id, uint64_t address_space, uint32_t offset,
+        const struct edge_linux_iovec *buffers,
+        const uint64_t *tags, uint32_t count) {
+    return io_uring_buffers_update(
+        ring_id, address_space, offset, buffers, tags, count, 1);
 }
 
 int kernel_io_uring_buffers_clone(
@@ -1963,31 +2099,57 @@ int kernel_io_uring_buffers_clone(
     }
     memset(g_io_uring_clone_buffers, 0,
            sizeof(g_io_uring_clone_buffers));
-    if (destination->fixed_buffer_count)
-        memcpy(g_io_uring_clone_buffers, destination->fixed_buffers,
-               destination->fixed_buffer_count *
-                   sizeof(g_io_uring_clone_buffers[0]));
+    for (uint32_t index = 0;
+         index < destination->fixed_buffer_count; ++index) {
+        result = io_uring_fixed_buffer_retain(
+            &g_io_uring_clone_buffers[index],
+            &destination->fixed_buffers[index]);
+        if (result < 0) goto release_clone_scratch;
+    }
     for (uint32_t index = 0; index < count; ++index) {
         uint32_t destination_index = destination_offset + index;
-        if (g_io_uring_clone_buffers[destination_index].tag &&
-            io_uring_completion_add_locked(
-                destination,
-                g_io_uring_clone_buffers[destination_index].tag,
-                0, 0) == 0)
-            notify = 1;
-        g_io_uring_clone_buffers[destination_index] =
-            source->fixed_buffers[source_offset + index];
+
+        io_uring_fixed_buffer_release(
+            &g_io_uring_clone_buffers[destination_index]);
+        result = io_uring_fixed_buffer_retain(
+            &g_io_uring_clone_buffers[destination_index],
+            &source->fixed_buffers[source_offset + index]);
+        if (result < 0) goto release_clone_scratch;
         g_io_uring_clone_buffers[destination_index].tag = 0u;
     }
+    for (uint32_t index = 0; index < count; ++index) {
+        uint32_t destination_index = destination_offset + index;
+
+        if (destination_index < destination->fixed_buffer_count &&
+            destination->fixed_buffers[destination_index].tag &&
+            io_uring_completion_add_locked(
+                destination,
+                destination->fixed_buffers[destination_index].tag,
+                0, 0) == 0)
+            notify = 1;
+    }
+    for (uint32_t index = 0;
+         index < destination->fixed_buffer_count; ++index)
+        io_uring_fixed_buffer_release(
+            &destination->fixed_buffers[index]);
     memcpy(destination->fixed_buffers, g_io_uring_clone_buffers,
            final_count * sizeof(g_io_uring_clone_buffers[0]));
     if (final_count < KERNEL_IO_URING_MAX_FIXED_BUFFERS)
         memset(&destination->fixed_buffers[final_count], 0,
                (KERNEL_IO_URING_MAX_FIXED_BUFFERS - final_count) *
                    sizeof(g_io_uring_clone_buffers[0]));
+    memset(g_io_uring_clone_buffers, 0,
+           sizeof(g_io_uring_clone_buffers));
     destination->fixed_buffer_count = final_count;
     if (notify)
         event_id = io_uring_event_retain_locked(destination, 0);
+
+    goto unlock_clone;
+
+release_clone_scratch:
+    for (uint32_t index = 0; index < final_count; ++index)
+        io_uring_fixed_buffer_release(
+            &g_io_uring_clone_buffers[index]);
 
 unlock_clone:
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
@@ -2040,6 +2202,153 @@ int kernel_io_uring_fixed_buffer_registered(
         result = -EDGE_LINUX_EFAULT;
     else result = 0;
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int64_t kernel_io_uring_fixed_buffer_transfer(
+        int32_t ring_id, uint32_t index, uint64_t address,
+        uint64_t length, int32_t descriptor, uint64_t offset,
+        kernel_io_operation_t operation, uint32_t flags,
+        void *user_registers) {
+    kernel_io_uring_page_t pages[
+        KERNEL_IO_URING_MAX_FIXED_BUFFER_PAGES] = {{0}};
+    kernel_io_file_range_info_t information;
+    kernel_io_uring_fixed_buffer_t *buffer;
+    kernel_io_uring_t *ring;
+    uint64_t buffer_offset;
+    uint64_t current_offset;
+    uint64_t transferred = 0u;
+    uint64_t lock_flags;
+    uint32_t first_page_offset;
+    uint32_t page_count = 0u;
+    int positional;
+    int writing;
+    int64_t result;
+
+    if (address > UINT64_MAX - length)
+        return -EDGE_LINUX_EFAULT;
+    positional = operation == KERNEL_IO_READ_POSITIONAL ||
+                 operation == KERNEL_IO_WRITE_POSITIONAL;
+    writing = operation == KERNEL_IO_WRITE_CURRENT ||
+              operation == KERNEL_IO_WRITE_POSITIONAL;
+    if ((!writing && operation != KERNEL_IO_READ_CURRENT &&
+         operation != KERNEL_IO_READ_POSITIONAL) ||
+        flags)
+        return KERNEL_IO_VECTOR_SCALAR_FALLBACK;
+
+    lock_flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+        goto unlock_snapshot;
+    }
+    if (index >= ring->fixed_buffer_count) {
+        result = -EDGE_LINUX_EFAULT;
+        goto unlock_snapshot;
+    }
+    buffer = &ring->fixed_buffers[index];
+    if (!buffer->address || address < buffer->address ||
+        length > buffer->length ||
+        address - buffer->address > buffer->length - length) {
+        result = -EDGE_LINUX_EFAULT;
+        goto unlock_snapshot;
+    }
+    if (!buffer->page_count) {
+        result = KERNEL_IO_VECTOR_SCALAR_FALLBACK;
+        goto unlock_snapshot;
+    }
+    for (page_count = 0;
+         page_count < buffer->page_count; ++page_count) {
+        result = g_io_uring_allocator.retain(
+            g_io_uring_allocator.context,
+            &buffer->pages[page_count]);
+        if (result < 0) {
+            io_uring_release_pages(pages, page_count);
+            page_count = 0u;
+            goto unlock_snapshot;
+        }
+        pages[page_count] = buffer->pages[page_count];
+    }
+    buffer_offset = address - buffer->address;
+    first_page_offset = (uint32_t)(buffer->address &
+        (KERNEL_IO_URING_PAGE_SIZE - 1u));
+    result = 0;
+
+unlock_snapshot:
+    spin_unlock_irqrestore(&g_io_uring_lock, lock_flags);
+    if (result < 0)
+        return result;
+
+    result = kernel_io_file_range_query(descriptor, &information);
+    if (result < 0) goto release_snapshot;
+    if (information.kind != KERNEL_IO_FILE_REGULAR &&
+        information.kind != KERNEL_IO_FILE_PIPE) {
+        result = KERNEL_IO_VECTOR_SCALAR_FALLBACK;
+        goto release_snapshot;
+    }
+    if (information.kind == KERNEL_IO_FILE_PIPE && positional) {
+        result = -EDGE_LINUX_ESPIPE;
+        goto release_snapshot;
+    }
+    if ((writing && !information.writable) ||
+        (!writing && !information.readable)) {
+        result = -EDGE_LINUX_EBADF;
+        goto release_snapshot;
+    }
+    if (writing && information.append) {
+        result = KERNEL_IO_VECTOR_SCALAR_FALLBACK;
+        goto release_snapshot;
+    }
+    current_offset = positional ? offset : information.offset;
+    while (transferred < length) {
+        uint64_t absolute = first_page_offset +
+            buffer_offset + transferred;
+        uint32_t page = (uint32_t)(
+            absolute / KERNEL_IO_URING_PAGE_SIZE);
+        uint32_t within = (uint32_t)(
+            absolute % KERNEL_IO_URING_PAGE_SIZE);
+        uint32_t chunk = KERNEL_IO_URING_PAGE_SIZE - within;
+        int64_t completed;
+
+        if (page >= page_count || !pages[page].address) {
+            result = transferred ? (int)transferred :
+                -EDGE_LINUX_EFAULT;
+            goto complete_transfer;
+        }
+        if ((uint64_t)chunk > length - transferred)
+            chunk = (uint32_t)(length - transferred);
+        if (information.kind == KERNEL_IO_FILE_PIPE && writing)
+            completed = kernel_io_kernel_write_current(
+                descriptor, (uint8_t *)pages[page].address + within,
+                chunk, user_registers);
+        else if (writing)
+            completed = kernel_io_file_range_write(
+                descriptor, current_offset,
+                (uint8_t *)pages[page].address + within, chunk);
+        else
+            completed = kernel_io_file_range_read(
+                descriptor, current_offset,
+                (uint8_t *)pages[page].address + within, chunk);
+        if (completed < 0) {
+            result = transferred ? (int)transferred : (int)completed;
+            goto complete_transfer;
+        }
+        transferred += (uint64_t)completed;
+        current_offset += (uint64_t)completed;
+        if ((uint32_t)completed != chunk) break;
+    }
+    result = (int)transferred;
+
+complete_transfer:
+    if (!positional && information.kind == KERNEL_IO_FILE_REGULAR &&
+        transferred)
+        (void)kernel_io_file_range_commit_offset(
+            descriptor, information.offset + transferred);
+    if (writing && transferred)
+        kernel_io_file_range_complete_write(descriptor);
+
+release_snapshot:
+    io_uring_release_pages(pages, page_count);
     return result;
 }
 

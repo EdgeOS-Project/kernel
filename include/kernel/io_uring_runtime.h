@@ -8,6 +8,7 @@
 
 #include "kernel/fd_runtime.h"
 #include "kernel/futex_runtime.h"
+#include "kernel/io_runtime.h"
 #include "kernel/linux_abi.h"
 #include "kernel/process_runtime.h"
 
@@ -21,6 +22,7 @@
 #define KERNEL_IO_URING_MAX_PENDING 128u
 #define KERNEL_IO_URING_MAX_FIXED_FILES 256u
 #define KERNEL_IO_URING_MAX_FIXED_BUFFERS 256u
+#define KERNEL_IO_URING_MAX_FIXED_BUFFER_PAGES 64u
 #define KERNEL_IO_URING_MAX_PROVIDED_BUFFERS 256u
 #define KERNEL_IO_URING_MAX_BUFFER_GROUPS 256u
 #define KERNEL_IO_URING_MAX_PBUF_PAGES 256u
@@ -201,9 +203,17 @@ int kernel_io_uring_files_update_tagged(
 int kernel_io_uring_buffers_register(
     int32_t ring_id, const struct edge_linux_iovec *buffers,
     const uint64_t *tags, uint32_t count);
+int kernel_io_uring_buffers_register_user(
+    int32_t ring_id, uint64_t address_space,
+    const struct edge_linux_iovec *buffers,
+    const uint64_t *tags, uint32_t count);
 int kernel_io_uring_buffers_unregister(int32_t ring_id);
 int kernel_io_uring_buffers_update(
     int32_t ring_id, uint32_t offset,
+    const struct edge_linux_iovec *buffers,
+    const uint64_t *tags, uint32_t count);
+int kernel_io_uring_buffers_update_user(
+    int32_t ring_id, uint64_t address_space, uint32_t offset,
     const struct edge_linux_iovec *buffers,
     const uint64_t *tags, uint32_t count);
 int kernel_io_uring_buffers_clone(
@@ -215,6 +225,11 @@ int kernel_io_uring_fixed_buffer_validate(
     uint64_t address, uint64_t length);
 int kernel_io_uring_fixed_buffer_registered(
     int32_t ring_id, uint32_t index);
+int64_t kernel_io_uring_fixed_buffer_transfer(
+    int32_t ring_id, uint32_t index, uint64_t address,
+    uint64_t length, int32_t descriptor, uint64_t offset,
+    kernel_io_operation_t operation, uint32_t flags,
+    void *user_registers);
 int kernel_io_uring_provided_buffers_add(
     int32_t ring_id, uint16_t group_id, uint16_t first_buffer_id,
     uint64_t address, uint32_t length, uint32_t count);

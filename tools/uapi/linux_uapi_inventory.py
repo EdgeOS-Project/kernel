@@ -139,8 +139,9 @@ EDGEOS_ASSESSMENTS = [
             "fixed-file installation with Linux close-on-exec policy",
             "FILES2 sparse registration, UPDATE2 layouts and resource tag completion events",
             "bounded fixed-buffer registration, sparse entries, updates, tags and range validation",
-            "READ_FIXED and WRITE_FIXED through shared synchronous descriptor I/O",
-            "READV_FIXED and WRITEV_FIXED with registered-buffer range validation",
+            "bounded fixed-buffer user-page pinning with retained lifetime across unmap",
+            "READ_FIXED and WRITE_FIXED through pinned pages for regular files and pipes",
+            "READV_FIXED and WRITEV_FIXED with pinned registered-buffer ranges for regular files and pipes",
             "bounded legacy provided-buffer groups with FIFO selection for READ, READV and RECV",
             "PROVIDE_BUFFERS and REMOVE_BUFFERS with Linux buffer IDs and CQE flags",
             "user-provided buffer-ring registration, status, unregistration and 16-bit head wrap",
@@ -179,7 +180,7 @@ EDGEOS_ASSESSMENTS = [
         ],
         "missing": [
             "asynchronous worker execution",
-            "fixed buffers with user-page pinning",
+            "large fixed-buffer pin lists and pinned transfer for remaining descriptor families",
             "SQPOLL wait control",
             "notification-pipe semantics",
             "application-provided ring memory",
@@ -192,6 +193,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/io_uring_abi_probe.c",
             "tools/tests/io_uring_extended_entries_abi_probe.c",
             "tools/tests/io_uring_fixed_files_abi_probe.c",
+            "tools/tests/io_uring_fixed_buffer_pin_abi_probe.c",
             "tools/tests/io_uring_provided_buffers_abi_probe.c",
             "tools/tests/io_uring_pbuf_ring_abi_probe.c",
             "tools/tests/io_uring_registered_rings_abi_probe.c",
@@ -245,6 +247,8 @@ EDGEOS_ASSESSMENTS = [
                 "source-table removal, plus legacy and extended fixed-buffer "
                 "registration, tagged updates, range errors and real pipe data "
                 "through READ_FIXED and WRITE_FIXED, plus frozen-source "
+                "fixed-buffer page pinning and READ_FIXED or WRITE_FIXED "
+                "lifetime after the original mapping is removed, plus "
                 "READV_FIXED and WRITEV_FIXED layouts with EdgeOS runtime data, "
                 "plus legacy provided-buffer add, remove, empty-group, READ and "
                 "single-iovec READV selection behavior with returned buffer IDs, "

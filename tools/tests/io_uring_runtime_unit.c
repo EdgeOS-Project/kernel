@@ -40,6 +40,9 @@ static uint32_t g_waitid_copy_count;
 static uint8_t g_multishot_read_data[64];
 static uint32_t g_multishot_read_length;
 static int32_t g_multishot_read_result;
+static uint8_t g_file_data[8192];
+static uint64_t g_file_offset;
+static uint32_t g_file_write_completions;
 
 uint64_t arch_mm_current_address_space(void) {
     return 0xabc000u;
@@ -226,6 +229,69 @@ int kernel_io_descriptor_ready(int32_t descriptor,
     return descriptor == g_ready_descriptor;
 }
 
+int kernel_io_file_range_query(
+        int32_t descriptor, kernel_io_file_range_info_t *information) {
+    if (!information) return -EDGE_LINUX_EINVAL;
+    memset(information, 0, sizeof(*information));
+    if (descriptor == 70) {
+        information->kind = KERNEL_IO_FILE_REGULAR;
+        information->readable = 1u;
+        information->writable = 1u;
+        information->offset = g_file_offset;
+        return 0;
+    }
+    if (descriptor == 71) {
+        information->kind = KERNEL_IO_FILE_PIPE;
+        information->writable = 1u;
+        return 0;
+    }
+    return -EDGE_LINUX_EBADF;
+}
+
+int64_t kernel_io_file_range_read(
+        int32_t descriptor, uint64_t offset,
+        void *buffer, uint32_t length) {
+    if (descriptor != 70 || !buffer) return -EDGE_LINUX_EBADF;
+    if (offset >= sizeof(g_file_data)) return 0;
+    if (length > sizeof(g_file_data) - offset)
+        length = (uint32_t)(sizeof(g_file_data) - offset);
+    memcpy(buffer, &g_file_data[offset], length);
+    return length;
+}
+
+int64_t kernel_io_file_range_write(
+        int32_t descriptor, uint64_t offset,
+        const void *buffer, uint32_t length) {
+    if (descriptor != 70 || !buffer) return -EDGE_LINUX_EBADF;
+    if (offset >= sizeof(g_file_data)) return -EDGE_LINUX_ENOSPC;
+    if (length > sizeof(g_file_data) - offset)
+        length = (uint32_t)(sizeof(g_file_data) - offset);
+    memcpy(&g_file_data[offset], buffer, length);
+    return length;
+}
+
+int kernel_io_file_range_commit_offset(
+        int32_t descriptor, uint64_t offset) {
+    if (descriptor != 70) return -EDGE_LINUX_EBADF;
+    g_file_offset = offset;
+    return 0;
+}
+
+void kernel_io_file_range_complete_write(int32_t descriptor) {
+    assert(descriptor == 70 || descriptor == 71);
+    ++g_file_write_completions;
+}
+
+int64_t kernel_io_kernel_write_current(
+        int32_t descriptor, const void *buffer,
+        uint32_t length, void *user_registers) {
+    (void)user_registers;
+    if (descriptor != 71 || !buffer) return -EDGE_LINUX_EBADF;
+    if (length > sizeof(g_file_data)) length = sizeof(g_file_data);
+    memcpy(g_file_data, buffer, length);
+    return length;
+}
+
 int kernel_fd_operation_ready(
         kernel_fd_operation_lease_t *lease, uint32_t operation) {
     const int32_t descriptor = *(int32_t *)(void *)lease - 1;
@@ -345,8 +411,7 @@ static int test_page_pin_user(
         (user_address - base) / KERNEL_IO_URING_PAGE_SIZE);
     if (ordinal >= 2u) return -EDGE_LINUX_EFAULT;
     index = TEST_PAGE_COUNT - 2u + ordinal;
-    if (g_references[index]) return -EDGE_LINUX_EBUSY;
-    g_references[index] = 1u;
+    ++g_references[index];
     page->address = g_pages[index];
     page->cookie = index;
     return 0;
@@ -1900,6 +1965,99 @@ int main(void) {
         assert(kernel_io_uring_buffers_unregister(second_ring_id) ==
                -EDGE_LINUX_ENXIO);
         test_page_release(0, &buffer_cq);
+        kernel_io_uring_release(second_ring_id);
+    }
+    {
+        const uint32_t first_page = TEST_PAGE_COUNT - 2u;
+        const struct edge_linux_iovec pinned_buffer = {
+            .iov_base = 0x700080u,
+            .iov_len = 0x1800u,
+        };
+        const struct edge_linux_iovec second_page = {
+            .iov_base = 0x701100u,
+            .iov_len = 0x200u,
+        };
+        const struct edge_linux_iovec too_large = {
+            .iov_base = 0x700000u,
+            .iov_len = 3u * KERNEL_IO_URING_PAGE_SIZE,
+        };
+        struct edge_linux_io_uring_params pinned_parameters = {0};
+        struct edge_linux_io_uring_params clone_parameters = {0};
+        int32_t clone_ring_id;
+        const char output[] = "fixed-buffer-write";
+        const char input[] = "fixed-buffer-read";
+        const uint64_t output_address = 0x700080u;
+        const uint64_t input_address = 0x700180u;
+
+        assert(g_references[first_page] == 0u);
+        assert(g_references[first_page + 1u] == 0u);
+        assert(kernel_io_uring_create(
+                   4u, &pinned_parameters, &second_ring_id) == 0);
+        assert(kernel_io_uring_buffers_register_user(
+                   second_ring_id, 0xabc000u,
+                   &too_large, 0, 1u) == -EDGE_LINUX_EFAULT);
+        assert(g_references[first_page] == 0u);
+        assert(g_references[first_page + 1u] == 0u);
+        assert(kernel_io_uring_buffers_register_user(
+                   second_ring_id, 0xabc000u,
+                   &pinned_buffer, 0, 1u) == 0);
+        assert(g_references[first_page] == 1u);
+        assert(g_references[first_page + 1u] == 1u);
+
+        memcpy(&g_pages[first_page][0x80u], output, sizeof(output));
+        memset(g_file_data, 0, sizeof(g_file_data));
+        g_file_offset = 0u;
+        g_file_write_completions = 0u;
+        assert(kernel_io_uring_fixed_buffer_transfer(
+                   second_ring_id, 0u, output_address,
+                   sizeof(output), 70, 0u,
+                   KERNEL_IO_WRITE_CURRENT, 0u, 0) ==
+               (int64_t)sizeof(output));
+        assert(memcmp(g_file_data, output, sizeof(output)) == 0);
+        assert(g_file_offset == sizeof(output));
+        assert(g_file_write_completions == 1u);
+
+        memcpy(&g_file_data[64], input, sizeof(input));
+        assert(kernel_io_uring_fixed_buffer_transfer(
+                   second_ring_id, 0u, input_address,
+                   sizeof(input), 70, 64u,
+                   KERNEL_IO_READ_POSITIONAL, 0u, 0) ==
+               (int64_t)sizeof(input));
+        assert(memcmp(
+                   &g_pages[first_page][0x180u],
+                   input, sizeof(input)) == 0);
+
+        assert(kernel_io_uring_create(
+                   4u, &clone_parameters, &clone_ring_id) == 0);
+        assert(kernel_io_uring_buffers_clone(
+                   clone_ring_id, second_ring_id,
+                   0u, 0u, 1u, 0) == 0);
+        assert(g_references[first_page] == 2u);
+        assert(g_references[first_page + 1u] == 2u);
+        assert(kernel_io_uring_buffers_unregister(second_ring_id) == 0);
+        assert(g_references[first_page] == 1u);
+        assert(g_references[first_page + 1u] == 1u);
+        assert(kernel_io_uring_fixed_buffer_transfer(
+                   clone_ring_id, 0u, output_address,
+                   sizeof(output), 70, 128u,
+                   KERNEL_IO_WRITE_POSITIONAL, 0u, 0) ==
+               (int64_t)sizeof(output));
+        assert(memcmp(&g_file_data[128], output, sizeof(output)) == 0);
+        assert(kernel_io_uring_buffers_unregister(clone_ring_id) == 0);
+        assert(g_references[first_page] == 0u);
+        assert(g_references[first_page + 1u] == 0u);
+        kernel_io_uring_release(clone_ring_id);
+
+        assert(kernel_io_uring_buffers_register_user(
+                   second_ring_id, 0xabc000u,
+                   &pinned_buffer, 0, 1u) == 0);
+        assert(kernel_io_uring_buffers_update_user(
+                   second_ring_id, 0xabc000u, 0u,
+                   &second_page, 0, 1u) == 1);
+        assert(g_references[first_page] == 0u);
+        assert(g_references[first_page + 1u] == 1u);
+        assert(kernel_io_uring_buffers_unregister(second_ring_id) == 0);
+        assert(g_references[first_page + 1u] == 0u);
         kernel_io_uring_release(second_ring_id);
     }
     {

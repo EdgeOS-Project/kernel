@@ -9555,7 +9555,9 @@ static int32_t edge_linux_io_uring_epoll_wait(
 
 static int64_t edge_linux_io_uring_execute_rw(
         edge_linux_syscall_context_t *context,
-        const struct edge_linux_io_uring_sqe *submission, int vector) {
+        int32_t ring_id,
+        const struct edge_linux_io_uring_sqe *submission,
+        int vector, int fixed) {
     kernel_io_vector_scratch_t scratch;
     kernel_io_operation_t operation;
     uint64_t current_offset;
@@ -9579,11 +9581,22 @@ static int64_t edge_linux_io_uring_execute_rw(
         (positional ? KERNEL_IO_WRITE_POSITIONAL : KERNEL_IO_WRITE_CURRENT) :
         (positional ? KERNEL_IO_READ_POSITIONAL : KERNEL_IO_READ_CURRENT);
     current_offset = positional ? submission->offset : 0;
-    if (!vector)
+    if (!vector) {
+        int64_t completed = fixed ?
+            kernel_io_uring_fixed_buffer_transfer(
+                ring_id, submission->buffer_index,
+                submission->address, submission->length,
+                submission->descriptor, current_offset, operation,
+                runtime_flags, context->user_registers) :
+            KERNEL_IO_VECTOR_SCALAR_FALLBACK;
+
+        if (completed != KERNEL_IO_VECTOR_SCALAR_FALLBACK)
+            return completed;
         return kernel_io_user_transfer(
             submission->descriptor, submission->address,
             submission->length, current_offset, operation,
             runtime_flags, context->user_registers);
+    }
 
     vector_count = submission->length;
     if (vector_count > EDGE_LINUX_IOV_MAX) return -EDGE_LINUX_EINVAL;
@@ -9602,10 +9615,19 @@ static int64_t edge_linux_io_uring_execute_rw(
         if (length > EDGE_LINUX_MAX_RW_COUNT - transferred)
             length = EDGE_LINUX_MAX_RW_COUNT - transferred;
         if (!length) continue;
-        completed = kernel_io_user_transfer(
-            submission->descriptor, scratch.vectors[index].iov_base,
-            length, current_offset, operation, runtime_flags,
-            context->user_registers);
+        completed = fixed ?
+            kernel_io_uring_fixed_buffer_transfer(
+                ring_id, submission->buffer_index,
+                scratch.vectors[index].iov_base, length,
+                submission->descriptor, current_offset, operation,
+                runtime_flags, context->user_registers) :
+            KERNEL_IO_VECTOR_SCALAR_FALLBACK;
+        if (completed == KERNEL_IO_VECTOR_SCALAR_FALLBACK)
+            completed = kernel_io_user_transfer(
+                submission->descriptor,
+                scratch.vectors[index].iov_base,
+                length, current_offset, operation, runtime_flags,
+                context->user_registers);
         if (completed < 0) return transferred ?
             (int64_t)transferred : completed;
         transferred += (uint64_t)completed;
@@ -10291,7 +10313,7 @@ static int32_t edge_linux_io_uring_execute_descriptor(
             result = -EDGE_LINUX_EINVAL;
         else
             result = edge_linux_io_uring_execute_rw(
-                context, submission, 0);
+                context, ring_id, submission, 0, 0);
         break;
     case EDGE_LINUX_IORING_OP_READ_FIXED:
     case EDGE_LINUX_IORING_OP_WRITE_FIXED:
@@ -10305,7 +10327,7 @@ static int32_t edge_linux_io_uring_execute_descriptor(
                 submission->address, submission->length);
             if (result == 0)
                 result = edge_linux_io_uring_execute_rw(
-                    context, submission, 0);
+                    context, ring_id, submission, 0, 1);
         }
         break;
     case EDGE_LINUX_IORING_OP_READV:
@@ -10314,7 +10336,7 @@ static int32_t edge_linux_io_uring_execute_descriptor(
             result = -EDGE_LINUX_EINVAL;
         else
             result = edge_linux_io_uring_execute_rw(
-                context, submission, 1);
+                context, ring_id, submission, 1, 0);
         break;
     case EDGE_LINUX_IORING_OP_READV_FIXED:
     case EDGE_LINUX_IORING_OP_WRITEV_FIXED:
@@ -10325,7 +10347,7 @@ static int32_t edge_linux_io_uring_execute_descriptor(
                 context, ring_id, submission);
             if (result == 0)
                 result = edge_linux_io_uring_execute_rw(
-                    context, submission, 1);
+                    context, ring_id, submission, 1, 1);
         }
         break;
     case EDGE_LINUX_IORING_OP_FSYNC:
@@ -11694,8 +11716,9 @@ static int edge_linux_io_uring_buffers_register_user(
                 return -EDGE_LINUX_EFAULT;
         }
     }
-    return kernel_io_uring_buffers_register(
-        ring_id, buffers, user_tags ? tags : 0, count);
+    return kernel_io_uring_buffers_register_user(
+        ring_id, arch_mm_current_address_space(), buffers,
+        user_tags ? tags : 0, count);
 }
 
 static int64_t edge_linux_io_uring_buffers_update_user(
@@ -11732,8 +11755,9 @@ static int64_t edge_linux_io_uring_buffers_update_user(
                 break;
             }
         }
-        result = kernel_io_uring_buffers_update(
-            ring_id, offset + processed, &buffer,
+        result = kernel_io_uring_buffers_update_user(
+            ring_id, arch_mm_current_address_space(),
+            offset + processed, &buffer,
             user_tags ? &tag : 0, 1u);
         if (result < 0) break;
     }
