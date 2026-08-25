@@ -2562,6 +2562,62 @@ static void test_socket_local_storage(void) {
     assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
 }
 
+static void test_inode_local_storage(void) {
+    uint8_t btf_blob[25] = {
+        0x9f, 0xeb, 1u, 0u,
+        24u, 0u, 0u, 0u,
+    };
+    kernel_bpf_map_create_request_t request = {
+        .type = KERNEL_BPF_MAP_TYPE_INODE_STORAGE,
+        .key_size = sizeof(int32_t),
+        .value_size = sizeof(uint32_t),
+        .flags = KERNEL_BPF_MAP_NO_PREALLOC,
+        .btf_key_type_id = 1u,
+        .btf_value_type_id = 1u,
+        .btf_present = 1u,
+    };
+    uint64_t filesystem_identity = 0xabcdef00ull;
+    uint32_t inode_number = 42u;
+    uint32_t inode_generation = 7u;
+    uint32_t value = 0x31415926u;
+    uint32_t output = 0u;
+    uint32_t next_key = 0u;
+    int btf;
+    int map;
+
+    btf_blob[16] = 0u;
+    btf_blob[20] = 1u;
+    btf = kernel_bpf_btf_create(btf_blob, sizeof(btf_blob));
+    assert(btf >= 0);
+    request.btf_object_id = btf;
+    map = kernel_bpf_map_create(&request);
+    assert(map >= 0);
+    assert(kernel_bpf_inode_storage_lookup(
+               map, filesystem_identity, inode_number,
+               inode_generation, &output, 0u) == -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_inode_storage_update(
+               map, filesystem_identity, inode_number,
+               inode_generation, &value, KERNEL_BPF_NOEXIST) == 0);
+    assert(kernel_bpf_inode_storage_lookup(
+               map, filesystem_identity, inode_number,
+               inode_generation, &output, 0u) == 0);
+    assert(output == value);
+    assert(kernel_bpf_inode_storage_lookup(
+               map, filesystem_identity, inode_number,
+               inode_generation + 1u, &output, 0u) ==
+           -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_map_next_key(map, 0, &next_key) ==
+           -EDGE_LINUX_ENOTSUPP);
+    assert(kernel_bpf_inode_storage_delete(
+               map, filesystem_identity, inode_number,
+               inode_generation) == 0);
+    assert(kernel_bpf_inode_storage_delete(
+               map, filesystem_identity, inode_number,
+               inode_generation) == -EDGE_LINUX_ENOENT);
+    kernel_bpf_object_release(btf);
+    kernel_bpf_object_release(map);
+}
+
 int main(void) {
     test_array_map();
     test_cgroup_array();
@@ -2595,6 +2651,7 @@ int main(void) {
     test_reuseport_socket_array();
     test_cgroup_local_storage();
     test_socket_local_storage();
+    test_inode_local_storage();
     puts("bpf_runtime_unit: PASS");
     return 0;
 }

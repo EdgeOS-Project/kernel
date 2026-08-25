@@ -5659,6 +5659,35 @@ static int edge_linux_bpf_sk_storage_element(
     return status;
 }
 
+static int edge_linux_bpf_inode_storage_element(
+        uint32_t command, int object_id, const void *key,
+        void *value, uint64_t flags) {
+    kernel_vfs_descriptor_t target;
+    uint64_t filesystem_identity;
+    int32_t descriptor;
+    int status;
+
+    if (!key) return -EDGE_LINUX_EFAULT;
+    memcpy(&descriptor, key, sizeof(descriptor));
+    status = kernel_vfs_describe_descriptor(descriptor, &target);
+    if (status < 0) return status;
+    if (!target.superblock || !target.inode)
+        return -EDGE_LINUX_EBADF;
+    filesystem_identity = (uint64_t)(uintptr_t)
+        vfs_superblock_identity(target.superblock);
+    if (command == EDGE_LINUX_BPF_MAP_LOOKUP_ELEM)
+        return kernel_bpf_inode_storage_lookup(
+            object_id, filesystem_identity, target.inode->ino,
+            target.inode->generation, value, flags);
+    if (command == EDGE_LINUX_BPF_MAP_UPDATE_ELEM)
+        return kernel_bpf_inode_storage_update(
+            object_id, filesystem_identity, target.inode->ino,
+            target.inode->generation, value, flags);
+    return kernel_bpf_inode_storage_delete(
+        object_id, filesystem_identity, target.inode->ino,
+        target.inode->generation);
+}
+
 static int64_t edge_linux_bpf_map_element(
     edge_linux_syscall_context_t *context, uint32_t command,
     uint64_t user_attribute, uint32_t attribute_size) {
@@ -5748,6 +5777,9 @@ static int64_t edge_linux_bpf_map_element(
         } else if (info.type == KERNEL_BPF_MAP_TYPE_SK_STORAGE) {
             status = edge_linux_bpf_sk_storage_element(
                 command, object_id, key, value, attribute.flags);
+        } else if (info.type == KERNEL_BPF_MAP_TYPE_INODE_STORAGE) {
+            status = edge_linux_bpf_inode_storage_element(
+                command, object_id, key, value, attribute.flags);
         } else {
             status = kernel_bpf_map_lookup_flags(
                 object_id, key, value, attribute.flags);
@@ -5813,6 +5845,9 @@ static int64_t edge_linux_bpf_map_element(
             }
         } else if (info.type == KERNEL_BPF_MAP_TYPE_SK_STORAGE) {
             status = edge_linux_bpf_sk_storage_element(
+                command, object_id, key, value, attribute.flags);
+        } else if (info.type == KERNEL_BPF_MAP_TYPE_INODE_STORAGE) {
+            status = edge_linux_bpf_inode_storage_element(
                 command, object_id, key, value, attribute.flags);
         } else if (info.type == KERNEL_BPF_MAP_TYPE_REUSEPORT_SOCKARRAY) {
             uint64_t socket_value = 0u;
@@ -5923,6 +5958,9 @@ static int64_t edge_linux_bpf_map_element(
         } else if (info.type == KERNEL_BPF_MAP_TYPE_SK_STORAGE) {
             status = edge_linux_bpf_sk_storage_element(
                 command, object_id, key, 0, 0u);
+        } else if (info.type == KERNEL_BPF_MAP_TYPE_INODE_STORAGE) {
+            status = edge_linux_bpf_inode_storage_element(
+                command, object_id, key, 0, 0u);
         } else {
             status = kernel_bpf_map_delete(object_id, key);
         }
@@ -5941,7 +5979,8 @@ static int64_t edge_linux_bpf_map_element(
             goto out;
         }
         status = info.type == KERNEL_BPF_MAP_TYPE_CGRP_STORAGE ||
-                 info.type == KERNEL_BPF_MAP_TYPE_SK_STORAGE ?
+                 info.type == KERNEL_BPF_MAP_TYPE_SK_STORAGE ||
+                 info.type == KERNEL_BPF_MAP_TYPE_INODE_STORAGE ?
             -EDGE_LINUX_ENOTSUPP : kernel_bpf_map_next_key(
                 object_id, attribute.key ? key : 0, value);
         if (status == 0 && edge_linux_copy_to_user(
@@ -6031,6 +6070,7 @@ static int64_t edge_linux_bpf_map_batch(
         info.type == KERNEL_BPF_MAP_TYPE_SOCKHASH ||
         info.type == KERNEL_BPF_MAP_TYPE_REUSEPORT_SOCKARRAY ||
         info.type == KERNEL_BPF_MAP_TYPE_SK_STORAGE ||
+        info.type == KERNEL_BPF_MAP_TYPE_INODE_STORAGE ||
         info.type == KERNEL_BPF_MAP_TYPE_CGRP_STORAGE ||
         info.type == KERNEL_BPF_MAP_TYPE_INSN_ARRAY)
         return -EDGE_LINUX_ENOTSUPP;
