@@ -4957,19 +4957,46 @@ static void robust_futex_cleanup_task(task_t *t) {
     uint32_t current_modifier;
     uint32_t pending_modifier;
     int64_t futex_offset = 0;
+    int compat;
 
     if (!t) return;
     waiter_remove_pid(t->pid);
     if (!t->linux_thread.robust_list_head) return;
     if (!robust_futex_can_access_task_user(t)) return;
-    if (t->linux_thread.robust_list_length &&
+    compat = t->linux_thread.robust_list_length ==
+             EDGE_LINUX_COMPAT_ROBUST_LIST_HEAD_SIZE;
+    if (t->linux_thread.robust_list_length && !compat &&
         t->linux_thread.robust_list_length != LINUX_ROBUST_LIST_HEAD_SIZE)
         return;
     head_u = t->linux_thread.robust_list_head;
-    if (!user_range_ok(head_u, LINUX_ROBUST_LIST_HEAD_SIZE)) return;
-    if (copy_from_user(&next_u, head_u, sizeof(next_u)) < 0) return;
-    if (copy_from_user(&futex_offset, head_u + 8, sizeof(futex_offset)) < 0) return;
-    if (copy_from_user(&pending_u, head_u + 16, sizeof(pending_u)) < 0) return;
+    if (compat) {
+        uint32_t compat_next;
+        int32_t compat_offset;
+        uint32_t compat_pending;
+
+        if (!user_range_ok(
+                head_u, EDGE_LINUX_COMPAT_ROBUST_LIST_HEAD_SIZE))
+            return;
+        if (copy_from_user(&compat_next, head_u,
+                           sizeof(compat_next)) < 0 ||
+            copy_from_user(&compat_offset, head_u + 4,
+                           sizeof(compat_offset)) < 0 ||
+            copy_from_user(&compat_pending, head_u + 8,
+                           sizeof(compat_pending)) < 0)
+            return;
+        next_u = compat_next;
+        futex_offset = compat_offset;
+        pending_u = compat_pending;
+    } else {
+        if (!user_range_ok(head_u, LINUX_ROBUST_LIST_HEAD_SIZE)) return;
+        if (copy_from_user(&next_u, head_u, sizeof(next_u)) < 0) return;
+        if (copy_from_user(&futex_offset, head_u + 8,
+                           sizeof(futex_offset)) < 0)
+            return;
+        if (copy_from_user(&pending_u, head_u + 16,
+                           sizeof(pending_u)) < 0)
+            return;
+    }
 
     current_modifier = (uint32_t)(next_u & LINUX_FUTEX_ROBUST_MOD_MASK);
     next_u &= ~(uint64_t)LINUX_FUTEX_ROBUST_MOD_MASK;
@@ -4980,10 +5007,20 @@ static void robust_futex_cleanup_task(task_t *t) {
     for (uint32_t i = 0; i < LINUX_ROBUST_LIST_LIMIT && next_u && next_u != head_u; ++i) {
         uint64_t entry_u = next_u;
         uint64_t encoded_next;
-        if (!user_range_ok(entry_u, sizeof(next_u))) break;
-        if (copy_from_user(&encoded_next, entry_u,
-                           sizeof(encoded_next)) < 0)
-            break;
+        if (compat) {
+            uint32_t compat_encoded_next;
+
+            if (!user_range_ok(entry_u, sizeof(compat_encoded_next))) break;
+            if (copy_from_user(&compat_encoded_next, entry_u,
+                               sizeof(compat_encoded_next)) < 0)
+                break;
+            encoded_next = compat_encoded_next;
+        } else {
+            if (!user_range_ok(entry_u, sizeof(next_u))) break;
+            if (copy_from_user(&encoded_next, entry_u,
+                               sizeof(encoded_next)) < 0)
+                break;
+        }
         if (entry_u != pending_entry)
             robust_futex_mark_owner_died(
                 t, entry_u, futex_offset,

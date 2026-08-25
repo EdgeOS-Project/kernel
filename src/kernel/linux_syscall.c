@@ -1828,7 +1828,11 @@ static int64_t edge_linux_sys_robust_list(
     int32_t pid;
 
     if (context->id == EDGE_LINUX_SYS_set_robust_list) {
-        if (context->arguments[1] != EDGE_LINUX_ROBUST_LIST_HEAD_SIZE)
+        uint64_t expected_length =
+            context->architecture == EDGE_LINUX_ARCH_X32 ?
+                EDGE_LINUX_COMPAT_ROBUST_LIST_HEAD_SIZE :
+                EDGE_LINUX_ROBUST_LIST_HEAD_SIZE;
+        if (context->arguments[1] != expected_length)
             return -EDGE_LINUX_EINVAL;
         return kernel_current_robust_list_set(
             context->arguments[0], context->arguments[1]) < 0 ?
@@ -1852,11 +1856,26 @@ static int64_t edge_linux_sys_robust_list(
         return -EDGE_LINUX_EPERM;
     if (kernel_process_robust_list_get(pid, &head, &length) < 0)
         return -EDGE_LINUX_ESRCH;
-    if (edge_linux_copy_to_user(context, context->arguments[1], &head,
-                                sizeof(head)) < 0 ||
-        edge_linux_copy_to_user(context, context->arguments[2], &length,
-                                sizeof(length)) < 0)
-        return -EDGE_LINUX_EFAULT;
+    if (context->architecture == EDGE_LINUX_ARCH_X32) {
+        uint32_t compat_head = (uint32_t)head;
+        uint32_t compat_length = EDGE_LINUX_COMPAT_ROBUST_LIST_HEAD_SIZE;
+
+        if (edge_linux_copy_to_user(
+                context, context->arguments[2], &compat_length,
+                sizeof(compat_length)) < 0 ||
+            edge_linux_copy_to_user(
+                context, context->arguments[1], &compat_head,
+                sizeof(compat_head)) < 0)
+            return -EDGE_LINUX_EFAULT;
+    } else {
+        if (edge_linux_copy_to_user(
+                context, context->arguments[2], &length,
+                sizeof(length)) < 0 ||
+            edge_linux_copy_to_user(
+                context, context->arguments[1], &head,
+                sizeof(head)) < 0)
+            return -EDGE_LINUX_EFAULT;
+    }
     return 0;
 }
 
