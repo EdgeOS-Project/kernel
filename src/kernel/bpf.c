@@ -328,6 +328,10 @@ static int bpf_map_is_devmap(const kernel_bpf_map_t *map) {
     return bpf_map_is_devmap_array(map) || bpf_map_is_devmap_hash(map);
 }
 
+static int bpf_map_is_xskmap(const kernel_bpf_map_t *map) {
+    return map && map->type == KERNEL_BPF_MAP_TYPE_XSKMAP;
+}
+
 static uint32_t bpf_round_power_of_two(uint32_t value) {
     uint32_t rounded = 1u;
 
@@ -605,6 +609,13 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
             bpf_align8(1u + request->value_size) :
             bpf_align8(1u + request->key_size + request->value_size);
         stored_flags |= KERNEL_BPF_MAP_RDONLY_PROGRAM;
+    } else if (request->type == KERNEL_BPF_MAP_TYPE_XSKMAP) {
+        if (request->key_size != sizeof(uint32_t) ||
+            request->value_size != sizeof(uint32_t) ||
+            (validation_flags & ~KERNEL_BPF_MAP_NUMA_NODE) ||
+            request->btf_present || request->map_extra)
+            goto invalid_btf;
+        stride = bpf_align8(1u + request->value_size);
     } else if (request->type == KERNEL_BPF_MAP_TYPE_HASH ||
                request->type == KERNEL_BPF_MAP_TYPE_PERCPU_HASH) {
         if (validation_flags & ~KERNEL_BPF_MAP_NO_PREALLOC)
@@ -1797,7 +1808,8 @@ int kernel_bpf_map_value_buffer_size(int object_id, uint64_t flags,
         return -EDGE_LINUX_EBADF;
     }
     map = &object->value.map;
-    status = bpf_map_check_percpu_flags_locked(map, flags);
+    status = bpf_map_is_xskmap(map) ? 0 :
+        bpf_map_check_percpu_flags_locked(map, flags);
     if (status < 0) {
         bpf_unlock();
         return status;
@@ -2694,6 +2706,10 @@ int kernel_bpf_map_lookup_flags(int object_id, const void *key, void *value,
         bpf_map_copy_value_out(map, index, value, 0u);
         goto out;
     }
+    if (bpf_map_is_xskmap(map)) {
+        status = -EDGE_LINUX_EOPNOTSUPP;
+        goto out;
+    }
     status = bpf_map_check_percpu_flags_locked(map, flags);
     if (status < 0 || ((uint32_t)flags & ~KERNEL_BPF_F_CPU)) {
         if (status == 0) status = -EDGE_LINUX_EINVAL;
@@ -2818,6 +2834,19 @@ static int bpf_devmap_update_locked(kernel_bpf_map_t *map,
     return 0;
 }
 
+static int bpf_xskmap_update_locked(kernel_bpf_map_t *map,
+                                    const void *key, uint64_t flags,
+                                    int socket_status) {
+    uint32_t index;
+
+    if (map->frozen) return -EDGE_LINUX_EPERM;
+    if (!key) return -EDGE_LINUX_EFAULT;
+    if (flags > KERNEL_BPF_EXIST) return -EDGE_LINUX_EINVAL;
+    memcpy(&index, key, sizeof(index));
+    if (index >= map->max_entries) return -EDGE_LINUX_E2BIG;
+    return socket_status;
+}
+
 int kernel_bpf_map_update(int object_id, const void *key, const void *value,
                           uint64_t flags) {
     kernel_bpf_object_t *object;
@@ -2928,6 +2957,11 @@ int kernel_bpf_map_update(int object_id, const void *key, const void *value,
             program_status = -EDGE_LINUX_EINVAL;
         status = bpf_devmap_update_locked(
             map, key, value, flags, 1, program_status);
+        goto out;
+    }
+    if (bpf_map_is_xskmap(map)) {
+        status = bpf_xskmap_update_locked(
+            map, key, flags, -EDGE_LINUX_EBADF);
         goto out;
     }
     if (bpf_map_is_map_in_map(map) ||
@@ -3107,6 +3141,32 @@ out:
     return status;
 }
 
+int kernel_bpf_xskmap_update(int object_id, const void *key,
+                             const void *value, uint64_t flags,
+                             int socket_status) {
+    kernel_bpf_object_t *object;
+    kernel_bpf_map_t *map;
+    int status;
+
+    if (!value) return -EDGE_LINUX_EFAULT;
+    bpf_lock();
+    object = bpf_object_locked(object_id);
+    if (!object || object->kind != KERNEL_BPF_OBJECT_MAP) {
+        status = -EDGE_LINUX_EBADF;
+        goto out;
+    }
+    map = &object->value.map;
+    if (!bpf_map_is_xskmap(map)) {
+        status = -EDGE_LINUX_EINVAL;
+        goto out;
+    }
+    status = bpf_xskmap_update_locked(
+        map, key, flags, socket_status);
+out:
+    bpf_unlock();
+    return status;
+}
+
 int kernel_bpf_perf_event_array_update(int object_id, const void *key,
                                        int32_t event_id, uint64_t flags) {
     kernel_bpf_object_t *object;
@@ -3252,6 +3312,10 @@ int kernel_bpf_map_lookup_and_delete(int object_id, const void *key,
         status = -EDGE_LINUX_ENOTSUPP;
         goto out;
     }
+    if (bpf_map_is_xskmap(map)) {
+        status = -EDGE_LINUX_ENOTSUPP;
+        goto out;
+    }
     if (bpf_map_is_bloom_filter(map) || bpf_map_is_lpm_trie(map)) {
         status = -EDGE_LINUX_EOPNOTSUPP;
         goto out;
@@ -3374,6 +3438,20 @@ int kernel_bpf_map_delete(int object_id, const void *key) {
         }
         memset(bpf_map_entry(map, index), 0, map->entry_stride);
         if (map->entry_count) --map->entry_count;
+        goto out;
+    }
+    if (bpf_map_is_xskmap(map)) {
+        uint32_t index;
+        uint8_t *entry;
+
+        memcpy(&index, key, sizeof(index));
+        if (index >= map->max_entries) {
+            status = -EDGE_LINUX_EINVAL;
+            goto out;
+        }
+        entry = bpf_map_entry(map, index);
+        if (entry[0] && map->entry_count) --map->entry_count;
+        memset(entry, 0, map->entry_stride);
         goto out;
     }
     if (bpf_map_is_array(map) && !bpf_map_is_object_array(map) &&
@@ -3544,6 +3622,22 @@ int kernel_bpf_map_next_key(int object_id, const void *key, void *next_key) {
                map->key_size);
         goto out;
     }
+    if (bpf_map_is_xskmap(map)) {
+        uint32_t index;
+
+        if (key) {
+            memcpy(&index, key, sizeof(index));
+            index = index < map->max_entries ? index + 1u : 0u;
+        } else {
+            index = 0u;
+        }
+        if (index >= map->max_entries) {
+            status = -EDGE_LINUX_ENOENT;
+            goto out;
+        }
+        memcpy(next_key, &index, sizeof(index));
+        goto out;
+    }
     if (bpf_map_is_array(map)) {
         if (key) {
             memcpy(&index, key, sizeof(index));
@@ -3629,6 +3723,10 @@ int kernel_bpf_map_batch_next_flags(int object_id, uint32_t *cursor,
         goto out;
     }
     if (bpf_map_is_devmap(map)) {
+        status = -EDGE_LINUX_ENOTSUPP;
+        goto out;
+    }
+    if (bpf_map_is_xskmap(map)) {
         status = -EDGE_LINUX_ENOTSUPP;
         goto out;
     }

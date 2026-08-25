@@ -5761,6 +5761,18 @@ static int64_t edge_linux_bpf_map_element(
             status = kernel_bpf_devmap_update(
                 object_id, key, value, attribute.flags,
                 ifindex_valid, program_status);
+        } else if (info.type == KERNEL_BPF_MAP_TYPE_XSKMAP) {
+            kernel_socket_descriptor_info_t socket_info;
+            int32_t socket_descriptor;
+            int socket_status;
+
+            memcpy(&socket_descriptor, value, sizeof(socket_descriptor));
+            socket_status = kernel_socket_describe_descriptor(
+                socket_descriptor, &socket_info);
+            if (socket_status == 0)
+                socket_status = -EDGE_LINUX_EOPNOTSUPP;
+            status = kernel_bpf_xskmap_update(
+                object_id, key, value, attribute.flags, socket_status);
         } else if (info.type == KERNEL_BPF_MAP_TYPE_PERF_EVENT_ARRAY) {
             int32_t event_descriptor;
             int32_t event_id;
@@ -5897,7 +5909,8 @@ static int64_t edge_linux_bpf_map_batch(
     if (info.type == KERNEL_BPF_MAP_TYPE_PERF_EVENT_ARRAY ||
         info.type == KERNEL_BPF_MAP_TYPE_CGROUP_ARRAY ||
         info.type == KERNEL_BPF_MAP_TYPE_DEVMAP ||
-        info.type == KERNEL_BPF_MAP_TYPE_DEVMAP_HASH)
+        info.type == KERNEL_BPF_MAP_TYPE_DEVMAP_HASH ||
+        info.type == KERNEL_BPF_MAP_TYPE_XSKMAP)
         return -EDGE_LINUX_ENOTSUPP;
     if (!info.key_size) return -EDGE_LINUX_ENOTSUPP;
     status = kernel_bpf_map_value_buffer_size(

@@ -722,6 +722,70 @@ static void test_device_maps(void) {
     assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
 }
 
+static void test_xsk_map(void) {
+    kernel_bpf_map_create_request_t request = {
+        .type = KERNEL_BPF_MAP_TYPE_XSKMAP,
+        .key_size = sizeof(uint32_t),
+        .value_size = sizeof(uint32_t),
+        .max_entries = 2u,
+    };
+    kernel_bpf_map_info_t info;
+    uint32_t key = 0u;
+    uint32_t next = UINT32_MAX;
+    uint32_t socket_descriptor = 99u;
+    uint32_t cursor = 0u;
+    int has_more = 0;
+    int object;
+
+    strcpy(request.name, "xsk_map");
+    object = kernel_bpf_map_create(&request);
+    assert(object >= 0);
+    assert(kernel_bpf_map_info(object, &info) == 0);
+    assert(info.type == KERNEL_BPF_MAP_TYPE_XSKMAP);
+    assert(kernel_bpf_map_lookup(object, &key, &socket_descriptor) ==
+           -EDGE_LINUX_EOPNOTSUPP);
+    assert(kernel_bpf_map_update(
+               object, &key, &socket_descriptor, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_EBADF);
+    assert(kernel_bpf_xskmap_update(
+               object, &key, &socket_descriptor, KERNEL_BPF_ANY,
+               -EDGE_LINUX_EBADF) == -EDGE_LINUX_EBADF);
+    assert(kernel_bpf_xskmap_update(
+               object, &key, &socket_descriptor, 3u,
+               -EDGE_LINUX_EBADF) == -EDGE_LINUX_EINVAL);
+    key = 2u;
+    assert(kernel_bpf_xskmap_update(
+               object, &key, &socket_descriptor, KERNEL_BPF_ANY,
+               -EDGE_LINUX_EBADF) == -EDGE_LINUX_E2BIG);
+    assert(kernel_bpf_map_delete(object, &key) == -EDGE_LINUX_EINVAL);
+    key = 0u;
+    assert(kernel_bpf_map_delete(object, &key) == 0);
+    assert(kernel_bpf_map_next_key(object, 0, &next) == 0);
+    assert(next == 0u);
+    key = 1u;
+    assert(kernel_bpf_map_next_key(object, &key, &next) ==
+           -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_map_lookup_and_delete(
+               object, &key, &socket_descriptor) ==
+           -EDGE_LINUX_ENOTSUPP);
+    assert(kernel_bpf_map_batch_next(
+               object, &cursor, &key, &socket_descriptor, 0,
+               &has_more) == -EDGE_LINUX_ENOTSUPP);
+    assert(kernel_bpf_map_freeze(object) == 0);
+    key = 0u;
+    assert(kernel_bpf_xskmap_update(
+               object, &key, &socket_descriptor, 3u,
+               -EDGE_LINUX_EBADF) == -EDGE_LINUX_EPERM);
+    assert(kernel_bpf_map_delete(object, &key) == -EDGE_LINUX_EPERM);
+    kernel_bpf_object_release(object);
+
+    request.key_size = sizeof(uint64_t);
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+    request.key_size = sizeof(uint32_t);
+    request.value_size = sizeof(uint64_t);
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+}
+
 static void test_lpm_trie_map(void) {
     struct lpm_key {
         uint32_t prefix_length;
@@ -1960,6 +2024,7 @@ int main(void) {
     test_stack_trace_map();
     test_cpu_map();
     test_device_maps();
+    test_xsk_map();
     test_lpm_trie_map();
     test_bloom_filter_map();
     test_percpu_maps();

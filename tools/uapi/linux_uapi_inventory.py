@@ -366,10 +366,11 @@ EDGEOS_ASSESSMENTS = [
             "stack-trace map creation, build-ID value layouts, rounded bucket addressing and empty syscall operations",
             "CPU-map creation, CPU and queue validation, entry lifecycle, optional program descriptor rejection and Linux unsupported-operation behavior",
             "device-map and device-hash creation, network-interface validation, entry lifecycle, capacity, iteration and program descriptor behavior",
+            "XSK-map creation, syscall lookup rejection, socket descriptor and family error behavior, deletion, key iteration and unsupported batch behavior",
             "ia32 and x32 fixed-width map-create and map-element attribute layouts",
         ],
         "missing": [
-            "remaining map types, stack-trace helper population, CPU-map packet redirect execution and device-map packet redirect execution",
+            "remaining map types, stack-trace helper population, CPU-map packet redirect execution, device-map packet redirect execution and AF_XDP socket-backed XSK-map entries",
             "remaining specialized map families and their concurrency semantics",
             "additional attachment families and program types",
             "complete allow-override and multi-position attachment semantics",
@@ -381,6 +382,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/bpf_cgroup_array_abi_probe.c",
             "tools/tests/bpf_cpumap_abi_probe.c",
             "tools/tests/bpf_devmap_abi_probe.c",
+            "tools/tests/bpf_xskmap_abi_probe.c",
             "tools/tests/bpf_stack_trace_abi_probe.c",
             "tools/tests/bpf_runtime_unit.c",
         ],
@@ -405,6 +407,9 @@ EDGEOS_ASSESSMENTS = [
                 "creation, qsize state, CPU bounds, program descriptor errors "
                 "and unsupported operations, device-map and device-hash "
                 "interface validation, lifecycle, capacity and iteration, "
+                "XSK-map creation, syscall lookup rejection, socket "
+                "descriptor and family errors, deletion, key iteration and "
+                "unsupported batch behavior, "
                 "plus ia32 "
                 "and x32 page-boundary map-create, "
                 "map-update and map-lookup attribute layouts"
