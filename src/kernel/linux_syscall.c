@@ -10815,6 +10815,7 @@ static int64_t edge_linux_sys_aio(
      EDGE_LINUX_IORING_ASYNC_CANCEL_OP)
 
 #define EDGE_LINUX_IORING_RECVSEND_POLL_FIRST (1u << 0)
+#define EDGE_LINUX_IORING_RECV_MULTISHOT       (1u << 1)
 #define EDGE_LINUX_IORING_RECVSEND_FIXED_BUF  (1u << 2)
 #define EDGE_LINUX_IORING_SEND_ZC_REPORT_USAGE (1u << 3)
 #define EDGE_LINUX_IORING_SEND_VECTORIZED      (1u << 5)
@@ -10823,10 +10824,20 @@ static int64_t edge_linux_sys_aio(
      EDGE_LINUX_IORING_RECVSEND_FIXED_BUF | \
      EDGE_LINUX_IORING_SEND_ZC_REPORT_USAGE | \
      EDGE_LINUX_IORING_SEND_VECTORIZED)
+#define EDGE_LINUX_IORING_RECV_ZC_FLAGS \
+    (EDGE_LINUX_IORING_RECVSEND_POLL_FIRST | \
+     EDGE_LINUX_IORING_RECV_MULTISHOT)
+#define EDGE_LINUX_IORING_ZCRX_REG_IMPORT 1u
+#define EDGE_LINUX_IORING_ZCRX_REG_NODEV  2u
+#define EDGE_LINUX_IORING_ZCRX_CTRL_FLUSH_RQ 0u
+#define EDGE_LINUX_IORING_ZCRX_CTRL_EXPORT 1u
+#define EDGE_LINUX_IORING_ZCRX_CTRL_ARM_NOTIFICATION 2u
 #define EDGE_LINUX_IORING_NOTIF_USAGE_ZC_COPIED (1u << 31)
 
+#define EDGE_LINUX_IORING_SETUP_CLAMP  (1u << 4)
 #define EDGE_LINUX_IORING_SETUP_SQE128 (1u << 10)
 #define EDGE_LINUX_IORING_SETUP_CQE32  (1u << 11)
+#define EDGE_LINUX_IORING_SETUP_DEFER_TASKRUN (1u << 13)
 #define EDGE_LINUX_IORING_SETUP_CQE_MIXED (1u << 18)
 #define EDGE_LINUX_IORING_SETUP_SQE_MIXED (1u << 19)
 
@@ -10889,9 +10900,11 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_IORING_REGISTER_CLOCK         29u
 #define EDGE_LINUX_IORING_REGISTER_CLONE_BUFFERS 30u
 #define EDGE_LINUX_IORING_REGISTER_SEND_MSG_RING 31u
+#define EDGE_LINUX_IORING_REGISTER_ZCRX_IFQ       32u
 #define EDGE_LINUX_IORING_REGISTER_RESIZE_RINGS   33u
 #define EDGE_LINUX_IORING_REGISTER_MEM_REGION    34u
 #define EDGE_LINUX_IORING_REGISTER_QUERY         35u
+#define EDGE_LINUX_IORING_REGISTER_ZCRX_CTRL      36u
 #define EDGE_LINUX_IORING_REGISTER_LAST          38u
 #define EDGE_LINUX_IORING_REGISTER_USE_REGISTERED_RING (1u << 31)
 
@@ -12073,6 +12086,40 @@ static int32_t edge_linux_io_uring_read_multishot(
     return result < 0 ? result : EDGE_LINUX_IORING_PENDING_RESULT;
 }
 
+static int32_t edge_linux_io_uring_recv_zc(
+        int32_t ring_id,
+        const struct edge_linux_io_uring_sqe *submission) {
+    uint32_t receive_flags = submission->ioprio;
+    kernel_socket_operation_request_t describe;
+    kernel_socket_operation_result_t description;
+    int result;
+
+    if (submission->offset || submission->address ||
+        submission->address3 || submission->operation_flags ||
+        submission->reserved2 ||
+        (receive_flags & ~EDGE_LINUX_IORING_RECV_ZC_FLAGS) ||
+        !(receive_flags & EDGE_LINUX_IORING_RECV_MULTISHOT))
+        return -EDGE_LINUX_EINVAL;
+    memset(&describe, 0, sizeof(describe));
+    memset(&description, 0, sizeof(description));
+    describe.operation = KERNEL_SOCKET_OPERATION_DESCRIBE;
+    result = (int)kernel_socket_operation_execute(
+        submission->descriptor, &describe, &description);
+    if (result < 0) return result;
+    if ((description.output.description.domain != EDGE_LINUX_AF_INET &&
+         description.output.description.domain != EDGE_LINUX_AF_INET6) ||
+        description.output.description.type != EDGE_LINUX_SOCK_STREAM ||
+        (description.output.description.protocol != 0u &&
+         description.output.description.protocol !=
+            EDGE_LINUX_IPPROTO_TCP))
+        return -EDGE_LINUX_EPROTONOSUPPORT;
+    result = kernel_io_uring_zcrx_recv_add(
+        ring_id, submission->user_data, submission->descriptor,
+        (uint32_t)submission->splice_descriptor,
+        submission->length);
+    return result < 0 ? result : EDGE_LINUX_IORING_PENDING_RESULT;
+}
+
 static int32_t edge_linux_io_uring_execute_descriptor(
         edge_linux_syscall_context_t *context,
         int32_t ring_id,
@@ -12100,6 +12147,7 @@ static int32_t edge_linux_io_uring_execute_descriptor(
         submission->opcode != EDGE_LINUX_IORING_OP_FUTEX_WAKE &&
         submission->opcode != EDGE_LINUX_IORING_OP_SEND_ZC &&
         submission->opcode != EDGE_LINUX_IORING_OP_SENDMSG_ZC &&
+        submission->opcode != EDGE_LINUX_IORING_OP_RECV_ZC &&
         submission->opcode != EDGE_LINUX_IORING_OP_URING_CMD &&
         submission->opcode != EDGE_LINUX_IORING_OP_URING_CMD128)
         return -EDGE_LINUX_EINVAL;
@@ -12397,6 +12445,10 @@ static int32_t edge_linux_io_uring_execute_descriptor(
         result = edge_linux_io_uring_execute_uring_cmd(
             context, submission);
         break;
+    case EDGE_LINUX_IORING_OP_RECV_ZC:
+        result = edge_linux_io_uring_recv_zc(
+            ring_id, submission);
+        break;
     default:
         result = -EDGE_LINUX_EINVAL;
         break;
@@ -12438,6 +12490,7 @@ static int edge_linux_io_uring_fixed_file_supported(uint8_t opcode) {
     case EDGE_LINUX_IORING_OP_EPOLL_WAIT:
     case EDGE_LINUX_IORING_OP_URING_CMD:
     case EDGE_LINUX_IORING_OP_URING_CMD128:
+    case EDGE_LINUX_IORING_OP_RECV_ZC:
         return 1;
     default:
         return 0;
@@ -13276,6 +13329,7 @@ static int edge_linux_io_uring_probe_supported(uint8_t opcode) {
            opcode == EDGE_LINUX_IORING_OP_SOCKET ||
            opcode == EDGE_LINUX_IORING_OP_URING_CMD ||
            opcode == EDGE_LINUX_IORING_OP_URING_CMD128 ||
+           opcode == EDGE_LINUX_IORING_OP_RECV_ZC ||
            opcode == EDGE_LINUX_IORING_OP_BIND ||
            opcode == EDGE_LINUX_IORING_OP_LISTEN ||
            opcode == EDGE_LINUX_IORING_OP_EPOLL_WAIT ||
@@ -14065,6 +14119,113 @@ static int64_t edge_linux_io_uring_send_msg_ring(
     return edge_linux_io_uring_msg_ring(-1, &submission);
 }
 
+static int64_t edge_linux_io_uring_zcrx_register(
+        edge_linux_syscall_context_t *context, int32_t ring_id,
+        uint64_t argument) {
+    struct edge_linux_io_uring_zcrx_notification_desc notification;
+    struct edge_linux_io_uring_zcrx_ifq_reg registration;
+    struct edge_linux_io_uring_zcrx_area_reg area;
+    struct edge_linux_io_uring_region_desc region;
+    kernel_linux_identity_t identity;
+    uint32_t setup_flags;
+    int notification_present;
+    int result;
+
+    if (kernel_current_linux_identity(&identity) < 0)
+        return -EDGE_LINUX_ESRCH;
+    if (!(identity.effective_capabilities &
+          (1ull << EDGE_LINUX_CAP_NET_ADMIN)))
+        return -EDGE_LINUX_EPERM;
+    result = kernel_io_uring_setup_flags(ring_id, &setup_flags);
+    if (result < 0) return result;
+    if (!(setup_flags & EDGE_LINUX_IORING_SETUP_DEFER_TASKRUN) ||
+        !(setup_flags & (EDGE_LINUX_IORING_SETUP_CQE32 |
+                         EDGE_LINUX_IORING_SETUP_CQE_MIXED)))
+        return -EDGE_LINUX_EINVAL;
+    if (!argument || edge_linux_copy_from_user(
+            context, &registration, argument,
+            sizeof(registration)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    if ((registration.flags & EDGE_LINUX_IORING_ZCRX_REG_IMPORT) ||
+        !(registration.flags & EDGE_LINUX_IORING_ZCRX_REG_NODEV))
+        return -EDGE_LINUX_EOPNOTSUPP;
+    if (registration.flags != EDGE_LINUX_IORING_ZCRX_REG_NODEV)
+        return -EDGE_LINUX_EINVAL;
+    if (registration.rq_entries > 32768u) {
+        if (!(setup_flags & EDGE_LINUX_IORING_SETUP_CLAMP))
+            return -EDGE_LINUX_EINVAL;
+        registration.rq_entries = 32768u;
+    }
+    if (!registration.region || edge_linux_copy_from_user(
+            context, &region, registration.region,
+            sizeof(region)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    if (!registration.area || edge_linux_copy_from_user(
+            context, &area, registration.area,
+            sizeof(area)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    notification_present = registration.notification != 0u;
+    memset(&notification, 0, sizeof(notification));
+    if (notification_present && edge_linux_copy_from_user(
+            context, &notification, registration.notification,
+            sizeof(notification)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    result = kernel_io_uring_zcrx_register_nodev(
+        ring_id, arch_mm_current_address_space(),
+        &registration, &area, &region,
+        notification_present ? &notification : 0);
+    if (result < 0) return result;
+    if (edge_linux_copy_to_user(
+            context, argument, &registration,
+            sizeof(registration)) < 0 ||
+        edge_linux_copy_to_user(
+            context, registration.region, &region,
+            sizeof(region)) < 0 ||
+        edge_linux_copy_to_user(
+            context, registration.area, &area,
+            sizeof(area)) < 0) {
+        (void)kernel_io_uring_zcrx_unregister(
+            ring_id, registration.zcrx_id);
+        return -EDGE_LINUX_EFAULT;
+    }
+    return 0;
+}
+
+static int64_t edge_linux_io_uring_zcrx_control(
+        edge_linux_syscall_context_t *context, int32_t ring_id,
+        uint64_t argument, uint32_t operation_count) {
+    struct edge_linux_io_uring_zcrx_ctrl control;
+
+    if (operation_count) return -EDGE_LINUX_EINVAL;
+    if (!argument || edge_linux_copy_from_user(
+            context, &control, argument, sizeof(control)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    if (control.reserved[0] || control.reserved[1])
+        return -EDGE_LINUX_EFAULT;
+    switch (control.operation) {
+    case EDGE_LINUX_IORING_ZCRX_CTRL_FLUSH_RQ:
+        for (uint32_t index = 0; index < 6u; ++index)
+            if (control.operation_data[index])
+                return -EDGE_LINUX_EINVAL;
+        return kernel_io_uring_zcrx_flush(
+            ring_id, control.zcrx_id);
+    case EDGE_LINUX_IORING_ZCRX_CTRL_ARM_NOTIFICATION:
+        if (control.operation_data[0] > 1u ||
+            (control.operation_data[0] >> 32u))
+            return -EDGE_LINUX_EINVAL;
+        for (uint32_t index = 1; index < 6u; ++index)
+            if (control.operation_data[index])
+                return -EDGE_LINUX_EINVAL;
+        return kernel_io_uring_zcrx_arm_notification(
+            ring_id, control.zcrx_id,
+            (uint32_t)control.operation_data[0]);
+    case EDGE_LINUX_IORING_ZCRX_CTRL_EXPORT:
+        return -EDGE_LINUX_EOPNOTSUPP;
+    default:
+        return -EDGE_LINUX_EOPNOTSUPP;
+    }
+}
+
 static int64_t edge_linux_sys_io_uring_register(
         edge_linux_syscall_context_t *context) {
     struct edge_linux_io_uring_probe probe;
@@ -14139,6 +14300,12 @@ static int64_t edge_linux_sys_io_uring_register(
     }
     if (opcode == EDGE_LINUX_IORING_REGISTER_PBUF_STATUS)
         return edge_linux_io_uring_pbuf_status(
+            context, ring_id, argument, operation_count);
+    if (opcode == EDGE_LINUX_IORING_REGISTER_ZCRX_IFQ)
+        return edge_linux_io_uring_zcrx_register(
+            context, ring_id, argument);
+    if (opcode == EDGE_LINUX_IORING_REGISTER_ZCRX_CTRL)
+        return edge_linux_io_uring_zcrx_control(
             context, ring_id, argument, operation_count);
     if (opcode == EDGE_LINUX_IORING_REGISTER_NAPI) {
         struct edge_linux_io_uring_napi napi;

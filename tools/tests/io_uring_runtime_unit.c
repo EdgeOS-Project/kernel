@@ -1847,6 +1847,84 @@ int main(void) {
         kernel_io_uring_release(second_ring_id);
     }
     {
+        struct edge_linux_io_uring_params zcrx_parameters = {
+            .flags = (1u << 11) | (1u << 12) | (1u << 13),
+        };
+        struct edge_linux_io_uring_zcrx_ifq_reg registration = {
+            .rq_entries = 8u,
+            .flags = 2u,
+        };
+        struct edge_linux_io_uring_zcrx_area_reg area = {
+            .address = 0x700000u,
+            .length = KERNEL_IO_URING_PAGE_SIZE,
+        };
+        struct edge_linux_io_uring_region_desc region = {
+            .size = KERNEL_IO_URING_PAGE_SIZE,
+        };
+        struct edge_linux_io_uring_zcrx_rqe refill = {0};
+        kernel_io_uring_page_t zcrx_cq;
+        kernel_io_uring_page_t zcrx_rq;
+        struct edge_linux_io_uring_cqe *zcrx_completion;
+        uint64_t *zcrx_extra;
+        const uint8_t payload[] = {'z', 'c', 'r', 'x'};
+        uint32_t references = g_fixed_file_references;
+
+        assert(kernel_io_uring_create(
+                   4u, &zcrx_parameters, &second_ring_id) == 0);
+        assert(kernel_io_uring_zcrx_register_nodev(
+                   second_ring_id, 0xabc000u, &registration,
+                   &area, &region, 0) == 0);
+        assert(registration.rq_entries == 8u);
+        assert(registration.offsets.head == 0u);
+        assert(registration.offsets.tail == 4u);
+        assert(registration.offsets.rqes == 64u);
+        assert(registration.receive_buffer_length ==
+               KERNEL_IO_URING_PAGE_SIZE);
+        assert(region.mmap_offset ==
+               KERNEL_IO_URING_OFF_ZCRX_REGION);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, region.mmap_offset,
+                   0u, &zcrx_rq) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_CQ_RING,
+                   0u, &zcrx_cq) == 0);
+        zcrx_completion = (struct edge_linux_io_uring_cqe *)(
+            (uint8_t *)zcrx_cq.address + zcrx_parameters.cq_off.cqes);
+        zcrx_extra = (uint64_t *)(void *)(zcrx_completion + 1);
+
+        g_ready_descriptor = 20;
+        g_ready_generation = g_descriptor_generation[20];
+        memcpy(g_multishot_read_data, payload, sizeof(payload));
+        g_multishot_read_length = sizeof(payload);
+        g_multishot_read_result = (int32_t)sizeof(payload);
+        assert(kernel_io_uring_zcrx_recv_add(
+                   second_ring_id, 0x5a435258u, 20,
+                   registration.zcrx_id, sizeof(payload)) == 0);
+        assert(kernel_io_uring_collect(second_ring_id, 0u) == 2u);
+        assert(zcrx_completion[0].user_data == 0x5a435258u);
+        assert(zcrx_completion[0].result == (int32_t)sizeof(payload));
+        assert((zcrx_completion[0].flags & (1u << 1)) != 0u);
+        assert(zcrx_extra[0] == 0u && zcrx_extra[1] == 0u);
+        assert(zcrx_completion[2].user_data == 0x5a435258u);
+        assert(zcrx_completion[2].result == 0);
+        assert(memcmp(g_pages[TEST_PAGE_COUNT - 2u],
+                      payload, sizeof(payload)) == 0);
+        assert(g_fixed_file_references == references);
+
+        memcpy((uint8_t *)zcrx_rq.address +
+                   registration.offsets.rqes,
+               &refill, sizeof(refill));
+        *page_u32(&zcrx_rq, registration.offsets.tail) = 1u;
+        assert(kernel_io_uring_zcrx_flush(
+                   second_ring_id, registration.zcrx_id) == 0);
+        assert(*page_u32(&zcrx_rq, registration.offsets.head) == 1u);
+
+        test_page_release(0, &zcrx_rq);
+        test_page_release(0, &zcrx_cq);
+        kernel_io_uring_release(second_ring_id);
+        assert(g_fixed_file_references == references);
+    }
+    {
         struct edge_linux_io_uring_params read_parameters = {0};
         kernel_io_uring_page_t read_cq;
         struct edge_linux_io_uring_cqe *read_completion;

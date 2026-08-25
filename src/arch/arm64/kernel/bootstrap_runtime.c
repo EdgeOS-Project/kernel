@@ -26440,6 +26440,10 @@ static int64_t arm64_fd_operation_file_range(
         case KERNEL_IO_FILE_RANGE_READ:
             if (!request->buffer && length)
                 return -LINUX_EFAULT;
+            if (file->kind == KERNEL_FD_SOCKET)
+                return fd_splice_read_kernel(
+                    current_task(), file, request->buffer,
+                    length, &offset, 0);
             if (file->kind == KERNEL_FD_PIPE_READ ||
                 file->kind == KERNEL_FD_PIPE_RW) {
                 kernel_pipe_t *pipe;

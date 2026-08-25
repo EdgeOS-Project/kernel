@@ -194,12 +194,13 @@ EDGEOS_ASSESSMENTS = [
             "user-provided pinned parameter regions with writable-page validation, retained lifetime and registered wait arguments",
             "IORING_SETUP_NO_MMAP user-backed shared SQ/CQ storage and SQE storage with retained page lifetime",
             "dynamically sized fixed-buffer page lists with retained transfer after the original mapping is removed",
+            "RECV_ZC for TCP sockets with nodev ZCRX areas, retained descriptions, CQE32 offsets, refill control and copy fallback",
         ],
         "missing": [
             "asynchronous worker execution",
             "pinned reads from device-specific character descriptors without kernel-buffer backends",
             "SQPOLL wait control",
-            "RECV_ZC with ZCRX registration and control",
+            "device-backed ZCRX registration and ZCRX import/export sharing",
             "remaining URING_CMD socket and device command consumers",
             "remaining ia32 and x32 semantic coverage across supported operations",
         ],
@@ -232,6 +233,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/io_uring_napi_abi_probe.c",
             "tools/tests/io_uring_user_region_abi_probe.c",
             "tools/tests/io_uring_no_mmap_abi_probe.c",
+            "tools/tests/io_uring_zcrx_abi_probe.c",
             "tools/tests/compat_io_uring_iovec_uapi_probe.c",
             "tools/tests/io_uring_runtime_unit.c",
         ],
@@ -312,6 +314,9 @@ EDGEOS_ASSESSMENTS = [
                 "page-alignment errors, direct NOP submission and CQE layout, "
                 "plus URING_CMD and URING_CMD128 socket option and name "
                 "commands with unsupported-command and layout validation, "
+                "plus TCP RECV_ZC with nodev ZCRX registration, CQE32 data "
+                "offsets, finite multishot completion, refill mmap and flush "
+                "control, "
                 "plus ia32 and x32 fixed-buffer registration, setup and mapped "
                 "ring layouts, NOP SQE/CQE completion and READV iovec boundary "
                 "handling"

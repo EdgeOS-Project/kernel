@@ -922,6 +922,68 @@ struct edge_linux_io_uring_region_desc {
     uint64_t reserved[4];
 };
 
+struct edge_linux_io_uring_zcrx_rqe {
+    uint64_t offset;
+    uint32_t length;
+    uint32_t padding;
+};
+
+struct edge_linux_io_uring_zcrx_cqe {
+    uint64_t offset;
+    uint64_t padding;
+};
+
+struct edge_linux_io_uring_zcrx_offsets {
+    uint32_t head;
+    uint32_t tail;
+    uint32_t rqes;
+    uint32_t reserved2;
+    uint64_t reserved[2];
+};
+
+struct edge_linux_io_uring_zcrx_area_reg {
+    uint64_t address;
+    uint64_t length;
+    uint64_t rq_area_token;
+    uint32_t flags;
+    uint32_t dmabuf_descriptor;
+    uint64_t reserved[2];
+};
+
+struct edge_linux_io_uring_zcrx_notification_desc {
+    uint64_t user_data;
+    uint32_t type_mask;
+    uint32_t flags;
+    uint64_t stats_offset;
+    uint64_t reserved[9];
+};
+
+struct edge_linux_io_uring_zcrx_notification_stats {
+    uint64_t copy_count;
+    uint64_t copy_bytes;
+};
+
+struct edge_linux_io_uring_zcrx_ifq_reg {
+    uint32_t interface_index;
+    uint32_t receive_queue;
+    uint32_t rq_entries;
+    uint32_t flags;
+    uint64_t area;
+    uint64_t region;
+    struct edge_linux_io_uring_zcrx_offsets offsets;
+    uint32_t zcrx_id;
+    uint32_t receive_buffer_length;
+    uint64_t notification;
+    uint64_t reserved[2];
+};
+
+struct edge_linux_io_uring_zcrx_ctrl {
+    uint32_t zcrx_id;
+    uint32_t operation;
+    uint64_t reserved[2];
+    uint64_t operation_data[6];
+};
+
 struct edge_linux_io_uring_mem_region_reg {
     uint64_t region;
     uint64_t flags;
@@ -1096,6 +1158,21 @@ _Static_assert(sizeof(struct edge_linux_io_uring_getevents_arg) == 24,
                "Linux io_uring getevents argument size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_region_desc) == 64,
                "Linux io_uring region descriptor size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_uring_zcrx_rqe) == 16,
+               "Linux io_uring ZCRX refill entry size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_uring_zcrx_cqe) == 16,
+               "Linux io_uring ZCRX completion extension size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_uring_zcrx_offsets) == 32,
+               "Linux io_uring ZCRX offset layout mismatch");
+_Static_assert(sizeof(struct edge_linux_io_uring_zcrx_area_reg) == 48,
+               "Linux io_uring ZCRX area registration size mismatch");
+_Static_assert(
+    sizeof(struct edge_linux_io_uring_zcrx_notification_desc) == 96,
+    "Linux io_uring ZCRX notification descriptor size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_uring_zcrx_ifq_reg) == 96,
+               "Linux io_uring ZCRX interface registration size mismatch");
+_Static_assert(sizeof(struct edge_linux_io_uring_zcrx_ctrl) == 72,
+               "Linux io_uring ZCRX control size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_mem_region_reg) == 32,
                "Linux io_uring memory region registration size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_reg_wait) == 64,

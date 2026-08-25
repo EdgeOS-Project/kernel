@@ -27,6 +27,9 @@
 #define KERNEL_IO_URING_MAX_BUFFER_GROUPS 256u
 #define KERNEL_IO_URING_MAX_PBUF_PAGES 256u
 #define KERNEL_IO_URING_MAX_WAIT_REGION_PAGES 64u
+#define KERNEL_IO_URING_MAX_ZCRX_CONTEXTS 4u
+#define KERNEL_IO_URING_MAX_ZCRX_RQ_PAGES 64u
+#define KERNEL_IO_URING_MAX_ZCRX_CHUNKS 4096u
 #define KERNEL_IO_URING_REGISTERED_RINGS 16u
 #define KERNEL_IO_URING_MAX_PERSONALITIES 64u
 #define KERNEL_IO_URING_MAX_NAPI_IDS 64u
@@ -37,6 +40,8 @@
 #define KERNEL_IO_URING_OFF_CQ_RING 0x08000000ull
 #define KERNEL_IO_URING_OFF_SQES    0x10000000ull
 #define KERNEL_IO_URING_OFF_PARAM_REGION 0x20000000ull
+#define KERNEL_IO_URING_OFF_ZCRX_REGION 0x30000000ull
+#define KERNEL_IO_URING_OFF_ZCRX_SHIFT 16u
 #define KERNEL_IO_URING_OFF_PBUF_RING 0x80000000ull
 #define KERNEL_IO_URING_OFF_PBUF_SHIFT 16u
 #define KERNEL_IO_URING_OFF_MMAP_MASK 0xf8000000ull
@@ -331,6 +336,19 @@ int kernel_io_uring_waitid_add(
 int kernel_io_uring_read_multishot_add(
     int32_t ring_id, uint64_t user_data, int32_t descriptor,
     uint16_t buffer_group, uint64_t address_space);
+int kernel_io_uring_zcrx_register_nodev(
+    int32_t ring_id, uint64_t address_space,
+    struct edge_linux_io_uring_zcrx_ifq_reg *registration,
+    struct edge_linux_io_uring_zcrx_area_reg *area,
+    struct edge_linux_io_uring_region_desc *region,
+    const struct edge_linux_io_uring_zcrx_notification_desc *notification);
+int kernel_io_uring_zcrx_flush(int32_t ring_id, uint32_t zcrx_id);
+int kernel_io_uring_zcrx_arm_notification(
+    int32_t ring_id, uint32_t zcrx_id, uint32_t notification_type);
+int kernel_io_uring_zcrx_unregister(int32_t ring_id, uint32_t zcrx_id);
+int kernel_io_uring_zcrx_recv_add(
+    int32_t ring_id, uint64_t user_data, int32_t descriptor,
+    uint32_t zcrx_id, uint32_t maximum_length);
 int kernel_io_uring_poll_update(int32_t ring_id, uint64_t old_user_data,
                                 int update_events, uint32_t events,
                                 int update_user_data,
@@ -356,6 +374,9 @@ int kernel_io_uring_take_submission(
 int kernel_io_uring_completion_add(int32_t ring_id, uint64_t user_data,
                                    int32_t result, uint32_t flags);
 int kernel_io_uring_completion_add32(
+    int32_t ring_id, uint64_t user_data, int32_t result,
+    uint32_t flags, uint64_t extra1, uint64_t extra2);
+int kernel_io_uring_completion_add32_async(
     int32_t ring_id, uint64_t user_data, int32_t result,
     uint32_t flags, uint64_t extra1, uint64_t extra2);
 int kernel_io_uring_completion_flush(int32_t ring_id);

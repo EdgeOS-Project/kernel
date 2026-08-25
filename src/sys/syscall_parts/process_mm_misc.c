@@ -1728,6 +1728,10 @@ static int64_t x86_fd_operation_file_range(
             return 0;
         case KERNEL_IO_FILE_RANGE_READ:
             if (!request->buffer && length) return -EFAULT;
+            if (entry->kind == FD_SOCKET)
+                return (int64_t)socket_recvfrom_entry_internal(
+                    -1, entry, 0u, length, LINUX_MSG_DONTWAIT,
+                    0u, 0u, 0, request->buffer);
             if (entry->kind == FD_PIPE_R || entry->kind == FD_PIPE_RW) {
                 edge_pipe_t *pipe;
                 kernel_pipe_io_decision_t decision;

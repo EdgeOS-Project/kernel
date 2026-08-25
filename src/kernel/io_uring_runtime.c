@@ -127,6 +127,8 @@ typedef struct kernel_io_uring_pending {
     uint8_t event_size;
     uint8_t event_data_offset;
     uint16_t buffer_group;
+    uint32_t zcrx_id;
+    uint32_t zcrx_remaining;
     int32_t wait_owner_tid;
     kernel_process_wait_request_t process_wait_request;
     kernel_io_uring_waitid_copy_t waitid_copy;
@@ -145,6 +147,31 @@ typedef struct kernel_io_uring_fixed_buffer {
     kernel_io_uring_page_t inline_pages[
         KERNEL_IO_URING_INLINE_FIXED_BUFFER_PAGES];
 } kernel_io_uring_fixed_buffer_t;
+
+#define IO_URING_ZCRX_BITMAP_WORDS \
+    ((KERNEL_IO_URING_MAX_ZCRX_CHUNKS + 63u) / 64u)
+
+typedef struct kernel_io_uring_zcrx {
+    uint8_t used;
+    uint8_t region_user_provided;
+    uint8_t notification_flags;
+    uint8_t fired_notifications;
+    uint32_t id;
+    uint32_t rq_entries;
+    uint32_t rq_head;
+    uint32_t receive_buffer_length;
+    uint32_t chunk_count;
+    uint32_t free_hint;
+    uint32_t region_page_count;
+    uint32_t stats_offset;
+    uint64_t notification_user_data;
+    uint32_t notification_type_mask;
+    uint32_t reserved;
+    kernel_io_uring_fixed_buffer_t area;
+    kernel_io_uring_page_t
+        region_pages[KERNEL_IO_URING_MAX_ZCRX_RQ_PAGES];
+    uint64_t free_bitmap[IO_URING_ZCRX_BITMAP_WORDS];
+} kernel_io_uring_zcrx_t;
 
 typedef struct kernel_io_uring_provided_buffer {
     uint64_t address;
@@ -243,6 +270,8 @@ typedef struct kernel_io_uring {
     kernel_io_uring_page_t pbuf_pages[KERNEL_IO_URING_MAX_PBUF_PAGES];
     uint16_t pbuf_page_groups[KERNEL_IO_URING_MAX_PBUF_PAGES];
     uint8_t pbuf_page_used[KERNEL_IO_URING_MAX_PBUF_PAGES];
+    kernel_io_uring_zcrx_t
+        zcrx[KERNEL_IO_URING_MAX_ZCRX_CONTEXTS];
     uint64_t next_provided_buffer_sequence;
     uint32_t clock_id;
     kernel_io_uring_pending_t pending[KERNEL_IO_URING_MAX_PENDING];
@@ -304,6 +333,7 @@ static int32_t io_uring_event_retain_locked(
 #define IO_URING_PENDING_FUTEX 5u
 #define IO_URING_PENDING_WAITID 6u
 #define IO_URING_PENDING_READ_MULTISHOT 7u
+#define IO_URING_PENDING_RECV_ZC 8u
 
 static kernel_io_uring_t g_io_urings[KERNEL_IO_URING_MAX_RINGS];
 static kernel_io_uring_fixed_buffer_t
@@ -728,6 +758,44 @@ static int io_uring_fixed_buffer_retain(
     return 0;
 }
 
+static int io_uring_fixed_buffer_copy_in(
+        kernel_io_uring_fixed_buffer_t *buffer, uint64_t offset,
+        const void *source, uint32_t length) {
+    uint64_t absolute;
+    uint32_t copied = 0u;
+
+    if (!buffer || (!source && length) ||
+        offset > buffer->length || length > buffer->length - offset)
+        return -EDGE_LINUX_EFAULT;
+    absolute = (buffer->address &
+        (KERNEL_IO_URING_PAGE_SIZE - 1u)) + offset;
+    while (copied < length) {
+        uint32_t page_index =
+            (uint32_t)(absolute / KERNEL_IO_URING_PAGE_SIZE);
+        uint32_t within =
+            (uint32_t)(absolute % KERNEL_IO_URING_PAGE_SIZE);
+        uint32_t chunk = KERNEL_IO_URING_PAGE_SIZE - within;
+        kernel_io_uring_page_t *page =
+            io_uring_fixed_buffer_page(buffer, page_index);
+
+        if (chunk > length - copied) chunk = length - copied;
+        if (!page || !page->address) return -EDGE_LINUX_EFAULT;
+        memcpy((uint8_t *)page->address + within,
+               (const uint8_t *)source + copied, chunk);
+        absolute += chunk;
+        copied += chunk;
+    }
+    return 0;
+}
+
+static void io_uring_zcrx_release(kernel_io_uring_zcrx_t *zcrx) {
+    if (!zcrx) return;
+    io_uring_fixed_buffer_release(&zcrx->area);
+    io_uring_release_pages(
+        zcrx->region_pages, zcrx->region_page_count);
+    memset(zcrx, 0, sizeof(*zcrx));
+}
+
 static kernel_fd_operation_lease_t *io_uring_fixed_file_lease(
         kernel_io_uring_page_t *pages, uint32_t index) {
     uint32_t page = index / IO_URING_FIXED_FILES_PER_PAGE;
@@ -763,17 +831,22 @@ static void io_uring_release_storage(kernel_io_uring_t *ring) {
     for (uint32_t index = 0;
          index < ring->fixed_buffer_count; ++index)
         io_uring_fixed_buffer_release(&ring->fixed_buffers[index]);
+    for (uint32_t index = 0;
+         index < KERNEL_IO_URING_MAX_ZCRX_CONTEXTS; ++index)
+        io_uring_zcrx_release(&ring->zcrx[index]);
     for (uint32_t slot = 0;
          slot < KERNEL_IO_URING_MAX_PENDING; ++slot) {
         kernel_io_uring_pending_t *pending = &ring->pending[slot];
         if (pending->used &&
             (pending->kind == IO_URING_PENDING_POLL ||
-             pending->kind == IO_URING_PENDING_READ_MULTISHOT) &&
+             pending->kind == IO_URING_PENDING_READ_MULTISHOT ||
+             pending->kind == IO_URING_PENDING_RECV_ZC) &&
             kernel_fd_operation_view(&pending->descriptor_lease))
             (void)kernel_fd_operation_release(
                 &pending->descriptor_lease);
         if (pending->used &&
-            pending->kind == IO_URING_PENDING_READ_MULTISHOT &&
+            (pending->kind == IO_URING_PENDING_READ_MULTISHOT ||
+             pending->kind == IO_URING_PENDING_RECV_ZC) &&
             pending->read_page.address)
             g_io_uring_allocator.release(
                 g_io_uring_allocator.context, &pending->read_page);
@@ -3082,6 +3155,373 @@ unlock:
     return result;
 }
 
+static int io_uring_zcrx_region_copy(
+        kernel_io_uring_zcrx_t *zcrx, uint32_t offset,
+        void *buffer, uint32_t length, int write_region) {
+    uint32_t copied = 0u;
+
+    if (!zcrx || (!buffer && length) ||
+        (uint64_t)offset + length >
+            (uint64_t)zcrx->region_page_count *
+                KERNEL_IO_URING_PAGE_SIZE)
+        return -EDGE_LINUX_EFAULT;
+    while (copied < length) {
+        uint32_t absolute = offset + copied;
+        uint32_t page_index = absolute / KERNEL_IO_URING_PAGE_SIZE;
+        uint32_t within = absolute % KERNEL_IO_URING_PAGE_SIZE;
+        uint32_t chunk = KERNEL_IO_URING_PAGE_SIZE - within;
+        kernel_io_uring_page_t *page = &zcrx->region_pages[page_index];
+
+        if (chunk > length - copied) chunk = length - copied;
+        if (!page->address) return -EDGE_LINUX_EFAULT;
+        if (write_region)
+            memcpy((uint8_t *)page->address + within,
+                   (const uint8_t *)buffer + copied, chunk);
+        else
+            memcpy((uint8_t *)buffer + copied,
+                   (const uint8_t *)page->address + within, chunk);
+        copied += chunk;
+    }
+    return 0;
+}
+
+static uint32_t io_uring_zcrx_round_entries(uint32_t entries) {
+    uint32_t rounded = 1u;
+
+    while (rounded < entries && rounded < 32768u) rounded <<= 1u;
+    return rounded;
+}
+
+static void io_uring_zcrx_reservation_clear(
+        int32_t ring_id, uint32_t zcrx_id) {
+    uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
+    kernel_io_uring_t *ring = io_uring_lookup_locked(ring_id);
+
+    if (ring && zcrx_id < KERNEL_IO_URING_MAX_ZCRX_CONTEXTS &&
+        ring->zcrx[zcrx_id].used == 2u)
+        memset(&ring->zcrx[zcrx_id], 0,
+               sizeof(ring->zcrx[zcrx_id]));
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+}
+
+int kernel_io_uring_zcrx_register_nodev(
+        int32_t ring_id, uint64_t address_space,
+        struct edge_linux_io_uring_zcrx_ifq_reg *registration,
+        struct edge_linux_io_uring_zcrx_area_reg *area,
+        struct edge_linux_io_uring_region_desc *region,
+        const struct edge_linux_io_uring_zcrx_notification_desc *notification) {
+    kernel_io_uring_zcrx_t *candidate;
+    kernel_io_uring_t *ring;
+    struct edge_linux_iovec area_vector;
+    struct edge_linux_io_uring_zcrx_notification_stats zero_stats;
+    uint64_t flags;
+    uint64_t required_region;
+    uint32_t candidate_pages;
+    uint32_t zcrx_id;
+    uint32_t entries;
+    int result = 0;
+
+    if (!address_space || !registration || !area || !region)
+        return -EDGE_LINUX_EINVAL;
+    if (registration->interface_index || registration->receive_queue ||
+        registration->flags != 2u || registration->zcrx_id ||
+        registration->reserved[0] || registration->reserved[1] ||
+        !registration->rq_entries)
+        return -EDGE_LINUX_EINVAL;
+    if (registration->rq_entries > 32768u)
+        return -EDGE_LINUX_EINVAL;
+    entries = io_uring_zcrx_round_entries(registration->rq_entries);
+    if (!entries || entries > 32768u)
+        return -EDGE_LINUX_EINVAL;
+    if (registration->receive_buffer_length &&
+        registration->receive_buffer_length !=
+            KERNEL_IO_URING_PAGE_SIZE)
+        return -EDGE_LINUX_EOPNOTSUPP;
+    if (area->flags || area->dmabuf_descriptor ||
+        area->rq_area_token || area->reserved[0] || area->reserved[1] ||
+        !area->address || !area->length ||
+        ((area->address | area->length) &
+         (KERNEL_IO_URING_PAGE_SIZE - 1u)))
+        return -EDGE_LINUX_EINVAL;
+    if (area->length / KERNEL_IO_URING_PAGE_SIZE >
+        KERNEL_IO_URING_MAX_ZCRX_CHUNKS)
+        return -EDGE_LINUX_E2BIG;
+    if (region->reserved[0] || region->reserved[1] ||
+        region->reserved[2] || region->reserved[3] ||
+        region->id || region->mmap_offset ||
+        (region->flags & ~1u) || !region->size ||
+        (region->size & (KERNEL_IO_URING_PAGE_SIZE - 1u)) ||
+        ((region->flags & 1u) != (region->user_address != 0u)) ||
+        ((region->flags & 1u) &&
+         (region->user_address & (KERNEL_IO_URING_PAGE_SIZE - 1u))))
+        return -EDGE_LINUX_EINVAL;
+    if (region->size / KERNEL_IO_URING_PAGE_SIZE >
+        KERNEL_IO_URING_MAX_ZCRX_RQ_PAGES)
+        return -EDGE_LINUX_E2BIG;
+    required_region = 64u + (uint64_t)entries *
+        sizeof(struct edge_linux_io_uring_zcrx_rqe);
+    if (region->size < required_region)
+        return -EDGE_LINUX_EINVAL;
+    if (notification) {
+        if ((notification->type_mask & ~3u) ||
+            (notification->flags & ~1u) ||
+            (!(notification->flags & 1u) &&
+             notification->stats_offset) ||
+            notification->reserved[0] || notification->reserved[1] ||
+            notification->reserved[2] || notification->reserved[3] ||
+            notification->reserved[4] || notification->reserved[5] ||
+            notification->reserved[6] || notification->reserved[7] ||
+            notification->reserved[8])
+            return -EDGE_LINUX_EINVAL;
+        if ((notification->flags & 1u) &&
+            ((notification->stats_offset & 7u) ||
+             notification->stats_offset < required_region ||
+             notification->stats_offset >
+                region->size - sizeof(zero_stats)))
+            return -EDGE_LINUX_ERANGE;
+    }
+    if (!g_io_uring_allocator.allocate_metadata_pages ||
+        !g_io_uring_allocator.release_metadata_pages ||
+        !g_io_uring_allocator.pin_user)
+        return -EDGE_LINUX_ENODEV;
+
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+    } else if (!(ring->setup_flags & IORING_SETUP_DEFER_TASKRUN) ||
+               !(ring->setup_flags &
+                 (IORING_SETUP_CQE32 | IORING_SETUP_CQE_MIXED))) {
+        result = -EDGE_LINUX_EINVAL;
+    } else {
+        for (zcrx_id = 0;
+             zcrx_id < KERNEL_IO_URING_MAX_ZCRX_CONTEXTS; ++zcrx_id)
+            if (!ring->zcrx[zcrx_id].used) break;
+        if (zcrx_id == KERNEL_IO_URING_MAX_ZCRX_CONTEXTS)
+            result = -EDGE_LINUX_ENOSPC;
+        else
+            ring->zcrx[zcrx_id].used = 2u;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (result < 0) return result;
+
+    candidate_pages = (uint32_t)((sizeof(*candidate) +
+        KERNEL_IO_URING_PAGE_SIZE - 1u) / KERNEL_IO_URING_PAGE_SIZE);
+    candidate = (kernel_io_uring_zcrx_t *)
+        g_io_uring_allocator.allocate_metadata_pages(
+            g_io_uring_allocator.context, candidate_pages);
+    if (!candidate) {
+        io_uring_zcrx_reservation_clear(ring_id, zcrx_id);
+        return -EDGE_LINUX_ENOMEM;
+    }
+    memset(candidate, 0,
+           (size_t)candidate_pages * KERNEL_IO_URING_PAGE_SIZE);
+    candidate->used = 1u;
+    candidate->id = zcrx_id;
+    candidate->rq_entries = entries;
+    candidate->receive_buffer_length = KERNEL_IO_URING_PAGE_SIZE;
+    candidate->chunk_count =
+        (uint32_t)(area->length / KERNEL_IO_URING_PAGE_SIZE);
+    candidate->region_page_count =
+        (uint32_t)(region->size / KERNEL_IO_URING_PAGE_SIZE);
+    candidate->region_user_provided =
+        (region->flags & 1u) != 0u;
+    if (notification) {
+        candidate->notification_user_data = notification->user_data;
+        candidate->notification_type_mask = notification->type_mask;
+        candidate->notification_flags = (uint8_t)notification->flags;
+        candidate->stats_offset =
+            (uint32_t)notification->stats_offset;
+    }
+
+    memset(&area_vector, 0, sizeof(area_vector));
+    area_vector.iov_base = area->address;
+    area_vector.iov_len = area->length;
+    result = io_uring_fixed_buffer_pin(
+        &candidate->area, address_space, &area_vector, 0u);
+    if (result < 0) goto fail_candidate;
+    if (candidate->region_user_provided)
+        result = io_uring_pin_user_pages(
+            candidate->region_pages, address_space,
+            region->user_address, candidate->region_page_count);
+    else
+        result = io_uring_allocate_pages(
+            candidate->region_pages, candidate->region_page_count);
+    if (result < 0) goto fail_candidate;
+
+    for (uint32_t chunk = 0; chunk < candidate->chunk_count; ++chunk)
+        candidate->free_bitmap[chunk >> 6u] |=
+            UINT64_C(1) << (chunk & 63u);
+    {
+        uint32_t zero = 0u;
+        (void)io_uring_zcrx_region_copy(
+            candidate, 0u, &zero, sizeof(zero), 1);
+        (void)io_uring_zcrx_region_copy(
+            candidate, 4u, &zero, sizeof(zero), 1);
+    }
+    if (candidate->notification_flags & 1u) {
+        memset(&zero_stats, 0, sizeof(zero_stats));
+        result = io_uring_zcrx_region_copy(
+            candidate, candidate->stats_offset,
+            &zero_stats, sizeof(zero_stats), 1);
+        if (result < 0) goto fail_candidate;
+    }
+
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring || ring->zcrx[zcrx_id].used != 2u) {
+        result = ring ? -EDGE_LINUX_EBUSY : -EDGE_LINUX_EBADF;
+    } else {
+        ring->zcrx[zcrx_id] = *candidate;
+        memset(candidate, 0, sizeof(*candidate));
+        result = 0;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (result < 0) goto fail_candidate;
+
+    registration->rq_entries = entries;
+    registration->offsets.head = 0u;
+    registration->offsets.tail = 4u;
+    registration->offsets.rqes = 64u;
+    registration->offsets.reserved2 = 0u;
+    registration->offsets.reserved[0] = 0u;
+    registration->offsets.reserved[1] = 0u;
+    registration->zcrx_id = zcrx_id;
+    registration->receive_buffer_length = KERNEL_IO_URING_PAGE_SIZE;
+    area->rq_area_token = 0u;
+    if (!(region->flags & 1u))
+        region->mmap_offset = KERNEL_IO_URING_OFF_ZCRX_REGION +
+            ((uint64_t)zcrx_id << KERNEL_IO_URING_OFF_ZCRX_SHIFT);
+    g_io_uring_allocator.release_metadata_pages(
+        g_io_uring_allocator.context, candidate, candidate_pages);
+    return 0;
+
+fail_candidate:
+    io_uring_zcrx_release(candidate);
+    g_io_uring_allocator.release_metadata_pages(
+        g_io_uring_allocator.context, candidate, candidate_pages);
+    io_uring_zcrx_reservation_clear(ring_id, zcrx_id);
+    return result;
+}
+
+int kernel_io_uring_zcrx_unregister(
+        int32_t ring_id, uint32_t zcrx_id) {
+    kernel_io_uring_zcrx_t *released;
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    uint32_t pages;
+    int result = 0;
+
+    if (zcrx_id >= KERNEL_IO_URING_MAX_ZCRX_CONTEXTS)
+        return -EDGE_LINUX_ENXIO;
+    pages = (uint32_t)((sizeof(*released) +
+        KERNEL_IO_URING_PAGE_SIZE - 1u) / KERNEL_IO_URING_PAGE_SIZE);
+    released = (kernel_io_uring_zcrx_t *)
+        g_io_uring_allocator.allocate_metadata_pages(
+            g_io_uring_allocator.context, pages);
+    if (!released) return -EDGE_LINUX_ENOMEM;
+    memset(released, 0, (size_t)pages * KERNEL_IO_URING_PAGE_SIZE);
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+    } else if (ring->zcrx[zcrx_id].used != 1u) {
+        result = -EDGE_LINUX_ENXIO;
+    } else {
+        *released = ring->zcrx[zcrx_id];
+        memset(&ring->zcrx[zcrx_id], 0,
+               sizeof(ring->zcrx[zcrx_id]));
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (result == 0) io_uring_zcrx_release(released);
+    g_io_uring_allocator.release_metadata_pages(
+        g_io_uring_allocator.context, released, pages);
+    return result;
+}
+
+int kernel_io_uring_zcrx_flush(
+        int32_t ring_id, uint32_t zcrx_id) {
+    kernel_io_uring_zcrx_t *zcrx;
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    uint32_t tail;
+    uint32_t available;
+    int result = 0;
+
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+        goto unlock;
+    }
+    if (zcrx_id >= KERNEL_IO_URING_MAX_ZCRX_CONTEXTS ||
+        ring->zcrx[zcrx_id].used != 1u) {
+        result = -EDGE_LINUX_ENXIO;
+        goto unlock;
+    }
+    zcrx = &ring->zcrx[zcrx_id];
+    result = io_uring_zcrx_region_copy(
+        zcrx, 4u, &tail, sizeof(tail), 0);
+    if (result < 0) goto unlock;
+    available = tail - zcrx->rq_head;
+    if (available > zcrx->rq_entries)
+        available = zcrx->rq_entries;
+    while (available--) {
+        struct edge_linux_io_uring_zcrx_rqe entry;
+        uint64_t offset;
+        uint32_t chunk;
+        uint32_t index = zcrx->rq_head & (zcrx->rq_entries - 1u);
+
+        result = io_uring_zcrx_region_copy(
+            zcrx, 64u + index * sizeof(entry),
+            &entry, sizeof(entry), 0);
+        ++zcrx->rq_head;
+        if (result < 0) break;
+        offset = entry.offset & ((UINT64_C(1) << 48u) - 1u);
+        if (entry.padding || (entry.offset >> 48u) ||
+            (offset & (zcrx->receive_buffer_length - 1u)))
+            continue;
+        chunk = (uint32_t)(offset / zcrx->receive_buffer_length);
+        if (chunk >= zcrx->chunk_count) continue;
+        zcrx->free_bitmap[chunk >> 6u] |=
+            UINT64_C(1) << (chunk & 63u);
+        if (chunk < zcrx->free_hint) zcrx->free_hint = chunk;
+    }
+    if (result == 0)
+        result = io_uring_zcrx_region_copy(
+            zcrx, 0u, &zcrx->rq_head,
+            sizeof(zcrx->rq_head), 1);
+unlock:
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+int kernel_io_uring_zcrx_arm_notification(
+        int32_t ring_id, uint32_t zcrx_id,
+        uint32_t notification_type) {
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    uint8_t mask;
+    int result = 0;
+
+    if (notification_type > 1u) return -EDGE_LINUX_EINVAL;
+    mask = (uint8_t)(1u << notification_type);
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+    } else if (zcrx_id >= KERNEL_IO_URING_MAX_ZCRX_CONTEXTS ||
+               ring->zcrx[zcrx_id].used != 1u) {
+        result = -EDGE_LINUX_ENXIO;
+    } else if (!(ring->zcrx[zcrx_id].fired_notifications & mask)) {
+        result = -EDGE_LINUX_EINVAL;
+    } else {
+        ring->zcrx[zcrx_id].fired_notifications &= (uint8_t)~mask;
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
 int kernel_io_uring_file_alloc_range_set(int32_t ring_id,
                                          uint32_t offset,
                                          uint32_t length) {
@@ -4042,6 +4482,91 @@ fail:
     return result;
 }
 
+int kernel_io_uring_zcrx_recv_add(
+        int32_t ring_id, uint64_t user_data, int32_t descriptor,
+        uint32_t zcrx_id, uint32_t maximum_length) {
+    kernel_fd_operation_lease_t descriptor_lease = {0};
+    kernel_io_uring_page_t read_page = {0};
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    uint32_t slot;
+    int result;
+
+    if (descriptor < 0) return -EDGE_LINUX_EBADF;
+    result = kernel_fd_operation_acquire(
+        descriptor, &descriptor_lease);
+    if (result < 0) return result;
+    if (!g_io_uring_allocator.allocate) {
+        result = -EDGE_LINUX_ENODEV;
+        goto fail;
+    }
+    result = g_io_uring_allocator.allocate(
+        g_io_uring_allocator.context, &read_page);
+    if (result < 0) goto fail;
+
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+    } else if (zcrx_id >= KERNEL_IO_URING_MAX_ZCRX_CONTEXTS ||
+               ring->zcrx[zcrx_id].used != 1u) {
+        result = -EDGE_LINUX_EINVAL;
+    } else {
+        for (slot = 0; slot < KERNEL_IO_URING_MAX_PENDING; ++slot)
+            if (!ring->pending[slot].used) break;
+        if (slot == KERNEL_IO_URING_MAX_PENDING) {
+            result = -EDGE_LINUX_EAGAIN;
+        } else {
+            kernel_io_uring_pending_t *pending = &ring->pending[slot];
+
+            memset(pending, 0, sizeof(*pending));
+            pending->used = 1u;
+            pending->kind = IO_URING_PENDING_RECV_ZC;
+            pending->opcode = 58u;
+            pending->multishot = 1u;
+            pending->descriptor = descriptor;
+            pending->user_data = user_data;
+            pending->zcrx_id = zcrx_id;
+            pending->zcrx_remaining = maximum_length;
+            pending->read_page = read_page;
+            memset(&read_page, 0, sizeof(read_page));
+            result = kernel_fd_operation_move(
+                &pending->descriptor_lease, &descriptor_lease);
+            if (result < 0) {
+                read_page = pending->read_page;
+                memset(pending, 0, sizeof(*pending));
+            } else {
+                result = kernel_fd_operation_description_id(
+                    &pending->descriptor_lease,
+                    &pending->file_description_id);
+                if (result < 0) {
+                    read_page = pending->read_page;
+                    memset(&pending->read_page, 0,
+                           sizeof(pending->read_page));
+                    (void)kernel_fd_operation_move(
+                        &descriptor_lease,
+                        &pending->descriptor_lease);
+                    memset(pending, 0, sizeof(*pending));
+                } else {
+                    ++ring->next_pending_sequence;
+                    if (!ring->next_pending_sequence)
+                        ++ring->next_pending_sequence;
+                    pending->sequence = ring->next_pending_sequence;
+                }
+            }
+        }
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+
+fail:
+    if (read_page.address)
+        g_io_uring_allocator.release(
+            g_io_uring_allocator.context, &read_page);
+    if (kernel_fd_operation_view(&descriptor_lease))
+        (void)kernel_fd_operation_release(&descriptor_lease);
+    return result;
+}
+
 int kernel_io_uring_poll_update(int32_t ring_id, uint64_t old_user_data,
                                 int update_events, uint32_t events,
                                 int update_user_data,
@@ -4136,7 +4661,9 @@ int kernel_io_uring_pending_cancel_match(
                 continue;
             if (ring->pending[slot].kind == IO_URING_PENDING_POLL ||
                 ring->pending[slot].kind ==
-                    IO_URING_PENDING_READ_MULTISHOT) {
+                    IO_URING_PENDING_READ_MULTISHOT ||
+                ring->pending[slot].kind ==
+                    IO_URING_PENDING_RECV_ZC) {
                 result = kernel_fd_operation_move(
                     &descriptor_lease,
                     &ring->pending[slot].descriptor_lease);
@@ -4150,11 +4677,14 @@ int kernel_io_uring_pending_cancel_match(
             }
             result = 0;
             if (ring->pending[slot].kind ==
-                    IO_URING_PENDING_READ_MULTISHOT &&
-                ring->pending[slot].read_page.address) {
-                read_page = ring->pending[slot].read_page;
-                memset(&ring->pending[slot].read_page, 0,
-                       sizeof(ring->pending[slot].read_page));
+                    IO_URING_PENDING_READ_MULTISHOT ||
+                ring->pending[slot].kind ==
+                    IO_URING_PENDING_RECV_ZC) {
+                if (ring->pending[slot].read_page.address) {
+                    read_page = ring->pending[slot].read_page;
+                    memset(&ring->pending[slot].read_page, 0,
+                           sizeof(ring->pending[slot].read_page));
+                }
             }
             canceled_sequence = ring->pending[slot].sequence;
             *canceled_user_data = ring->pending[slot].user_data;
@@ -4228,6 +4758,8 @@ typedef struct io_uring_pending_snapshot {
     uint8_t event_size;
     uint8_t event_data_offset;
     uint16_t buffer_group;
+    uint32_t zcrx_id;
+    uint32_t zcrx_remaining;
     int32_t wait_owner_tid;
     kernel_process_wait_request_t process_wait_request;
     kernel_io_uring_waitid_copy_t waitid_copy;
@@ -4260,6 +4792,8 @@ static void io_uring_pending_snapshot(
     destination->event_size = source->event_size;
     destination->event_data_offset = source->event_data_offset;
     destination->buffer_group = source->buffer_group;
+    destination->zcrx_id = source->zcrx_id;
+    destination->zcrx_remaining = source->zcrx_remaining;
     destination->wait_owner_tid = source->wait_owner_tid;
     destination->process_wait_request = source->process_wait_request;
     destination->waitid_copy = source->waitid_copy;
@@ -4354,13 +4888,15 @@ static int io_uring_pending_remove_locked(
     memset(release, 0, sizeof(*release));
     release->epoll_index = -1;
     if ((pending->kind == IO_URING_PENDING_POLL ||
-         pending->kind == IO_URING_PENDING_READ_MULTISHOT) &&
+         pending->kind == IO_URING_PENDING_READ_MULTISHOT ||
+         pending->kind == IO_URING_PENDING_RECV_ZC) &&
         kernel_fd_operation_view(&pending->descriptor_lease) &&
         kernel_fd_operation_move(
             &release->descriptor_lease,
             &pending->descriptor_lease) < 0)
         return -EDGE_LINUX_EBUSY;
-    if (pending->kind == IO_URING_PENDING_READ_MULTISHOT) {
+    if (pending->kind == IO_URING_PENDING_READ_MULTISHOT ||
+        pending->kind == IO_URING_PENDING_RECV_ZC) {
         release->read_page = pending->read_page;
         memset(&pending->read_page, 0, sizeof(pending->read_page));
     }
@@ -4387,6 +4923,72 @@ static void io_uring_pending_release_finish(
         (void)kernel_futex_async_wait_cancel(
             release->futex_wait_id);
     release->epoll_index = -1;
+}
+
+static int io_uring_zcrx_chunk_take_locked(
+        kernel_io_uring_zcrx_t *zcrx, uint32_t *chunk) {
+    uint32_t start;
+
+    if (!zcrx || !chunk || !zcrx->chunk_count)
+        return -EDGE_LINUX_ENOBUFS;
+    start = zcrx->free_hint < zcrx->chunk_count ?
+        zcrx->free_hint : 0u;
+    for (uint32_t scanned = 0; scanned < zcrx->chunk_count; ++scanned) {
+        uint32_t candidate = start + scanned;
+        uint64_t mask;
+
+        if (candidate >= zcrx->chunk_count)
+            candidate -= zcrx->chunk_count;
+        mask = UINT64_C(1) << (candidate & 63u);
+        if (!(zcrx->free_bitmap[candidate >> 6u] & mask))
+            continue;
+        zcrx->free_bitmap[candidate >> 6u] &= ~mask;
+        zcrx->free_hint = candidate + 1u;
+        if (zcrx->free_hint >= zcrx->chunk_count)
+            zcrx->free_hint = 0u;
+        *chunk = candidate;
+        return 0;
+    }
+    return -EDGE_LINUX_ENOBUFS;
+}
+
+static void io_uring_zcrx_chunk_return_locked(
+        kernel_io_uring_zcrx_t *zcrx, uint32_t chunk) {
+    if (!zcrx || chunk >= zcrx->chunk_count) return;
+    zcrx->free_bitmap[chunk >> 6u] |=
+        UINT64_C(1) << (chunk & 63u);
+    if (chunk < zcrx->free_hint) zcrx->free_hint = chunk;
+}
+
+static int io_uring_zcrx_notification_prepare_locked(
+        kernel_io_uring_zcrx_t *zcrx, uint32_t type,
+        uint64_t *user_data) {
+    uint8_t mask;
+
+    if (!zcrx || !user_data || type > 1u) return 0;
+    mask = (uint8_t)(1u << type);
+    if (!(zcrx->notification_type_mask & mask) ||
+        (zcrx->fired_notifications & mask))
+        return 0;
+    zcrx->fired_notifications |= mask;
+    *user_data = zcrx->notification_user_data;
+    return 1;
+}
+
+static void io_uring_zcrx_copy_stats_locked(
+        kernel_io_uring_zcrx_t *zcrx, uint32_t bytes) {
+    struct edge_linux_io_uring_zcrx_notification_stats stats;
+
+    if (!zcrx || !(zcrx->notification_flags & 1u)) return;
+    if (io_uring_zcrx_region_copy(
+            zcrx, zcrx->stats_offset,
+            &stats, sizeof(stats), 0) < 0)
+        return;
+    ++stats.copy_count;
+    stats.copy_bytes += bytes;
+    (void)io_uring_zcrx_region_copy(
+        zcrx, zcrx->stats_offset,
+        &stats, sizeof(stats), 1);
 }
 
 static int io_uring_link_timeout_disarm(
@@ -4714,6 +5316,154 @@ uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us) {
             }
             spin_unlock_irqrestore(&g_io_uring_lock, flags);
             io_uring_pending_release_finish(&final_release);
+        } else if (pending.kind == IO_URING_PENDING_RECV_ZC) {
+            io_uring_pending_release_t final_release;
+            kernel_io_file_range_request_t read_request;
+            kernel_io_uring_zcrx_t *zcrx;
+            uint64_t notification_user_data = 0u;
+            uint64_t completion_offset = 0u;
+            uint32_t chunk = 0u;
+            uint32_t read_length;
+            int notify_copy = 0;
+            int notify_empty = 0;
+            int final = 0;
+
+            memset(&final_release, 0, sizeof(final_release));
+            final_release.epoll_index = -1;
+            if (pending.zcrx_id >=
+                    KERNEL_IO_URING_MAX_ZCRX_CONTEXTS ||
+                ring->zcrx[pending.zcrx_id].used != 1u ||
+                kernel_fd_operation_clone(
+                    &poll_lease,
+                    &ring->pending[slot].descriptor_lease) < 0) {
+                spin_unlock_irqrestore(&g_io_uring_lock, flags);
+                continue;
+            }
+            zcrx = &ring->zcrx[pending.zcrx_id];
+            if (io_uring_zcrx_chunk_take_locked(zcrx, &chunk) < 0) {
+                notify_empty =
+                    io_uring_zcrx_notification_prepare_locked(
+                        zcrx, 0u, &notification_user_data);
+                spin_unlock_irqrestore(&g_io_uring_lock, flags);
+                (void)kernel_fd_operation_release(&poll_lease);
+                if (notify_empty &&
+                    kernel_io_uring_completion_add_async(
+                        ring_id, notification_user_data, 0, 0u) == 0)
+                    ++count;
+                continue;
+            }
+            read_length = zcrx->receive_buffer_length;
+            if (pending.zcrx_remaining &&
+                pending.zcrx_remaining < read_length)
+                read_length = pending.zcrx_remaining;
+            spin_unlock_irqrestore(&g_io_uring_lock, flags);
+
+            if (kernel_fd_operation_ready(
+                    &poll_lease, KERNEL_IO_READ_CURRENT) <= 0) {
+                flags = spin_lock_irqsave(&g_io_uring_lock);
+                ring = io_uring_lookup_locked(ring_id);
+                if (ring && pending.zcrx_id <
+                        KERNEL_IO_URING_MAX_ZCRX_CONTEXTS &&
+                    ring->zcrx[pending.zcrx_id].used == 1u)
+                    io_uring_zcrx_chunk_return_locked(
+                        &ring->zcrx[pending.zcrx_id], chunk);
+                spin_unlock_irqrestore(&g_io_uring_lock, flags);
+                (void)kernel_fd_operation_release(&poll_lease);
+                continue;
+            }
+            memset(&read_request, 0, sizeof(read_request));
+            read_request.operation = KERNEL_IO_FILE_RANGE_READ;
+            read_request.buffer = pending.read_page.address;
+            read_request.length = read_length;
+            result = (int32_t)kernel_fd_operation_file_range(
+                &poll_lease, &read_request);
+            (void)kernel_fd_operation_release(&poll_lease);
+            if (result == -EDGE_LINUX_EAGAIN) {
+                flags = spin_lock_irqsave(&g_io_uring_lock);
+                ring = io_uring_lookup_locked(ring_id);
+                if (ring && pending.zcrx_id <
+                        KERNEL_IO_URING_MAX_ZCRX_CONTEXTS &&
+                    ring->zcrx[pending.zcrx_id].used == 1u)
+                    io_uring_zcrx_chunk_return_locked(
+                        &ring->zcrx[pending.zcrx_id], chunk);
+                spin_unlock_irqrestore(&g_io_uring_lock, flags);
+                continue;
+            }
+
+            flags = spin_lock_irqsave(&g_io_uring_lock);
+            ring = io_uring_lookup_locked(ring_id);
+            if (!ring || !ring->pending[slot].used ||
+                ring->pending[slot].kind != IO_URING_PENDING_RECV_ZC ||
+                ring->pending[slot].sequence != pending.sequence ||
+                pending.zcrx_id >= KERNEL_IO_URING_MAX_ZCRX_CONTEXTS ||
+                ring->zcrx[pending.zcrx_id].used != 1u) {
+                spin_unlock_irqrestore(&g_io_uring_lock, flags);
+                continue;
+            }
+            zcrx = &ring->zcrx[pending.zcrx_id];
+            completion_user_data = ring->pending[slot].user_data;
+            if (result <= 0) {
+                io_uring_zcrx_chunk_return_locked(zcrx, chunk);
+                if (io_uring_pending_remove_locked(
+                        &ring->pending[slot], &final_release) == 0)
+                    final = 1;
+            } else if (io_uring_fixed_buffer_copy_in(
+                           &zcrx->area,
+                           (uint64_t)chunk *
+                               zcrx->receive_buffer_length,
+                           pending.read_page.address,
+                           (uint32_t)result) < 0) {
+                result = -EDGE_LINUX_EFAULT;
+                io_uring_zcrx_chunk_return_locked(zcrx, chunk);
+                if (io_uring_pending_remove_locked(
+                        &ring->pending[slot], &final_release) == 0)
+                    final = 1;
+            } else {
+                completion_offset = (uint64_t)chunk *
+                    zcrx->receive_buffer_length;
+                io_uring_zcrx_copy_stats_locked(
+                    zcrx, (uint32_t)result);
+                notify_copy =
+                    io_uring_zcrx_notification_prepare_locked(
+                        zcrx, 1u, &notification_user_data);
+                if (ring->pending[slot].zcrx_remaining) {
+                    if ((uint32_t)result >=
+                        ring->pending[slot].zcrx_remaining)
+                        ring->pending[slot].zcrx_remaining = 0u;
+                    else
+                        ring->pending[slot].zcrx_remaining -=
+                            (uint32_t)result;
+                    if (!ring->pending[slot].zcrx_remaining &&
+                        io_uring_pending_remove_locked(
+                            &ring->pending[slot],
+                            &final_release) == 0)
+                        final = 1;
+                }
+            }
+            spin_unlock_irqrestore(&g_io_uring_lock, flags);
+
+            if (result > 0) {
+                if (kernel_io_uring_completion_add32_async(
+                        ring_id, completion_user_data, result,
+                        IORING_CQE_F_MORE,
+                        completion_offset, 0u) == 0)
+                    ++count;
+                if (notify_copy &&
+                    kernel_io_uring_completion_add_async(
+                        ring_id, notification_user_data, 1, 0u) == 0)
+                    ++count;
+                if (final &&
+                    kernel_io_uring_completion_add_async(
+                        ring_id, completion_user_data, 0, 0u) == 0)
+                    ++count;
+            } else if (final &&
+                       kernel_io_uring_completion_add_async(
+                           ring_id, completion_user_data,
+                           result, 0u) == 0) {
+                ++count;
+            }
+            io_uring_pending_release_finish(&final_release);
+            continue;
         } else if (pending.kind == IO_URING_PENDING_EPOLL) {
             io_uring_epoll_copy_context_t copy_context = {
                 .address = pending.user_address,
@@ -4888,6 +5638,23 @@ static int io_uring_pbuf_mmap_group(
     return 1;
 }
 
+static int io_uring_zcrx_mmap_context(
+        uint64_t offset, uint32_t *zcrx_id) {
+    uint64_t encoded;
+
+    if ((offset & KERNEL_IO_URING_OFF_MMAP_MASK) !=
+        KERNEL_IO_URING_OFF_ZCRX_REGION)
+        return 0;
+    if (offset & ((1ull << KERNEL_IO_URING_OFF_ZCRX_SHIFT) - 1u))
+        return -EDGE_LINUX_EINVAL;
+    encoded = (offset & ~KERNEL_IO_URING_OFF_MMAP_MASK) >>
+        KERNEL_IO_URING_OFF_ZCRX_SHIFT;
+    if (encoded >= KERNEL_IO_URING_MAX_ZCRX_CONTEXTS)
+        return -EDGE_LINUX_EINVAL;
+    *zcrx_id = (uint32_t)encoded;
+    return 1;
+}
+
 int kernel_io_uring_mmap_info(int32_t ring_id, uint64_t offset,
                               uint64_t length, uint32_t *page_count) {
     kernel_io_uring_page_t *pages;
@@ -4895,7 +5662,9 @@ int kernel_io_uring_mmap_info(int32_t ring_id, uint64_t offset,
     uint64_t flags;
     uint32_t count;
     uint16_t group_id = 0u;
+    uint32_t zcrx_id = 0u;
     int pbuf;
+    int zcrx;
     int result;
     if (!length || !page_count) return -EDGE_LINUX_EINVAL;
     flags = spin_lock_irqsave(&g_io_uring_lock);
@@ -4904,8 +5673,21 @@ int kernel_io_uring_mmap_info(int32_t ring_id, uint64_t offset,
         spin_unlock_irqrestore(&g_io_uring_lock, flags);
         return -EDGE_LINUX_EBADF;
     }
+    zcrx = io_uring_zcrx_mmap_context(offset, &zcrx_id);
     pbuf = io_uring_pbuf_mmap_group(offset, &group_id);
-    if (pbuf < 0) {
+    if (zcrx < 0) {
+        result = zcrx;
+    } else if (zcrx) {
+        kernel_io_uring_zcrx_t *context = &ring->zcrx[zcrx_id];
+
+        pages = 0;
+        if (context->used != 1u || context->region_user_provided)
+            result = -EDGE_LINUX_EINVAL;
+        else {
+            count = context->region_page_count;
+            result = 0;
+        }
+    } else if (pbuf < 0) {
         result = pbuf;
     } else if (pbuf) {
         kernel_io_uring_buffer_group_t *group =
@@ -4941,7 +5723,9 @@ int kernel_io_uring_mmap_page(int32_t ring_id, uint64_t offset,
     uint64_t flags;
     uint32_t count;
     uint16_t group_id = 0u;
+    uint32_t zcrx_id = 0u;
     int pbuf;
+    int zcrx;
     int result;
     if (!page) return -EDGE_LINUX_EINVAL;
     flags = spin_lock_irqsave(&g_io_uring_lock);
@@ -4950,8 +5734,23 @@ int kernel_io_uring_mmap_page(int32_t ring_id, uint64_t offset,
         spin_unlock_irqrestore(&g_io_uring_lock, flags);
         return -EDGE_LINUX_EBADF;
     }
+    zcrx = io_uring_zcrx_mmap_context(offset, &zcrx_id);
     pbuf = io_uring_pbuf_mmap_group(offset, &group_id);
-    if (pbuf < 0) {
+    if (zcrx < 0) {
+        result = zcrx;
+    } else if (zcrx) {
+        kernel_io_uring_zcrx_t *context = &ring->zcrx[zcrx_id];
+
+        if (context->used != 1u || context->region_user_provided) {
+            pages = 0;
+            count = 0u;
+            result = -EDGE_LINUX_EINVAL;
+        } else {
+            pages = context->region_pages;
+            count = context->region_page_count;
+            result = 0;
+        }
+    } else if (pbuf < 0) {
         result = pbuf;
     } else if (pbuf) {
         kernel_io_uring_buffer_group_t *group =
@@ -5557,6 +6356,14 @@ int kernel_io_uring_completion_add32(
     return io_uring_completion_add(
         ring_id, user_data, result, cqe_flags,
         extra1, extra2, 1, 0);
+}
+
+int kernel_io_uring_completion_add32_async(
+        int32_t ring_id, uint64_t user_data, int32_t result,
+        uint32_t cqe_flags, uint64_t extra1, uint64_t extra2) {
+    return io_uring_completion_add(
+        ring_id, user_data, result, cqe_flags,
+        extra1, extra2, 1, 1);
 }
 
 int kernel_io_uring_completion_flush(int32_t ring_id) {
