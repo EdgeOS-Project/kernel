@@ -399,11 +399,11 @@ int64_t kernel_process_exec(const kernel_exec_request_t *request) {
     if (status < 0) return exec_fail(&state, status);
     status = linux_exec_payload_capture_vector_with(
         state.payload, &state, process_exec_arch_copy_from_user,
-        request->argv_user, 0);
+        request->argv_user, request->vector_word_size, 0);
     if (status < 0) return exec_fail(&state, status);
     status = linux_exec_payload_capture_vector_with(
         state.payload, &state, process_exec_arch_copy_from_user,
-        request->envp_user, 1);
+        request->envp_user, request->vector_word_size, 1);
     if (status < 0) return exec_fail(&state, status);
     status = exec_resolve_image(&state, request->nofollow != 0);
     if (status < 0) return exec_fail(&state, status);

@@ -59,6 +59,19 @@ vfs_superblock_t *vfs_superblock_stable(vfs_superblock_t *superblock) {
     return superblock;
 }
 
+int kernel_fanotify_permission_check(const char *canonical_path,
+                                     uint64_t mask) {
+    (void)canonical_path;
+    (void)mask;
+    return 0;
+}
+
+void kernel_fanotify_notify_path(const char *canonical_path,
+                                 uint32_t mask) {
+    (void)canonical_path;
+    (void)mask;
+}
+
 int vfs_inode_open(vfs_superblock_t *superblock,
                    const vfs_inode_t *inode) {
     (void)superblock;
@@ -158,11 +171,12 @@ void kernel_exec_payload_release(kernel_exec_payload_handle_t *handle) {
 int linux_exec_payload_capture_vector_with(
     linux_exec_payload_t *payload, void *copy_context,
     linux_exec_copy_from_user_fn copy_from_user, uint64_t user_vector,
-    int environment) {
+    uint8_t vector_word_size, int environment) {
     (void)payload;
     (void)copy_context;
     (void)copy_from_user;
     (void)user_vector;
+    expect_true("exec vector word size", vector_word_size == sizeof(uint64_t));
     record_event(environment ?
                  EVENT_CAPTURE_ENVIRONMENT : EVENT_CAPTURE_ARGUMENTS);
     return 0;
@@ -371,6 +385,7 @@ static kernel_exec_request_t base_request(const char *path) {
     request.path = (char *)path;
     request.argv_user = 0x1000u;
     request.envp_user = 0x2000u;
+    request.vector_word_size = sizeof(uint64_t);
     return request;
 }
 

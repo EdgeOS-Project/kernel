@@ -26,6 +26,7 @@ typedef struct kernel_exec_request {
     int32_t memory_descriptor;
     uint64_t argv_user;
     uint64_t envp_user;
+    uint8_t vector_word_size;
     uint8_t memory_descriptor_supplied;
     uint8_t nofollow;
 } kernel_exec_request_t;

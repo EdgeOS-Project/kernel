@@ -133,16 +133,20 @@ static int payload_append_user_string(
 int linux_exec_payload_capture_vector_with(
     linux_exec_payload_t *payload, void *copy_context,
     linux_exec_copy_from_user_fn copy_from_user, uint64_t user_vector,
-    int environment) {
+    uint8_t vector_word_size, int environment) {
     uint32_t count = 0;
     if (!payload || !copy_from_user) return -EDGE_LINUX_EFAULT;
+    if (vector_word_size != sizeof(uint32_t) &&
+        vector_word_size != sizeof(uint64_t))
+        return -EDGE_LINUX_EINVAL;
     if (!user_vector) return 0;
     while (payload->argc + payload->envc < LINUX_EXEC_POINTER_MAX) {
         uint64_t source = 0;
-        uint64_t slot = user_vector + (uint64_t)count * sizeof(source);
+        uint64_t slot = user_vector +
+            (uint64_t)count * vector_word_size;
         int result;
-        if (slot < user_vector ||
-            copy_from_user(copy_context, &source, slot, sizeof(source)) < 0)
+        if (slot < user_vector || copy_from_user(
+                copy_context, &source, slot, vector_word_size) < 0)
             return -EDGE_LINUX_EFAULT;
         if (!source) return 0;
         result = payload_append_user_string(

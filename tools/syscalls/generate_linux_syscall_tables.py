@@ -17,6 +17,8 @@ DISPATCH_INCLUDE = ROOT / "src/kernel/linux_syscall_dispatch.inc"
 
 
 X32_COMPAT_SHARED_SYSCALLS = {
+    "execve",
+    "execveat",
     "get_robust_list",
     "getsockopt",
     "io_setup",

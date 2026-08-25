@@ -17272,6 +17272,8 @@ static int64_t edge_linux_sys_exec(
     int status;
 
     memset(&request, 0, sizeof(request));
+    request.vector_word_size = context->architecture ==
+        EDGE_LINUX_ARCH_X32 ? sizeof(uint32_t) : sizeof(uint64_t);
     if (context->id == EDGE_LINUX_SYS_execve) {
         user_path = context->arguments[0];
         request.argv_user = context->arguments[1];

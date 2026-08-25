@@ -44,7 +44,7 @@ void linux_exec_payload_reset(linux_exec_payload_t *payload);
 int linux_exec_payload_capture_vector_with(
     linux_exec_payload_t *payload, void *copy_context,
     linux_exec_copy_from_user_fn copy_from_user, uint64_t user_vector,
-    int environment);
+    uint8_t vector_word_size, int environment);
 int linux_exec_payload_append(linux_exec_payload_t *payload,
                               const char *string, int environment,
                               uint32_t *offset_out);
