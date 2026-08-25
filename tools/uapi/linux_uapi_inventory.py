@@ -149,6 +149,7 @@ EDGEOS_ASSESSMENTS = [
             "FILES2 sparse registration, UPDATE2 layouts and resource tag completion events",
             "bounded fixed-buffer registration, sparse entries, updates, tags and range validation",
             "ia32 and x32 fixed-buffer registration and update iovec conversion",
+            "ia32 and x32 setup, mapped SQ/CQ/SQE rings, NOP completion and compat READV iovec conversion",
             "bounded fixed-buffer user-page pinning with retained lifetime across unmap",
             "READ_FIXED and WRITE_FIXED through pinned pages for regular files and pipes",
             "READV_FIXED and WRITEV_FIXED with pinned registered-buffer ranges for regular files and pipes",
@@ -197,7 +198,7 @@ EDGEOS_ASSESSMENTS = [
             "provided-buffer page pinning and owner-mm-independent lifetime across unmap and exit",
             "incremental buffer-ring READ_MULTISHOT with partial-buffer BUF_MORE lifetime",
             "remaining supported VFS and socket operations",
-            "remaining ia32 and x32 runtime coverage outside fixed-buffer registration",
+            "remaining ia32 and x32 semantic coverage across supported operations",
         ],
         "runtime_tests": [
             "tools/tests/io_uring_abi_probe.c",
@@ -299,7 +300,9 @@ EDGEOS_ASSESSMENTS = [
                 "busy-poll state and enter behavior verified on EdgeOS, plus "
                 "user-provided pinned parameter regions, handback, duplicate "
                 "registration, mmap rejection and registered wait arguments, "
-                "plus ia32 and x32 fixed-buffer iovec boundary handling"
+                "plus ia32 and x32 fixed-buffer registration, setup and mapped "
+                "ring layouts, NOP SQE/CQE completion and READV iovec boundary "
+                "handling"
             ),
         },
     },

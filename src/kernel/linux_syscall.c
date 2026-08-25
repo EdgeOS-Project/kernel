@@ -11293,6 +11293,10 @@ static int32_t edge_linux_io_uring_epoll_wait(
     return result < 0 ? result : EDGE_LINUX_IORING_PENDING_RESULT;
 }
 
+static int edge_linux_io_uring_copy_iovec_from_user(
+    edge_linux_syscall_context_t *context, uint64_t user_buffers,
+    uint32_t index, struct edge_linux_iovec *buffer);
+
 static int64_t edge_linux_io_uring_execute_rw(
         edge_linux_syscall_context_t *context,
         int32_t ring_id,
@@ -11345,13 +11349,15 @@ static int64_t edge_linux_io_uring_execute_rw(
     if (kernel_io_current_vector_scratch(&scratch) < 0 ||
         !scratch.vectors || scratch.capacity < vector_count)
         return -EDGE_LINUX_ENOMEM;
-    if (edge_linux_copy_from_user(
-            context, scratch.vectors, submission->address,
-            (uint64_t)vector_count * sizeof(scratch.vectors[0])) < 0)
-        return -EDGE_LINUX_EFAULT;
     for (uint32_t index = 0; index < vector_count; ++index) {
-        uint64_t length = scratch.vectors[index].iov_len;
+        int import_result = edge_linux_io_uring_copy_iovec_from_user(
+            context, submission->address, index,
+            &scratch.vectors[index]);
+        uint64_t length;
         int64_t completed;
+
+        if (import_result < 0) return import_result;
+        length = scratch.vectors[index].iov_len;
         if (length > EDGE_LINUX_MAX_RW_COUNT - transferred)
             length = EDGE_LINUX_MAX_RW_COUNT - transferred;
         if (!length) continue;
@@ -11391,14 +11397,15 @@ static int edge_linux_io_uring_fixed_vector_validate(
     if (kernel_io_current_vector_scratch(&scratch) < 0 ||
         !scratch.vectors || scratch.capacity < count)
         return -EDGE_LINUX_ENOMEM;
-    if (edge_linux_copy_from_user(
-            context, scratch.vectors, submission->address,
-            (uint64_t)count * sizeof(scratch.vectors[0])) < 0)
-        return -EDGE_LINUX_EFAULT;
     for (uint32_t index = 0; index < count; ++index) {
-        uint64_t length = scratch.vectors[index].iov_len;
+        int import_result = edge_linux_io_uring_copy_iovec_from_user(
+            context, submission->address, index,
+            &scratch.vectors[index]);
+        uint64_t length;
         int result;
 
+        if (import_result < 0) return import_result;
+        length = scratch.vectors[index].iov_len;
         if (!length) return -EDGE_LINUX_EFAULT;
         if (length > EDGE_LINUX_MAX_RW_COUNT - total)
             return -EDGE_LINUX_EINVAL;
@@ -12483,10 +12490,9 @@ static int edge_linux_io_uring_select_buffer(
         struct edge_linux_iovec vector;
 
         if (submission->length != 1u) return -EDGE_LINUX_EINVAL;
-        if (edge_linux_copy_from_user(
-                context, &vector, submission->address,
-                sizeof(vector)) < 0)
-            return -EDGE_LINUX_EFAULT;
+        result = edge_linux_io_uring_copy_iovec_from_user(
+            context, submission->address, 0u, &vector);
+        if (result < 0) return result;
         requested_length = vector.iov_len > UINT32_MAX ?
             UINT32_MAX : (uint32_t)vector.iov_len;
     }
