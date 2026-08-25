@@ -372,12 +372,13 @@ EDGEOS_ASSESSMENTS = [
             "XSK-map creation, syscall lookup rejection, socket descriptor and family error behavior, deletion, key iteration and unsupported batch behavior",
             "socket-array and socket-hash creation, connected stream socket insertion, cookie lookup, close-time removal, replacement, deletion and key iteration semantics",
             "reuseport socket-array creation, bound TCP and UDP insertion, single-map membership, cookie lookup, replacement, deletion, close-time removal and key iteration semantics",
+            "cgroup local-storage creation with BTF, cgroup FD lookup, insertion, replacement, deletion, reference lifetime and unsupported iteration semantics",
             "instruction-array creation, offset update and zeroing behavior, lookup, iteration, freeze and unsupported delete and batch operations",
             "resizable-hash creation flag and size-hint validation, element operations, iteration, lookup-and-delete, batch operations and freeze behavior",
             "ia32 and x32 fixed-width map-create and map-element attribute layouts",
         ],
         "missing": [
-            "remaining map types, socket-map and reuseport program attachment and redirect execution, reuseport disconnect-time removal, stack-trace helper population, CPU-map packet redirect execution, device-map packet redirect execution and AF_XDP socket-backed XSK-map entries",
+            "remaining map types, socket-map and reuseport program attachment and redirect execution, reuseport disconnect-time removal, cgroup local-storage helper access and owner-removal cleanup, deprecated cgroup-storage attachment integration, stack-trace helper population, CPU-map packet redirect execution, device-map packet redirect execution and AF_XDP socket-backed XSK-map entries",
             "resizable-hash concurrent dynamic resizing and full Linux key and value size range",
             "remaining specialized map-family concurrency semantics, plus instruction-array verifier and jump-table integration",
             "additional attachment families and program types",
@@ -393,6 +394,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/bpf_xskmap_abi_probe.c",
             "tools/tests/bpf_sockmap_abi_probe.c",
             "tools/tests/bpf_reuseport_array_abi_probe.c",
+            "tools/tests/bpf_cgrp_storage_abi_probe.c",
             "tools/tests/bpf_insn_array_abi_probe.c",
             "tools/tests/bpf_rhash_abi_probe.c",
             "tools/tests/bpf_stack_trace_abi_probe.c",
@@ -428,6 +430,9 @@ EDGEOS_ASSESSMENTS = [
                 "reuseport socket-array creation, bound TCP and UDP "
                 "insertion, single-map membership, cookie lookup, "
                 "replacement, deletion, close-time removal and iteration, "
+                "cgroup local-storage BTF creation, cgroup FD lookup, "
+                "insertion, replacement, deletion, reference lifetime and "
+                "unsupported iteration, "
                 "instruction-array creation, offset updates, lookup, "
                 "iteration, freeze and unsupported delete and batch behavior, "
                 "resizable-hash creation flags, size hints, element and batch "

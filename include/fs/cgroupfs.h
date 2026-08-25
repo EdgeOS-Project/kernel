@@ -20,6 +20,7 @@ int cgroupfs_directory_valid(vfs_superblock_t *sb,
 int cgroupfs_reference_get(vfs_superblock_t *sb,
                            const vfs_inode_t *inode,
                            uint64_t *reference);
+int cgroupfs_reference_retain(uint64_t reference);
 void cgroupfs_reference_put(uint64_t reference);
 int cgroupfs_bpf_program_attach(vfs_superblock_t *sb,
                                 const vfs_inode_t *inode,

@@ -183,6 +183,10 @@ void cgroupfs_reference_put(uint64_t reference) {
         reference;
 }
 
+int cgroupfs_reference_retain(uint64_t reference) {
+    return reference ? 0 : -EDGE_LINUX_EBADF;
+}
+
 uint32_t edge_smp_current_cpu(void) {
     return g_test_current_cpu;
 }
@@ -2414,6 +2418,85 @@ static void test_reuseport_socket_array(void) {
     assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
 }
 
+static void test_cgroup_local_storage(void) {
+    uint8_t btf_blob[25] = {
+        0x9f, 0xeb, 1u, 0u,
+        24u, 0u, 0u, 0u,
+    };
+    kernel_bpf_map_create_request_t request = {
+        .type = KERNEL_BPF_MAP_TYPE_CGRP_STORAGE,
+        .key_size = sizeof(int32_t),
+        .value_size = sizeof(uint32_t),
+        .flags = KERNEL_BPF_MAP_NO_PREALLOC,
+        .btf_key_type_id = 1u,
+        .btf_value_type_id = 1u,
+        .btf_present = 1u,
+    };
+    kernel_bpf_map_info_t info;
+    uint64_t first_reference = 0x300000003ull;
+    uint64_t second_reference = 0x400000004ull;
+    uint32_t value = 0x11223344u;
+    uint32_t replacement = 0x88776655u;
+    uint32_t output = 0u;
+    uint32_t next_key = 0u;
+    int btf;
+    int map;
+
+    btf_blob[16] = 0u;
+    btf_blob[20] = 1u;
+    btf = kernel_bpf_btf_create(btf_blob, sizeof(btf_blob));
+    assert(btf >= 0);
+    request.btf_object_id = btf;
+    map = kernel_bpf_map_create(&request);
+    assert(map >= 0);
+    assert(kernel_bpf_map_info(map, &info) == 0);
+    assert(info.type == KERNEL_BPF_MAP_TYPE_CGRP_STORAGE);
+    assert(info.max_entries == 0u);
+    assert(kernel_bpf_cgrp_storage_lookup(
+               map, first_reference, &output, 0u) ==
+           -EDGE_LINUX_ENOENT);
+
+    g_cgroup_reference_release_count = 0u;
+    memset(g_cgroup_references_released, 0,
+           sizeof(g_cgroup_references_released));
+    assert(kernel_bpf_cgrp_storage_update(
+               map, first_reference, &value, KERNEL_BPF_EXIST) ==
+           -EDGE_LINUX_ENOENT);
+    assert(g_cgroup_reference_release_count == 1u);
+    assert(kernel_bpf_cgrp_storage_update(
+               map, first_reference, &value, KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_cgrp_storage_lookup(
+               map, first_reference, &output, 0u) == 0);
+    assert(output == value);
+    assert(kernel_bpf_cgrp_storage_update(
+               map, first_reference, &replacement,
+               KERNEL_BPF_NOEXIST) == -EDGE_LINUX_EEXIST);
+    assert(kernel_bpf_cgrp_storage_update(
+               map, first_reference, &replacement,
+               KERNEL_BPF_EXIST) == 0);
+    assert(kernel_bpf_cgrp_storage_lookup(
+               map, first_reference, &output, 0u) == 0);
+    assert(output == replacement);
+    assert(kernel_bpf_map_next_key(map, 0, &next_key) ==
+           -EDGE_LINUX_ENOTSUPP);
+    assert(kernel_bpf_cgrp_storage_delete(
+               map, first_reference) == 0);
+    assert(kernel_bpf_cgrp_storage_delete(
+               map, first_reference) == -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_cgrp_storage_update(
+               map, second_reference, &value, KERNEL_BPF_ANY) == 0);
+    kernel_bpf_object_release(btf);
+    kernel_bpf_object_release(map);
+    assert(g_cgroup_reference_release_count == 5u);
+    assert(g_cgroup_references_released[4] == second_reference);
+
+    request.btf_present = 0u;
+    request.btf_key_type_id = 0u;
+    request.btf_value_type_id = 0u;
+    request.btf_object_id = 0;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+}
+
 int main(void) {
     test_array_map();
     test_cgroup_array();
@@ -2445,6 +2528,7 @@ int main(void) {
     test_pinned_object_lifetime();
     test_socket_maps();
     test_reuseport_socket_array();
+    test_cgroup_local_storage();
     puts("bpf_runtime_unit: PASS");
     return 0;
 }

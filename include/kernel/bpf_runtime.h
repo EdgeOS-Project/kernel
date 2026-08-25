@@ -42,6 +42,7 @@
 #define KERNEL_BPF_MAP_TYPE_RINGBUF 27u
 #define KERNEL_BPF_MAP_TYPE_BLOOM_FILTER 30u
 #define KERNEL_BPF_MAP_TYPE_USER_RINGBUF 31u
+#define KERNEL_BPF_MAP_TYPE_CGRP_STORAGE 32u
 #define KERNEL_BPF_MAP_TYPE_INSN_ARRAY 34u
 #define KERNEL_BPF_MAP_TYPE_RHASH 35u
 
@@ -52,6 +53,7 @@
 #define KERNEL_BPF_MAP_WRONLY (1u << 4)
 #define KERNEL_BPF_MAP_STACK_BUILD_ID (1u << 5)
 #define KERNEL_BPF_MAP_ZERO_SEED (1u << 6)
+#define KERNEL_BPF_MAP_CLONE (1u << 9)
 #define KERNEL_BPF_MAP_RDONLY_PROGRAM (1u << 7)
 #define KERNEL_BPF_MAP_PRESERVE_ELEMS (1u << 11)
 #define KERNEL_BPF_MAP_RB_OVERWRITE (1u << 19)
@@ -231,6 +233,14 @@ int kernel_bpf_perf_event_array_update(int object_id, const void *key,
 int kernel_bpf_cgroup_array_update(int object_id, const void *key,
                                    uint64_t cgroup_reference,
                                    uint64_t flags);
+int kernel_bpf_cgrp_storage_lookup(int object_id,
+                                   uint64_t cgroup_reference,
+                                   void *value, uint64_t flags);
+int kernel_bpf_cgrp_storage_update(int object_id,
+                                   uint64_t cgroup_reference,
+                                   const void *value, uint64_t flags);
+int kernel_bpf_cgrp_storage_delete(int object_id,
+                                   uint64_t cgroup_reference);
 int kernel_bpf_map_delete(int object_id, const void *key);
 int kernel_bpf_map_lookup_and_delete(int object_id, const void *key,
                                      void *value);

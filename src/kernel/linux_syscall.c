@@ -5607,6 +5607,22 @@ static int edge_linux_bpf_require_descriptor_access(
     return 0;
 }
 
+static int edge_linux_bpf_cgroup_reference_from_key(
+        const void *key, uint64_t *reference) {
+    kernel_vfs_descriptor_t target;
+    int32_t descriptor;
+    int status;
+
+    if (!key || !reference) return -EDGE_LINUX_EFAULT;
+    memcpy(&descriptor, key, sizeof(descriptor));
+    status = kernel_vfs_describe_descriptor(descriptor, &target);
+    if (status < 0) return status;
+    if (!target.superblock || !target.inode)
+        return -EDGE_LINUX_EBADF;
+    return cgroupfs_reference_get(
+        target.superblock, target.inode, reference);
+}
+
 static int64_t edge_linux_bpf_map_element(
     edge_linux_syscall_context_t *context, uint32_t command,
     uint64_t user_attribute, uint32_t attribute_size) {
@@ -5683,8 +5699,20 @@ static int64_t edge_linux_bpf_map_element(
             status = -EDGE_LINUX_EFAULT;
             goto out;
         }
-        status = kernel_bpf_map_lookup_flags(
-            object_id, key, value, attribute.flags);
+        if (info.type == KERNEL_BPF_MAP_TYPE_CGRP_STORAGE) {
+            uint64_t reference;
+
+            status = edge_linux_bpf_cgroup_reference_from_key(
+                key, &reference);
+            if (status == 0) {
+                status = kernel_bpf_cgrp_storage_lookup(
+                    object_id, reference, value, attribute.flags);
+                cgroupfs_reference_put(reference);
+            }
+        } else {
+            status = kernel_bpf_map_lookup_flags(
+                object_id, key, value, attribute.flags);
+        }
         if (status == 0 &&
             info.type != KERNEL_BPF_MAP_TYPE_BLOOM_FILTER &&
             edge_linux_copy_to_user(
@@ -5734,7 +5762,17 @@ static int64_t edge_linux_bpf_map_element(
                 goto out;
             }
         }
-        if (info.type == KERNEL_BPF_MAP_TYPE_REUSEPORT_SOCKARRAY) {
+        if (info.type == KERNEL_BPF_MAP_TYPE_CGRP_STORAGE) {
+            uint64_t reference;
+
+            status = edge_linux_bpf_cgroup_reference_from_key(
+                key, &reference);
+            if (status == 0) {
+                status = kernel_bpf_cgrp_storage_update(
+                    object_id, reference, value, attribute.flags);
+                cgroupfs_reference_put(reference);
+            }
+        } else if (info.type == KERNEL_BPF_MAP_TYPE_REUSEPORT_SOCKARRAY) {
             uint64_t socket_value = 0u;
 
             memcpy(&socket_value, value, info.value_size);
@@ -5830,7 +5868,19 @@ static int64_t edge_linux_bpf_map_element(
             status = -EDGE_LINUX_EINVAL;
             goto out;
         }
-        status = kernel_bpf_map_delete(object_id, key);
+        if (info.type == KERNEL_BPF_MAP_TYPE_CGRP_STORAGE) {
+            uint64_t reference;
+
+            status = edge_linux_bpf_cgroup_reference_from_key(
+                key, &reference);
+            if (status == 0) {
+                status = kernel_bpf_cgrp_storage_delete(
+                    object_id, reference);
+                cgroupfs_reference_put(reference);
+            }
+        } else {
+            status = kernel_bpf_map_delete(object_id, key);
+        }
     } else if (command == EDGE_LINUX_BPF_MAP_LOOKUP_AND_DELETE_ELEM) {
         if (attribute.flags) {
             status = -EDGE_LINUX_EINVAL;
@@ -5845,8 +5895,9 @@ static int64_t edge_linux_bpf_map_element(
             status = -EDGE_LINUX_EINVAL;
             goto out;
         }
-        status = kernel_bpf_map_next_key(
-            object_id, attribute.key ? key : 0, value);
+        status = info.type == KERNEL_BPF_MAP_TYPE_CGRP_STORAGE ?
+            -EDGE_LINUX_ENOTSUPP : kernel_bpf_map_next_key(
+                object_id, attribute.key ? key : 0, value);
         if (status == 0 && edge_linux_copy_to_user(
                 context, attribute.value, value, value_size) < 0)
             status = -EDGE_LINUX_EFAULT;
@@ -5933,6 +5984,7 @@ static int64_t edge_linux_bpf_map_batch(
         info.type == KERNEL_BPF_MAP_TYPE_SOCKMAP ||
         info.type == KERNEL_BPF_MAP_TYPE_SOCKHASH ||
         info.type == KERNEL_BPF_MAP_TYPE_REUSEPORT_SOCKARRAY ||
+        info.type == KERNEL_BPF_MAP_TYPE_CGRP_STORAGE ||
         info.type == KERNEL_BPF_MAP_TYPE_INSN_ARRAY)
         return -EDGE_LINUX_ENOTSUPP;
     if (!info.key_size) return -EDGE_LINUX_ENOTSUPP;

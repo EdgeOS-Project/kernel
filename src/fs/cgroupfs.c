@@ -3888,6 +3888,22 @@ int cgroupfs_reference_get(vfs_superblock_t *sb,
     return result;
 }
 
+int cgroupfs_reference_retain(uint64_t reference) {
+    uint32_t node = (uint32_t)reference;
+    uint32_t generation = (uint32_t)(reference >> 32u);
+    int result = -EDGE_LINUX_EBADF;
+
+    cgroupfs_initialize();
+    cgroupfs_lock(&g_cgroupfs_lock);
+    if (cgroupfs_node_valid(node, generation) &&
+        g_cgroupfs.nodes[node].bpf_reference_count != UINT32_MAX) {
+        ++g_cgroupfs.nodes[node].bpf_reference_count;
+        result = 0;
+    }
+    cgroupfs_unlock(&g_cgroupfs_lock);
+    return result;
+}
+
 void cgroupfs_reference_put(uint64_t reference) {
     uint32_t node = (uint32_t)reference;
     uint32_t generation = (uint32_t)(reference >> 32u);

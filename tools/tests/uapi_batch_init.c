@@ -230,6 +230,8 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "bpf_sockmap_abi_probe",
 #elif defined(UAPI_BATCH_BPF_REUSEPORT_ONLY)
         "bpf_reuseport_array_abi_probe",
+#elif defined(UAPI_BATCH_BPF_CGRP_STORAGE_ONLY)
+        "bpf_cgrp_storage_abi_probe",
 #elif defined(UAPI_BATCH_BPF_INSN_ARRAY_ONLY)
         "bpf_insn_array_abi_probe",
 #elif defined(UAPI_BATCH_BPF_RHASH_ONLY)
