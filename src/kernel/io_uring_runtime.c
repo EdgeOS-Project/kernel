@@ -35,6 +35,7 @@
 #define IORING_SETUP_SQ_REWIND       (1u << 20)
 
 #define IORING_CQE_F_SKIP            (1u << 5)
+#define IORING_CQE_F_BUF_MORE        (1u << 4)
 #define IORING_CQE_F_MORE            (1u << 1)
 #define IORING_CQE_F_BUFFER          (1u << 0)
 #define IORING_CQE_BUFFER_SHIFT      16u
@@ -3862,11 +3863,8 @@ int kernel_io_uring_read_multishot_add(
         return -EDGE_LINUX_EINVAL;
     result = kernel_io_uring_pbuf_ring_snapshot(
         ring_id, buffer_group, &pbuf_ring);
-    if (result == 0) {
-        if (pbuf_ring.incremental)
-            return -EDGE_LINUX_EOPNOTSUPP;
-    } else if (result != -EDGE_LINUX_EINVAL &&
-               result != -EDGE_LINUX_ENOENT) {
+    if (result != 0 && result != -EDGE_LINUX_EINVAL &&
+        result != -EDGE_LINUX_ENOENT) {
         return result;
     }
     result = kernel_fd_operation_acquire(
@@ -4232,7 +4230,6 @@ static int io_uring_multishot_buffer_select(
         struct edge_linux_io_uring_buf buffer;
         uint16_t tail;
 
-        if (ring.incremental) return -EDGE_LINUX_EOPNOTSUPP;
         result = kernel_io_uring_pbuf_ring_read(
             ring_id, group_id, ring.head, &buffer, &tail);
         if (result < 0) return result;
@@ -4562,10 +4559,6 @@ uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us) {
                     }
                     final = 1;
                 } else {
-                    if (provided_ring)
-                        (void)kernel_io_uring_pbuf_ring_commit(
-                            ring_id, selected.group_id,
-                            provided_ring_head);
                     if (kernel_mm_address_space_copy(
                                pending.address_space, selected.address,
                                pending.read_page.address, (uint32_t)result,
@@ -4573,10 +4566,42 @@ uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us) {
                         result = -EDGE_LINUX_EFAULT;
                         final = 1;
                     } else {
+                        int buffer_more = 0;
+
+                        if (provided_ring) {
+                            kernel_io_uring_pbuf_ring_t buffer_ring;
+
+                            if (kernel_io_uring_pbuf_ring_snapshot(
+                                    ring_id, selected.group_id,
+                                    &buffer_ring) < 0) {
+                                result = -EDGE_LINUX_EIO;
+                                final = 1;
+                            } else if (buffer_ring.incremental) {
+                                int complete_result =
+                                    kernel_io_uring_pbuf_ring_complete(
+                                        ring_id, selected.group_id,
+                                        provided_ring_head,
+                                        (uint32_t)result, &buffer_more);
+
+                                if (complete_result < 0) {
+                                    result = complete_result;
+                                    final = 1;
+                                }
+                            } else if (
+                                kernel_io_uring_pbuf_ring_commit(
+                                    ring_id, selected.group_id,
+                                    provided_ring_head) < 0) {
+                                result = -EDGE_LINUX_EIO;
+                                final = 1;
+                            }
+                        }
                         completion_flags = IORING_CQE_F_MORE |
                             IORING_CQE_F_BUFFER |
                             ((uint32_t)selected.id <<
                              IORING_CQE_BUFFER_SHIFT);
+                        if (buffer_more)
+                            completion_flags |= IORING_CQE_F_BUF_MORE;
+                        if (final) completion_flags = 0u;
                     }
                 }
             }

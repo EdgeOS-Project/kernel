@@ -179,7 +179,7 @@ EDGEOS_ASSESSMENTS = [
             "LINK_TIMEOUT cancellation races, target lifetime and paired completion results",
             "FUTEX_WAIT and FUTEX_WAITV asynchronous completion through the shared futex2 wait registry",
             "WAITID immediate and asynchronous child-state completion with retained submitter identity",
-            "READ_MULTISHOT pipe reads with retained descriptions, legacy provided buffers and normal buffer rings",
+            "READ_MULTISHOT pipe reads with retained descriptions, legacy provided buffers, normal buffer rings and incremental partial-buffer lifetime",
             "blind linked capability queries for supported request, registration, setup, enter, SQE and feature flags",
             "synchronous and asynchronous cancellation by user data, file description, opcode or any request, including all-match counts",
             "disabled-ring restrictions for register operations, SQE opcodes and allowed or required SQE flags",
@@ -197,7 +197,6 @@ EDGEOS_ASSESSMENTS = [
             "asynchronous worker execution",
             "large fixed-buffer pin lists and pinned transfer for remaining descriptor families",
             "SQPOLL wait control",
-            "incremental buffer-ring READ_MULTISHOT with partial-buffer BUF_MORE lifetime",
             "remaining supported VFS and socket operations",
             "remaining ia32 and x32 semantic coverage across supported operations",
         ],
@@ -283,7 +282,9 @@ EDGEOS_ASSESSMENTS = [
                 "timeout-first and unlinked-request completion behavior, plus "
                 "FUTEX_WAIT and FUTEX_WAITV value validation, wake results, "
                 "vector indexes and cancellation lifetime, plus READ_MULTISHOT "
-                "pipe reads, provided-buffer IDs, ENOBUFS termination, "
+                "pipe reads, provided-buffer IDs, incremental address and "
+                "length updates, BUF_MORE lifetime, min-left retirement, "
+                "ENOBUFS termination, "
                 "cancellation and descriptor validation, plus frozen-source "
                 "blind linked capability-query layouts, per-entry results and "
                 "zero-filled extension bytes, plus synchronous and asynchronous "
