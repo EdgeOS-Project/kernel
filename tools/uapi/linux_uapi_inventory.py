@@ -162,6 +162,7 @@ EDGEOS_ASSESSMENTS = [
             "fixed-file automatic allocation range registration",
             "pipe creation with ordinary descriptors and explicit or automatic fixed-file slots",
             "architecture-correct O_DIRECT packet pipes with record truncation semantics",
+            "O_NOTIFICATION_PIPE creation and watch-queue sizing through IORING_OP_PIPE",
             "splice with immediate offsets and ordinary or fixed input and output descriptors",
             "MSG_RING data delivery, CQE flag forwarding and buffered target-CQ overflow",
             "MSG_RING registered-file transfer with explicit or allocated target slots, CQE skipping and retained lifetime",
@@ -188,7 +189,6 @@ EDGEOS_ASSESSMENTS = [
             "asynchronous worker execution",
             "large fixed-buffer pin lists and pinned transfer for remaining descriptor families",
             "SQPOLL wait control",
-            "notification-pipe semantics",
             "application-provided ring memory",
             "provided-buffer page pinning and owner-mm-independent lifetime across unmap and exit",
             "incremental buffer-ring READ_MULTISHOT with partial-buffer BUF_MORE lifetime",
@@ -199,6 +199,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/io_uring_abi_probe.c",
             "tools/tests/io_uring_extended_entries_abi_probe.c",
             "tools/tests/io_uring_fixed_files_abi_probe.c",
+            "tools/tests/io_uring_notification_pipe_abi_probe.c",
             "tools/tests/io_uring_fixed_buffer_pin_abi_probe.c",
             "tools/tests/io_uring_provided_buffers_abi_probe.c",
             "tools/tests/io_uring_pbuf_ring_abi_probe.c",
@@ -244,7 +245,8 @@ EDGEOS_ASSESSMENTS = [
                 "batching, registered wait layouts and errors from the frozen "
                 "source oracle, poll update, multishot poll, per-ring clock, "
                 "fixed-file allocation range, operation probe, pipe creation "
-                "and direct fixed-file allocation, plus packet-pipe record "
+                "and direct fixed-file allocation, notification-pipe creation "
+                "and watch-queue sizing, plus packet-pipe record "
                 "boundaries, short-read truncation and splice with ordinary "
                 "or fixed input and output descriptors, plus MSG_RING data, "
                 "flag forwarding, disabled targets and buffered CQ overflow, "

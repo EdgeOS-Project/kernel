@@ -7,6 +7,7 @@
 #define SYS_read 0
 #define SYS_close 3
 #define SYS_fcntl 72
+#define SYS_ioctl 16
 #define SYS_mmap 9
 #define SYS_munmap 11
 #define SYS_exit 60
@@ -18,6 +19,7 @@
 #define SYS_read 63
 #define SYS_close 57
 #define SYS_fcntl 25
+#define SYS_ioctl 29
 #define SYS_write 64
 #define SYS_exit 93
 #define SYS_eventfd2 19
@@ -43,6 +45,8 @@
 #define EINVAL 22
 #define F_GETFD 1
 #define FD_CLOEXEC 1
+#define O_NOTIFICATION_PIPE 0x80u
+#define IOC_WATCH_QUEUE_SET_SIZE 0x5760u
 #define IOSQE_FIXED_FILE (1u << 0)
 #define IORING_ENTER_GETEVENTS 1u
 #define IORING_REGISTER_FILES 2u
@@ -555,6 +559,7 @@ static int run_probe(void) {
     long installed;
     int32_t installed_result;
     int failures = 0;
+    int notification_pipe_failures = 0;
 
     failures += test_pipe2_packet_mode();
 
@@ -720,6 +725,33 @@ static int run_probe(void) {
     if (update_descriptors[1] >= 0)
         (void)raw_syscall6(
             SYS_close, update_descriptors[1], 0, 0, 0, 0, 0);
+
+    installed_result = submit_pipe(
+        ring, &parameters, sq_ring, cq_ring, sqes,
+        0u, O_NOTIFICATION_PIPE, update_descriptors, &failures);
+    if (installed_result != 0) {
+        (void)print_text("FAIL io-uring-notification-pipe-create\n");
+        ++failures;
+        ++notification_pipe_failures;
+    }
+    if (installed_result == 0) {
+        if (raw_syscall6(
+                SYS_ioctl, update_descriptors[0],
+                IOC_WATCH_QUEUE_SET_SIZE, 1, 0, 0, 0) != 0) {
+            (void)print_text("FAIL io-uring-notification-pipe-size\n");
+            ++failures;
+            ++notification_pipe_failures;
+        }
+    }
+    if (update_descriptors[0] >= 0)
+        (void)raw_syscall6(
+            SYS_close, update_descriptors[0], 0, 0, 0, 0, 0);
+    if (update_descriptors[1] >= 0)
+        (void)raw_syscall6(
+            SYS_close, update_descriptors[1], 0, 0, 0, 0, 0);
+    (void)print_text(notification_pipe_failures ?
+        "IO_URING_NOTIFICATION_PIPE_CHECK_FAIL\n" :
+        "IO_URING_NOTIFICATION_PIPE_CHECK_PASS\n");
 
     installed_result = submit_pipe(
         ring, &parameters, sq_ring, cq_ring, sqes,
