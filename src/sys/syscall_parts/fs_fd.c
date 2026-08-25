@@ -870,7 +870,17 @@ static int console_line_translate_input(int line_id, edge_console_line_t *line, 
     return ch;
 }
 
-static uint64_t do_sys_read_console_line(int line_id, uint64_t buf, uint64_t len) {
+static int console_line_copy_read_byte(uint64_t buffer, uint64_t offset,
+                                       char byte, int kernel_buffer) {
+    if (kernel_buffer) {
+        ((char *)(uintptr_t)buffer)[offset] = byte;
+        return 0;
+    }
+    return copy_to_user(buffer + offset, &byte, 1) < 0 ? -EFAULT : 0;
+}
+
+static uint64_t do_read_console_line(int line_id, uint64_t buf, uint64_t len,
+                                     int kernel_buffer) {
     task_t *cur = process_current_task();
     int cur_pgid = cur ? cur->pgid : process_getpgid(0);
     edge_console_line_t *line = console_line_state(line_id);
@@ -878,7 +888,8 @@ static uint64_t do_sys_read_console_line(int line_id, uint64_t buf, uint64_t len
     if (!line) return (uint64_t)-EINVAL;
     if (!buf) return (uint64_t)-EINVAL;
     if (len == 0) return 0;
-    if (!user_range_ok(buf, len)) return (uint64_t)-EFAULT;
+    if (!kernel_buffer && !user_range_ok(buf, len))
+        return (uint64_t)-EFAULT;
 
     /*
      * Linux does not let a daemonized child keep consuming the old login tty
@@ -913,7 +924,9 @@ static uint64_t do_sys_read_console_line(int line_id, uint64_t buf, uint64_t len
         while (copied < len) {
                 if (line->line_pos < line->line_len) {
                     char c = line->linebuf[line->line_pos++];
-                    if (copy_to_user(buf + copied, &c, 1) < 0) return (uint64_t)-EFAULT;
+                    if (console_line_copy_read_byte(
+                            buf, copied, c, kernel_buffer) < 0)
+                        return (uint64_t)-EFAULT;
                     copied++;
                     if (c == '\n') break;
                 continue;
@@ -1033,7 +1046,9 @@ static uint64_t do_sys_read_console_line(int line_id, uint64_t buf, uint64_t len
             }
             console_line_echo_input_char(line_id, line, ch);
             char out = (char)ch;
-            if (copy_to_user(buf + count, &out, 1) < 0) return (uint64_t)-EFAULT;
+            if (console_line_copy_read_byte(
+                    buf, count, out, kernel_buffer) < 0)
+                return (uint64_t)-EFAULT;
             count++;
 
             /*
@@ -1048,6 +1063,11 @@ static uint64_t do_sys_read_console_line(int line_id, uint64_t buf, uint64_t len
         }
         return count;
     }
+}
+
+static uint64_t do_sys_read_console_line(int line_id, uint64_t buf,
+                                         uint64_t len) {
+    return do_read_console_line(line_id, buf, len, 0);
 }
 
 static uint64_t do_sys_getcwd(uint64_t buf, uint64_t size) {

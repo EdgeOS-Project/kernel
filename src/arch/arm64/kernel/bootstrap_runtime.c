@@ -970,6 +970,7 @@ typedef struct {
     uint64_t tty_read_count;
     uint64_t tty_read_deadline_us;
     uint8_t tty_read_identity;
+    uint8_t tty_read_kernel_buffer;
     uint64_t pipe_read_buffer;
     uint64_t pipe_read_length;
     uint16_t pipe_read_index;
@@ -5130,6 +5131,7 @@ static void task_interrupt_wait_for_signal(kernel_task_t *task,
                 task->tty_read_length = 0;
                 task->tty_read_count = 0;
                 task->tty_read_deadline_us = 0;
+                task->tty_read_kernel_buffer = 0;
                 task_vector_io_complete(
                     task,
                     task->vector_io_transferred ?
@@ -5143,6 +5145,7 @@ static void task_interrupt_wait_for_signal(kernel_task_t *task,
             task->tty_read_length = 0;
             task->tty_read_count = 0;
             task->tty_read_deadline_us = 0;
+            task->tty_read_kernel_buffer = 0;
             task_state_set(task, KERNEL_TASK_RUNNABLE);
             return;
         case KERNEL_TASK_WAITING_PIPE:
@@ -23520,6 +23523,7 @@ static void tty_read_reset(kernel_task_t *task) {
     task->tty_read_length = 0;
     task->tty_read_count = 0;
     task->tty_read_deadline_us = 0;
+    task->tty_read_kernel_buffer = 0;
 }
 
 static int64_t tty_read_continue(kernel_task_t *task) {
@@ -23596,11 +23600,16 @@ static int64_t tty_read_continue(kernel_task_t *task) {
 
         {
             char byte = (char)ch;
-            if (arch_copy_to_user(task->ttbr0,
-                                  task->tty_read_buffer + task->tty_read_count,
-                                  &byte, 1u) < 0)
-                return task->tty_read_count ? (int64_t)task->tty_read_count :
-                                              -LINUX_EFAULT;
+            if (task->tty_read_kernel_buffer) {
+                ((char *)(uintptr_t)task->tty_read_buffer)
+                    [task->tty_read_count] = byte;
+            } else if (arch_copy_to_user(
+                           task->ttbr0,
+                           task->tty_read_buffer + task->tty_read_count,
+                           &byte, 1u) < 0) {
+                return task->tty_read_count ?
+                    (int64_t)task->tty_read_count : -LINUX_EFAULT;
+            }
             ++task->tty_read_count;
         }
         if ((tty->termios.lflag & 8u) ||
@@ -24869,6 +24878,7 @@ static int64_t fd_read_user_internal(
         task->tty_read_count = 0;
         task->tty_read_deadline_us = 0;
         task->tty_read_identity = identity;
+        task->tty_read_kernel_buffer = 0;
         result = tty_read_continue(task);
         if (result != -LINUX_EAGAIN ||
             (fd->status_flags & LINUX_O_NONBLOCK)) {
@@ -25880,6 +25890,7 @@ static int arm64_vector_io_arm_wait(
         task->tty_read_length = 0;
         task->tty_read_count = 0;
         task->tty_read_deadline_us = 0;
+        task->tty_read_kernel_buffer = 0;
         task->tty_read_identity =
             task_tty_identity(task, fd);
         task_state_set(task, KERNEL_TASK_WAITING_TTY);
@@ -26233,6 +26244,29 @@ int64_t arch_io_kernel_read_current(int32_t descriptor,
             task, file->pipe_index,
             file->kind == KERNEL_FD_PTY_MASTER,
             buffer, length);
+    if (file->kind == KERNEL_FD_TTY) {
+        uint8_t identity = task_tty_identity(task, file);
+
+        task->tty_read_buffer = (uint64_t)(uintptr_t)buffer;
+        task->tty_read_length = length;
+        task->tty_read_count = 0;
+        task->tty_read_deadline_us = 0;
+        task->tty_read_identity = identity;
+        task->tty_read_kernel_buffer = 1;
+        result = tty_read_continue(task);
+        if (result != -LINUX_EAGAIN ||
+            (file->status_flags & LINUX_O_NONBLOCK)) {
+            tty_read_reset(task);
+            return result;
+        }
+        if (!frame) {
+            tty_read_reset(task);
+            return -LINUX_EINVAL;
+        }
+        arch_copy_frame(&task->frame, frame);
+        task_state_set(task, KERNEL_TASK_WAITING_TTY);
+        task_resume_next();
+    }
     if (file->kind == KERNEL_FD_FILE) {
         offset = fd_description_offset(file);
         return fd_splice_read_kernel(

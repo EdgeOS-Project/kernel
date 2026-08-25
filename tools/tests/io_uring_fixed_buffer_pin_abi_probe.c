@@ -10,6 +10,7 @@
 #define SYS_mmap 9
 #define SYS_munmap 11
 #define SYS_ioctl 16
+#define SYS_sched_yield 24
 #define SYS_exit 60
 #define SYS_socketpair 53
 #define SYS_mount 165
@@ -28,6 +29,7 @@
 #define SYS_read 63
 #define SYS_write 64
 #define SYS_exit 93
+#define SYS_sched_yield 124
 #define SYS_socketpair 199
 #define SYS_munmap 215
 #define SYS_mmap 222
@@ -195,6 +197,29 @@ static void append_decimal(char *text, uint32_t *length, uint32_t value) {
     text[*length] = '\0';
 }
 
+#ifdef IO_URING_FIXED_BUFFER_TTY_PROBE
+static void report_long(const char *prefix, long value) {
+    char message[96];
+    uint32_t length = 0u;
+    uint32_t magnitude;
+
+    while (prefix[length] && length + 16u < sizeof(message)) {
+        message[length] = prefix[length];
+        ++length;
+    }
+    if (value < 0) {
+        message[length++] = '-';
+        magnitude = (uint32_t)(-(value + 1)) + 1u;
+    } else {
+        magnitude = (uint32_t)value;
+    }
+    append_decimal(message, &length, magnitude);
+    message[length++] = '\n';
+    (void)raw_syscall6(
+        SYS_write, 1, (long)message, length, 0, 0, 0);
+}
+#endif
+
 static long open_character_device(const char *path, uint32_t device,
                                   uint32_t flags) {
     static const char dev[] = "/dev";
@@ -339,6 +364,9 @@ static int run_probe(void) {
     int32_t pty[2] = {-1, -1};
     int32_t null_descriptor = -1;
     int32_t zero_descriptor = -1;
+#ifdef IO_URING_FIXED_BUFFER_TTY_PROBE
+    int32_t tty_descriptor = -1;
+#endif
     uint8_t observed[64];
     struct io_uring_sqe *sqes = 0;
     void *sq_ring = 0;
@@ -619,6 +647,73 @@ static int run_probe(void) {
             ++failures;
         }
     }
+#ifdef IO_URING_FIXED_BUFFER_TTY_PROBE
+    if (!failures) {
+        static const char ready[] =
+            "IO_URING_FIXED_BUFFER_PIN_TTY_READY\n";
+        static const char expected[] = "tty\n";
+#if defined(__aarch64__)
+        static const char tty_path[] = "/dev/ttyAMA0";
+        const uint32_t tty_device = 0xcc40u;
+#else
+        static const char tty_path[] = "/dev/ttyS0";
+        const uint32_t tty_device = 0x440u;
+#endif
+
+        result = open_character_device(
+            tty_path, tty_device, O_RDWR | O_NOCTTY);
+        if (!result_is_error(result)) tty_descriptor = (int32_t)result;
+        failures += require_result(
+            result_is_error(result), 0,
+            "IO_URING_FIXED_BUFFER_PIN_TTY_OPEN_FAIL\n");
+        if (failures) goto tty_done;
+
+        (void)raw_syscall6(
+            SYS_write, 1, (long)ready, text_length(ready), 0, 0, 0);
+        for (uint32_t attempt = 0u; attempt < 50000u; ++attempt)
+            (void)raw_syscall6(
+                SYS_sched_yield, 0, 0, 0, 0, 0, 0);
+        result = submit(
+            ring, &parameters, sq_ring, cq_ring, sqes,
+            IORING_OP_READ_FIXED, tty_descriptor,
+            buffer.base + SECOND_OFFSET, sizeof(expected) - 1u,
+            0x54545952454144ull);
+        if (result != (long)(sizeof(expected) - 1u))
+            report_long("IO_URING_FIXED_BUFFER_PIN_TTY_RESULT=", result);
+        failures += require_result(
+            result, sizeof(expected) - 1u,
+            "IO_URING_FIXED_BUFFER_PIN_TTY_READ_FAIL\n");
+        result = submit(
+            ring, &parameters, sq_ring, cq_ring, sqes,
+            IORING_OP_WRITE_FIXED, output_pipe[1],
+            buffer.base + SECOND_OFFSET, sizeof(expected) - 1u,
+            0x5454595645524946ull);
+        failures += require_result(
+            result, sizeof(expected) - 1u,
+            "IO_URING_FIXED_BUFFER_PIN_TTY_VERIFY_WRITE_FAIL\n");
+        bytes_zero(observed, sizeof(observed));
+        result = raw_syscall6(
+            SYS_read, output_pipe[0], (long)observed,
+            sizeof(expected) - 1u, 0, 0, 0);
+        failures += require_result(
+            result, sizeof(expected) - 1u,
+            "IO_URING_FIXED_BUFFER_PIN_TTY_VERIFY_READ_FAIL\n");
+        if (!bytes_equal(observed, expected, sizeof(expected) - 1u)) {
+            static const char mismatch[] =
+                "IO_URING_FIXED_BUFFER_PIN_TTY_DATA_FAIL\n";
+            (void)raw_syscall6(
+                SYS_write, 1, (long)mismatch, text_length(mismatch),
+                0, 0, 0);
+            ++failures;
+        }
+tty_done:
+        if (tty_descriptor >= 0) {
+            (void)raw_syscall6(
+                SYS_close, tty_descriptor, 0, 0, 0, 0, 0);
+            tty_descriptor = -1;
+        }
+    }
+#endif
     failures += raw_syscall6(
         SYS_io_uring_register, ring, IORING_UNREGISTER_BUFFERS,
         0, 0, 0, 0) != 0;
@@ -646,6 +741,11 @@ cleanup:
     if (zero_descriptor >= 0)
         (void)raw_syscall6(
             SYS_close, zero_descriptor, 0, 0, 0, 0, 0);
+#ifdef IO_URING_FIXED_BUFFER_TTY_PROBE
+    if (tty_descriptor >= 0)
+        (void)raw_syscall6(
+            SYS_close, tty_descriptor, 0, 0, 0, 0, 0);
+#endif
     if (page)
         (void)raw_syscall6(
             SYS_munmap, (long)page, FIXED_BUFFER_SIZE, 0, 0, 0, 0);
@@ -675,6 +775,11 @@ void _start(void) {
 
     (void)raw_syscall6(
         SYS_write, 1, (long)result, text_length(result), 0, 0, 0);
+#ifdef IO_URING_FIXED_BUFFER_TTY_PROBE
+    for (uint32_t attempt = 0u; attempt < 50000u; ++attempt)
+        (void)raw_syscall6(
+            SYS_sched_yield, 0, 0, 0, 0, 0, 0);
+#endif
     raw_syscall6(SYS_exit, failures ? 1 : 0, 0, 0, 0, 0, 0);
     for (;;) { }
 }

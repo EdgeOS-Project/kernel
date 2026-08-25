@@ -11233,6 +11233,11 @@ static int64_t fd_read_kernel(uint64_t fd_u, void *buf, uint32_t len) {
     int r;
     if (!buf && len) return -EFAULT;
     if (!e) return -EBADF;
+    if (e->kind == FD_CONSOLE ||
+        (e->kind == FD_VFS && path_is_tty_device(e->path)))
+        return (int64_t)do_read_console_line(
+            console_line_from_fd_entry(e), (uint64_t)(uintptr_t)buf,
+            len, 1);
     if (e->kind == FD_PTY_MASTER || e->kind == FD_PTY_SLAVE)
         return fd_pty_read_kernel(e, buf, len);
     if (e->kind == FD_PIPE_R || e->kind == FD_PIPE_RW) {
