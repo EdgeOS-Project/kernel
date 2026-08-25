@@ -22,6 +22,11 @@ typedef struct linux_timespec64 {
     int64_t tv_nsec;
 } linux_timespec64_t;
 
+typedef struct linux_timespec32 {
+    int32_t tv_sec;
+    int32_t tv_nsec;
+} linux_timespec32_t;
+
 typedef struct linux_timeval64 {
     int64_t tv_sec;
     int64_t tv_usec;
@@ -64,6 +69,8 @@ typedef struct linux_timezone {
 
 _Static_assert(sizeof(linux_timespec64_t) == 16,
                "Linux 64-bit timespec ABI layout");
+_Static_assert(sizeof(linux_timespec32_t) == 8,
+               "Linux 32-bit timespec ABI layout");
 _Static_assert(sizeof(linux_timeval64_t) == 16,
                "Linux 64-bit timeval ABI layout");
 _Static_assert(sizeof(linux_itimerspec64_t) == 32,

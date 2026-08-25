@@ -1729,7 +1729,8 @@ static int64_t edge_linux_sys_numa_policy(
             uint8_t resident;
             int32_t page_status = 0;
 
-            if (context->architecture == EDGE_LINUX_ARCH_X32) {
+            if (edge_linux_architecture_is_compat32(
+                    context->architecture)) {
                 uint32_t compat_page;
                 if (pages_user > UINT32_MAX ||
                     index > (UINT32_MAX - pages_user) /
@@ -9261,7 +9262,7 @@ static int64_t edge_linux_sys_aio_setup(
 
     if (!destination) return -EDGE_LINUX_EFAULT;
     if (requested > UINT32_MAX) return -EDGE_LINUX_EINVAL;
-    if (context->architecture == EDGE_LINUX_ARCH_X32) {
+    if (edge_linux_architecture_is_compat32(context->architecture)) {
         uint32_t compat_initial;
         if (destination > UINT32_MAX || edge_linux_copy_from_user(
                 context, &compat_initial, destination,
@@ -9276,12 +9277,12 @@ static int64_t edge_linux_sys_aio_setup(
     result = kernel_aio_context_create(
         owner_tgid, (uint32_t)requested, &handle);
     if (result < 0) return result;
-    if (context->architecture == EDGE_LINUX_ARCH_X32 &&
+    if (edge_linux_architecture_is_compat32(context->architecture) &&
         handle > UINT32_MAX) {
         (void)kernel_aio_context_destroy(owner_tgid, handle);
         return -EDGE_LINUX_EOVERFLOW;
     }
-    if (context->architecture == EDGE_LINUX_ARCH_X32) {
+    if (edge_linux_architecture_is_compat32(context->architecture)) {
         uint32_t compat_handle = (uint32_t)handle;
         result = edge_linux_copy_to_user(
             context, destination, &compat_handle, sizeof(compat_handle));
@@ -9311,11 +9312,12 @@ static int64_t edge_linux_sys_aio_submit(
     if (!list) return -EDGE_LINUX_EFAULT;
     for (; submitted < request_count; ++submitted) {
         uint64_t iocb_user = 0;
-        uint64_t pointer_size = context->architecture ==
-            EDGE_LINUX_ARCH_X32 ? sizeof(uint32_t) : sizeof(uint64_t);
+        uint64_t pointer_size = edge_linux_architecture_is_compat32(
+            context->architecture) ? sizeof(uint32_t) : sizeof(uint64_t);
         if ((uint64_t)submitted > (UINT64_MAX - list) / pointer_size) {
             result = -EDGE_LINUX_EFAULT;
-        } else if (context->architecture == EDGE_LINUX_ARCH_X32) {
+        } else if (edge_linux_architecture_is_compat32(
+                       context->architecture)) {
             uint32_t compat_iocb_user;
             if (list > UINT32_MAX || edge_linux_copy_from_user(
                     context, &compat_iocb_user,
@@ -9352,9 +9354,18 @@ static int edge_linux_aio_timeout(
     *deadline = UINT64_MAX;
     *immediate = 0;
     if (!user_timeout) return 0;
-    if (edge_linux_copy_from_user(
-            context, &timeout, user_timeout, sizeof(timeout)) < 0)
+    if (context->architecture == EDGE_LINUX_ARCH_IA32) {
+        linux_timespec32_t compat_timeout;
+        if (edge_linux_copy_from_user(
+                context, &compat_timeout, user_timeout,
+                sizeof(compat_timeout)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        timeout.tv_sec = compat_timeout.tv_sec;
+        timeout.tv_nsec = compat_timeout.tv_nsec;
+    } else if (edge_linux_copy_from_user(
+                   context, &timeout, user_timeout, sizeof(timeout)) < 0) {
         return -EDGE_LINUX_EFAULT;
+    }
     result = edge_linux_timespec_microseconds(&timeout, &duration);
     if (result < 0) return result;
     now = boottime_monotonic_us();
@@ -13673,14 +13684,15 @@ static int64_t edge_linux_sys_ioctl(
     memset(&request, 0, sizeof(request));
     request.descriptor = descriptor;
     request.command = (uint32_t)context->arguments[1];
-    request.argument = context->architecture == EDGE_LINUX_ARCH_X32 ?
+    request.argument = edge_linux_architecture_is_compat32(
+        context->architecture) ?
         (uint32_t)context->arguments[2] : context->arguments[2];
     request.user_registers = context->user_registers;
     request.copy_context = context->current_task;
     request.copy_from_user = context->arch_ops->copy_from_user;
     request.copy_to_user = context->arch_ops->copy_to_user;
     request.user_pointer_size =
-        context->architecture == EDGE_LINUX_ARCH_X32 ?
+        edge_linux_architecture_is_compat32(context->architecture) ?
             sizeof(uint32_t) : sizeof(uint64_t);
 
     if (request.command == EDGE_LINUX_FIOCLEX)
@@ -14957,7 +14969,7 @@ static int64_t edge_linux_sys_socket_message(
         context->user_registers, context->current_task,
         context->arch_ops->copy_from_user,
         context->arch_ops->copy_to_user,
-        context->architecture == EDGE_LINUX_ARCH_X32 ?
+        edge_linux_architecture_is_compat32(context->architecture) ?
             KERNEL_SOCKET_MESSAGE_ABI_X32 :
             KERNEL_SOCKET_MESSAGE_ABI_NATIVE);
 }
@@ -14973,7 +14985,7 @@ static int64_t edge_linux_sys_socket_mmsg(
 
     status = kernel_socket_mmsg_import_abi(
         context->arguments[1], context->arguments[2], &vector_length,
-        context->architecture == EDGE_LINUX_ARCH_X32 ?
+        edge_linux_architecture_is_compat32(context->architecture) ?
             KERNEL_SOCKET_MESSAGE_ABI_X32 :
             KERNEL_SOCKET_MESSAGE_ABI_NATIVE);
     if (status < 0) return status;
@@ -14996,7 +15008,8 @@ static int64_t edge_linux_sys_socket_mmsg(
     request.user_messages = context->arguments[1];
     request.vector_length = vector_length;
     request.receiving = context->id == EDGE_LINUX_SYS_recvmmsg;
-    request.abi = context->architecture == EDGE_LINUX_ARCH_X32 ?
+    request.abi = edge_linux_architecture_is_compat32(
+        context->architecture) ?
         KERNEL_SOCKET_MESSAGE_ABI_X32 :
         KERNEL_SOCKET_MESSAGE_ABI_NATIVE;
     request.user_timeout = request.receiving ? context->arguments[4] : 0u;
@@ -15194,7 +15207,7 @@ static int64_t edge_linux_socket_option_attach_filter(
     struct edge_linux_sock_fprog user_program;
 
     memset(&user_program, 0, sizeof(user_program));
-    if (context->architecture == EDGE_LINUX_ARCH_X32) {
+    if (edge_linux_architecture_is_compat32(context->architecture)) {
         struct edge_linux_compat_sock_fprog compat_program;
 
         if (value_length != sizeof(compat_program))
