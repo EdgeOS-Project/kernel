@@ -224,6 +224,8 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "bpf_devmap_abi_probe",
 #elif defined(UAPI_BATCH_BPF_XSKMAP_ONLY)
         "bpf_xskmap_abi_probe",
+#elif defined(UAPI_BATCH_BPF_INSN_ARRAY_ONLY)
+        "bpf_insn_array_abi_probe",
 #else
 #ifndef UAPI_BATCH_FREESTANDING_ONLY
         "restart_syscall_abi_probe",

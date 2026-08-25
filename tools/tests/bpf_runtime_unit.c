@@ -786,6 +786,100 @@ static void test_xsk_map(void) {
     assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
 }
 
+static void test_instruction_array(void) {
+    struct instruction_array_value {
+        uint32_t original_offset;
+        uint32_t translated_offset;
+        uint32_t jitted_offset;
+        uint32_t reserved;
+    } value = {0u};
+    kernel_bpf_map_create_request_t request = {
+        .type = KERNEL_BPF_MAP_TYPE_INSN_ARRAY,
+        .key_size = sizeof(uint32_t),
+        .value_size = sizeof(value),
+        .max_entries = 2u,
+    };
+    kernel_bpf_map_info_t info;
+    uint32_t key = 0u;
+    uint32_t next = UINT32_MAX;
+    uint32_t cursor = 0u;
+    int has_more = 0;
+    int object;
+
+    strcpy(request.name, "insn_array");
+    object = kernel_bpf_map_create(&request);
+    assert(object >= 0);
+    assert(kernel_bpf_map_info(object, &info) == 0);
+    assert(info.type == KERNEL_BPF_MAP_TYPE_INSN_ARRAY);
+    assert((info.flags & KERNEL_BPF_MAP_RDONLY_PROGRAM) != 0u);
+    memset(&value, 0xff, sizeof(value));
+    assert(kernel_bpf_map_lookup(object, &key, &value) == 0);
+    assert(value.original_offset == 0u &&
+           value.translated_offset == 0u && value.jitted_offset == 0u &&
+           value.reserved == 0u);
+    value.original_offset = 7u;
+    assert(kernel_bpf_map_update(
+               object, &key, &value, KERNEL_BPF_ANY) == 0);
+    memset(&value, 0xff, sizeof(value));
+    assert(kernel_bpf_map_lookup(object, &key, &value) == 0);
+    assert(value.original_offset == 7u &&
+           value.translated_offset == 0u && value.jitted_offset == 0u &&
+           value.reserved == 0u);
+    assert(kernel_bpf_map_update(
+               object, &key, &value, KERNEL_BPF_NOEXIST) ==
+           -EDGE_LINUX_EEXIST);
+    value.original_offset = 8u;
+    assert(kernel_bpf_map_update(
+               object, &key, &value, KERNEL_BPF_EXIST) == 0);
+    value.translated_offset = 1u;
+    assert(kernel_bpf_map_update(
+               object, &key, &value, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_EINVAL);
+    value.translated_offset = 0u;
+    value.jitted_offset = 1u;
+    assert(kernel_bpf_map_update(
+               object, &key, &value, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_EINVAL);
+    key = 2u;
+    assert(kernel_bpf_map_update(
+               object, &key, &value, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_E2BIG);
+    assert(kernel_bpf_map_lookup(object, &key, &value) ==
+           -EDGE_LINUX_ENOENT);
+    key = 0u;
+    assert(kernel_bpf_map_delete(object, &key) == -EDGE_LINUX_EINVAL);
+    assert(kernel_bpf_map_next_key(object, 0, &next) == 0);
+    assert(next == 0u);
+    key = 1u;
+    assert(kernel_bpf_map_next_key(object, &key, &next) ==
+           -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_map_lookup_and_delete(object, &key, &value) ==
+           -EDGE_LINUX_ENOTSUPP);
+    assert(kernel_bpf_map_batch_next(
+               object, &cursor, &key, &value, 0, &has_more) ==
+           -EDGE_LINUX_ENOTSUPP);
+    assert(kernel_bpf_map_freeze(object) == 0);
+    key = 0u;
+    memset(&value, 0, sizeof(value));
+    assert(kernel_bpf_map_update(
+               object, &key, &value, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_EPERM);
+    assert(kernel_bpf_map_delete(object, &key) == -EDGE_LINUX_EPERM);
+    kernel_bpf_object_release(object);
+
+    request.key_size = sizeof(uint64_t);
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+    request.key_size = sizeof(uint32_t);
+    request.value_size = sizeof(uint64_t);
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+    request.value_size = sizeof(value);
+    request.flags = KERNEL_BPF_MAP_RDONLY;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+    request.flags = 0u;
+    request.map_extra = 1u;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+}
+
 static void test_lpm_trie_map(void) {
     struct lpm_key {
         uint32_t prefix_length;
@@ -2025,6 +2119,7 @@ int main(void) {
     test_cpu_map();
     test_device_maps();
     test_xsk_map();
+    test_instruction_array();
     test_lpm_trie_map();
     test_bloom_filter_map();
     test_percpu_maps();

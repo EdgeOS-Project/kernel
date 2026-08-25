@@ -367,11 +367,12 @@ EDGEOS_ASSESSMENTS = [
             "CPU-map creation, CPU and queue validation, entry lifecycle, optional program descriptor rejection and Linux unsupported-operation behavior",
             "device-map and device-hash creation, network-interface validation, entry lifecycle, capacity, iteration and program descriptor behavior",
             "XSK-map creation, syscall lookup rejection, socket descriptor and family error behavior, deletion, key iteration and unsupported batch behavior",
+            "instruction-array creation, offset update and zeroing behavior, lookup, iteration, freeze and unsupported delete and batch operations",
             "ia32 and x32 fixed-width map-create and map-element attribute layouts",
         ],
         "missing": [
             "remaining map types, stack-trace helper population, CPU-map packet redirect execution, device-map packet redirect execution and AF_XDP socket-backed XSK-map entries",
-            "remaining specialized map families and their concurrency semantics",
+            "remaining specialized map families and their concurrency semantics, plus instruction-array verifier and jump-table integration",
             "additional attachment families and program types",
             "complete allow-override and multi-position attachment semantics",
             "complete BTF type-graph validation and program integration",
@@ -383,6 +384,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/bpf_cpumap_abi_probe.c",
             "tools/tests/bpf_devmap_abi_probe.c",
             "tools/tests/bpf_xskmap_abi_probe.c",
+            "tools/tests/bpf_insn_array_abi_probe.c",
             "tools/tests/bpf_stack_trace_abi_probe.c",
             "tools/tests/bpf_runtime_unit.c",
         ],
@@ -410,6 +412,8 @@ EDGEOS_ASSESSMENTS = [
                 "XSK-map creation, syscall lookup rejection, socket "
                 "descriptor and family errors, deletion, key iteration and "
                 "unsupported batch behavior, "
+                "instruction-array creation, offset updates, lookup, "
+                "iteration, freeze and unsupported delete and batch behavior, "
                 "plus ia32 "
                 "and x32 page-boundary map-create, "
                 "map-update and map-lookup attribute layouts"

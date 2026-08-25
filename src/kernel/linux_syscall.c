@@ -5910,7 +5910,8 @@ static int64_t edge_linux_bpf_map_batch(
         info.type == KERNEL_BPF_MAP_TYPE_CGROUP_ARRAY ||
         info.type == KERNEL_BPF_MAP_TYPE_DEVMAP ||
         info.type == KERNEL_BPF_MAP_TYPE_DEVMAP_HASH ||
-        info.type == KERNEL_BPF_MAP_TYPE_XSKMAP)
+        info.type == KERNEL_BPF_MAP_TYPE_XSKMAP ||
+        info.type == KERNEL_BPF_MAP_TYPE_INSN_ARRAY)
         return -EDGE_LINUX_ENOTSUPP;
     if (!info.key_size) return -EDGE_LINUX_ENOTSUPP;
     status = kernel_bpf_map_value_buffer_size(
