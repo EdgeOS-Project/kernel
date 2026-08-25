@@ -68,7 +68,11 @@ static int process_session_pid_to_global(
 static int process_session_pid_to_visible(
     const kernel_linux_identity_t *identity, int32_t global_pid,
     int32_t *visible_pid) {
-    if (!identity || !visible_pid || global_pid <= 0) return -1;
+    if (!identity || !visible_pid || global_pid < 0) return -1;
+    if (!global_pid) {
+        *visible_pid = 0;
+        return 0;
+    }
     return edge_pid_namespace_global_to_visible(
         identity->pid_namespace_id, global_pid, visible_pid);
 }
