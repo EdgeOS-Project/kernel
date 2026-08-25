@@ -15,6 +15,7 @@
 typedef enum kernel_vfs_dirent_format {
     KERNEL_VFS_DIRENT64 = 0,
     KERNEL_VFS_DIRENT_NATIVE64 = 1,
+    KERNEL_VFS_DIRENT_NATIVE32 = 2,
 } kernel_vfs_dirent_format_t;
 
 typedef struct kernel_vfs_getdents_request {

@@ -54,6 +54,27 @@ typedef struct __attribute__((packed)) edge_ia32_linux_stat64 {
     uint64_t st_ino;
 } edge_ia32_linux_stat64_t;
 
+typedef struct edge_ia32_linux_stat {
+    uint32_t st_dev;
+    uint32_t st_ino;
+    uint16_t st_mode;
+    uint16_t st_nlink;
+    uint16_t st_uid;
+    uint16_t st_gid;
+    uint32_t st_rdev;
+    uint32_t st_size;
+    uint32_t st_blksize;
+    uint32_t st_blocks;
+    uint32_t st_atime;
+    uint32_t st_atime_nsec;
+    uint32_t st_mtime;
+    uint32_t st_mtime_nsec;
+    uint32_t st_ctime;
+    uint32_t st_ctime_nsec;
+    uint32_t unused4;
+    uint32_t unused5;
+} edge_ia32_linux_stat_t;
+
 _Static_assert(sizeof(edge_x86_64_linux_stat_t) == 144,
                "x86_64 Linux stat size mismatch");
 _Static_assert(offsetof(edge_x86_64_linux_stat_t, st_mode) == 24,
@@ -68,11 +89,20 @@ _Static_assert(offsetof(edge_ia32_linux_stat64_t, st_size) == 44,
                "ia32 Linux stat64 size offset mismatch");
 _Static_assert(offsetof(edge_ia32_linux_stat64_t, st_ino) == 88,
                "ia32 Linux stat64 inode offset mismatch");
+_Static_assert(sizeof(edge_ia32_linux_stat_t) == 64,
+               "ia32 Linux stat size mismatch");
+_Static_assert(offsetof(edge_ia32_linux_stat_t, st_rdev) == 16,
+               "ia32 Linux stat device offset mismatch");
+_Static_assert(offsetof(edge_ia32_linux_stat_t, st_atime) == 32,
+               "ia32 Linux stat time offset mismatch");
 
 int edge_x86_64_linux_stat_to_user(
     void *context, edge_linux_copy_to_user_fn copy_to_user,
     uint64_t user_destination, const kernel_file_metadata_t *metadata);
 int edge_ia32_linux_stat64_to_user(
+    void *context, edge_linux_copy_to_user_fn copy_to_user,
+    uint64_t user_destination, const kernel_file_metadata_t *metadata);
+int edge_ia32_linux_stat_to_user(
     void *context, edge_linux_copy_to_user_fn copy_to_user,
     uint64_t user_destination, const kernel_file_metadata_t *metadata);
 

@@ -1898,6 +1898,14 @@ struct edge_linux_dirent {
     char d_name[];
 };
 
+/* Linux i386 getdents uses 32-bit inode and offset fields. */
+struct edge_linux_ia32_dirent {
+    uint32_t d_ino;
+    uint32_t d_off;
+    uint16_t d_reclen;
+    char d_name[];
+};
+
 /* Fixed prefix of Linux's variable-length struct file_handle. */
 struct edge_linux_file_handle_header {
     uint32_t handle_bytes;
@@ -2076,6 +2084,8 @@ _Static_assert(offsetof(struct edge_linux_dirent64, d_name) == 19,
                "Linux dirent64 name offset");
 _Static_assert(offsetof(struct edge_linux_dirent, d_name) == 18,
                "Linux native dirent name offset");
+_Static_assert(offsetof(struct edge_linux_ia32_dirent, d_name) == 10,
+               "Linux i386 dirent name offset");
 _Static_assert(sizeof(struct edge_linux_file_handle_header) == 8,
                "Linux file_handle prefix ABI layout");
 _Static_assert(offsetof(struct edge_linux_file_handle_header,

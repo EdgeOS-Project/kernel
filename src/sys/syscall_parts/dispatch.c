@@ -252,6 +252,7 @@ static const edge_linux_syscall_arch_ops_t ia32_linux_syscall_ops = {
     .user_address_limit = UINT32_MAX,
     .validate_user_range_arch = x86_linux_validate_user_range_arch,
     .copy_stat_to_user = edge_ia32_linux_stat64_to_user,
+    .copy_legacy_stat_to_user = edge_ia32_linux_stat_to_user,
     .copy_epoll_event_from_user = x86_linux_copy_epoll_event_from_user,
     .network_poll = syscall_network_poll,
     .epoll_event_size = 12u,

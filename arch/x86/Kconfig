@@ -10,6 +10,14 @@ config COMPAT_IA32
       system call ABI. Compatibility structure conversion remains explicit;
       calls without an audited conversion return ENOSYS.
 
+config UID16
+    bool "Legacy 16-bit UID system calls"
+    depends on COMPAT_IA32
+    default y
+    help
+      Enable the historical Linux i386 identity and ownership system calls
+      whose public user and group identifiers are 16 bits wide.
+
 config X86_X32_ABI
     bool "x32 ABI for 64-bit processes"
     depends on ARCH_X86_64

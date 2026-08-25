@@ -44,6 +44,10 @@ typedef struct edge_linux_syscall_arch_ops {
         void *context, edge_linux_copy_to_user_fn copy_to_user,
         uint64_t user_destination,
         const kernel_file_metadata_t *metadata);
+    int (*copy_legacy_stat_to_user)(
+        void *context, edge_linux_copy_to_user_fn copy_to_user,
+        uint64_t user_destination,
+        const kernel_file_metadata_t *metadata);
     int (*copy_epoll_event_from_user)(void *context,
                                       uint64_t user_source,
                                       kernel_epoll_event_t *event);

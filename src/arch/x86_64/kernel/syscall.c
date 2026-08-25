@@ -111,6 +111,43 @@ int edge_ia32_linux_stat64_to_user(
         -EDGE_LINUX_EFAULT : 0;
 }
 
+int edge_ia32_linux_stat_to_user(
+    void *context, edge_linux_copy_to_user_fn copy_to_user,
+    uint64_t user_destination, const kernel_file_metadata_t *metadata) {
+    edge_ia32_linux_stat_t result = {0};
+
+    if (!copy_to_user || !user_destination || !metadata)
+        return -EDGE_LINUX_EFAULT;
+    if (metadata->device > UINT32_MAX || metadata->inode > UINT32_MAX ||
+        metadata->links > UINT16_MAX || metadata->rdev > UINT32_MAX ||
+        metadata->size > INT32_MAX || metadata->block_size > UINT32_MAX ||
+        metadata->blocks > UINT32_MAX ||
+        metadata->access_time.seconds > INT32_MAX ||
+        metadata->modification_time.seconds > INT32_MAX ||
+        metadata->change_time.seconds > INT32_MAX)
+        return -EDGE_LINUX_EOVERFLOW;
+    result.st_dev = (uint32_t)metadata->device;
+    result.st_ino = (uint32_t)metadata->inode;
+    result.st_mode = metadata->mode;
+    result.st_nlink = (uint16_t)metadata->links;
+    result.st_uid = metadata->uid > UINT16_MAX ? 65534u :
+                    (uint16_t)metadata->uid;
+    result.st_gid = metadata->gid > UINT16_MAX ? 65534u :
+                    (uint16_t)metadata->gid;
+    result.st_rdev = (uint32_t)metadata->rdev;
+    result.st_size = (uint32_t)metadata->size;
+    result.st_blksize = metadata->block_size;
+    result.st_blocks = (uint32_t)metadata->blocks;
+    result.st_atime = (uint32_t)metadata->access_time.seconds;
+    result.st_atime_nsec = metadata->access_time.nanoseconds;
+    result.st_mtime = (uint32_t)metadata->modification_time.seconds;
+    result.st_mtime_nsec = metadata->modification_time.nanoseconds;
+    result.st_ctime = (uint32_t)metadata->change_time.seconds;
+    result.st_ctime_nsec = metadata->change_time.nanoseconds;
+    return copy_to_user(context, user_destination, &result, sizeof(result)) < 0 ?
+           -EDGE_LINUX_EFAULT : 0;
+}
+
 static uint64_t x86_rdmsr(uint32_t msr) {
     uint32_t lo;
     uint32_t hi;

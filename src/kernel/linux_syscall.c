@@ -368,6 +368,23 @@ static int edge_linux_user_bytes_zero(
     return 0;
 }
 
+static uint32_t edge_linux_ia32_old_id_import(uint64_t value) {
+    uint16_t narrowed = (uint16_t)value;
+    return narrowed == UINT16_MAX ? UINT32_MAX : narrowed;
+}
+
+static uint16_t edge_linux_ia32_old_id_export(uint32_t value) {
+    return value > UINT16_MAX ? 65534u : (uint16_t)value;
+}
+
+static int edge_linux_ia32_old_identity_getter(
+    const edge_linux_syscall_context_t *context) {
+    if (!context || context->architecture != EDGE_LINUX_ARCH_IA32)
+        return 0;
+    return context->raw_number == 24u || context->raw_number == 47u ||
+           context->raw_number == 49u || context->raw_number == 50u;
+}
+
 static int64_t edge_linux_sys_identity(
     edge_linux_syscall_context_t *context) {
     kernel_linux_identity_t identity;
@@ -384,24 +401,30 @@ static int64_t edge_linux_sys_identity(
         case EDGE_LINUX_SYS_getppid:
             return identity.ppid;
         case EDGE_LINUX_SYS_getuid:
-            return namespaces && edge_userns_map_from_parent(
+            visible_id = namespaces && edge_userns_map_from_parent(
                 namespaces, 0, identity.uid, &visible_id) == 0 ?
                 visible_id : 65534u;
+            break;
         case EDGE_LINUX_SYS_geteuid:
-            return namespaces && edge_userns_map_from_parent(
+            visible_id = namespaces && edge_userns_map_from_parent(
                 namespaces, 0, identity.euid, &visible_id) == 0 ?
                 visible_id : 65534u;
+            break;
         case EDGE_LINUX_SYS_getgid:
-            return namespaces && edge_userns_map_from_parent(
+            visible_id = namespaces && edge_userns_map_from_parent(
                 namespaces, 1, identity.gid, &visible_id) == 0 ?
                 visible_id : 65534u;
+            break;
         case EDGE_LINUX_SYS_getegid:
-            return namespaces && edge_userns_map_from_parent(
+            visible_id = namespaces && edge_userns_map_from_parent(
                 namespaces, 1, identity.egid, &visible_id) == 0 ?
                 visible_id : 65534u;
+            break;
         default:
             return -EDGE_LINUX_ENOSYS;
     }
+    return edge_linux_ia32_old_identity_getter(context) ?
+        edge_linux_ia32_old_id_export(visible_id) : visible_id;
 }
 
 static int64_t edge_linux_sys_listns(
@@ -492,6 +515,7 @@ static int64_t edge_linux_sys_res_identity(
     edge_linux_syscall_context_t *context) {
     kernel_linux_identity_t identity;
     uint32_t values[3];
+    int legacy_ia32;
     if (kernel_current_linux_identity(&identity) < 0)
         return -EDGE_LINUX_ESRCH;
     if (context->id == EDGE_LINUX_SYS_getresuid) {
@@ -505,11 +529,21 @@ static int64_t edge_linux_sys_res_identity(
     } else {
         return -EDGE_LINUX_ENOSYS;
     }
+    legacy_ia32 = context->architecture == EDGE_LINUX_ARCH_IA32 &&
+        (context->raw_number == 165u || context->raw_number == 171u);
     for (uint32_t index = 0; index < 3u; ++index) {
-        if (!context->arguments[index] ||
-            edge_linux_copy_to_user(context, context->arguments[index],
-                                    &values[index], sizeof(values[index])) < 0)
+        if (!context->arguments[index]) return -EDGE_LINUX_EFAULT;
+        if (legacy_ia32) {
+            uint16_t value = edge_linux_ia32_old_id_export(values[index]);
+            if (edge_linux_copy_to_user(
+                    context, context->arguments[index],
+                    &value, sizeof(value)) < 0)
+                return -EDGE_LINUX_EFAULT;
+        } else if (edge_linux_copy_to_user(
+                       context, context->arguments[index],
+                       &values[index], sizeof(values[index])) < 0) {
             return -EDGE_LINUX_EFAULT;
+        }
     }
     return 0;
 }
@@ -3120,7 +3154,9 @@ static int64_t edge_linux_sys_getdents(
     memset(&request, 0, sizeof(request));
     request.descriptor = (int32_t)context->arguments[0];
     request.format = context->id == EDGE_LINUX_SYS_getdents ?
-        KERNEL_VFS_DIRENT_NATIVE64 : KERNEL_VFS_DIRENT64;
+        (context->architecture == EDGE_LINUX_ARCH_IA32 ?
+             KERNEL_VFS_DIRENT_NATIVE32 : KERNEL_VFS_DIRENT_NATIVE64) :
+        KERNEL_VFS_DIRENT64;
     request.user_buffer = context->arguments[1];
     request.capacity = (uint32_t)context->arguments[2];
     request.copy_context = context;
@@ -7578,51 +7614,63 @@ static int64_t edge_linux_credential_error(int result) {
 static int64_t edge_linux_sys_set_credentials(
     edge_linux_syscall_context_t *context) {
     linux_credential_state_t credentials;
+    uint32_t arguments[3];
+    int legacy_ia32;
     uint32_t previous;
     int result;
     if (kernel_current_credentials_get(&credentials) < 0)
         return -EDGE_LINUX_ESRCH;
+    for (uint32_t index = 0; index < 3u; ++index)
+        arguments[index] = (uint32_t)context->arguments[index];
+    legacy_ia32 = context->architecture == EDGE_LINUX_ARCH_IA32 &&
+        (context->raw_number == 23u || context->raw_number == 46u ||
+         context->raw_number == 70u || context->raw_number == 71u ||
+         context->raw_number == 138u || context->raw_number == 139u ||
+         context->raw_number == 164u || context->raw_number == 170u);
+    if (legacy_ia32) {
+        for (uint32_t index = 0; index < 3u; ++index)
+            arguments[index] = edge_linux_ia32_old_id_import(
+                context->arguments[index]);
+    }
     switch (context->id) {
         case EDGE_LINUX_SYS_setuid:
             result = linux_credentials_setuid(
-                &credentials, (uint32_t)context->arguments[0]);
+                &credentials, arguments[0]);
             break;
         case EDGE_LINUX_SYS_setgid:
             result = linux_credentials_setgid(
-                &credentials, (uint32_t)context->arguments[0]);
+                &credentials, arguments[0]);
             break;
         case EDGE_LINUX_SYS_setreuid:
             result = linux_credentials_setreuid(
-                &credentials, (uint32_t)context->arguments[0],
-                (uint32_t)context->arguments[1]);
+                &credentials, arguments[0], arguments[1]);
             break;
         case EDGE_LINUX_SYS_setregid:
             result = linux_credentials_setregid(
-                &credentials, (uint32_t)context->arguments[0],
-                (uint32_t)context->arguments[1]);
+                &credentials, arguments[0], arguments[1]);
             break;
         case EDGE_LINUX_SYS_setresuid:
             result = linux_credentials_setresuid(
-                &credentials, (uint32_t)context->arguments[0],
-                (uint32_t)context->arguments[1],
-                (uint32_t)context->arguments[2]);
+                &credentials, arguments[0], arguments[1], arguments[2]);
             break;
         case EDGE_LINUX_SYS_setresgid:
             result = linux_credentials_setresgid(
-                &credentials, (uint32_t)context->arguments[0],
-                (uint32_t)context->arguments[1],
-                (uint32_t)context->arguments[2]);
+                &credentials, arguments[0], arguments[1], arguments[2]);
             break;
         case EDGE_LINUX_SYS_setfsuid:
             previous = linux_credentials_setfsuid(
-                &credentials, (uint32_t)context->arguments[0]);
+                &credentials, arguments[0]);
             return kernel_current_credentials_set(&credentials) < 0 ?
-                -EDGE_LINUX_ESRCH : (int64_t)previous;
+                -EDGE_LINUX_ESRCH :
+                (legacy_ia32 ? edge_linux_ia32_old_id_export(previous) :
+                               (int64_t)previous);
         case EDGE_LINUX_SYS_setfsgid:
             previous = linux_credentials_setfsgid(
-                &credentials, (uint32_t)context->arguments[0]);
+                &credentials, arguments[0]);
             return kernel_current_credentials_set(&credentials) < 0 ?
-                -EDGE_LINUX_ESRCH : (int64_t)previous;
+                -EDGE_LINUX_ESRCH :
+                (legacy_ia32 ? edge_linux_ia32_old_id_export(previous) :
+                               (int64_t)previous);
         default:
             return -EDGE_LINUX_ENOSYS;
     }
@@ -7652,6 +7700,8 @@ static int64_t edge_linux_sys_groups(
     edge_linux_syscall_context_t *context) {
     linux_group_list_t groups;
     kernel_linux_identity_t identity;
+    int legacy_ia32 = context->architecture == EDGE_LINUX_ARCH_IA32 &&
+        (context->raw_number == 80u || context->raw_number == 81u);
     uint32_t count;
     uint32_t page_index;
     int64_t result = 0;
@@ -7680,6 +7730,37 @@ static int64_t edge_linux_sys_groups(
             uint32_t elements = edge_linux_group_page_elements(
                 count, page_index);
             uint64_t destination;
+            if (legacy_ia32) {
+                uint32_t copied = 0;
+                if (!values) {
+                    result = -EDGE_LINUX_EFAULT;
+                    goto groups_out;
+                }
+                while (copied < elements) {
+                    uint16_t converted[64];
+                    uint32_t chunk = elements - copied;
+                    uint64_t element_index =
+                        (uint64_t)page_index * EDGE_LINUX_GROUPS_PER_PAGE +
+                        copied;
+                    if (chunk > 64u) chunk = 64u;
+                    for (uint32_t index = 0; index < chunk; ++index)
+                        converted[index] = edge_linux_ia32_old_id_export(
+                            values[copied + index]);
+                    if (context->arguments[1] >
+                            UINT64_MAX - element_index * sizeof(uint16_t) ||
+                        edge_linux_copy_to_user(
+                            context,
+                            context->arguments[1] +
+                                element_index * sizeof(uint16_t),
+                            converted,
+                            (uint64_t)chunk * sizeof(converted[0])) < 0) {
+                        result = -EDGE_LINUX_EFAULT;
+                        goto groups_out;
+                    }
+                    copied += chunk;
+                }
+                continue;
+            }
             if (!values || edge_linux_group_user_page(
                     context->arguments[1], page_index, &destination) < 0 ||
                 edge_linux_copy_to_user(
@@ -7711,11 +7792,39 @@ static int64_t edge_linux_sys_groups(
         uint32_t elements = edge_linux_group_page_elements(count, page_index);
         uint64_t source;
         uint32_t element;
-        if (!values || edge_linux_group_user_page(
-                context->arguments[1], page_index, &source) < 0 ||
-            edge_linux_copy_from_user(
-                context, values, source,
-                (uint64_t)elements * sizeof(values[0])) < 0) {
+        if (legacy_ia32) {
+            uint32_t copied = 0;
+            if (!values) {
+                result = -EDGE_LINUX_EFAULT;
+                goto groups_out;
+            }
+            while (copied < elements) {
+                uint16_t converted[64];
+                uint32_t chunk = elements - copied;
+                uint64_t element_index =
+                    (uint64_t)page_index * EDGE_LINUX_GROUPS_PER_PAGE +
+                    copied;
+                if (chunk > 64u) chunk = 64u;
+                if (context->arguments[1] >
+                        UINT64_MAX - element_index * sizeof(uint16_t) ||
+                    edge_linux_copy_from_user(
+                        context, converted,
+                        context->arguments[1] +
+                            element_index * sizeof(uint16_t),
+                        (uint64_t)chunk * sizeof(converted[0])) < 0) {
+                    result = -EDGE_LINUX_EFAULT;
+                    goto groups_out;
+                }
+                for (uint32_t index = 0; index < chunk; ++index)
+                    values[copied + index] =
+                        edge_linux_ia32_old_id_import(converted[index]);
+                copied += chunk;
+            }
+        } else if (!values || edge_linux_group_user_page(
+                       context->arguments[1], page_index, &source) < 0 ||
+                   edge_linux_copy_from_user(
+                       context, values, source,
+                       (uint64_t)elements * sizeof(values[0])) < 0) {
             result = -EDGE_LINUX_EFAULT;
             goto groups_out;
         }
@@ -18413,6 +18522,14 @@ static int64_t edge_linux_sys_stat(
         return -EDGE_LINUX_ENOSYS;
     }
     if (status < 0) return status;
+    if (context->architecture == EDGE_LINUX_ARCH_IA32 &&
+        context->raw_number >= 106u && context->raw_number <= 108u) {
+        if (!context->arch_ops->copy_legacy_stat_to_user)
+            return -EDGE_LINUX_EIO;
+        return context->arch_ops->copy_legacy_stat_to_user(
+            context->current_task, context->arch_ops->copy_to_user,
+            destination, &metadata);
+    }
     return context->arch_ops->copy_stat_to_user(
         context->current_task, context->arch_ops->copy_to_user,
         destination, &metadata);
@@ -19979,6 +20096,9 @@ static int64_t edge_linux_sys_chown(
     int descriptor_form = 0;
     int nofollow = 0;
     int trailing_slash = 0;
+    int legacy_ia32 = context->architecture == EDGE_LINUX_ARCH_IA32 &&
+        (context->raw_number == 16u || context->raw_number == 95u ||
+         context->raw_number == 182u);
     int privileged;
     int status;
 
@@ -20002,6 +20122,10 @@ static int64_t edge_linux_sys_chown(
         nofollow = (flags & EDGE_LINUX_AT_SYMLINK_NOFOLLOW) != 0;
     } else {
         return -EDGE_LINUX_ENOSYS;
+    }
+    if (legacy_ia32) {
+        requested_uid = edge_linux_ia32_old_id_import(requested_uid);
+        requested_gid = edge_linux_ia32_old_id_import(requested_gid);
     }
     if (flags & ~(EDGE_LINUX_AT_SYMLINK_NOFOLLOW |
                   EDGE_LINUX_AT_EMPTY_PATH))
@@ -22430,6 +22554,20 @@ int edge_linux_syscall_dispatch(edge_linux_syscall_context_t *context) {
     if (edge_linux_syscall_map(context->architecture, context->raw_number,
                                &context->id, &context->route_status) < 0)
         return EDGE_LINUX_SYSCALL_NOT_HANDLED;
+#ifndef CONFIG_UID16
+    if (context->architecture == EDGE_LINUX_ARCH_IA32) {
+        switch (context->raw_number) {
+            case 16u: case 23u: case 24u: case 46u: case 47u:
+            case 49u: case 50u: case 70u: case 71u: case 80u:
+            case 81u: case 95u: case 138u: case 139u: case 164u:
+            case 165u: case 170u: case 171u: case 182u:
+                context->result = -EDGE_LINUX_ENOSYS;
+                return EDGE_LINUX_SYSCALL_HANDLED;
+            default:
+                break;
+        }
+    }
+#endif
     rseq_status = kernel_current_rseq_slice_syscall_enter(
         context->id == EDGE_LINUX_SYS_rseq_slice_yield,
         &force_reschedule);
