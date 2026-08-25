@@ -404,27 +404,60 @@ NATIVE_ARCHITECTURES = {
 COMPAT_ARCHITECTURES = {
     "x86_64": "not-applicable",
     "aarch64": "not-applicable",
-    "ia32": "unimplemented",
-    "x32": "unimplemented",
+    "ia32": "runtime-verified-partial",
+    "x32": "not-applicable",
 }
 
 X32_ARCHITECTURES = {
     "x86_64": "not-applicable",
     "aarch64": "not-applicable",
-    "ia32": "unimplemented",
+    "ia32": "not-applicable",
     "x32": "runtime-verified-partial",
+}
+
+SYSCALL_NATIVE_ARCHITECTURES = {
+    "x86_64": "runtime-verified-partial",
+    "aarch64": "runtime-verified-partial",
+    "ia32": "not-applicable",
+    "x32": "not-applicable",
 }
 
 COVERAGE_ASSESSMENTS = [
     coverage_assessment(
-        "syscalls-native", "partial", NATIVE_ARCHITECTURES,
+        "syscalls-native", "partial", SYSCALL_NATIVE_ARCHITECTURES,
         runtime_tests=[
             "tools/syscalls/linux_syscall_inventory.json",
             "tools/tests/validate_syscall_inventory.py",
             "tools/tests/arch_syscall_parity.py",
         ]),
-    coverage_assessment("syscalls-ia32", "unimplemented", COMPAT_ARCHITECTURES,
-                        kconfig=["COMPAT_IA32"]),
+    coverage_assessment(
+        "syscalls-ia32", "partial", COMPAT_ARCHITECTURES,
+        kconfig=["COMPAT_IA32"],
+        runtime_tests=[
+            "tools/tests/ia32_compat_uapi_probe.S",
+            "tools/tests/ia32_runtime_uapi_probe.S",
+            "tools/tests/ia32_common_uapi_probe.c",
+            "tools/tests/ia32_fd_mm_uapi_probe.c",
+            "tools/tests/ia32_largefile_uapi_probe.c",
+            "tools/tests/ia32_legacy_id_stat_uapi_probe.c",
+            "tools/tests/ia32_modern_uapi_probe.c",
+            "tools/tests/ia32_numa_aio_quota_uapi_probe.c",
+            "tools/tests/ia32_posix_mq_uapi_probe.c",
+            "tools/tests/ia32_ptrace_uapi_probe.c",
+            "tools/tests/ia32_resource_uapi_probe.c",
+            "tools/tests/ia32_signal_ldt_uapi_probe.c",
+            "tools/tests/ia32_socketcall_uapi_probe.c",
+            "tools/tests/ia32_sysv_ipc_uapi_probe.c",
+            "tools/tests/ia32_time_uapi_probe.c",
+            "tools/tests/ia32_disabled_syscalls_uapi_probe.c",
+        ],
+        oracle_status="partial",
+        oracle_scope=(
+            "ELF loading, int 0x80 entry, scalar and common calls, legacy and "
+            "time64 structures, file and memory operations, socketcall, SysV "
+            "IPC, POSIX message queues, signals, LDT and TLS, ptrace, NUMA, "
+            "quota, AIO, architecture control and configuration-disabled slots"
+        )),
     coverage_assessment(
         "syscalls-x32", "partial", X32_ARCHITECTURES,
         kconfig=["X86_X32_ABI"],
