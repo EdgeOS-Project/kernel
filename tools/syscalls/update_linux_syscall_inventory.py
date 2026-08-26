@@ -81,6 +81,14 @@ VERIFIED_SYSCALL_PROBES = {
     "sched_yield": "tools/tests/scheduler_runtime_probe.c",
     "set_mempolicy": "tools/tests/numa_policy_abi_probe.c",
     "set_mempolicy_home_node": "tools/tests/numa_policy_abi_probe.c",
+    "setfsgid": "tools/tests/credential_transition_abi_probe.c",
+    "setfsuid": "tools/tests/credential_transition_abi_probe.c",
+    "setgid": "tools/tests/credential_transition_abi_probe.c",
+    "setregid": "tools/tests/credential_transition_abi_probe.c",
+    "setresgid": "tools/tests/credential_transition_abi_probe.c",
+    "setresuid": "tools/tests/credential_transition_abi_probe.c",
+    "setreuid": "tools/tests/credential_transition_abi_probe.c",
+    "setuid": "tools/tests/credential_transition_abi_probe.c",
     "sysfs": "tools/tests/sysfs_syscall_abi_probe.c",
 }
 PARTIAL_SYSCALL_PROBES = {

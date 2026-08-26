@@ -7455,19 +7455,19 @@
         "tools/tests/credential_transition_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 123,
           "status": "implemented",
           "route": "shared:edge_linux_sys_set_credentials",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 152,
           "status": "implemented",
           "route": "shared:edge_linux_sys_set_credentials",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -7480,19 +7480,19 @@
         "tools/tests/credential_transition_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 122,
           "status": "implemented",
           "route": "shared:edge_linux_sys_set_credentials",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 151,
           "status": "implemented",
           "route": "shared:edge_linux_sys_set_credentials",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -7505,19 +7505,19 @@
         "tools/tests/credential_transition_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 106,
           "status": "implemented",
           "route": "shared:edge_linux_sys_set_credentials",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 144,
           "status": "implemented",
           "route": "shared:edge_linux_sys_set_credentials",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -7680,19 +7680,19 @@
         "tools/tests/credential_transition_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 114,
           "status": "implemented",
           "route": "shared:edge_linux_sys_set_credentials",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 143,
           "status": "implemented",
           "route": "shared:edge_linux_sys_set_credentials",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -7705,19 +7705,19 @@
         "tools/tests/credential_transition_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 119,
           "status": "implemented",
           "route": "shared:edge_linux_sys_set_credentials",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 149,
           "status": "implemented",
           "route": "shared:edge_linux_sys_set_credentials",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -7730,19 +7730,19 @@
         "tools/tests/credential_transition_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 117,
           "status": "implemented",
           "route": "shared:edge_linux_sys_set_credentials",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 147,
           "status": "implemented",
           "route": "shared:edge_linux_sys_set_credentials",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -7755,19 +7755,19 @@
         "tools/tests/credential_transition_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 113,
           "status": "implemented",
           "route": "shared:edge_linux_sys_set_credentials",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 145,
           "status": "implemented",
           "route": "shared:edge_linux_sys_set_credentials",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -7881,19 +7881,19 @@
         "tools/tests/credential_transition_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 105,
           "status": "implemented",
           "route": "shared:edge_linux_sys_set_credentials",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 146,
           "status": "implemented",
           "route": "shared:edge_linux_sys_set_credentials",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
