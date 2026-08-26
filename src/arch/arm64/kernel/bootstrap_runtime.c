@@ -11321,7 +11321,7 @@ static void socket_unix_poll_snapshot(
     const kernel_socket_t *peer;
 
     bytes_zero(&state, sizeof(state));
-    if (!socket || !socket_buffered_stream_uses_peer(socket)) {
+    if (!socket || socket->domain != LINUX_AF_UNIX) {
         kernel_unix_socket_poll_policy(0, result);
         return;
     }
@@ -12427,13 +12427,21 @@ static int64_t socket_unix_dgram_send_vectors(
 
     if (sender->shutdown_write) return -LINUX_EPIPE;
     if (!receiver || !receiver->used) return -LINUX_ECONNREFUSED;
-    if (receiver->shutdown_read)
-        return sender->connected ? -LINUX_EPIPE : -LINUX_ECONNREFUSED;
     for (uint32_t index = 0; index < vector_count; ++index) {
         if (vectors[index].iov_len > KERNEL_UNIX_DGRAM_SIZE ||
             total > KERNEL_UNIX_DGRAM_SIZE - vectors[index].iov_len)
             return -LINUX_EMSGSIZE;
         total += vectors[index].iov_len;
+    }
+    {
+        uint32_t available =
+            sizeof(receiver->unix_rx) - receiver->unix_rx_count;
+        int shutdown_error =
+            kernel_unix_socket_record_peer_shutdown_error(
+                sender->type, sender->connected, receiver->shutdown_read,
+                (uint32_t)total, available, receiver->dgram_count,
+                KERNEL_UNIX_DGRAM_RECORDS);
+        if (shutdown_error) return shutdown_error;
     }
     if (receiver->dgram_count >= KERNEL_UNIX_DGRAM_RECORDS ||
         total > sizeof(receiver->unix_rx) - receiver->unix_rx_count)
@@ -18502,8 +18510,11 @@ static int64_t socket_shutdown_retained(
     if (socket->domain == LINUX_AF_UNIX || socket->local_stream) {
         uint32_t peer_changed = 0;
         int peer_index = -1;
-        if (how == 0 || how == 2) {
+        if ((how == 0 || how == 2) &&
+            kernel_socket_type_has_peer_eof(socket->type)) {
             peer_changed |= KERNEL_SOCKET_READINESS_WRITE_CHANGED;
+            socket_unix_wake_readers(socket_index);
+        } else if (how == 0 || how == 2) {
             socket_unix_wake_readers(socket_index);
         }
         if (how == 1 || how == 2) {
@@ -18521,7 +18532,8 @@ static int64_t socket_shutdown_retained(
                     KERNEL_SOCKET_READINESS_READ_CHANGED;
                 socket_unix_wake_readers(peer);
             }
-            if (how == 0 || how == 2)
+            if ((how == 0 || how == 2) &&
+                kernel_socket_type_has_peer_eof(socket->type))
                 socket_unix_wake_writers(peer);
         }
         if (peer_index >= 0 && peer_changed)
@@ -20303,7 +20315,7 @@ static uint32_t fd_ready_mask(kernel_task_t *task, bootstrap_fd_t *fd) {
                !socket_is_icmp(socket))) &&
              lwip_stack_packet_frame_pending()))
             state.readable = 1;
-        if (socket_buffered_stream_uses_peer(socket)) {
+        if (socket->domain == LINUX_AF_UNIX) {
             socket_unix_poll_snapshot(socket, &unix_result);
             state.read_closed = unix_result.read_closed;
             state.hangup = unix_result.hangup;
@@ -20318,7 +20330,7 @@ static uint32_t fd_ready_mask(kernel_task_t *task, bootstrap_fd_t *fd) {
             state.use_stream_write_policy = 1;
             if (socket->connected && socket->tcp)
                 state.stream.send_space = tcp_sndbuf(socket->tcp);
-        } else if (socket_buffered_stream_uses_peer(socket)) {
+        } else if (socket->domain == LINUX_AF_UNIX) {
             state.writable = unix_result.writable;
         } else if (socket->domain == LINUX_AF_NETLINK) {
             state.writable = 1;
@@ -34608,9 +34620,6 @@ static int64_t arm64_socket_message_send(
                    kernel_unix_socket_missing_peer_error(socket->type, socket->peer_closed);
         receiver = &g_sockets[peer_index];
         if (socket->shutdown_write) return -LINUX_EPIPE;
-        if (receiver->shutdown_read)
-            return !message.name && socket->connected ?
-                   -LINUX_EPIPE : -LINUX_ECONNREFUSED;
         for (i = 0; i < message.iov_length; ++i) {
             arm64_linux_iovec_t iov;
             if (arch_copy_from_user(task->ttbr0, &iov,
@@ -34622,6 +34631,16 @@ static int64_t arm64_socket_message_send(
                 return -LINUX_EMSGSIZE;
             }
             total += iov.length;
+        }
+        {
+            uint32_t available =
+                sizeof(receiver->unix_rx) - receiver->unix_rx_count;
+            int shutdown_error =
+                kernel_unix_socket_record_peer_shutdown_error(
+                    socket->type, !message.name && socket->connected,
+                    receiver->shutdown_read, (uint32_t)total, available,
+                    receiver->dgram_count, KERNEL_UNIX_DGRAM_RECORDS);
+            if (shutdown_error) return shutdown_error;
         }
         if (receiver->dgram_count >= KERNEL_UNIX_DGRAM_RECORDS ||
             total > sizeof(receiver->unix_rx) - receiver->unix_rx_count) {

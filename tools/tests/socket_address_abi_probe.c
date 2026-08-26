@@ -45,6 +45,7 @@
 #define EFAULT 14
 #define EINVAL 22
 #define EADDRINUSE 98
+#define ENETUNREACH 101
 #define ENOTSOCK 88
 #define ENOTCONN 107
 
@@ -497,8 +498,13 @@ static int run_ipv4_probe(void) {
         ++failures;
     }
 
-    failures += expect_result("ipv4_connect",
-        raw_syscall3(SYS_connect, descriptor, (long)&peer, sizeof(peer)), 0);
+    long connect_result = raw_syscall3(SYS_connect, descriptor,
+                                       (long)&peer, sizeof(peer));
+    if (connect_result == -ENETUNREACH) {
+        failures += close_if_open(descriptor);
+        return failures;
+    }
+    failures += expect_result("ipv4_connect", connect_result, 0);
     length = sizeof(returned);
     failures += expect_result("ipv4_getpeername",
         raw_syscall3(SYS_getpeername, descriptor, (long)&returned,

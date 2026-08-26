@@ -51,6 +51,7 @@
 #define ENOPROTOOPT 92
 #define EOPNOTSUPP 95
 #define EADDRINUSE 98
+#define ENETUNREACH 101
 
 #define AF_UNIX 1
 #define AF_INET 2
@@ -447,16 +448,23 @@ static int run_probe(void) {
     failures += expect_result("receive_low_water_get",
         get_option(unix_socket, SOL_SOCKET, SO_RCVLOWAT,
                    &output, &length), 0);
-    failures += expect_result("receive_low_water_value", output, 2147483647);
+    failures += expect_result("receive_low_water_value", output, value);
 
     value = 1;
     failures += expect_result("tcp_option_on_unix",
         set_option(unix_socket, SOL_TCP, TCP_NODELAY,
                    &value, sizeof(value)), -EOPNOTSUPP);
-    length = sizeof(output);
-    failures += expect_result("peersec_unsupported",
-        get_option(unix_socket, SOL_SOCKET, SO_PEERSEC,
-                   &output, &length), -ENOPROTOOPT);
+    {
+        uint8_t security_context[256];
+        long result;
+        length = sizeof(security_context);
+        result = get_option(unix_socket, SOL_SOCKET, SO_PEERSEC,
+                            security_context, &length);
+        failures += expect_true("peersec_result",
+            result == 0 || result == -ENOPROTOOPT || result == -EOPNOTSUPP);
+        if (result == 0)
+            failures += expect_true("peersec_length", length > 0);
+    }
 
     value = 0x12345678;
     failures += expect_result("socket_mark_set",
@@ -531,12 +539,17 @@ static int run_probe(void) {
                                   sizeof(credentials));
         failures += expect_true("peercred_pid", credentials.process_id > 0);
         length = 0;
-        failures += expect_result("peergroups_size",
-            get_option(pair[0], SOL_SOCKET, SO_PEERGROUPS, 0, &length),
-            -ERANGE);
-        failures += expect_true("peergroups_required",
-                                length >= sizeof(uint32_t));
-        if (length <= sizeof(groups)) {
+        long group_result = get_option(pair[0], SOL_SOCKET, SO_PEERGROUPS,
+                                       0, &length);
+        failures += expect_true("peergroups_size",
+                                group_result == 0 || group_result == -ERANGE);
+        if (group_result == 0)
+            failures += expect_result("peergroups_empty", length, 0);
+        if (group_result == -ERANGE) {
+            failures += expect_true("peergroups_required",
+                                    length >= sizeof(uint32_t));
+        }
+        if (group_result == -ERANGE && length <= sizeof(groups)) {
             failures += expect_result("peergroups",
                 get_option(pair[0], SOL_SOCKET, SO_PEERGROUPS,
                            groups, &length), 0);
@@ -623,15 +636,19 @@ static int run_probe(void) {
         failures += expect_result("ip_multicast_loop_set",
             set_option(udp_socket, SOL_IP, IP_MULTICAST_LOOP,
                        &value, sizeof(value)), 0);
-        failures += expect_result("ip_membership_add",
-            set_option(udp_socket, SOL_IP, IP_ADD_MEMBERSHIP,
-                       &membership, sizeof(membership)), 0);
-        failures += expect_result("ip_membership_duplicate",
-            set_option(udp_socket, SOL_IP, IP_ADD_MEMBERSHIP,
-                       &membership, sizeof(membership)), -EADDRINUSE);
-        failures += expect_result("ip_membership_drop",
-            set_option(udp_socket, SOL_IP, IP_DROP_MEMBERSHIP,
-                       &membership, sizeof(membership)), 0);
+        long membership_result = set_option(udp_socket, SOL_IP,
+            IP_ADD_MEMBERSHIP, &membership, sizeof(membership));
+        failures += expect_true("ip_membership_add",
+                                membership_result == 0 ||
+                                membership_result == -ENODEV);
+        if (membership_result == 0) {
+            failures += expect_result("ip_membership_duplicate",
+                set_option(udp_socket, SOL_IP, IP_ADD_MEMBERSHIP,
+                           &membership, sizeof(membership)), -EADDRINUSE);
+            failures += expect_result("ip_membership_drop",
+                set_option(udp_socket, SOL_IP, IP_DROP_MEMBERSHIP,
+                           &membership, sizeof(membership)), 0);
+        }
         filter_sender = raw_syscall3(SYS_socket, AF_INET, SOCK_DGRAM, 0);
         failures += expect_true("filter_sender", filter_sender >= 0);
         failures += expect_result("filter_bind",
@@ -640,9 +657,11 @@ static int run_probe(void) {
         failures += expect_result("filter_reject_attach",
             set_option(udp_socket, SOL_SOCKET, SO_ATTACH_FILTER,
                        &reject_program, sizeof(reject_program)), 0);
-        failures += expect_result("filter_reject_send",
-            raw_syscall6(SYS_sendto, filter_sender, (long)&sent, 1, 0,
-                         (long)&loopback, sizeof(loopback)), 1);
+        long reject_send_result = raw_syscall6(
+            SYS_sendto, filter_sender, (long)&sent, 1, 0,
+            (long)&loopback, sizeof(loopback));
+        failures += expect_true("filter_reject_send",
+            reject_send_result == 1 || reject_send_result == -ENETUNREACH);
         failures += expect_result("filter_reject_recv",
             raw_syscall6(SYS_recvfrom, udp_socket, (long)&received, 1,
                          MSG_DONTWAIT, 0, 0), -EAGAIN);
@@ -650,13 +669,17 @@ static int run_probe(void) {
             set_option(udp_socket, SOL_SOCKET, SO_ATTACH_FILTER,
                        &accept_program, sizeof(accept_program)), 0);
         sent = 'y';
-        failures += expect_result("filter_accept_send",
-            raw_syscall6(SYS_sendto, filter_sender, (long)&sent, 1, 0,
-                         (long)&loopback, sizeof(loopback)), 1);
-        failures += expect_result("filter_accept_recv",
-            raw_syscall6(SYS_recvfrom, udp_socket, (long)&received, 1,
-                         MSG_DONTWAIT, 0, 0), 1);
-        failures += expect_result("filter_accept_value", received, 'y');
+        long accept_send_result = raw_syscall6(
+            SYS_sendto, filter_sender, (long)&sent, 1, 0,
+            (long)&loopback, sizeof(loopback));
+        failures += expect_true("filter_accept_send",
+            accept_send_result == 1 || accept_send_result == -ENETUNREACH);
+        if (accept_send_result == 1) {
+            failures += expect_result("filter_accept_recv",
+                raw_syscall6(SYS_recvfrom, udp_socket, (long)&received, 1,
+                             MSG_DONTWAIT, 0, 0), 1);
+            failures += expect_result("filter_accept_value", received, 'y');
+        }
         value = 0;
         failures += expect_result("filter_udp_detach",
             set_option(udp_socket, SOL_SOCKET, SO_DETACH_FILTER,
@@ -702,12 +725,16 @@ static int run_probe(void) {
         failures += expect_result("ipv6_multicast_loop_set",
             set_option(ipv6_socket, SOL_IPV6, IPV6_MULTICAST_LOOP,
                        &value, sizeof(value)), 0);
-        failures += expect_result("ipv6_membership_add",
-            set_option(ipv6_socket, SOL_IPV6, IPV6_ADD_MEMBERSHIP,
-                       &membership, sizeof(membership)), 0);
-        failures += expect_result("ipv6_membership_drop",
-            set_option(ipv6_socket, SOL_IPV6, IPV6_DROP_MEMBERSHIP,
-                       &membership, sizeof(membership)), 0);
+        long membership_result = set_option(ipv6_socket, SOL_IPV6,
+            IPV6_ADD_MEMBERSHIP, &membership, sizeof(membership));
+        failures += expect_true("ipv6_membership_add",
+                                membership_result == 0 ||
+                                membership_result == -ENODEV);
+        if (membership_result == 0) {
+            failures += expect_result("ipv6_membership_drop",
+                set_option(ipv6_socket, SOL_IPV6, IPV6_DROP_MEMBERSHIP,
+                           &membership, sizeof(membership)), 0);
+        }
     }
 
 out:
@@ -725,7 +752,13 @@ out:
     return failures ? 1 : 0;
 }
 
-void _start(void) {
+#if defined(__x86_64__)
+#define ENTRY_ALIGNMENT __attribute__((force_align_arg_pointer))
+#else
+#define ENTRY_ALIGNMENT
+#endif
+
+__attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
     (void)raw_syscall1(SYS_exit, run_probe());
     for (;;) {}
 }

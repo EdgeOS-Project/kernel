@@ -20,6 +20,19 @@ int kernel_unix_socket_missing_peer_error(uint32_t type, int peer_closed) {
         -EDGE_LINUX_ECONNREFUSED : -EDGE_LINUX_EPIPE;
 }
 
+int kernel_unix_socket_record_peer_shutdown_error(
+    uint32_t type, int connected, int peer_shutdown_read,
+    uint32_t required_bytes, uint32_t available_bytes,
+    uint32_t record_count, uint32_t record_capacity) {
+    int record = type == EDGE_LINUX_SOCK_DGRAM ||
+                 type == EDGE_LINUX_SOCK_SEQPACKET;
+
+    if (!record || !peer_shutdown_read) return 0;
+    if (required_bytes > available_bytes || record_count >= record_capacity)
+        return 0;
+    return connected ? -EDGE_LINUX_EPIPE : -EDGE_LINUX_ECONNREFUSED;
+}
+
 int32_t kernel_unix_socket_credential_pid(int32_t thread_id,
                                           int32_t thread_group_id) {
     return thread_group_id > 0 ? thread_group_id : thread_id;
@@ -48,7 +61,7 @@ void kernel_unix_socket_poll_policy(
                          state->peer_shutdown_read;
     }
 
-    if (state->shutdown_write || state->peer_shutdown_read ||
+    if (state->shutdown_write || (!record && state->peer_shutdown_read) ||
         (state->peer_eof && !state->peer_valid)) {
         result->writable = 1;
         return;

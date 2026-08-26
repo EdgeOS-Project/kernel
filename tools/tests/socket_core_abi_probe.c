@@ -233,7 +233,7 @@ static int expect_poll(const char *name, int descriptor, int expected) {
     pollfd.events = POLLIN | POLLOUT | POLLRDHUP;
     pollfd.revents = 0;
     result = raw_syscall5(SYS_ppoll, (long)&pollfd, 1, (long)&timeout, 0, 0);
-    failures += expect_result(name, result, 1);
+    failures += expect_result(name, result, expected ? 1 : 0);
     failures += expect_result(name, pollfd.revents, expected);
     return failures;
 }
@@ -510,11 +510,11 @@ static int run_probe(void) {
         result = raw_syscall2(SYS_shutdown, pair[0], SHUT_RD);
         failures += expect_result("dgram_full_shutdown_read", result, 0);
         failures += expect_poll("dgram_full_shutdown_read_peer_poll",
-                                pair[1], POLLOUT);
+                                pair[1], 0);
         result = raw_syscall6(SYS_sendto, pair[1], (long)&byte, 1,
                               MSG_NOSIGNAL, 0, 0);
         failures += expect_result("dgram_full_shutdown_read_peer_send",
-                                  result, -EPIPE);
+                                  result, -EAGAIN);
         failures += close_if_open(pair[0]);
         failures += close_if_open(pair[1]);
         pair[0] = -1;

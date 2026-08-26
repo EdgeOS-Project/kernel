@@ -509,7 +509,18 @@ static void test_unix_socket_poll_policy(void) {
     assert(!result.writable);
     state.peer_shutdown_read = 1;
     kernel_unix_socket_poll_policy(&state, &result);
+    assert(!result.writable);
+    state.peer_record_count = 0;
+    kernel_unix_socket_poll_policy(&state, &result);
     assert(result.writable);
+    assert(kernel_unix_socket_record_peer_shutdown_error(
+               EDGE_LINUX_SOCK_DGRAM, 1, 1, 1, 0, 16, 16) == 0);
+    assert(kernel_unix_socket_record_peer_shutdown_error(
+               EDGE_LINUX_SOCK_DGRAM, 1, 1, 1, 4096, 0, 16) ==
+           -EDGE_LINUX_EPIPE);
+    assert(kernel_unix_socket_record_peer_shutdown_error(
+               EDGE_LINUX_SOCK_DGRAM, 0, 1, 1, 4096, 0, 16) ==
+           -EDGE_LINUX_ECONNREFUSED);
 
     memset(&state, 0, sizeof(state));
     state.type = EDGE_LINUX_SOCK_SEQPACKET;

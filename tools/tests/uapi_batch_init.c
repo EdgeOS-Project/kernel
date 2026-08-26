@@ -379,6 +379,10 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "splice_abi_probe",
         "tee_abi_probe",
         "vmsplice_abi_probe",
+#elif defined(UAPI_BATCH_SOCKET_CORE_ONLY)
+        "socket_core_abi_probe",
+        "socket_address_abi_probe",
+        "socket_option_abi_probe",
 #elif defined(UAPI_BATCH_NATIVE_OPTIONAL_ONLY)
         "native_optional_syscalls_abi_probe",
 #else

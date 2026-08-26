@@ -236,6 +236,10 @@ uint32_t kernel_socket_poll_events(
     const kernel_socket_poll_state_t *state);
 int kernel_socket_type_has_peer_eof(uint32_t type);
 int kernel_unix_socket_missing_peer_error(uint32_t type, int peer_closed);
+int kernel_unix_socket_record_peer_shutdown_error(
+    uint32_t type, int connected, int peer_shutdown_read,
+    uint32_t required_bytes, uint32_t available_bytes,
+    uint32_t record_count, uint32_t record_capacity);
 int32_t kernel_unix_socket_credential_pid(int32_t thread_id,
                                           int32_t thread_group_id);
 void kernel_unix_socket_poll_policy(

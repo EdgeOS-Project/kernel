@@ -2734,11 +2734,12 @@ static int64_t x86_socket_shutdown_entry(
         if (how == 1 || how == 2) s->shutdown_write = 1;
         fd_wake_socket_waiters(socket_id);
         if ((how == 0 || how == 2) &&
+            kernel_socket_type_has_peer_eof((uint32_t)s->type) &&
             s->unix_peer_id >= 0 && s->unix_peer_id < EDGE_MAX_SOCKETS &&
             g_sockets[s->unix_peer_id].used) {
             /*
-             * A peer blocked on a full send queue must observe EPIPE as soon
-             * as this endpoint disables reception, even for SOCK_DGRAM.
+             * Stream-like peers observe the receive shutdown immediately.
+             * Linux leaves a full datagram sender blocked by queue pressure.
              */
             fd_wake_socket_waiters(s->unix_peer_id);
         }
@@ -2900,13 +2901,24 @@ static uint64_t unix_record_send_iov_to(
             spin_unlock_irqrestore(&peer->io_lock, irq_flags);
             return (uint64_t)-EPIPE;
         }
-        if (!peer->used || peer->closed || peer->shutdown_read ||
-            peer->type != s->type) {
+        if (!peer->used || peer->closed || peer->type != s->type) {
             spin_unlock_irqrestore(&peer->io_lock, irq_flags);
             return (uint64_t)-EPIPE;
         }
         room = peer->rx_len < socket_rx_capacity(peer) ?
                socket_rx_capacity(peer) - peer->rx_len : 0;
+        {
+            int shutdown_error =
+                kernel_unix_socket_record_peer_shutdown_error(
+                    (uint32_t)s->type, s->connected,
+                    peer->shutdown_read, total, room,
+                    (uint32_t)peer->packet_count,
+                    EDGE_SOCKET_PACKET_QUEUE);
+            if (shutdown_error) {
+                spin_unlock_irqrestore(&peer->io_lock, irq_flags);
+                return (uint64_t)(int64_t)shutdown_error;
+            }
+        }
         if (peer->packet_count >= EDGE_SOCKET_PACKET_QUEUE || total > room ||
             (rights && *rights &&
              kernel_socket_rights_queue_count(&peer->rights) >=

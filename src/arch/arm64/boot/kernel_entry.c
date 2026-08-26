@@ -284,14 +284,15 @@ void edgeos_arm64_el1_main(edgeos_arm64_bootinfo_t *bootinfo) {
         if (edge_native_netdev_register() != 0)
             arm64_serial_puts(
                 "arm64: native network registration failed\n");
-        lwip_stack_init();
-#ifdef CONFIG_NFSD
-        if (edge_nfsd_boot_start() < 0)
-            arm64_serial_puts("arm64: NFS server startup failed\n");
-#endif
     } else {
         arm64_serial_puts("arm64: no virtio-mmio network device discovered\n");
     }
+    /* Linux permits INET sockets even when no network interface is present. */
+    lwip_stack_init();
+#ifdef CONFIG_NFSD
+    if (edge_nfsd_boot_start() < 0)
+        arm64_serial_puts("arm64: NFS server startup failed\n");
+#endif
     if (edgeos_arm64_virtio_input_init(bootinfo) < 0) {
         arm64_serial_puts("arm64: no virtio keyboard discovered\n");
     } else if (edgeos_arm64_virtio_input_enable_interrupts() < 0) {

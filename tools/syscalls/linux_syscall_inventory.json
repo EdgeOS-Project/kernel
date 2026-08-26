@@ -257,19 +257,19 @@
         "tools/tests/socket_address_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 49,
           "status": "implemented",
           "route": "shared:edge_linux_sys_socket_address",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 200,
           "status": "implemented",
           "route": "shared:edge_linux_sys_socket_address",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -724,19 +724,19 @@
         "tools/tests/socket_address_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 42,
           "status": "implemented",
           "route": "shared:edge_linux_sys_socket_address",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 203,
           "status": "implemented",
           "route": "shared:edge_linux_sys_socket_address",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -2461,19 +2461,19 @@
         "tools/tests/socket_address_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 52,
           "status": "implemented",
           "route": "shared:edge_linux_sys_socket_address",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 205,
           "status": "implemented",
           "route": "shared:edge_linux_sys_socket_address",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -2776,19 +2776,19 @@
         "tools/tests/socket_address_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 51,
           "status": "implemented",
           "route": "shared:edge_linux_sys_socket_address",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 204,
           "status": "implemented",
           "route": "shared:edge_linux_sys_socket_address",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -2801,19 +2801,19 @@
         "tools/tests/socket_option_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 55,
           "status": "implemented",
           "route": "shared:edge_linux_sys_socket_option",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 209,
           "status": "implemented",
           "route": "shared:edge_linux_sys_socket_option",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -3718,22 +3718,22 @@
       "shared_handler": "edge_linux_sys_socket_core",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/socket_core_abi_probe.c"
+        "tools/tests/socket_address_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 50,
           "status": "implemented",
           "route": "shared:edge_linux_sys_socket_core",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 201,
           "status": "implemented",
           "route": "shared:edge_linux_sys_socket_core",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -7805,19 +7805,19 @@
         "tools/tests/socket_option_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 54,
           "status": "implemented",
           "route": "shared:edge_linux_sys_socket_option",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 208,
           "status": "implemented",
           "route": "shared:edge_linux_sys_socket_option",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -8030,19 +8030,19 @@
         "tools/tests/socket_core_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 48,
           "status": "implemented",
           "route": "shared:edge_linux_sys_socket_core",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 210,
           "status": "implemented",
           "route": "shared:edge_linux_sys_socket_core",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -8126,19 +8126,19 @@
         "tools/tests/socket_core_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 41,
           "status": "implemented",
           "route": "shared:edge_linux_sys_socket_core",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 198,
           "status": "implemented",
           "route": "shared:edge_linux_sys_socket_core",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -8165,19 +8165,19 @@
         "tools/tests/socket_core_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 53,
           "status": "implemented",
           "route": "shared:edge_linux_sys_socket_core",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 199,
           "status": "implemented",
           "route": "shared:edge_linux_sys_socket_core",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },

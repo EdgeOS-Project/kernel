@@ -127,6 +127,7 @@ static edge_lwip_deferred_frame_t
     g_lwip_deferred_frames[EDGE_LWIP_DEFERRED_FRAME_MAX];
 static struct raw_pcb *g_icmp_raw;
 static struct raw_pcb *g_icmp6_raw;
+static int g_core_ready;
 static int g_ready;
 static uint64_t g_rx_packets;
 static uint64_t g_rx_bytes;
@@ -2436,8 +2437,11 @@ void lwip_stack_init(void) {
     ip4_addr_t netmask;
     ip4_addr_t gw;
 
-    if (g_ready)
-        return;
+    if (!g_core_ready) {
+        lwip_init();
+        g_core_ready = 1;
+    }
+    if (g_ready) return;
     g_netdev_handle = edge_netdev_get_active();
     if (!g_netdev_handle ||
         edge_netdev_set_up(g_netdev_handle, 1) != 0)
@@ -2448,7 +2452,6 @@ void lwip_stack_init(void) {
     g_tx_bytes = 0;
     memset(g_ipv6_prefix_lengths, 0, sizeof(g_ipv6_prefix_lengths));
 
-    lwip_init();
     /*
      * Keep the QEMU user-net defaults configured inside lwIP until the Linux
      * network configuration ABI is complete enough for DHCP-only operation.
