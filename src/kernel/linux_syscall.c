@@ -12508,8 +12508,18 @@ static int64_t edge_linux_io_uring_execute_uring_cmd(
 
     result = kernel_socket_describe_descriptor(
         submission->descriptor, &descriptor_info);
-    if (result == -EDGE_LINUX_ENOTSOCK)
+    if (result == -EDGE_LINUX_ENOTSOCK) {
+        kernel_vfs_target_t target;
+
+        memset(&target, 0, sizeof(target));
+        result = kernel_vfs_resolve_fd(
+            submission->descriptor, &target);
+        if (result < 0) return result;
+        if (target.resolved_path &&
+            strcmp(target.resolved_path, "/dev/null") == 0)
+            return 0;
         return -EDGE_LINUX_EOPNOTSUPP;
+    }
     if (result < 0) return result;
 
     memset(nested.arguments, 0, sizeof(nested.arguments));

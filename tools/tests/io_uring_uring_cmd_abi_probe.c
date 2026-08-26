@@ -10,6 +10,7 @@
 #define SYS_mmap 9
 #define SYS_munmap 11
 #define SYS_ioctl 16
+#define SYS_openat 257
 #define SYS_socket 41
 #define SYS_sendto 44
 #define SYS_bind 49
@@ -29,6 +30,7 @@
 #define SYS_ioctl 29
 #define SYS_munmap 215
 #define SYS_mmap 222
+#define SYS_openat 56
 #else
 #error "io_uring_uring_cmd_abi_probe requires a Linux 64-bit architecture"
 #endif
@@ -39,6 +41,8 @@
 #define PROT_READ 1u
 #define PROT_WRITE 2u
 #define MAP_SHARED 1u
+#define AT_FDCWD -100
+#define O_RDWR 2u
 #define PAGE_SIZE 4096u
 #define AF_UNIX 1
 #define AF_INET 2
@@ -275,9 +279,9 @@ static int run_ring(long socket_descriptor, long queue_descriptor,
     struct io_uring_params parameters;
     struct io_uring_sqe request;
     struct user_sockaddr name;
-    void *sq_ring;
-    void *cq_ring;
-    void *sqes;
+    void *sq_ring = 0;
+    void *cq_ring = 0;
+    void *sqes = 0;
     uint32_t name_length;
     uint32_t option_value;
     uint8_t receive_buffer[sizeof(payload)];
@@ -395,6 +399,68 @@ static int run_ring(long socket_descriptor, long queue_descriptor,
     (void)raw_syscall6(SYS_munmap, (long)cq_ring, PAGE_SIZE, 0, 0, 0, 0);
     (void)raw_syscall6(SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
     (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+    return failures;
+}
+
+static int run_null_ring(uint32_t setup_flags, uint8_t opcode) {
+    static const char null_path[] = "/dev/null";
+    struct io_uring_params parameters;
+    struct io_uring_sqe request;
+    void *sq_ring = 0;
+    void *cq_ring = 0;
+    void *sqes = 0;
+    uint32_t stride = setup_flags & IORING_SETUP_SQE128 ? 128u : 64u;
+    long null_descriptor;
+    long ring_descriptor;
+    int failures = 0;
+
+    null_descriptor = raw_syscall6(
+        SYS_openat, AT_FDCWD, (long)null_path, O_RDWR, 0, 0, 0);
+    if (null_descriptor < 0) {
+        print_text("NULL_OPEN_FAIL\n");
+        return 1;
+    }
+    memset(&parameters, 0, sizeof(parameters));
+    parameters.flags = setup_flags;
+    ring_descriptor = raw_syscall6(
+        SYS_io_uring_setup, 8, (long)&parameters, 0, 0, 0, 0);
+    if (ring_descriptor < 0) {
+        print_text("NULL_URING_SETUP_FAIL\n");
+        (void)raw_syscall6(
+            SYS_close, null_descriptor, 0, 0, 0, 0, 0);
+        return 1;
+    }
+    sq_ring = map_ring(ring_descriptor, IORING_OFF_SQ_RING);
+    cq_ring = map_ring(ring_descriptor, IORING_OFF_CQ_RING);
+    sqes = map_ring(ring_descriptor, IORING_OFF_SQES);
+    if (!sq_ring || !cq_ring || !sqes) {
+        print_text("NULL_URING_MMAP_FAIL\n");
+        failures = 1;
+    } else {
+        memset(&request, 0, sizeof(request));
+        request.opcode = opcode;
+        request.descriptor = (int32_t)null_descriptor;
+        request.offset = 0x4e554c4cu;
+        request.address = 0x1111222233334444ull;
+        request.length = 0x55667788u;
+        request.user_data = 0x4e554c4c434d44ull;
+        failures += record_failure(submit_one(
+            ring_descriptor, &parameters, sq_ring, cq_ring, sqes,
+            stride, &request, 0), "NULL_URING_CMD_FAIL\n");
+    }
+    if (sqes)
+        (void)raw_syscall6(
+            SYS_munmap, (long)sqes, PAGE_SIZE, 0, 0, 0, 0);
+    if (cq_ring)
+        (void)raw_syscall6(
+            SYS_munmap, (long)cq_ring, PAGE_SIZE, 0, 0, 0, 0);
+    if (sq_ring)
+        (void)raw_syscall6(
+            SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
+    (void)raw_syscall6(
+        SYS_close, ring_descriptor, 0, 0, 0, 0, 0);
+    (void)raw_syscall6(
+        SYS_close, null_descriptor, 0, 0, 0, 0, 0);
     return failures;
 }
 
@@ -562,6 +628,11 @@ void _start(void) {
     if (!failures)
         failures += run_timestamp_ring(
             queue_sender, queue_receiver, &queue_address,
+            IORING_SETUP_SQE128, IORING_OP_URING_CMD128);
+    if (!failures)
+        failures += run_null_ring(0u, IORING_OP_URING_CMD);
+    if (!failures)
+        failures += run_null_ring(
             IORING_SETUP_SQE128, IORING_OP_URING_CMD128);
     if (socket_descriptor >= 0)
         (void)raw_syscall6(SYS_close, socket_descriptor, 0, 0, 0, 0, 0);

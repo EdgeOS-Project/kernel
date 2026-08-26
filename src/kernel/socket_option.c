@@ -340,8 +340,8 @@ int kernel_socket_option_set_timestamping(
     if (status < 0) return status;
     if (!view.state) return -EDGE_LINUX_EIO;
     if (flags & EDGE_LINUX_SOF_TIMESTAMPING_BIND_PHC) {
-        if (!view.bound_interface_index ||
-            *view.bound_interface_index <= 0)
+        if (!view.bound_interface ||
+            *view.bound_interface <= 0)
             return -EDGE_LINUX_EOPNOTSUPP;
         /* No EdgeOS network device currently exports PHC virtual clocks. */
         return -EDGE_LINUX_EINVAL;
