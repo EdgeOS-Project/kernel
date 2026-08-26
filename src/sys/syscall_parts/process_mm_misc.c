@@ -1710,6 +1710,7 @@ static int64_t x86_fd_operation_file_range(
                     (uint64_t)(uintptr_t)&g_memfds[0];
                 information->file =
                     (uint64_t)(uint32_t)entry->pipe_id;
+                information->size = memory->size;
                 information->kind = KERNEL_IO_FILE_REGULAR;
                 return 0;
             }
@@ -1719,6 +1720,7 @@ static int64_t x86_fd_operation_file_range(
             information->filesystem =
                 (uint64_t)(uintptr_t)entry->sb;
             information->file = entry->inode.ino;
+            information->size = entry->inode.size;
             information->metadata_flags = entry->inode.metadata_flags;
             inode_kind = entry->inode.mode & 0xf000u;
             if (inode_kind == VFS_INODE_FILE)
@@ -1833,6 +1835,17 @@ static int64_t x86_fd_operation_file_range(
                 edge_inotify_notify_path(
                     entry->path, EDGE_IN_MODIFY, 0);
             return 0;
+        case KERNEL_IO_FILE_RANGE_SYNC_DATA:
+        case KERNEL_IO_FILE_RANGE_SYNC_FILE:
+            if (entry->kind == FD_MEMFD) return 0;
+            if (entry->kind != FD_VFS) return -EINVAL;
+            if (edge_mmap_file_cache_sync_inode(
+                    entry->sb, &entry->inode, 0) < 0)
+                return -EIO;
+            return fd_sync_inode(
+                entry,
+                request->operation == KERNEL_IO_FILE_RANGE_SYNC_DATA) < 0 ?
+                    -EIO : 0;
         default:
             return -EINVAL;
     }

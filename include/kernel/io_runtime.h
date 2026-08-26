@@ -56,6 +56,7 @@ typedef struct kernel_io_file_range_info {
     uint64_t filesystem;
     uint64_t file;
     uint64_t offset;
+    uint64_t size;
     kernel_io_file_kind_t kind;
     uint8_t readable;
     uint8_t writable;
@@ -71,6 +72,8 @@ typedef enum kernel_io_file_range_operation {
     KERNEL_IO_FILE_RANGE_WRITE,
     KERNEL_IO_FILE_RANGE_COMMIT_OFFSET,
     KERNEL_IO_FILE_RANGE_COMPLETE_WRITE,
+    KERNEL_IO_FILE_RANGE_SYNC_DATA,
+    KERNEL_IO_FILE_RANGE_SYNC_FILE,
 } kernel_io_file_range_operation_t;
 
 typedef struct kernel_io_file_range_request {
@@ -161,5 +164,6 @@ int64_t kernel_io_file_range_write(int32_t descriptor, uint64_t offset,
                                    const void *buffer, uint32_t length);
 int kernel_io_file_range_commit_offset(int32_t descriptor, uint64_t offset);
 void kernel_io_file_range_complete_write(int32_t descriptor);
+int kernel_io_file_range_sync(int32_t descriptor, int data_only);
 
 #endif

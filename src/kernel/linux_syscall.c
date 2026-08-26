@@ -13431,6 +13431,21 @@ static uint32_t edge_linux_io_uring_worker_ready_operation(
     }
 }
 
+static int edge_linux_io_uring_worker_add(
+        int32_t ring_id,
+        const struct edge_linux_io_uring_sqe *submission) {
+    uint32_t runtime_flags;
+    int result;
+
+    result = edge_linux_aio_decode_rw_flags(
+        submission->operation_flags, &runtime_flags);
+    if (result < 0) return result;
+    return kernel_io_uring_worker_add(
+        ring_id, kernel_current_pid(), submission,
+        edge_linux_io_uring_worker_ready_operation(submission),
+        runtime_flags);
+}
+
 static uint32_t edge_linux_io_uring_worker_service(
         edge_linux_syscall_context_t *context,
         int32_t ring_filter, uint32_t budget) {
@@ -13788,10 +13803,8 @@ static int64_t edge_linux_sys_io_uring_enter(
         } else {
             if ((submission.flags & EDGE_LINUX_IOSQE_ASYNC) &&
                 edge_linux_io_uring_worker_eligible(&submission)) {
-                operation_result = kernel_io_uring_worker_add(
-                    ring_id, kernel_current_pid(), &submission,
-                    edge_linux_io_uring_worker_ready_operation(
-                        &submission));
+                operation_result = edge_linux_io_uring_worker_add(
+                    ring_id, &submission);
                 if (operation_result == 0)
                     operation_result = EDGE_LINUX_IORING_PENDING_RESULT;
             } else {
@@ -13800,10 +13813,8 @@ static int64_t edge_linux_sys_io_uring_enter(
                     &completion_flags, &notification);
                 if (operation_result == -EDGE_LINUX_EAGAIN &&
                     edge_linux_io_uring_worker_eligible(&submission)) {
-                    operation_result = kernel_io_uring_worker_add(
-                        ring_id, kernel_current_pid(), &submission,
-                        edge_linux_io_uring_worker_ready_operation(
-                            &submission));
+                    operation_result = edge_linux_io_uring_worker_add(
+                        ring_id, &submission);
                     if (operation_result == 0)
                         operation_result =
                             EDGE_LINUX_IORING_PENDING_RESULT;

@@ -64,10 +64,14 @@
 #define SOCK_STREAM 1
 #define AT_FDCWD -100
 #define O_RDWR 2
+#define O_CREAT 0x40
+#define O_TRUNC 0x200
 #define O_NONBLOCK 0x800
 #define O_NOCTTY 0x100
 #define EAGAIN 11
 #define EEXIST 17
+#define RWF_DSYNC 0x00000002u
+#define RWF_APPEND 0x00000010u
 #define SIGCHLD 17
 #define S_IFCHR 0020000
 #define TIOCGPTN 0x80045430u
@@ -202,8 +206,6 @@ static void append_decimal(char *text, uint32_t *length, uint32_t value) {
     text[*length] = '\0';
 }
 
-#if defined(IO_URING_FIXED_BUFFER_TTY_PROBE) || \
-    defined(IO_URING_FIXED_BUFFER_DEVICE_PROBE)
 static void report_long(const char *prefix, long value) {
     char message[96];
     uint32_t length = 0u;
@@ -224,7 +226,6 @@ static void report_long(const char *prefix, long value) {
     (void)raw_syscall6(
         SYS_write, 1, (long)message, length, 0, 0, 0);
 }
-#endif
 
 static long open_character_device(const char *path, uint32_t device,
                                   uint32_t flags) {
@@ -312,11 +313,12 @@ static void *map_ring(long descriptor, uint64_t offset) {
         0 : (void *)(uintptr_t)result;
 }
 
-static int submit(
+static int submit_with_flags(
         long ring, struct io_uring_params *parameters,
         void *sq_ring, void *cq_ring, struct io_uring_sqe *sqes,
         uint8_t opcode, int32_t descriptor, uint64_t address,
-        uint32_t length, uint64_t user_data) {
+        uint32_t length, uint64_t user_data, uint8_t submission_flags,
+        uint32_t operation_flags) {
     volatile uint32_t *sq_head = (volatile uint32_t *)(
         (uint8_t *)sq_ring + parameters->sq_off.head);
     volatile uint32_t *sq_tail = (volatile uint32_t *)(
@@ -339,10 +341,12 @@ static int submit(
 
     bytes_zero(&sqes[sq_index], sizeof(sqes[sq_index]));
     sqes[sq_index].opcode = opcode;
+    sqes[sq_index].flags = submission_flags;
     sqes[sq_index].descriptor = descriptor;
     sqes[sq_index].offset = UINT64_MAX;
     sqes[sq_index].address = address;
     sqes[sq_index].length = length;
+    sqes[sq_index].operation_flags = operation_flags;
     sqes[sq_index].user_data = user_data;
     sqes[sq_index].buffer_index = 0u;
     sq_array[sq_index] = sq_index;
@@ -357,6 +361,16 @@ static int submit(
     entered = cqes[cq_index].result;
     __atomic_store_n(cq_head, *cq_head + 1u, __ATOMIC_RELEASE);
     return (int)entered;
+}
+
+static int submit(
+        long ring, struct io_uring_params *parameters,
+        void *sq_ring, void *cq_ring, struct io_uring_sqe *sqes,
+        uint8_t opcode, int32_t descriptor, uint64_t address,
+        uint32_t length, uint64_t user_data) {
+    return submit_with_flags(
+        ring, parameters, sq_ring, cq_ring, sqes,
+        opcode, descriptor, address, length, user_data, 0u, 0u);
 }
 
 static int submit_async_read(
@@ -443,6 +457,7 @@ static int run_probe(void) {
     int32_t pty[2] = {-1, -1};
     int32_t null_descriptor = -1;
     int32_t zero_descriptor = -1;
+    int32_t regular_descriptor = -1;
 #ifdef IO_URING_FIXED_BUFFER_DEVICE_PROBE
     int32_t input_descriptor = -1;
 #endif
@@ -513,6 +528,86 @@ static int run_probe(void) {
         SYS_read, output_pipe[0], (long)observed,
         sizeof(first), 0, 0, 0) != (long)sizeof(first);
     failures += !bytes_equal(observed, first, sizeof(first));
+
+    if (!failures) {
+        static const char regular_path[] = "/io-uring-rwf-test";
+
+        result = raw_syscall6(
+            SYS_openat, AT_FDCWD, (long)regular_path,
+            O_RDWR | O_CREAT | O_TRUNC, 0600, 0, 0);
+        if (!result_is_error(result))
+            regular_descriptor = (int32_t)result;
+        failures += require_result(
+            result_is_error(result), 0,
+            "IO_URING_FIXED_BUFFER_PIN_RWF_OPEN_FAIL\n");
+        if (!failures)
+            failures += require_result(
+                raw_syscall6(
+                    SYS_write, regular_descriptor, (long)first,
+                    sizeof(first), 0, 0, 0),
+                sizeof(first),
+                "IO_URING_FIXED_BUFFER_PIN_RWF_SEED_FAIL\n");
+        if (!failures)
+            result = submit_with_flags(
+                ring, &parameters, sq_ring, cq_ring, sqes,
+                IORING_OP_WRITE_FIXED, regular_descriptor,
+                buffer.base + FIRST_OFFSET, sizeof(first),
+                0x525746415050454eull, IOSQE_ASYNC,
+                RWF_APPEND | RWF_DSYNC);
+        if (!failures && result != (long)sizeof(first))
+            report_long(
+                "IO_URING_FIXED_BUFFER_PIN_RWF_WRITE_RESULT=", result);
+        if (!failures)
+            failures += require_result(
+                result, sizeof(first),
+                "IO_URING_FIXED_BUFFER_PIN_RWF_WRITE_FAIL\n");
+        if (regular_descriptor >= 0) {
+            (void)raw_syscall6(
+                SYS_close, regular_descriptor, 0, 0, 0, 0, 0);
+            regular_descriptor = -1;
+        }
+        if (!failures) {
+            result = raw_syscall6(
+                SYS_openat, AT_FDCWD, (long)regular_path,
+                0, 0, 0, 0);
+            if (!result_is_error(result))
+                regular_descriptor = (int32_t)result;
+            failures += require_result(
+                result_is_error(result), 0,
+                "IO_URING_FIXED_BUFFER_PIN_RWF_REOPEN_FAIL\n");
+        }
+        bytes_zero(observed, sizeof(observed));
+        if (!failures) {
+            result = raw_syscall6(
+                SYS_read, regular_descriptor, (long)observed,
+                sizeof(first) * 2u, 0, 0, 0);
+            if (result != (long)(sizeof(first) * 2u))
+                report_long(
+                    "IO_URING_FIXED_BUFFER_PIN_RWF_READ_RESULT=", result);
+            failures += require_result(
+                result, sizeof(first) * 2u,
+                "IO_URING_FIXED_BUFFER_PIN_RWF_READ_FAIL\n");
+        }
+        if (!failures) {
+            if (!bytes_equal(observed, first, sizeof(first))) {
+                static const char mismatch[] =
+                    "IO_URING_FIXED_BUFFER_PIN_RWF_SEED_DATA_FAIL\n";
+                (void)raw_syscall6(
+                    SYS_write, 1, (long)mismatch,
+                    text_length(mismatch), 0, 0, 0);
+                ++failures;
+            }
+            if (!bytes_equal(
+                    observed + sizeof(first), first, sizeof(first))) {
+                static const char mismatch[] =
+                    "IO_URING_FIXED_BUFFER_PIN_RWF_APPEND_DATA_FAIL\n";
+                (void)raw_syscall6(
+                    SYS_write, 1, (long)mismatch,
+                    text_length(mismatch), 0, 0, 0);
+                ++failures;
+            }
+        }
+    }
 
     failures += raw_syscall6(
         SYS_write, input_pipe[1], (long)second,
@@ -908,6 +1003,9 @@ cleanup:
     if (zero_descriptor >= 0)
         (void)raw_syscall6(
             SYS_close, zero_descriptor, 0, 0, 0, 0, 0);
+    if (regular_descriptor >= 0)
+        (void)raw_syscall6(
+            SYS_close, regular_descriptor, 0, 0, 0, 0, 0);
 #ifdef IO_URING_FIXED_BUFFER_DEVICE_PROBE
     if (input_descriptor >= 0)
         (void)raw_syscall6(

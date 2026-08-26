@@ -19,6 +19,7 @@
 #include "kernel/runtime_limits.h"
 #include "string.h"
 #include "sys/spinlock.h"
+#include "vfs/vfs.h"
 
 #define IORING_SETUP_SQPOLL          (1u << 1)
 #define IORING_SETUP_SQ_AFF          (1u << 2)
@@ -2568,7 +2569,10 @@ int64_t kernel_io_uring_fixed_buffer_transfer(
               operation == KERNEL_IO_WRITE_POSITIONAL;
     if ((!writing && operation != KERNEL_IO_READ_CURRENT &&
          operation != KERNEL_IO_READ_POSITIONAL) ||
-        flags)
+        (flags & ~(KERNEL_IO_TRANSFER_APPEND |
+                   KERNEL_IO_TRANSFER_NOAPPEND |
+                   KERNEL_IO_TRANSFER_SYNC_DATA |
+                   KERNEL_IO_TRANSFER_SYNC_FILE)))
         return KERNEL_IO_VECTOR_SCALAR_FALLBACK;
     memset(&snapshot, 0, sizeof(snapshot));
 
@@ -2620,11 +2624,25 @@ unlock_snapshot:
         result = -EDGE_LINUX_EBADF;
         goto release_snapshot;
     }
-    if (writing && information.append) {
-        result = KERNEL_IO_VECTOR_SCALAR_FALLBACK;
+    if (writing &&
+        (information.metadata_flags & VFS_FILE_XFLAG_IMMUTABLE)) {
+        result = -EDGE_LINUX_EPERM;
+        goto release_snapshot;
+    }
+    if (writing &&
+        (information.metadata_flags & VFS_FILE_XFLAG_APPEND) &&
+        ((flags & KERNEL_IO_TRANSFER_NOAPPEND) ||
+         (!information.append &&
+          !(flags & KERNEL_IO_TRANSFER_APPEND)))) {
+        result = -EDGE_LINUX_EPERM;
         goto release_snapshot;
     }
     current_offset = positional ? offset : information.offset;
+    if (writing &&
+        ((flags & KERNEL_IO_TRANSFER_APPEND) ||
+         (information.append &&
+          !(flags & KERNEL_IO_TRANSFER_NOAPPEND))))
+        current_offset = information.size;
     if (information.kind != KERNEL_IO_FILE_REGULAR) {
         kernel_io_buffer_t bounce;
 
@@ -2758,9 +2776,17 @@ complete_transfer:
     if (!positional && information.kind == KERNEL_IO_FILE_REGULAR &&
         transferred)
         (void)kernel_io_file_range_commit_offset(
-            descriptor, information.offset + transferred);
+            descriptor, current_offset);
     if (writing && transferred)
         kernel_io_file_range_complete_write(descriptor);
+    if (writing && transferred &&
+        (flags & (KERNEL_IO_TRANSFER_SYNC_DATA |
+                  KERNEL_IO_TRANSFER_SYNC_FILE))) {
+        int sync_result = kernel_io_file_range_sync(
+            descriptor,
+            (flags & KERNEL_IO_TRANSFER_SYNC_FILE) == 0);
+        if (sync_result < 0) result = sync_result;
+    }
 
 release_snapshot:
     io_uring_fixed_buffer_release(&snapshot);
@@ -4851,7 +4877,7 @@ int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data) {
 int kernel_io_uring_worker_add(
         int32_t ring_id, int32_t owner_pid,
         const struct edge_linux_io_uring_sqe *submission,
-        uint32_t ready_operation) {
+        uint32_t ready_operation, uint32_t runtime_flags) {
     kernel_fd_operation_lease_t descriptor_lease = {0};
     kernel_fd_operation_lease_t *fixed_lease = 0;
     kernel_io_uring_pending_t *pending = 0;
@@ -4862,7 +4888,11 @@ int kernel_io_uring_worker_add(
 
     if (!submission || owner_pid <= 0 ||
         (ready_operation != KERNEL_IO_READ_CURRENT &&
-         ready_operation != KERNEL_IO_WRITE_CURRENT))
+         ready_operation != KERNEL_IO_WRITE_CURRENT) ||
+        (runtime_flags & ~(KERNEL_IO_TRANSFER_APPEND |
+                           KERNEL_IO_TRANSFER_NOAPPEND |
+                           KERNEL_IO_TRANSFER_SYNC_DATA |
+                           KERNEL_IO_TRANSFER_SYNC_FILE)))
         return -EDGE_LINUX_EINVAL;
     if (!(submission->flags & IO_URING_WORKER_FIXED_FILE)) {
         result = kernel_fd_operation_acquire(
@@ -4926,6 +4956,7 @@ int kernel_io_uring_worker_add(
     pending->user_data = submission->user_data;
     pending->sequence = ring->next_pending_sequence;
     pending->worker_owner_pid = owner_pid;
+    pending->worker_reserved = runtime_flags;
     pending->worker_submission = *submission;
     result = 0;
 unlock:
@@ -5091,6 +5122,7 @@ typedef struct io_uring_independent_work {
     int32_t ring_id;
     int32_t terminal_result;
     uint32_t first_page_offset;
+    uint32_t runtime_flags;
     uint8_t writing;
 } io_uring_independent_work_t;
 
@@ -5123,8 +5155,7 @@ static int io_uring_independent_work_supported(
     int positional;
     int result;
 
-    if (!work || work->submission.operation_flags)
-        return 0;
+    if (!work) return 0;
     positional = work->submission.offset != UINT64_MAX;
     result = io_uring_independent_file_range(
         &work->descriptor_lease, KERNEL_IO_FILE_RANGE_QUERY,
@@ -5145,8 +5176,19 @@ static int io_uring_independent_work_supported(
         work->terminal_result = -EDGE_LINUX_EBADF;
         return 1;
     }
-    if (work->writing && work->information.append)
-        return 0;
+    if (work->writing &&
+        (work->information.metadata_flags & VFS_FILE_XFLAG_IMMUTABLE)) {
+        work->terminal_result = -EDGE_LINUX_EPERM;
+        return 1;
+    }
+    if (work->writing &&
+        (work->information.metadata_flags & VFS_FILE_XFLAG_APPEND) &&
+        ((work->runtime_flags & KERNEL_IO_TRANSFER_NOAPPEND) ||
+         (!work->information.append &&
+          !(work->runtime_flags & KERNEL_IO_TRANSFER_APPEND)))) {
+        work->terminal_result = -EDGE_LINUX_EPERM;
+        return 1;
+    }
     return 1;
 }
 
@@ -5176,14 +5218,14 @@ static int io_uring_independent_work_prepare(
             pending->kind != IO_URING_PENDING_WORKER ||
             pending->ready_latched ||
             (pending->opcode != IO_URING_OP_READ_FIXED &&
-             pending->opcode != IO_URING_OP_WRITE_FIXED) ||
-            pending->worker_submission.operation_flags) {
+             pending->opcode != IO_URING_OP_WRITE_FIXED)) {
             spin_unlock_irqrestore(&g_io_uring_lock, flags);
             continue;
         }
         work->ring_id = (int32_t)ring_index;
         work->sequence = pending->sequence;
         work->submission = pending->worker_submission;
+        work->runtime_flags = pending->worker_reserved;
         work->writing = pending->opcode == IO_URING_OP_WRITE_FIXED;
         result = kernel_fd_operation_clone(
             &work->descriptor_lease, &pending->descriptor_lease);
@@ -5268,6 +5310,11 @@ static int32_t io_uring_independent_work_execute(
     positional = work->submission.offset != UINT64_MAX;
     current_offset = positional ? work->submission.offset :
                                   work->information.offset;
+    if (work->writing &&
+        ((work->runtime_flags & KERNEL_IO_TRANSFER_APPEND) ||
+         (work->information.append &&
+          !(work->runtime_flags & KERNEL_IO_TRANSFER_NOAPPEND))))
+        current_offset = work->information.size;
     result = kernel_io_buffer_acquire(&bounce);
     if (result < 0) return result;
     while (transferred < work->submission.length) {
@@ -5350,12 +5397,23 @@ static int32_t io_uring_independent_work_execute(
         (void)io_uring_independent_file_range(
             &work->descriptor_lease,
             KERNEL_IO_FILE_RANGE_COMMIT_OFFSET,
-            work->information.offset + transferred, 0, 0u, 0);
+            current_offset, 0, 0u, 0);
     if (work->writing && transferred)
         (void)io_uring_independent_file_range(
             &work->descriptor_lease,
             KERNEL_IO_FILE_RANGE_COMPLETE_WRITE,
             0u, 0, 0u, 0);
+    if (work->writing && transferred &&
+        (work->runtime_flags & (KERNEL_IO_TRANSFER_SYNC_DATA |
+                                KERNEL_IO_TRANSFER_SYNC_FILE))) {
+        int sync_result = io_uring_independent_file_range(
+            &work->descriptor_lease,
+            (work->runtime_flags & KERNEL_IO_TRANSFER_SYNC_FILE) ?
+                KERNEL_IO_FILE_RANGE_SYNC_FILE :
+                KERNEL_IO_FILE_RANGE_SYNC_DATA,
+            0u, 0, 0u, 0);
+        if (sync_result < 0) result = sync_result;
+    }
 finish:
     kernel_io_buffer_release(&bounce);
     return result;

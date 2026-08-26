@@ -1751,3 +1751,12 @@ void kernel_io_file_range_complete_write(int32_t descriptor) {
 
     (void)fd_file_range_execute(descriptor, &request);
 }
+
+int kernel_io_file_range_sync(int32_t descriptor, int data_only) {
+    kernel_io_file_range_request_t request = {
+        .operation = data_only ? KERNEL_IO_FILE_RANGE_SYNC_DATA :
+                                 KERNEL_IO_FILE_RANGE_SYNC_FILE,
+    };
+
+    return (int)fd_file_range_execute(descriptor, &request);
+}

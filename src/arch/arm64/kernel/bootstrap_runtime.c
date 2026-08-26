@@ -26603,6 +26603,7 @@ static int64_t arm64_fd_operation_file_range(
             if (file->path[0] && !file->anonymous_inode) {
                 vfs_inode_t current = file->inode;
                 vfs_superblock_t *current_superblock = file->sb;
+                vfs_path_cache_invalidate(file->path);
                 if (vfs_resolve(
                         file->path, &current, &current_superblock,
                         0, 0) == 0 &&
@@ -26613,6 +26614,7 @@ static int64_t arm64_fd_operation_file_range(
             information->filesystem =
                 (uint64_t)(uintptr_t)file->sb;
             information->file = file->inode.ino;
+            information->size = file->inode.size;
             information->metadata_flags = file->inode.metadata_flags;
             inode_kind = file->inode.mode & 0xf000u;
             if (inode_kind == VFS_INODE_FILE)
@@ -26730,6 +26732,14 @@ static int64_t arm64_fd_operation_file_range(
                 inotify_notify_path(
                     file->path, KERNEL_INOTIFY_MODIFY);
             return 0;
+        case KERNEL_IO_FILE_RANGE_SYNC_DATA:
+        case KERNEL_IO_FILE_RANGE_SYNC_FILE:
+            if (file->kind != KERNEL_FD_FILE || !file->sb)
+                return -LINUX_EINVAL;
+            return file_page_sync_inode(
+                file->sb, &file->inode,
+                request->operation == KERNEL_IO_FILE_RANGE_SYNC_FILE ?
+                    1 : 2) < 0 ? -LINUX_EIO : 0;
         default:
             return -LINUX_EINVAL;
     }
