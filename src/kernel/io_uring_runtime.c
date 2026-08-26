@@ -2970,6 +2970,78 @@ int kernel_io_uring_fixed_buffer_registered(
     return result;
 }
 
+int kernel_io_uring_fixed_buffer_copy(
+        int32_t ring_id, uint32_t index, uint64_t address,
+        void *kernel_buffer, uint64_t length, int to_registered_buffer) {
+    kernel_io_uring_fixed_buffer_t snapshot;
+    kernel_io_uring_fixed_buffer_t *buffer;
+    kernel_io_uring_t *ring;
+    uint64_t buffer_offset;
+    uint64_t copied = 0u;
+    uint64_t lock_flags;
+    uint32_t first_page_offset;
+    int result;
+
+    if ((!kernel_buffer && length) || address > UINT64_MAX - length)
+        return -EDGE_LINUX_EFAULT;
+    memset(&snapshot, 0, sizeof(snapshot));
+    lock_flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+        goto unlock;
+    }
+    if (index >= ring->fixed_buffer_count) {
+        result = -EDGE_LINUX_EFAULT;
+        goto unlock;
+    }
+    buffer = &ring->fixed_buffers[index];
+    if (!buffer->address || address < buffer->address ||
+        length > buffer->length ||
+        address - buffer->address > buffer->length - length) {
+        result = -EDGE_LINUX_EFAULT;
+        goto unlock;
+    }
+    result = io_uring_fixed_buffer_retain(&snapshot, buffer);
+    if (result < 0) goto unlock;
+    buffer_offset = address - buffer->address;
+    first_page_offset = (uint32_t)(buffer->address &
+        (KERNEL_IO_URING_PAGE_SIZE - 1u));
+
+unlock:
+    spin_unlock_irqrestore(&g_io_uring_lock, lock_flags);
+    if (result < 0) return result;
+    while (copied < length) {
+        uint64_t absolute = first_page_offset + buffer_offset + copied;
+        uint32_t page = (uint32_t)(
+            absolute / KERNEL_IO_URING_PAGE_SIZE);
+        uint32_t within = (uint32_t)(
+            absolute % KERNEL_IO_URING_PAGE_SIZE);
+        uint32_t chunk = KERNEL_IO_URING_PAGE_SIZE - within;
+        kernel_io_uring_page_t *entry =
+            io_uring_fixed_buffer_page(&snapshot, page);
+
+        if (!entry || !entry->address) {
+            result = -EDGE_LINUX_EFAULT;
+            goto release;
+        }
+        if ((uint64_t)chunk > length - copied)
+            chunk = (uint32_t)(length - copied);
+        if (to_registered_buffer)
+            memcpy((uint8_t *)entry->address + within,
+                   (uint8_t *)kernel_buffer + copied, chunk);
+        else
+            memcpy((uint8_t *)kernel_buffer + copied,
+                   (uint8_t *)entry->address + within, chunk);
+        copied += chunk;
+    }
+    result = 0;
+
+release:
+    io_uring_fixed_buffer_release(&snapshot);
+    return result;
+}
+
 int64_t kernel_io_uring_fixed_buffer_transfer(
         int32_t ring_id, uint32_t index, uint64_t address,
         uint64_t length, int32_t descriptor, uint64_t offset,

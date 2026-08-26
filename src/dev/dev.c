@@ -378,15 +378,16 @@ void dev_init(uint32_t magic, void *mb_info) {
 #endif
 
 #ifdef CONFIG_NVME
-    if (!g_has_module_ramdisk && !block_find("sda")) bootlog_stage("Waiting for NVMe identify");
-    if (!g_has_module_ramdisk && !block_find("sda") && nvme_init() == 0 && nvme_present()) {
+    if (!nvme_present()) bootlog_stage("Waiting for NVMe identify");
+    if (!nvme_present() && nvme_init() == 0 && nvme_present()) {
         block_ops_t ops = {nvme_read_ops, nvme_write_ops};
-        int index = block_register("sda", nvme_sector_size(),
+        const char *name = block_find("sda") ? "nvme0n1" : "sda";
+        int index = block_register(name, nvme_sector_size(),
                                    nvme_sector_count(), 0, 0, ops);
         if (index >= 0)
             block_set_max_transfer_sectors(
                 block_get(index), nvme_max_transfer_sectors());
-        dev_register_partitions(block_find("sda"), "sda", 0);
+        dev_register_partitions(block_find(name), name, 0);
     }
 #else
     if (!g_has_module_ramdisk && !block_find("sda")) bootlog_stage("NVMe driver disabled");

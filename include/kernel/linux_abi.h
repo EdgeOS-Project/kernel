@@ -802,6 +802,32 @@ struct edge_linux_io_uring_cqe {
     uint32_t flags;
 };
 
+struct edge_linux_nvme_uring_cmd {
+    uint8_t opcode;
+    uint8_t flags;
+    uint16_t reserved1;
+    uint32_t namespace_id;
+    uint32_t command_dword2;
+    uint32_t command_dword3;
+    uint64_t metadata;
+    uint64_t address;
+    uint32_t metadata_length;
+    uint32_t data_length;
+    uint32_t command_dword10;
+    uint32_t command_dword11;
+    uint32_t command_dword12;
+    uint32_t command_dword13;
+    uint32_t command_dword14;
+    uint32_t command_dword15;
+    uint32_t timeout_milliseconds;
+    uint32_t reserved2;
+};
+
+#define EDGE_LINUX_NVME_URING_CMD_IO        0xc0484e80u
+#define EDGE_LINUX_NVME_URING_CMD_IO_VEC    0xc0484e81u
+#define EDGE_LINUX_NVME_URING_CMD_ADMIN     0xc0484e82u
+#define EDGE_LINUX_NVME_URING_CMD_ADMIN_VEC 0xc0484e83u
+
 struct edge_linux_io_sqring_offsets {
     uint32_t head;
     uint32_t tail;
@@ -1132,6 +1158,15 @@ _Static_assert(offsetof(struct edge_linux_io_uring_sqe, user_data) == 32,
                "Linux io_uring SQE user_data offset mismatch");
 _Static_assert(sizeof(struct edge_linux_io_uring_cqe) == 16,
                "Linux io_uring CQE size mismatch");
+_Static_assert(sizeof(struct edge_linux_nvme_uring_cmd) == 72,
+               "Linux NVMe io_uring command size mismatch");
+_Static_assert(offsetof(struct edge_linux_nvme_uring_cmd, metadata) == 16,
+               "Linux NVMe io_uring metadata offset mismatch");
+_Static_assert(offsetof(struct edge_linux_nvme_uring_cmd, address) == 24,
+               "Linux NVMe io_uring address offset mismatch");
+_Static_assert(offsetof(struct edge_linux_nvme_uring_cmd,
+                        timeout_milliseconds) == 64,
+               "Linux NVMe io_uring timeout offset mismatch");
 _Static_assert(sizeof(struct edge_linux_io_sqring_offsets) == 40,
                "Linux io_uring SQ offset size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_cqring_offsets) == 40,

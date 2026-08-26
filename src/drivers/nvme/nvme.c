@@ -6,6 +6,7 @@
 #endif
 #include "stdio.h"
 #include "string.h"
+#include "sys/boottime.h"
 #include "sys/mmio.h"
 
 #define NVME_PCI_CLASS_MASS_STORAGE 0x01u
@@ -151,6 +152,10 @@ static nvme_cqe_t g_admin_cq[NVME_ADMIN_Q_DEPTH] __attribute__((aligned(NVME_PAG
 static nvme_sqe_t g_io_sq[NVME_IO_Q_DEPTH] __attribute__((aligned(NVME_PAGE_SIZE)));
 static nvme_cqe_t g_io_cq[NVME_IO_Q_DEPTH] __attribute__((aligned(NVME_PAGE_SIZE)));
 static uint64_t g_prp_list[NVME_MAX_PRP_LIST] __attribute__((aligned(NVME_PAGE_SIZE)));
+static uint8_t g_passthrough_data[NVME_PASSTHROUGH_MAX_DATA]
+    __attribute__((aligned(NVME_PAGE_SIZE)));
+static uint8_t g_passthrough_metadata[NVME_PASSTHROUGH_MAX_METADATA]
+    __attribute__((aligned(NVME_PAGE_SIZE)));
 static nvme_identify_ctrl_t g_id_ctrl __attribute__((aligned(NVME_PAGE_SIZE)));
 static nvme_identify_ns_t g_id_ns __attribute__((aligned(NVME_PAGE_SIZE)));
 static volatile uint32_t g_submit_busy;
@@ -252,10 +257,14 @@ static void nvme_submit_release(void) {
 }
 
 static int nvme_submit_sync_locked(nvme_ctrl_t *c, nvme_queue_t *q,
-                                   uint16_t qid, nvme_sqe_t *sqe) {
+                                   uint16_t qid, nvme_sqe_t *sqe,
+                                   uint32_t timeout_milliseconds,
+                                   uint16_t *completion_status,
+                                   uint64_t *completion_result) {
     uint16_t cid;
     nvme_cqe_t *cqe;
     uint16_t status;
+    uint64_t deadline;
     int rc = -1;
     if (!c || !q || !sqe || q->q_depth == 0) return -1;
     cid = q->sq_tail;
@@ -265,7 +274,14 @@ static int nvme_submit_sync_locked(nvme_ctrl_t *c, nvme_queue_t *q,
     if (q->sq_tail >= q->q_depth) q->sq_tail = 0;
     nvme_ring_sq_tail(c, qid, q->sq_tail);
 
-    for (uint32_t spins = 0; spins < 5000000u; ++spins) {
+    if (!timeout_milliseconds)
+        timeout_milliseconds = qid ? 30000u : 60000u;
+    deadline = boottime_monotonic_us() +
+        (uint64_t)timeout_milliseconds * 1000u;
+    for (uint32_t spins = 0;
+         boottime_monotonic_us() < deadline; ++spins) {
+        uint64_t result_value;
+
         cqe = &q->cq[q->cq_head];
         if ((cqe->status & 1u) != q->cq_phase) {
             nvme_wait_relax(spins);
@@ -273,13 +289,17 @@ static int nvme_submit_sync_locked(nvme_ctrl_t *c, nvme_queue_t *q,
         }
         if (cqe->cid != cid) goto out;
         status = (uint16_t)(cqe->status >> 1);
+        result_value = (uint64_t)cqe->dw0 |
+            ((uint64_t)cqe->rsv0 << 32u);
         q->cq_head++;
         if (q->cq_head >= q->q_depth) {
             q->cq_head = 0;
             q->cq_phase ^= 1u;
         }
         nvme_ring_cq_head(c, qid, q->cq_head);
-        rc = status == 0 ? 0 : -1;
+        if (completion_status) *completion_status = status;
+        if (completion_result) *completion_result = result_value;
+        rc = completion_status ? 0 : (status == 0 ? 0 : -1);
         goto out;
     }
 out:
@@ -290,7 +310,7 @@ static int nvme_submit_sync(nvme_ctrl_t *c, nvme_queue_t *q, uint16_t qid,
                             nvme_sqe_t *sqe) {
     int result;
     if (nvme_submit_acquire() < 0) return -1;
-    result = nvme_submit_sync_locked(c, q, qid, sqe);
+    result = nvme_submit_sync_locked(c, q, qid, sqe, 0, 0, 0);
     nvme_submit_release();
     return result;
 }
@@ -310,7 +330,8 @@ static int nvme_identify(nvme_ctrl_t *c, uint32_t nsid, uint8_t cns, void *buf, 
     sqe.prp1 = prp1;
     sqe.prp2 = prp2;
     sqe.cdw10 = (uint32_t)cns;
-    result = nvme_submit_sync_locked(c, &c->adminq, 0, &sqe);
+    result = nvme_submit_sync_locked(
+        c, &c->adminq, 0, &sqe, 0, 0, 0);
     nvme_submit_release();
     return result;
 }
@@ -358,7 +379,8 @@ static int nvme_rw(int write, uint32_t lba, uint32_t sector_count, void *buf) {
     sqe.cdw10 = lba;
     sqe.cdw11 = 0;
     sqe.cdw12 = (sector_count - 1u) & 0xFFFFu;
-    result = nvme_submit_sync_locked(&g_nvme, &g_nvme.ioq, 1, &sqe);
+    result = nvme_submit_sync_locked(
+        &g_nvme, &g_nvme.ioq, 1, &sqe, 0, 0, 0);
     nvme_submit_release();
     return result;
 }
@@ -379,12 +401,91 @@ uint32_t nvme_max_transfer_sectors(void) {
     return g_nvme.present ? g_nvme.max_transfer_sectors : 0;
 }
 
+uint32_t nvme_namespace_id(void) {
+    return g_nvme.present ? g_nvme.nsid : 0;
+}
+
 int nvme_read(uint32_t lba, uint32_t sector_count, void *buf) {
     return nvme_rw(0, lba, sector_count, buf);
 }
 
 int nvme_write(uint32_t lba, uint32_t sector_count, const void *buf) {
     return nvme_rw(1, lba, sector_count, (void *)buf);
+}
+
+int nvme_passthrough(nvme_passthrough_command_t *command,
+                     uint64_t *completion_result) {
+    nvme_sqe_t sqe;
+    nvme_queue_t *queue;
+    uint16_t queue_id;
+    uint16_t completion_status = 0;
+    uint64_t prp1 = 0;
+    uint64_t prp2 = 0;
+    int write;
+    int result;
+
+    if (!g_nvme.present || !command || !completion_result ||
+        command->flags || command->reserved ||
+        command->data_length > NVME_PASSTHROUGH_MAX_DATA ||
+        command->metadata_length > NVME_PASSTHROUGH_MAX_METADATA ||
+        (!!command->data_length != !!command->data) ||
+        (!!command->metadata_length != !!command->metadata))
+        return -1;
+    if (!command->admin && command->namespace_id != g_nvme.nsid)
+        return -1;
+    write = (command->opcode & 1u) != 0u;
+    if (nvme_submit_acquire() < 0) return -1;
+    if (command->data_length) {
+        if (write)
+            memcpy(g_passthrough_data, command->data,
+                   command->data_length);
+        else
+            memset(g_passthrough_data, 0, command->data_length);
+        if (nvme_setup_prps(g_passthrough_data, command->data_length,
+                            &prp1, &prp2) < 0) {
+            nvme_submit_release();
+            return -1;
+        }
+    }
+    if (command->metadata_length) {
+        if (write)
+            memcpy(g_passthrough_metadata, command->metadata,
+                   command->metadata_length);
+        else
+            memset(g_passthrough_metadata, 0,
+                   command->metadata_length);
+    }
+    memset(&sqe, 0, sizeof(sqe));
+    ((nvme_cmd_hdr_t *)&sqe)->opcode = command->opcode;
+    ((nvme_cmd_hdr_t *)&sqe)->flags = command->flags;
+    sqe.nsid = command->namespace_id;
+    ((uint32_t *)(void *)&sqe)[2] = command->command_dword2;
+    ((uint32_t *)(void *)&sqe)[3] = command->command_dword3;
+    sqe.mptr = command->metadata_length ?
+        nvme_dma_address(g_passthrough_metadata) : 0u;
+    sqe.prp1 = prp1;
+    sqe.prp2 = prp2;
+    sqe.cdw10 = command->command_dword10;
+    sqe.cdw11 = command->command_dword11;
+    sqe.cdw12 = command->command_dword12;
+    sqe.cdw13 = command->command_dword13;
+    sqe.cdw14 = command->command_dword14;
+    sqe.cdw15 = command->command_dword15;
+    queue = command->admin ? &g_nvme.adminq : &g_nvme.ioq;
+    queue_id = command->admin ? 0u : 1u;
+    result = nvme_submit_sync_locked(
+        &g_nvme, queue, queue_id, &sqe,
+        command->timeout_milliseconds,
+        &completion_status, completion_result);
+    if (!write && command->data_length)
+        memcpy(command->data, g_passthrough_data,
+               command->data_length);
+    if (!write && command->metadata_length)
+        memcpy(command->metadata, g_passthrough_metadata,
+               command->metadata_length);
+    nvme_submit_release();
+    if (result < 0) return -1;
+    return completion_status;
 }
 
 int nvme_init(void) {

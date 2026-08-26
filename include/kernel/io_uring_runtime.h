@@ -240,6 +240,9 @@ int kernel_io_uring_fixed_buffer_validate(
     uint64_t address, uint64_t length);
 int kernel_io_uring_fixed_buffer_registered(
     int32_t ring_id, uint32_t index);
+int kernel_io_uring_fixed_buffer_copy(
+    int32_t ring_id, uint32_t index, uint64_t address,
+    void *kernel_buffer, uint64_t length, int to_registered_buffer);
 int64_t kernel_io_uring_fixed_buffer_transfer(
     int32_t ring_id, uint32_t index, uint64_t address,
     uint64_t length, int32_t descriptor, uint64_t offset,

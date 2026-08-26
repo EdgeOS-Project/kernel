@@ -7,6 +7,7 @@
 #include "block/loop.h"
 #include "dev/alsa.h"
 #include "dev/devtmpfs.h"
+#include "drivers/nvme.h"
 #include "fs/tmpfs.h"
 #include "fs/fuse.h"
 #include "fb_console.h"
@@ -520,6 +521,20 @@ int devtmpfs_populate_standard_nodes(const char *mountpoint) {
     if (edge_drm_path_is_render("/dev/dri/renderD128") &&
         devtmpfs_ensure_node(mountpoint, &render_node, 0, 0) < 0)
         return -1;
+#ifdef CONFIG_NVME
+    if (nvme_present()) {
+        static const devtmpfs_node_t nvme_nodes[] = {
+            { "nvme0", 0600u, VFS_INODE_CHR, 240u, 0u },
+            { "ng0n1", 0600u, VFS_INODE_CHR, 241u, 0u },
+        };
+
+        for (uint32_t index = 0;
+             index < sizeof(nvme_nodes) / sizeof(nvme_nodes[0]); ++index)
+            if (devtmpfs_ensure_node(
+                    mountpoint, &nvme_nodes[index], 0, 6u) < 0)
+                return -1;
+    }
+#endif
     if (kernel_arch_serial_console_device(&serial) == 0) {
         serial_node.name = serial.name;
         serial_node.mode = 0620u;

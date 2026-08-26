@@ -2428,6 +2428,8 @@ int main(void) {
         const uint64_t input_address = 0x700180u;
         const uint64_t crossing_address = 0x700ff8u;
         struct edge_linux_iovec fixed_vectors[2];
+        uint8_t copy_source[32];
+        uint8_t copy_result[32];
 
         assert(g_references[first_page] == 0u);
         assert(g_references[first_page + 1u] == 0u);
@@ -2443,6 +2445,29 @@ int main(void) {
                    &pinned_buffer, 0, 1u) == 0);
         assert(g_references[first_page] == 1u);
         assert(g_references[first_page + 1u] == 1u);
+        for (uint32_t index = 0; index < sizeof(copy_source); ++index)
+            copy_source[index] = (uint8_t)(0x40u + index);
+        memcpy(&g_pages[first_page][0xff8u], copy_source, 8u);
+        memcpy(&g_pages[first_page + 1u][0], copy_source + 8u,
+               sizeof(copy_source) - 8u);
+        memset(copy_result, 0, sizeof(copy_result));
+        assert(kernel_io_uring_fixed_buffer_copy(
+                   second_ring_id, 0u, crossing_address,
+                   copy_result, sizeof(copy_result), 0) == 0);
+        assert(memcmp(copy_result, copy_source, sizeof(copy_source)) == 0);
+        memset(&g_pages[first_page][0xff8u], 0, 8u);
+        memset(&g_pages[first_page + 1u][0], 0,
+               sizeof(copy_source) - 8u);
+        assert(kernel_io_uring_fixed_buffer_copy(
+                   second_ring_id, 0u, crossing_address,
+                   copy_source, sizeof(copy_source), 1) == 0);
+        assert(memcmp(&g_pages[first_page][0xff8u], copy_source, 8u) == 0);
+        assert(memcmp(&g_pages[first_page + 1u][0], copy_source + 8u,
+                      sizeof(copy_source) - 8u) == 0);
+        assert(kernel_io_uring_fixed_buffer_copy(
+                   second_ring_id, 0u, 0x701ff0u,
+                   copy_result, sizeof(copy_result), 0) ==
+               -EDGE_LINUX_EFAULT);
         assert(kernel_io_uring_mmap_page(
                    second_ring_id, KERNEL_IO_URING_OFF_CQ_RING,
                    0u, &independent_cq) == 0);

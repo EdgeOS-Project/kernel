@@ -9,6 +9,7 @@
 
 #include "block/block.h"
 #include "console.h"
+#include "drivers/nvme.h"
 #include "fs/cgroupfs.h"
 #include "fs/swap.h"
 #include "kernel/aio_runtime.h"
@@ -12357,8 +12358,11 @@ static int64_t edge_linux_io_uring_msg_ring(
 
 typedef struct edge_linux_io_uring_notification {
     uint64_t user_data;
+    uint64_t completion_extra1;
+    uint64_t completion_extra2;
     int32_t result;
     uint8_t present;
+    uint8_t completion_extended;
 } edge_linux_io_uring_notification_t;
 
 static int64_t edge_linux_socket_option_get(
@@ -12487,10 +12491,281 @@ static int64_t edge_linux_io_uring_execute_send_zc(
     }
 }
 
+#ifdef CONFIG_NVME
+static void edge_linux_io_uring_free_pages(void *buffer,
+                                           uint32_t pages) {
+    uint8_t *bytes = (uint8_t *)buffer;
+
+    if (!bytes) return;
+    for (uint32_t page = 0; page < pages; ++page)
+        arch_vm_free_page(bytes + (uint64_t)page * 4096u);
+}
+
+static int edge_linux_io_uring_nvme_copy_vectors(
+        edge_linux_syscall_context_t *context,
+        const struct edge_linux_iovec *vectors, uint32_t vector_count,
+        uint8_t *buffer, uint32_t length, int to_user,
+        int32_t ring_id, uint16_t fixed_index, int fixed) {
+    uint32_t copied = 0u;
+
+    for (uint32_t index = 0; index < vector_count; ++index) {
+        uint64_t vector_length = vectors[index].iov_len;
+
+        if (vector_length > length - copied)
+            vector_length = length - copied;
+        if (vector_length) {
+            int result = fixed ? kernel_io_uring_fixed_buffer_copy(
+                ring_id, fixed_index, vectors[index].iov_base,
+                buffer + copied, vector_length, to_user) :
+                (to_user ? edge_linux_copy_to_user(
+                               context, vectors[index].iov_base,
+                               buffer + copied, vector_length) :
+                           edge_linux_copy_from_user(
+                               context, buffer + copied,
+                               vectors[index].iov_base, vector_length));
+
+            if (result < 0) return -EDGE_LINUX_EFAULT;
+        }
+        copied += (uint32_t)vector_length;
+        if (copied == length) break;
+    }
+    return copied == length ? 0 : -EDGE_LINUX_EFAULT;
+}
+#endif
+
+static int64_t edge_linux_io_uring_nvme_cmd(
+        edge_linux_syscall_context_t *context, int32_t ring_id,
+        const struct edge_linux_io_uring_sqe *submission,
+        const uint8_t command_payload[80], int controller,
+        edge_linux_io_uring_notification_t *completion) {
+#ifdef CONFIG_NVME
+    struct edge_linux_nvme_uring_cmd command;
+    kernel_vfs_descriptor_t descriptor;
+    kernel_io_vector_scratch_t vector_scratch = {0};
+    nvme_passthrough_command_t passthrough;
+    linux_credential_state_t credentials;
+    struct edge_linux_iovec *vectors = 0;
+    uint8_t *data = 0;
+    uint8_t *metadata = 0;
+    uint64_t completion_result = 0u;
+    uint64_t data_length = 0u;
+    uint32_t data_pages = 0u;
+    uint32_t metadata_pages = 0u;
+    uint32_t setup_flags = 0u;
+    uint32_t command_operation = (uint32_t)submission->offset;
+    uint32_t vector_count = 0u;
+    int vectorized;
+    int fixed;
+    int privileged;
+    int write;
+    int result;
+
+    if (!command_payload || !completion)
+        return -EDGE_LINUX_EINVAL;
+    result = kernel_io_uring_setup_flags(ring_id, &setup_flags);
+    if (result < 0) return result;
+    if (!(setup_flags & (EDGE_LINUX_IORING_SETUP_SQE128 |
+                         EDGE_LINUX_IORING_SETUP_SQE_MIXED)) ||
+        !(setup_flags & (EDGE_LINUX_IORING_SETUP_CQE32 |
+                         EDGE_LINUX_IORING_SETUP_CQE_MIXED)))
+        return -EDGE_LINUX_EOPNOTSUPP;
+    if (submission->operation_flags &
+        EDGE_LINUX_IORING_URING_CMD_MULTISHOT)
+        return -EDGE_LINUX_EINVAL;
+    fixed = (submission->operation_flags &
+             EDGE_LINUX_IORING_URING_CMD_FIXED) != 0u;
+    if (controller) {
+        if (command_operation != EDGE_LINUX_NVME_URING_CMD_ADMIN &&
+            command_operation != EDGE_LINUX_NVME_URING_CMD_ADMIN_VEC)
+            return -EDGE_LINUX_ENOTTY;
+        vectorized =
+            command_operation == EDGE_LINUX_NVME_URING_CMD_ADMIN_VEC;
+    } else {
+        if (command_operation != EDGE_LINUX_NVME_URING_CMD_IO &&
+            command_operation != EDGE_LINUX_NVME_URING_CMD_IO_VEC)
+            return -EDGE_LINUX_ENOTTY;
+        vectorized =
+            command_operation == EDGE_LINUX_NVME_URING_CMD_IO_VEC;
+    }
+    memcpy(&command, command_payload, sizeof(command));
+    if (command.flags) return -EDGE_LINUX_EINVAL;
+    if (!controller && command.namespace_id != nvme_namespace_id())
+        return -EDGE_LINUX_EINVAL;
+    if (kernel_vfs_describe_descriptor(
+            submission->descriptor, &descriptor) < 0)
+        return -EDGE_LINUX_EBADF;
+    if (kernel_current_credentials_get(&credentials) < 0)
+        return -EDGE_LINUX_EACCES;
+    privileged = credentials.euid == 0u ||
+        ((credentials.capabilities.effective >>
+          EDGE_LINUX_CAP_SYS_ADMIN) & 1u) != 0u;
+    write = (command.opcode & 1u) != 0u;
+    if (controller) {
+        uint32_t identify_selector = command.command_dword10 & 0xffu;
+        int safe_identify = command.opcode == 0x06u &&
+            (identify_selector == 0x00u || identify_selector == 0x01u ||
+             identify_selector == 0x05u || identify_selector == 0x06u ||
+             identify_selector == 0x08u);
+
+        if (!safe_identify && !privileged)
+            return -EDGE_LINUX_EACCES;
+    } else if (command.opcode != 0x02u &&
+               (command.opcode != 0x01u || !descriptor.writable) &&
+               !privileged) {
+        return -EDGE_LINUX_EACCES;
+    }
+    if (write && !descriptor.writable && !privileged)
+        return -EDGE_LINUX_EACCES;
+    if (vectorized) {
+        vector_count = command.data_length;
+        if (vector_count > EDGE_LINUX_IOV_MAX)
+            return -EDGE_LINUX_EINVAL;
+        if (vector_count) {
+            if (!command.address)
+                return -EDGE_LINUX_EFAULT;
+            if (kernel_io_current_vector_scratch(&vector_scratch) < 0 ||
+                !vector_scratch.vectors ||
+                vector_scratch.capacity < vector_count)
+                return -EDGE_LINUX_ENOMEM;
+            vectors = vector_scratch.vectors;
+            if (edge_linux_import_iovec_array(
+                    context, vectors, command.address,
+                    vector_count) < 0)
+                return -EDGE_LINUX_EFAULT;
+            for (uint32_t index = 0; index < vector_count; ++index) {
+                if (vectors[index].iov_len > UINT64_MAX - data_length)
+                    return -EDGE_LINUX_EINVAL;
+                data_length += vectors[index].iov_len;
+                if (data_length > NVME_PASSTHROUGH_MAX_DATA)
+                    return -EDGE_LINUX_ENOMEM;
+                if (fixed && kernel_io_uring_fixed_buffer_validate(
+                        ring_id, submission->buffer_index,
+                        vectors[index].iov_base,
+                        vectors[index].iov_len) < 0)
+                    return -EDGE_LINUX_EFAULT;
+            }
+        }
+    } else {
+        data_length = command.data_length;
+        if (data_length > NVME_PASSTHROUGH_MAX_DATA)
+            return -EDGE_LINUX_ENOMEM;
+        if (data_length && !command.address)
+            return -EDGE_LINUX_EFAULT;
+        if (fixed && data_length &&
+            kernel_io_uring_fixed_buffer_validate(
+                ring_id, submission->buffer_index,
+                command.address, data_length) < 0)
+            return -EDGE_LINUX_EFAULT;
+    }
+    if (command.metadata_length > NVME_PASSTHROUGH_MAX_METADATA)
+        return -EDGE_LINUX_ENOMEM;
+    if (command.metadata_length && !command.metadata)
+        return -EDGE_LINUX_EFAULT;
+    if (data_length) {
+        data_pages = ((uint32_t)data_length + 4095u) / 4096u;
+        data = (uint8_t *)arch_vm_alloc_pages(data_pages);
+        if (!data) return -EDGE_LINUX_ENOMEM;
+    }
+    if (command.metadata_length) {
+        metadata_pages = (command.metadata_length + 4095u) / 4096u;
+        metadata = (uint8_t *)arch_vm_alloc_pages(metadata_pages);
+        if (!metadata) {
+            result = -EDGE_LINUX_ENOMEM;
+            goto finish;
+        }
+    }
+    if (write && data_length) {
+        result = vectorized ?
+            edge_linux_io_uring_nvme_copy_vectors(
+                context, vectors, vector_count, data,
+                (uint32_t)data_length, 0, ring_id,
+                submission->buffer_index, fixed) :
+            (fixed ? kernel_io_uring_fixed_buffer_copy(
+                 ring_id, submission->buffer_index,
+                 command.address, data, data_length, 0) :
+             edge_linux_copy_from_user(
+                 context, data, command.address, data_length));
+        if (result < 0) {
+            result = -EDGE_LINUX_EFAULT;
+            goto finish;
+        }
+    }
+    if (write && command.metadata_length &&
+        edge_linux_copy_from_user(
+            context, metadata, command.metadata,
+            command.metadata_length) < 0) {
+        result = -EDGE_LINUX_EFAULT;
+        goto finish;
+    }
+    memset(&passthrough, 0, sizeof(passthrough));
+    passthrough.opcode = command.opcode;
+    passthrough.flags = command.flags;
+    passthrough.namespace_id = command.namespace_id;
+    passthrough.command_dword2 = command.command_dword2;
+    passthrough.command_dword3 = command.command_dword3;
+    passthrough.data = data;
+    passthrough.data_length = (uint32_t)data_length;
+    passthrough.metadata = metadata;
+    passthrough.metadata_length = command.metadata_length;
+    passthrough.command_dword10 = command.command_dword10;
+    passthrough.command_dword11 = command.command_dword11;
+    passthrough.command_dword12 = command.command_dword12;
+    passthrough.command_dword13 = command.command_dword13;
+    passthrough.command_dword14 = command.command_dword14;
+    passthrough.command_dword15 = command.command_dword15;
+    passthrough.timeout_milliseconds = command.timeout_milliseconds;
+    passthrough.admin = controller ? 1u : 0u;
+    result = nvme_passthrough(&passthrough, &completion_result);
+    if (result < 0) {
+        result = -EDGE_LINUX_EIO;
+        goto finish;
+    }
+    if (!write && data_length) {
+        int copy_result = vectorized ?
+            edge_linux_io_uring_nvme_copy_vectors(
+                context, vectors, vector_count, data,
+                (uint32_t)data_length, 1, ring_id,
+                submission->buffer_index, fixed) :
+            (fixed ? kernel_io_uring_fixed_buffer_copy(
+                 ring_id, submission->buffer_index,
+                 command.address, data, data_length, 1) :
+             edge_linux_copy_to_user(
+                 context, command.address, data, data_length));
+        if (copy_result < 0) {
+            result = -EDGE_LINUX_EFAULT;
+            goto finish;
+        }
+    }
+    if (!write && command.metadata_length &&
+        edge_linux_copy_to_user(
+            context, command.metadata, metadata,
+            command.metadata_length) < 0) {
+        result = -EDGE_LINUX_EFAULT;
+        goto finish;
+    }
+    completion->completion_extended = 1u;
+    completion->completion_extra1 = completion_result;
+    completion->completion_extra2 = 0u;
+finish:
+    edge_linux_io_uring_free_pages(data, data_pages);
+    edge_linux_io_uring_free_pages(metadata, metadata_pages);
+    return result;
+#else
+    (void)context;
+    (void)ring_id;
+    (void)submission;
+    (void)command_payload;
+    (void)controller;
+    (void)completion;
+    return -EDGE_LINUX_EOPNOTSUPP;
+#endif
+}
+
 static int64_t edge_linux_io_uring_execute_uring_cmd(
         edge_linux_syscall_context_t *context, int32_t ring_id,
         const struct edge_linux_io_uring_sqe *submission,
-        const uint8_t command_payload[80]) {
+        const uint8_t command_payload[80],
+        edge_linux_io_uring_notification_t *completion) {
     edge_linux_syscall_context_t nested = *context;
     kernel_socket_descriptor_info_t descriptor_info;
     uint32_t command = (uint32_t)submission->offset;
@@ -12500,8 +12775,6 @@ static int64_t edge_linux_io_uring_execute_uring_cmd(
     uint32_t option_length = (uint32_t)submission->splice_descriptor;
     uint32_t actual_length = 0u;
     int result;
-
-    (void)command_payload;
 
     if ((submission->offset >> 32u) != 0u ||
         (command_flags & ~EDGE_LINUX_IORING_URING_CMD_MASK) != 0u ||
@@ -12522,6 +12795,16 @@ static int64_t edge_linux_io_uring_execute_uring_cmd(
         result = kernel_vfs_resolve_fd(
             submission->descriptor, &target);
         if (result < 0) return result;
+        if (target.resolved_path &&
+            strcmp(target.resolved_path, "/dev/nvme0") == 0)
+            return edge_linux_io_uring_nvme_cmd(
+                context, ring_id, submission, command_payload,
+                1, completion);
+        if (target.resolved_path &&
+            strcmp(target.resolved_path, "/dev/ng0n1") == 0)
+            return edge_linux_io_uring_nvme_cmd(
+                context, ring_id, submission, command_payload,
+                0, completion);
         if (target.resolved_path &&
             strcmp(target.resolved_path, "/dev/null") == 0)
             return 0;
@@ -12718,6 +13001,9 @@ static int32_t edge_linux_io_uring_execute_descriptor(
         uint32_t *completion_flags,
         edge_linux_io_uring_notification_t *notification) {
     int64_t result;
+    int uring_command =
+        submission->opcode == EDGE_LINUX_IORING_OP_URING_CMD ||
+        submission->opcode == EDGE_LINUX_IORING_OP_URING_CMD128;
     if (submission->flags & ~EDGE_LINUX_IOSQE_KNOWN)
         return -EDGE_LINUX_EINVAL;
     if (submission->opcode == EDGE_LINUX_IORING_OP_FILES_UPDATE &&
@@ -12728,7 +13014,8 @@ static int32_t edge_linux_io_uring_execute_descriptor(
         return -EDGE_LINUX_EBADF;
     if (submission->flags & EDGE_LINUX_IOSQE_BUFFER_SELECT)
         return -EDGE_LINUX_ENOBUFS;
-    if (submission->personality || submission->reserved2)
+    if (!uring_command &&
+        (submission->personality || submission->reserved2))
         return -EDGE_LINUX_EINVAL;
     if (submission->address3 &&
         submission->opcode != EDGE_LINUX_IORING_OP_SETXATTR &&
@@ -13034,7 +13321,8 @@ static int32_t edge_linux_io_uring_execute_descriptor(
     case EDGE_LINUX_IORING_OP_URING_CMD:
     case EDGE_LINUX_IORING_OP_URING_CMD128:
         result = edge_linux_io_uring_execute_uring_cmd(
-            context, ring_id, submission, command_payload);
+            context, ring_id, submission, command_payload,
+            notification);
         break;
     case EDGE_LINUX_IORING_OP_RECV_ZC:
         result = edge_linux_io_uring_recv_zc(
@@ -13443,7 +13731,9 @@ static int32_t edge_linux_io_uring_execute(
     linux_credential_state_t personality;
     int32_t result;
 
-    if (!submission->personality)
+    if (!submission->personality ||
+        submission->opcode == EDGE_LINUX_IORING_OP_URING_CMD ||
+        submission->opcode == EDGE_LINUX_IORING_OP_URING_CMD128)
         return edge_linux_io_uring_execute_current(
             context, ring_id, submission, command_payload, completion_flags,
             notification);
@@ -13943,7 +14233,12 @@ static int64_t edge_linux_sys_io_uring_enter(
         if (operation_result != EDGE_LINUX_IORING_PENDING_RESULT &&
             (!(submission.flags & EDGE_LINUX_IOSQE_CQE_SKIP_SUCCESS) ||
              operation_result < 0)) {
-            if ((submission.opcode == EDGE_LINUX_IORING_OP_NOP ||
+            if (notification.completion_extended)
+                (void)kernel_io_uring_completion_add32(
+                    ring_id, submission.user_data, operation_result,
+                    completion_flags, notification.completion_extra1,
+                    notification.completion_extra2);
+            else if ((submission.opcode == EDGE_LINUX_IORING_OP_NOP ||
                  submission.opcode == EDGE_LINUX_IORING_OP_NOP128) &&
                 (submission.operation_flags &
                  EDGE_LINUX_IORING_NOP_CQE32))

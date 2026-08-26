@@ -10,6 +10,7 @@
 #define SYS_execve 59
 #define SYS_exit 60
 #define SYS_wait4 61
+#define SYS_mount 165
 #elif defined(__aarch64__)
 #define ENTRY_ALIGNMENT
 #define SYS_write 64
@@ -17,6 +18,7 @@
 #define SYS_wait4 260
 #define SYS_execve 221
 #define SYS_clone 220
+#define SYS_mount 40
 #else
 #error "uapi_batch_init requires a supported 64-bit architecture"
 #endif
@@ -100,6 +102,35 @@ static long raw_syscall4(long number, long a0, long a1, long a2, long a3) {
     return x0;
 #endif
 }
+
+#ifdef UAPI_BATCH_IO_URING_NVME_CMD_ONLY
+static long raw_syscall5(long number, long a0, long a1, long a2, long a3,
+                         long a4) {
+#if defined(__x86_64__)
+    register long r10 __asm__("r10") = a3;
+    register long r8 __asm__("r8") = a4;
+    long result;
+    __asm__ volatile("syscall"
+                     : "=a"(result)
+                     : "a"(number), "D"(a0), "S"(a1), "d"(a2),
+                       "r"(r10), "r"(r8)
+                     : "rcx", "r11", "memory");
+    return result;
+#else
+    register long x8 __asm__("x8") = number;
+    register long x0 __asm__("x0") = a0;
+    register long x1 __asm__("x1") = a1;
+    register long x2 __asm__("x2") = a2;
+    register long x3 __asm__("x3") = a3;
+    register long x4 __asm__("x4") = a4;
+    __asm__ volatile("svc #0"
+                     : "+r"(x0)
+                     : "r"(x8), "r"(x1), "r"(x2), "r"(x3), "r"(x4)
+                     : "memory", "cc");
+    return x0;
+#endif
+}
+#endif
 
 static unsigned long text_length(const char *text) {
     unsigned long length = 0;
@@ -211,6 +242,8 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "io_uring_fixed_buffer_pin_abi_probe",
 #elif defined(UAPI_BATCH_IO_URING_URING_CMD_ONLY)
         "io_uring_uring_cmd_abi_probe",
+#elif defined(UAPI_BATCH_IO_URING_NVME_CMD_ONLY)
+        "io_uring_nvme_uring_cmd_abi_probe",
 #elif defined(UAPI_BATCH_IO_URING_ZCRX_ONLY)
         "io_uring_zcrx_abi_probe",
 #elif defined(UAPI_BATCH_IO_URING_SQPOLL_ONLY)
@@ -273,6 +306,11 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
 #endif
     };
     int failures = 0;
+
+#ifdef UAPI_BATCH_IO_URING_NVME_CMD_ONLY
+    (void)raw_syscall5(SYS_mount, (long)"devtmpfs", (long)"/dev",
+                       (long)"devtmpfs", 0, 0);
+#endif
 
     for (unsigned long index = 0;
          index < sizeof(probes) / sizeof(probes[0]); ++index) {
