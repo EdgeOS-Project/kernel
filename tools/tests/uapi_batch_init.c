@@ -6,6 +6,7 @@
 #if defined(__x86_64__)
 #define ENTRY_ALIGNMENT __attribute__((force_align_arg_pointer))
 #define SYS_write 1
+#define SYS_sched_yield 24
 #define SYS_fork 57
 #define SYS_execve 59
 #define SYS_exit 60
@@ -16,6 +17,7 @@
 #define ENTRY_ALIGNMENT
 #define SYS_write 64
 #define SYS_exit 93
+#define SYS_sched_yield 124
 #define SYS_wait4 260
 #define SYS_execve 221
 #define SYS_clone 220
@@ -112,7 +114,8 @@ static long raw_syscall4(long number, long a0, long a1, long a2, long a3) {
     defined(UAPI_BATCH_FILESYSTEM_CORE_ONLY) || \
     defined(UAPI_BATCH_FILESYSTEM_FD_ONLY) || \
     defined(UAPI_BATCH_PROCESS_RESOURCE_ONLY) || \
-    defined(UAPI_BATCH_PROCESS_EVENT_ONLY)
+    defined(UAPI_BATCH_PROCESS_EVENT_ONLY) || \
+    defined(UAPI_BATCH_PROCESS_MISC_ORACLE_ONLY)
 static long raw_syscall5(long number, long a0, long a1, long a2, long a3,
                          long a4) {
 #if defined(__x86_64__)
@@ -334,6 +337,12 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "namespace_abi_probe",
         "signalfd_abi_probe",
         "wait_abi_probe",
+#elif defined(UAPI_BATCH_PROCESS_MISC_ORACLE_ONLY)
+        "capability_abi_probe",
+        "nanosleep_abi_probe",
+        "supplementary_groups_abi_probe",
+        "pidfd_signal_abi_probe",
+        "process_vm_abi_probe",
 #elif defined(UAPI_BATCH_NATIVE_OPTIONAL_ONLY)
         "native_optional_syscalls_abi_probe",
 #else
@@ -388,6 +397,11 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
     (void)raw_syscall5(SYS_mount, (long)"proc", (long)"/proc",
                        (long)"proc", 0, 0);
 #endif
+#if defined(UAPI_BATCH_PROCESS_MISC_ORACLE_ONLY)
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/proc", 0555, 0);
+    (void)raw_syscall5(SYS_mount, (long)"proc", (long)"/proc",
+                       (long)"proc", 0, 0);
+#endif
 #if defined(UAPI_BATCH_FILESYSTEM_CORE_ONLY) || \
     defined(UAPI_BATCH_FILESYSTEM_FD_ONLY)
     (void)raw_syscall5(SYS_mount, (long)"devtmpfs", (long)"/dev",
@@ -414,6 +428,9 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
     }
     print_text(failures ? "UAPI_BATCH_RESULT_FAIL\n" :
                           "UAPI_BATCH_RESULT_PASS\n");
+#if defined(UAPI_BATCH_LINUX_ORACLE_HOLD)
+    for (;;) (void)raw_syscall1(SYS_sched_yield, 0);
+#endif
     (void)raw_syscall1(SYS_exit, failures ? 1 : 0);
     for (;;) { }
 }

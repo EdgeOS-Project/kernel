@@ -18,6 +18,7 @@
 #define SYS_wait4 61
 #define SYS_exit 60
 #define SYS_getuid 102
+#define SYS_setpgid 109
 #define SYS_rt_sigtimedwait 128
 #define SYS_gettid 186
 #elif defined(__aarch64__)
@@ -29,6 +30,7 @@
 #define SYS_getpid 172
 #define SYS_getuid 174
 #define SYS_gettid 178
+#define SYS_setpgid 154
 #define SYS_clone 220
 #define SYS_wait4 260
 #define SYS_nanosleep 101
@@ -289,6 +291,9 @@ static int test_pidfd_signals(void) {
     long thread_pidfd;
     long nonblocking_pidfd;
     int failures = 0;
+
+    failures += expect_result("establish_process_group",
+        raw_syscall2(SYS_setpgid, 0, 0), 0);
 
     failures += expect_result("open_zero_pid",
         raw_syscall2(SYS_pidfd_open, 0, 0), -EINVAL);

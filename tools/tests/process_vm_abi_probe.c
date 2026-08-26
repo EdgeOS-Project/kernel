@@ -404,7 +404,7 @@ static int test_permission_denial(void) {
     return failures;
 }
 
-void _start(void) {
+static __attribute__((noreturn, noinline, used)) void probe_entry(void) {
     int failures = test_self();
     failures += test_cross_process_transfer();
     failures += test_permission_denial();
@@ -412,3 +412,15 @@ void _start(void) {
     raw_syscall6(SYS_exit, failures ? 1 : 0, 0, 0, 0, 0, 0);
     for (;;) {}
 }
+
+#if defined(__x86_64__)
+__attribute__((naked, noreturn)) void _start(void) {
+    __asm__ __volatile__(
+        "andq $-16, %rsp\n"
+        "call probe_entry\n");
+}
+#else
+void _start(void) {
+    probe_entry();
+}
+#endif

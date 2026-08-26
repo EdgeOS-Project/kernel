@@ -67,7 +67,7 @@ static long raw_syscall3(long nr, long a0, long a1, long a2) {
     return ret;
 }
 
-static void raw_exit(int code) {
+static __attribute__((noreturn)) void raw_exit(int code) {
     raw_syscall3(SYS_exit, code, 0, 0);
     for (;;) {}
 }
@@ -298,6 +298,18 @@ static int run_probe(void) {
     return failures ? 1 : 0;
 }
 
-void _start(void) {
+static __attribute__((noreturn, noinline, used)) void probe_entry(void) {
     raw_exit(run_probe());
 }
+
+#if defined(__x86_64__)
+__attribute__((naked, noreturn)) void _start(void) {
+    __asm__ __volatile__(
+        "andq $-16, %rsp\n"
+        "call probe_entry\n");
+}
+#else
+void _start(void) {
+    probe_entry();
+}
+#endif

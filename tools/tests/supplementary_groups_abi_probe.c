@@ -306,8 +306,20 @@ static int run_probe(void) {
     return failures ? 1 : 0;
 }
 
-void _start(void) {
+static __attribute__((noreturn, noinline, used)) void probe_entry(void) {
     int result = run_probe();
     (void)raw_syscall3(SYS_exit, result, 0, 0);
     for (;;) {}
 }
+
+#if defined(__x86_64__)
+__attribute__((naked, noreturn)) void _start(void) {
+    __asm__ __volatile__(
+        "andq $-16, %rsp\n"
+        "call probe_entry\n");
+}
+#else
+void _start(void) {
+    probe_entry();
+}
+#endif
