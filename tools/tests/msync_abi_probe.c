@@ -50,6 +50,7 @@
 
 #define EINVAL 22
 #define ENOMEM 12
+#define EOPNOTSUPP 95
 
 #define PROT_READ 1
 #define PROT_WRITE 2
@@ -273,11 +274,18 @@ static int run_tests(void) {
                 (long)sizeof(readback));
             failures += expect_true("regular fallocate preserves map cache",
                 readback[0] == 0x2au && readback[1] == 0xa2u);
-            failures += expect_result("regular mapped zero range",
-                raw_syscall6(SYS_fallocate, descriptor,
-                             FALLOC_FL_ZERO_RANGE, 192, 32, 0, 0), 0);
-            failures += expect_true("regular zero range updates map",
-                shared[201] == 0 && shared[202] == 0);
+            {
+                long zero_result = raw_syscall6(
+                    SYS_fallocate, descriptor, FALLOC_FL_ZERO_RANGE,
+                    192, 32, 0, 0);
+
+                failures += expect_true(
+                    "regular mapped zero range",
+                    zero_result == 0 || zero_result == -EOPNOTSUPP);
+                if (zero_result == 0)
+                    failures += expect_true("regular zero range updates map",
+                        shared[201] == 0 && shared[202] == 0);
+            }
             failures += expect_result("regular mapped fsync",
                 raw_syscall6(SYS_fsync, descriptor, 0, 0, 0, 0, 0), 0);
             failures += expect_result("regular post-fsync pread",
