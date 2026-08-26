@@ -247,11 +247,17 @@ static int test_optional_calls(void) {
         raw_syscall6(SYS_kexec_file_load, -1, -1, 0, 0, 0x40, 0),
         -EINVAL, -ENOSYS);
 
-    /* Unsupported hardware and a disabled backend are distinct Linux states. */
-    failures += expect_one_of(
+#if defined(EXPECT_MAP_SHADOW_STACK_ENOSYS)
+    failures += expect_result(
+        "map_shadow_stack configured out",
+        raw_syscall6(SYS_map_shadow_stack, 0, 0, 0, 0, 0, 0),
+        -ENOSYS);
+#else
+    failures += expect_result(
         "map_shadow_stack availability",
         raw_syscall6(SYS_map_shadow_stack, 0, 0, 0, 0, 0, 0),
-        -ENOTSUP, -ENOSYS);
+        -ENOTSUP);
+#endif
 #if defined(__x86_64__)
     failures += expect_result(
         "uprobe direct entry",

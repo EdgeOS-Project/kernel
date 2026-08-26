@@ -3458,6 +3458,12 @@ static int64_t edge_linux_sys_uprobe_entry(
     return -1;
 }
 
+static int64_t edge_linux_sys_map_shadow_stack(
+        edge_linux_syscall_context_t *context) {
+    (void)context;
+    return -EDGE_LINUX_EOPNOTSUPP;
+}
+
 static int64_t edge_linux_sys_namespace(
     edge_linux_syscall_context_t *context) {
     kernel_linux_identity_t identity;

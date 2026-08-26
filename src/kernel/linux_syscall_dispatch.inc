@@ -230,6 +230,9 @@ case EDGE_LINUX_SYS_lsm_set_self_attr:
 case EDGE_LINUX_SYS_madvise:
     context->result = edge_linux_sys_madvise(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_map_shadow_stack:
+    context->result = edge_linux_sys_map_shadow_stack(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_membarrier:
     context->result = edge_linux_sys_membarrier(context);
     return EDGE_LINUX_SYSCALL_HANDLED;

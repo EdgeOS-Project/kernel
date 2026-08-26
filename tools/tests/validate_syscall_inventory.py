@@ -17,7 +17,6 @@ LINUX_REFERENCE_COMMIT = "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
 AARCH64_LINUX_ENOSYS_NUMBERS = {
     "lookup_dcookie": 18,
     "nfsservctl": 42,
-    "map_shadow_stack": 453,
 }
 EVIDENCE_STATUSES = {
     "explicit-enosys",

@@ -4104,25 +4104,27 @@
     {
       "id": "map_shadow_stack",
       "semantic_id": "map_shadow_stack",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_map_shadow_stack",
       "architecture_exceptions": [
         "x86_64 shadow-stack and AArch64 guarded-control-stack ABI"
       ],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/native_optional_syscalls_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "partial",
       "architectures": {
         "x86_64": {
           "number": 453,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_map_shadow_stack",
+          "evidence_status": "runtime-probe-listed"
         },
         "aarch64": {
           "number": 453,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_map_shadow_stack",
+          "evidence_status": "runtime-probe-listed"
         }
       }
     },

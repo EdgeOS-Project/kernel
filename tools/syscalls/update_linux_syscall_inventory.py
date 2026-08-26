@@ -58,7 +58,6 @@ LINUX_RESERVED_ENOSYS_X86_64 = {
 AARCH64_LINUX_ENOSYS_NUMBERS = {
     "lookup_dcookie": 18,
     "nfsservctl": 42,
-    "map_shadow_stack": 453,
 }
 LINUX_RESERVED_SYSCALL_PROBE = (
     "tools/tests/linux_reserved_syscalls_abi_probe.c"
@@ -79,6 +78,7 @@ PARTIAL_SYSCALL_PROBES = {
     "bpf": "tools/tests/bpf_abi_probe.c",
     "kexec_file_load": "tools/tests/native_optional_syscalls_abi_probe.c",
     "kexec_load": "tools/tests/native_optional_syscalls_abi_probe.c",
+    "map_shadow_stack": "tools/tests/native_optional_syscalls_abi_probe.c",
     "uprobe": "tools/tests/native_optional_syscalls_abi_probe.c",
     "uretprobe": "tools/tests/native_optional_syscalls_abi_probe.c",
 }
