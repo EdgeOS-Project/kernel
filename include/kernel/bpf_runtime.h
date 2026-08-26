@@ -42,6 +42,7 @@
 #define KERNEL_BPF_MAP_TYPE_DEVMAP_HASH 25u
 #define KERNEL_BPF_MAP_TYPE_RINGBUF 27u
 #define KERNEL_BPF_MAP_TYPE_INODE_STORAGE 28u
+#define KERNEL_BPF_MAP_TYPE_TASK_STORAGE 29u
 #define KERNEL_BPF_MAP_TYPE_BLOOM_FILTER 30u
 #define KERNEL_BPF_MAP_TYPE_USER_RINGBUF 31u
 #define KERNEL_BPF_MAP_TYPE_CGRP_STORAGE 32u
@@ -265,6 +266,16 @@ int kernel_bpf_inode_storage_delete(int object_id,
                                     uint64_t filesystem_identity,
                                     uint32_t inode_number,
                                     uint32_t inode_generation);
+int kernel_bpf_task_storage_lookup(int object_id, int32_t tid,
+                                   uint64_t start_time_ticks,
+                                   void *value, uint64_t flags);
+int kernel_bpf_task_storage_update(int object_id, int32_t tid,
+                                   uint64_t start_time_ticks,
+                                   const void *value, uint64_t flags);
+int kernel_bpf_task_storage_delete(int object_id, int32_t tid,
+                                   uint64_t start_time_ticks);
+void kernel_bpf_task_storage_task_exit(int32_t tid,
+                                       uint64_t start_time_ticks);
 int kernel_bpf_map_delete(int object_id, const void *key);
 int kernel_bpf_map_lookup_and_delete(int object_id, const void *key,
                                      void *value);

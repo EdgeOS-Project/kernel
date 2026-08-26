@@ -375,6 +375,7 @@ EDGEOS_ASSESSMENTS = [
             "cgroup local-storage creation with BTF, cgroup FD lookup, insertion, replacement, deletion, reference lifetime and unsupported iteration semantics",
             "socket local-storage creation with BTF, socket FD and alias lookup, insertion, replacement, deletion, last-close removal and unsupported iteration semantics",
             "inode local-storage creation with BTF, inode identity shared across file descriptions, insertion, replacement, close-and-reopen persistence, deletion and unsupported iteration semantics",
+            "task local-storage creation with BTF, pidfd lookup, insertion, replacement, deletion, PID-generation isolation, task-exit cleanup and unsupported iteration semantics",
             "instruction-array creation, offset update and zeroing behavior, lookup, iteration, freeze and unsupported delete and batch operations",
             "resizable-hash creation flag and size-hint validation, element operations, iteration, lookup-and-delete, batch operations and freeze behavior",
             "ia32 and x32 fixed-width map-create and map-element attribute layouts",
@@ -399,6 +400,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/bpf_cgrp_storage_abi_probe.c",
             "tools/tests/bpf_sk_storage_abi_probe.c",
             "tools/tests/bpf_inode_storage_abi_probe.c",
+            "tools/tests/bpf_task_storage_abi_probe.c",
             "tools/tests/bpf_insn_array_abi_probe.c",
             "tools/tests/bpf_rhash_abi_probe.c",
             "tools/tests/bpf_stack_trace_abi_probe.c",
@@ -444,6 +446,9 @@ EDGEOS_ASSESSMENTS = [
                 "across file descriptions, insertion, replacement, "
                 "close-and-reopen persistence, deletion and unsupported "
                 "iteration, "
+                "task local-storage BTF creation, pidfd lookup, insertion, "
+                "replacement, deletion, generation isolation, exit cleanup "
+                "and unsupported iteration, "
                 "instruction-array creation, offset updates, lookup, "
                 "iteration, freeze and unsupported delete and batch behavior, "
                 "resizable-hash creation flags, size hints, element and batch "

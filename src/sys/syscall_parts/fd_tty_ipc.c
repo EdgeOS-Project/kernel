@@ -5039,7 +5039,12 @@ static void robust_futex_cleanup_task(task_t *t) {
 }
 
 static void syscall_task_exit_cleanup(task_t *t) {
+    uint64_t start_time_ticks;
+
     if (!t) return;
+    start_time_ticks = t->rusage_start_us / 10000u;
+    if (!start_time_ticks) start_time_ticks = 1u;
+    kernel_bpf_task_storage_task_exit(t->pid, start_time_ticks);
     kernel_io_uring_task_release(t->pid);
     kernel_epoll_wait_lease_release(&t->epoll_wait_lease);
     tty_session_release_task(t);

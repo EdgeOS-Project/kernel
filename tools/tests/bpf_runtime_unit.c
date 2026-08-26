@@ -2618,6 +2618,60 @@ static void test_inode_local_storage(void) {
     kernel_bpf_object_release(map);
 }
 
+static void test_task_local_storage(void) {
+    uint8_t btf_blob[25] = {
+        0x9f, 0xeb, 1u, 0u,
+        24u, 0u, 0u, 0u,
+    };
+    kernel_bpf_map_create_request_t request = {
+        .type = KERNEL_BPF_MAP_TYPE_TASK_STORAGE,
+        .key_size = sizeof(int32_t),
+        .value_size = sizeof(uint32_t),
+        .flags = KERNEL_BPF_MAP_NO_PREALLOC,
+        .btf_key_type_id = 1u,
+        .btf_value_type_id = 1u,
+        .btf_present = 1u,
+    };
+    const int32_t tid = 84;
+    const uint64_t start_time_ticks = 12345u;
+    uint32_t value = 0x27182818u;
+    uint32_t output = 0u;
+    int btf;
+    int map;
+
+    btf_blob[16] = 0u;
+    btf_blob[20] = 1u;
+    btf = kernel_bpf_btf_create(btf_blob, sizeof(btf_blob));
+    assert(btf >= 0);
+    request.btf_object_id = btf;
+    map = kernel_bpf_map_create(&request);
+    assert(map >= 0);
+    assert(kernel_bpf_task_storage_lookup(
+               map, tid, start_time_ticks, &output, 0u) ==
+           -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_task_storage_update(
+               map, tid, start_time_ticks, &value,
+               KERNEL_BPF_NOEXIST) == 0);
+    assert(kernel_bpf_task_storage_lookup(
+               map, tid, start_time_ticks, &output, 0u) == 0);
+    assert(output == value);
+    assert(kernel_bpf_task_storage_lookup(
+               map, tid, start_time_ticks + 1u, &output, 0u) ==
+           -EDGE_LINUX_ENOENT);
+    kernel_bpf_task_storage_task_exit(tid, start_time_ticks);
+    assert(kernel_bpf_task_storage_lookup(
+               map, tid, start_time_ticks, &output, 0u) ==
+           -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_task_storage_update(
+               map, tid, start_time_ticks, &value, KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_task_storage_delete(
+               map, tid, start_time_ticks) == 0);
+    assert(kernel_bpf_task_storage_delete(
+               map, tid, start_time_ticks) == -EDGE_LINUX_ENOENT);
+    kernel_bpf_object_release(btf);
+    kernel_bpf_object_release(map);
+}
+
 int main(void) {
     test_array_map();
     test_cgroup_array();
@@ -2652,6 +2706,7 @@ int main(void) {
     test_cgroup_local_storage();
     test_socket_local_storage();
     test_inode_local_storage();
+    test_task_local_storage();
     puts("bpf_runtime_unit: PASS");
     return 0;
 }

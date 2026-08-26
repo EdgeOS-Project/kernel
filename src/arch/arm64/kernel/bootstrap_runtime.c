@@ -22270,6 +22270,8 @@ static __attribute__((noreturn)) void task_finish(kernel_task_t *task,
                 &task->rusage_children_system_time_us,
                 sibling->rusage_children_system_time_us);
             task_account_process_exit(sibling, exit_code, signal, 0);
+            kernel_bpf_task_storage_task_exit(
+                sibling->pid, sibling->start_time_ticks);
             robust_futex_cleanup(sibling);
             fifo_open_pending_cancel(sibling);
             task_clear_child_tid(sibling);
@@ -22304,6 +22306,8 @@ static __attribute__((noreturn)) void task_finish(kernel_task_t *task,
     task_account_process_exit(
         task, exit_code, signal,
         whole_group || !signal_group_survives);
+    kernel_bpf_task_storage_task_exit(
+        task->pid, task->start_time_ticks);
     robust_futex_cleanup(task);
     fifo_open_pending_cancel(task);
     task_clear_child_tid(task);

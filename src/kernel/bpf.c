@@ -374,15 +374,25 @@ static int bpf_map_is_inode_storage(const kernel_bpf_map_t *map) {
     return map && map->type == KERNEL_BPF_MAP_TYPE_INODE_STORAGE;
 }
 
+static int bpf_map_is_task_storage(const kernel_bpf_map_t *map) {
+    return map && map->type == KERNEL_BPF_MAP_TYPE_TASK_STORAGE;
+}
+
 static int bpf_map_is_local_storage(const kernel_bpf_map_t *map) {
     return bpf_map_is_cgrp_storage(map) || bpf_map_is_sk_storage(map) ||
-           bpf_map_is_inode_storage(map);
+           bpf_map_is_inode_storage(map) || bpf_map_is_task_storage(map);
 }
 
 static int bpf_map_type_is_local_storage(uint32_t type) {
     return type == KERNEL_BPF_MAP_TYPE_CGRP_STORAGE ||
            type == KERNEL_BPF_MAP_TYPE_SK_STORAGE ||
-           type == KERNEL_BPF_MAP_TYPE_INODE_STORAGE;
+           type == KERNEL_BPF_MAP_TYPE_INODE_STORAGE ||
+           type == KERNEL_BPF_MAP_TYPE_TASK_STORAGE;
+}
+
+static size_t bpf_local_storage_owner_size(const kernel_bpf_map_t *map) {
+    return bpf_map_is_inode_storage(map) || bpf_map_is_task_storage(map) ?
+        sizeof(bpf_local_storage_owner_t) : sizeof(uint64_t);
 }
 
 static int bpf_map_is_insn_array(const kernel_bpf_map_t *map) {
@@ -717,7 +727,8 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
             goto invalid_btf;
         storage_entries = BPF_CGRP_STORAGE_ENTRIES;
         stride = bpf_align8(
-            1u + (request->type == KERNEL_BPF_MAP_TYPE_INODE_STORAGE ?
+            1u + ((request->type == KERNEL_BPF_MAP_TYPE_INODE_STORAGE ||
+                   request->type == KERNEL_BPF_MAP_TYPE_TASK_STORAGE) ?
                   sizeof(bpf_local_storage_owner_t) : sizeof(uint64_t)) +
             request->value_size);
     } else if (request->type == KERNEL_BPF_MAP_TYPE_INSN_ARRAY) {
@@ -3802,10 +3813,8 @@ out:
 
 static uint8_t *bpf_local_storage_value(kernel_bpf_map_t *map,
                                         uint32_t index) {
-    size_t owner_size = bpf_map_is_inode_storage(map) ?
-        sizeof(bpf_local_storage_owner_t) : sizeof(uint64_t);
-
-    return bpf_map_entry(map, index) + 1u + owner_size;
+    return bpf_map_entry(map, index) + 1u +
+        bpf_local_storage_owner_size(map);
 }
 
 static void bpf_local_storage_find_locked(kernel_bpf_map_t *map,
@@ -3818,8 +3827,7 @@ static void bpf_local_storage_find_locked(kernel_bpf_map_t *map,
     for (uint32_t index = 0; index < map->storage_entries; ++index) {
         uint8_t *entry = bpf_map_entry(map, index);
         bpf_local_storage_owner_t stored_owner = {0};
-        size_t owner_size = bpf_map_is_inode_storage(map) ?
-            sizeof(stored_owner) : sizeof(stored_owner.primary);
+        size_t owner_size = bpf_local_storage_owner_size(map);
 
         if (!entry[0]) {
             if (free_slot == UINT32_MAX) free_slot = index;
@@ -3928,9 +3936,7 @@ static int bpf_local_storage_update(int object_id, uint32_t map_type,
         entry = bpf_map_entry(map, index);
         memset(entry, 0, map->entry_stride);
         entry[0] = 1u;
-        memcpy(entry + 1u, &owner,
-               bpf_map_is_inode_storage(map) ?
-               sizeof(owner) : sizeof(owner.primary));
+        memcpy(entry + 1u, &owner, bpf_local_storage_owner_size(map));
         ++map->entry_count;
         retained = 0;
     }
@@ -3973,8 +3979,7 @@ static int bpf_local_storage_delete(int object_id, uint32_t map_type,
         goto out;
     }
     memcpy(&released_owner, bpf_map_entry(map, index) + 1u,
-           bpf_map_is_inode_storage(map) ?
-           sizeof(released_owner) : sizeof(released_owner.primary));
+           bpf_local_storage_owner_size(map));
     memset(bpf_map_entry(map, index), 0, map->entry_stride);
     if (map->entry_count) --map->entry_count;
 out:
@@ -4082,6 +4087,63 @@ int kernel_bpf_inode_storage_delete(int object_id,
         object_id, KERNEL_BPF_MAP_TYPE_INODE_STORAGE,
         bpf_inode_storage_owner(filesystem_identity, inode_number,
                                 inode_generation));
+}
+
+static bpf_local_storage_owner_t bpf_task_storage_owner(
+        int32_t tid, uint64_t start_time_ticks) {
+    bpf_local_storage_owner_t owner;
+
+    owner.primary = (uint64_t)(uint32_t)tid;
+    owner.secondary = start_time_ticks;
+    return owner;
+}
+
+int kernel_bpf_task_storage_lookup(int object_id, int32_t tid,
+                                   uint64_t start_time_ticks,
+                                   void *value, uint64_t flags) {
+    return bpf_local_storage_lookup(
+        object_id, KERNEL_BPF_MAP_TYPE_TASK_STORAGE,
+        bpf_task_storage_owner(tid, start_time_ticks), value, flags);
+}
+
+int kernel_bpf_task_storage_update(int object_id, int32_t tid,
+                                   uint64_t start_time_ticks,
+                                   const void *value, uint64_t flags) {
+    return bpf_local_storage_update(
+        object_id, KERNEL_BPF_MAP_TYPE_TASK_STORAGE,
+        bpf_task_storage_owner(tid, start_time_ticks), value, flags);
+}
+
+int kernel_bpf_task_storage_delete(int object_id, int32_t tid,
+                                   uint64_t start_time_ticks) {
+    return bpf_local_storage_delete(
+        object_id, KERNEL_BPF_MAP_TYPE_TASK_STORAGE,
+        bpf_task_storage_owner(tid, start_time_ticks));
+}
+
+void kernel_bpf_task_storage_task_exit(int32_t tid,
+                                       uint64_t start_time_ticks) {
+    bpf_local_storage_owner_t owner =
+        bpf_task_storage_owner(tid, start_time_ticks);
+
+    if (tid <= 0 || !start_time_ticks) return;
+    bpf_lock();
+    for (uint32_t object_index = 0;
+         object_index < BPF_OBJECT_CAPACITY; ++object_index) {
+        kernel_bpf_object_t *object = &g_bpf_objects[object_index];
+        kernel_bpf_map_t *map;
+        uint32_t index;
+
+        if (!object->used || object->kind != KERNEL_BPF_OBJECT_MAP)
+            continue;
+        map = &object->value.map;
+        if (!bpf_map_is_task_storage(map)) continue;
+        bpf_local_storage_find_locked(map, owner, &index, 0);
+        if (index == UINT32_MAX) continue;
+        memset(bpf_map_entry(map, index), 0, map->entry_stride);
+        if (map->entry_count) --map->entry_count;
+    }
+    bpf_unlock();
 }
 
 int kernel_bpf_map_lookup_and_delete(int object_id, const void *key,

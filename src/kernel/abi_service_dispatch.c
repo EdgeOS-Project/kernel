@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 
+#include "kernel/bpf_runtime.h"
 #include "kernel/fbdev_runtime.h"
 #include "kernel/ioctl_runtime.h"
 #include "kernel/keyring_runtime.h"
@@ -21,6 +22,14 @@
 
 __attribute__((noreturn)) void kernel_current_exit(
     int32_t code, int whole_thread_group) {
+    kernel_linux_identity_t bpf_identity;
+    kernel_proc_task_view_t bpf_task;
+
+    if (kernel_current_linux_identity(&bpf_identity) == 0 &&
+        kernel_proc_task_view_get(
+            bpf_identity.global_tid, &bpf_task) == 0)
+        kernel_bpf_task_storage_task_exit(
+            bpf_task.tid, bpf_task.start_time_ticks);
 #ifdef CONFIG_LANDLOCK
     kernel_linux_identity_t landlock_identity;
     if (kernel_current_linux_identity(&landlock_identity) == 0)
