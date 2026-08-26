@@ -143,12 +143,39 @@ int main(void) {
         if (reopened_fd < 0) {
             fail_errno("open(/proc/self/fd regular)");
         } else {
+            off_t reopened_offset;
+            off_t source_offset;
+            ssize_t reopened_read;
+            int reopened_errno;
+            int reopened_flags;
+
             memset(read_buffer, 0, sizeof(read_buffer));
-            if (lseek(reopened_fd, 0, SEEK_CUR) != 0 ||
-                read(reopened_fd, read_buffer, 6) != 6 ||
+            reopened_offset = lseek(reopened_fd, 0, SEEK_CUR);
+            reopened_flags = fcntl(reopened_fd, F_GETFL);
+            errno = 0;
+            reopened_read = read(reopened_fd, read_buffer, 6);
+            reopened_errno = errno;
+            source_offset = lseek(source_fd, 0, SEEK_CUR);
+            if (reopened_offset != 0 || reopened_read != 6 ||
                 memcmp(read_buffer, "source", 6) != 0 ||
-                lseek(source_fd, 0, SEEK_CUR) != 5)
-                fail_message("proc fd reopen", "offsets are not independent");
+                source_offset != 5) {
+                fprintf(stderr,
+                        "proc fd reopen: reopened-offset=%lld read=%lld "
+                        "source-offset=%lld flags=0x%x errno=%d "
+                        "bytes=%02x%02x%02x%02x%02x%02x\n",
+                        (long long)reopened_offset,
+                        (long long)reopened_read,
+                        (long long)source_offset,
+                        reopened_flags,
+                        reopened_errno,
+                        (unsigned char)read_buffer[0],
+                        (unsigned char)read_buffer[1],
+                        (unsigned char)read_buffer[2],
+                        (unsigned char)read_buffer[3],
+                        (unsigned char)read_buffer[4],
+                        (unsigned char)read_buffer[5]);
+                ++failures;
+            }
         }
     }
     if (linkat(directory_fd, "source", directory_fd, "peer", 0) < 0)

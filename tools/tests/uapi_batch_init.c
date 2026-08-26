@@ -11,6 +11,7 @@
 #define SYS_exit 60
 #define SYS_wait4 61
 #define SYS_mount 165
+#define SYS_mkdirat 258
 #elif defined(__aarch64__)
 #define ENTRY_ALIGNMENT
 #define SYS_write 64
@@ -19,6 +20,7 @@
 #define SYS_execve 221
 #define SYS_clone 220
 #define SYS_mount 40
+#define SYS_mkdirat 34
 #else
 #error "uapi_batch_init requires a supported 64-bit architecture"
 #endif
@@ -106,7 +108,8 @@ static long raw_syscall4(long number, long a0, long a1, long a2, long a3) {
 #if defined(UAPI_BATCH_IO_URING_NVME_CMD_ONLY) || \
     defined(UAPI_BATCH_IO_URING_BSG_CMD_ONLY) || \
     defined(UAPI_BATCH_IO_URING_FUSE_CMD_ONLY) || \
-    defined(UAPI_BATCH_EVENT_CORE_ONLY)
+    defined(UAPI_BATCH_EVENT_CORE_ONLY) || \
+    defined(UAPI_BATCH_FILESYSTEM_CORE_ONLY)
 static long raw_syscall5(long number, long a0, long a1, long a2, long a3,
                          long a4) {
 #if defined(__x86_64__)
@@ -292,6 +295,11 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "inotify_abi_probe",
 #elif defined(UAPI_BATCH_SHARED_SMOKE_ONLY)
         "shared_syscall_smoke",
+#elif defined(UAPI_BATCH_FILESYSTEM_CORE_ONLY)
+        "metadata_mutation_abi_probe",
+        "path_mutation_abi_probe",
+        "xattr_abi_probe",
+        "vector_io_abi_probe",
 #elif defined(UAPI_BATCH_NATIVE_OPTIONAL_ONLY)
         "native_optional_syscalls_abi_probe",
 #else
@@ -331,6 +339,15 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
                        (long)"devtmpfs", 0, 0);
 #endif
 #if defined(UAPI_BATCH_EVENT_CORE_ONLY)
+    (void)raw_syscall5(SYS_mount, (long)"proc", (long)"/proc",
+                       (long)"proc", 0, 0);
+#endif
+#if defined(UAPI_BATCH_FILESYSTEM_CORE_ONLY)
+    (void)raw_syscall5(SYS_mount, (long)"devtmpfs", (long)"/dev",
+                       (long)"devtmpfs", 0, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/dev/pts", 0755, 0);
+    (void)raw_syscall5(SYS_mount, (long)"devpts", (long)"/dev/pts",
+                       (long)"devpts", 0, 0);
     (void)raw_syscall5(SYS_mount, (long)"proc", (long)"/proc",
                        (long)"proc", 0, 0);
 #endif

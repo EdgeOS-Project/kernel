@@ -480,6 +480,8 @@ static int64_t kernel_vfs_open_tmpfile(
     tmpfile_request = *request;
     tmpfile_request.landlock_access =
         EDGE_LINUX_LANDLOCK_ACCESS_FS_TRUNCATE;
+    tmpfile_request.linkable_zero_link_inode =
+        (request->flags & KERNEL_VFS_OPEN_EXCLUSIVE) == 0;
     for (uint32_t attempt = 0; attempt < 64u; ++attempt) {
         status = kernel_vfs_tmpfile_path(
             directory, staging_path, capacity);

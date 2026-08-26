@@ -86,7 +86,7 @@ typedef struct kernel_vfs_open_request {
     uint32_t flags;
     uint16_t mode;
     uint8_t access_mode;
-    uint8_t reserved;
+    uint8_t linkable_zero_link_inode;
 } kernel_vfs_open_request_t;
 
 typedef enum kernel_vfs_sync_operation {

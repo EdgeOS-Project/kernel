@@ -5297,6 +5297,8 @@ int arch_vfs_open_install_regular(
     }
     entry->kind = FD_VFS;
     entry->flags = flags;
+    entry->linkable_zero_link_inode =
+        request->linkable_zero_link_inode != 0;
     entry->landlock_access = request->landlock_access;
     entry->fd_flags =
         (request->flags & KERNEL_VFS_OPEN_CLOEXEC) ?

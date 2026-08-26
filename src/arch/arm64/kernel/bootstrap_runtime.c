@@ -33638,6 +33638,8 @@ int arch_vfs_open_install_regular(
         if (unlink_after_open) (void)vfs_unlink(path);
         return descriptor;
     }
+    task->fds[descriptor].linkable_zero_link_inode =
+        request->linkable_zero_link_inode != 0;
     task->fds[descriptor].landlock_access = request->landlock_access;
     if (!(request->flags & KERNEL_VFS_OPEN_PATH) &&
         alsa_path_kind(task->fds[descriptor].path) !=

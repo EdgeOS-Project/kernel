@@ -16876,6 +16876,7 @@ static int64_t edge_linux_sys_copy_file_range(
 int64_t kernel_vfs_open_magic_fd(
     const kernel_vfs_open_request_t *request, const char *path,
     int *handled) {
+    kernel_vfs_open_request_t reopen_request;
     kernel_vfs_target_t source;
     kernel_linux_identity_t identity;
     int32_t descriptor;
@@ -16953,11 +16954,14 @@ validate_source:
     }
     if ((source.inode->mode & 0xf000u) == VFS_INODE_FIFO)
         return arch_vfs_reopen_fifo_descriptor(descriptor, request);
-    return kernel_vfs_install_inode_descriptor(
-        source.superblock, source.inode, request->linux_flags,
-        (request->flags & KERNEL_VFS_OPEN_CLOEXEC) ?
-            KERNEL_FD_CLOEXEC : 0u,
-        source.linkable_zero_link_inode);
+    reopen_request = *request;
+    reopen_request.linkable_zero_link_inode =
+        source.linkable_zero_link_inode != 0;
+    return arch_vfs_open_install_regular(
+        &reopen_request,
+        source.resolved_path && source.resolved_path[0] ?
+            source.resolved_path : path,
+        source.inode, source.superblock, 0);
 }
 
 static int edge_linux_fd_number(uint64_t raw, int32_t *descriptor) {

@@ -33,6 +33,14 @@ static uint64_t g_sync_range_length;
 static vfs_superblock_t g_sync_superblock;
 static vfs_inode_t g_sync_inode;
 
+int kernel_fanotify_pre_access_permission_check(
+    const char *canonical_path, uint64_t offset, uint64_t count) {
+    (void)canonical_path;
+    (void)offset;
+    (void)count;
+    return 0;
+}
+
 static void expect_true(const char *name, int condition) {
     if (condition) return;
     fprintf(stderr, "FAIL: %s\n", name);
