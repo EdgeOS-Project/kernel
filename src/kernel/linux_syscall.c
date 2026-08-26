@@ -6634,6 +6634,8 @@ static int64_t edge_linux_bpf_program_attachment(
     kernel_vfs_descriptor_t target;
     int object_id = -1;
     int replace_object_id = -1;
+    int relative_object_id = -1;
+    int relative_retained = 0;
     int status;
 
     status = edge_linux_bpf_copy_attribute(
@@ -6642,15 +6644,8 @@ static int64_t edge_linux_bpf_program_attachment(
                  replace_program_descriptor),
         user_attribute, attribute_size);
     if (status < 0) return status;
-    if (attribute.attach_type != KERNEL_BPF_CGROUP_DEVICE ||
-        attribute.relative_descriptor || attribute.expected_revision)
+    if (attribute.attach_type != KERNEL_BPF_CGROUP_DEVICE)
         return -EDGE_LINUX_EINVAL;
-    status = edge_linux_bpf_target_description(
-        attribute.target_descriptor, &target);
-    if (status < 0) return status;
-    if (!target.superblock || !target.inode)
-        return -EDGE_LINUX_EBADF;
-
     if (command == EDGE_LINUX_BPF_PROG_ATTACH ||
         attribute.program_descriptor) {
         if (attribute.program_descriptor > INT32_MAX)
@@ -6661,6 +6656,18 @@ static int64_t edge_linux_bpf_program_attachment(
         if (object_id < 0) return object_id;
     }
     if (command == EDGE_LINUX_BPF_PROG_ATTACH) {
+        if (attribute.attach_flags &
+            ~(KERNEL_BPF_F_ALLOW_OVERRIDE |
+              KERNEL_BPF_F_ALLOW_MULTI |
+              KERNEL_BPF_F_REPLACE |
+              KERNEL_BPF_F_BEFORE |
+              KERNEL_BPF_F_AFTER |
+              KERNEL_BPF_F_ID |
+              KERNEL_BPF_F_PREORDER |
+              KERNEL_BPF_F_LINK))
+            return -EDGE_LINUX_EINVAL;
+        if (attribute.attach_flags & KERNEL_BPF_F_LINK)
+            return -EDGE_LINUX_EINVAL;
         if (attribute.attach_flags & KERNEL_BPF_F_REPLACE) {
             if (attribute.replace_program_descriptor > INT32_MAX)
                 return -EDGE_LINUX_EBADF;
@@ -6671,14 +6678,51 @@ static int64_t edge_linux_bpf_program_attachment(
         } else if (attribute.replace_program_descriptor) {
             return -EDGE_LINUX_EINVAL;
         }
-        return cgroupfs_bpf_program_attach(
+        if (attribute.relative_descriptor ||
+            (attribute.attach_flags & KERNEL_BPF_F_ID)) {
+            if (attribute.attach_flags & KERNEL_BPF_F_ID) {
+                relative_object_id = kernel_bpf_object_from_user_id(
+                    KERNEL_BPF_OBJECT_PROGRAM,
+                    attribute.relative_descriptor);
+                relative_retained = relative_object_id >= 0;
+            } else if (attribute.relative_descriptor > INT32_MAX) {
+                return -EDGE_LINUX_EBADF;
+            } else {
+                relative_object_id = kernel_bpf_descriptor_object(
+                    (int32_t)attribute.relative_descriptor,
+                    KERNEL_BPF_OBJECT_PROGRAM);
+            }
+            if (relative_object_id < 0)
+                return relative_object_id;
+        }
+        status = edge_linux_bpf_target_description(
+            attribute.target_descriptor, &target);
+        if (status < 0) goto attachment_out;
+        if (!target.superblock || !target.inode) {
+            status = -EDGE_LINUX_EBADF;
+            goto attachment_out;
+        }
+        status = cgroupfs_bpf_program_attach(
             target.superblock, target.inode, object_id,
-            attribute.attach_flags, replace_object_id);
+            attribute.attach_flags & ~KERNEL_BPF_F_ID,
+            replace_object_id, relative_object_id,
+            attribute.expected_revision);
+attachment_out:
+        if (relative_retained)
+            kernel_bpf_object_release(relative_object_id);
+        return status;
     }
-    if (attribute.attach_flags || attribute.replace_program_descriptor)
+    if (attribute.attach_flags || attribute.replace_program_descriptor ||
+        attribute.relative_descriptor)
         return -EDGE_LINUX_EINVAL;
+    status = edge_linux_bpf_target_description(
+        attribute.target_descriptor, &target);
+    if (status < 0) return status;
+    if (!target.superblock || !target.inode)
+        return -EDGE_LINUX_EBADF;
     return cgroupfs_bpf_program_detach(
-        target.superblock, target.inode, object_id);
+        target.superblock, target.inode, object_id,
+        attribute.expected_revision);
 }
 
 static int64_t edge_linux_bpf_link_command(
@@ -6691,29 +6735,70 @@ static int64_t edge_linux_bpf_link_command(
         edge_linux_bpf_link_create_attribute_t attribute;
         kernel_vfs_descriptor_t target;
         int program_object_id;
+        int relative_object_id = -1;
+        int relative_retained = 0;
 
         status = edge_linux_bpf_copy_attribute(
             context, &attribute, sizeof(attribute), sizeof(attribute),
             user_attribute, attribute_size);
         if (status < 0) return status;
         if (attribute.attach_type != KERNEL_BPF_CGROUP_DEVICE ||
-            attribute.relative_descriptor || attribute.padding ||
-            attribute.expected_revision)
+            attribute.padding ||
+            (attribute.flags & ~(KERNEL_BPF_F_BEFORE |
+                                 KERNEL_BPF_F_AFTER |
+                                 KERNEL_BPF_F_ID |
+                                 KERNEL_BPF_F_PREORDER |
+                                 KERNEL_BPF_F_LINK)))
+            return -EDGE_LINUX_EINVAL;
+        if ((attribute.relative_descriptor &&
+             !(attribute.flags & KERNEL_BPF_F_LINK)) ||
+            ((attribute.flags & KERNEL_BPF_F_ID) &&
+             !(attribute.flags & KERNEL_BPF_F_LINK)) ||
+            ((attribute.flags & KERNEL_BPF_F_LINK) &&
+             !attribute.relative_descriptor &&
+             !(attribute.flags & KERNEL_BPF_F_ID)))
             return -EDGE_LINUX_EINVAL;
         program_object_id = kernel_bpf_descriptor_object(
             (int32_t)attribute.program_descriptor,
             KERNEL_BPF_OBJECT_PROGRAM);
         if (program_object_id < 0) return program_object_id;
+        if (attribute.relative_descriptor ||
+            (attribute.flags & (KERNEL_BPF_F_ID |
+                                KERNEL_BPF_F_LINK))) {
+            if (attribute.flags & KERNEL_BPF_F_ID) {
+                relative_object_id = kernel_bpf_object_from_user_id(
+                    KERNEL_BPF_OBJECT_LINK,
+                    attribute.relative_descriptor);
+                relative_retained = relative_object_id >= 0;
+            } else {
+                relative_object_id = kernel_bpf_descriptor_object(
+                    (int32_t)attribute.relative_descriptor,
+                    KERNEL_BPF_OBJECT_LINK);
+            }
+            if (relative_object_id < 0)
+                return relative_object_id;
+        }
         status = edge_linux_bpf_target_description(
             attribute.target_descriptor, &target);
-        if (status < 0) return status;
-        if (!target.superblock || !target.inode)
-            return -EDGE_LINUX_EBADF;
+        if (status < 0) goto link_create_out;
+        if (!target.superblock || !target.inode) {
+            status = -EDGE_LINUX_EBADF;
+            goto link_create_out;
+        }
         link_object_id = cgroupfs_bpf_link_create(
             target.superblock, target.inode, program_object_id,
-            attribute.attach_type, attribute.flags);
-        if (link_object_id < 0) return link_object_id;
-        return kernel_bpf_create_descriptor(link_object_id);
+            attribute.attach_type,
+            attribute.flags & ~KERNEL_BPF_F_ID,
+            relative_object_id, attribute.expected_revision);
+        if (link_object_id < 0) {
+            status = link_object_id;
+            goto link_create_out;
+        }
+        status = kernel_bpf_create_descriptor(link_object_id);
+link_create_out:
+        if (relative_retained)
+            kernel_bpf_object_release(relative_object_id);
+        return status;
     }
     if (command == EDGE_LINUX_BPF_LINK_UPDATE) {
         edge_linux_bpf_link_update_attribute_t attribute;
@@ -6885,9 +6970,6 @@ static int64_t edge_linux_bpf_program_query(
     copied = requested < count ? requested : count;
     for (uint32_t index = 0u; index < copied; ++index) {
         uint32_t user_id;
-        uint32_t link_user_id = 0u;
-        uint32_t link_attach_flags = 0u;
-
         status = kernel_bpf_object_user_id(object_ids[index], &user_id);
         if (status < 0) return status;
         if (edge_linux_copy_to_user(
@@ -6896,32 +6978,24 @@ static int64_t edge_linux_bpf_program_query(
                     (uint64_t)index * sizeof(user_id),
                 &user_id, sizeof(user_id)) < 0)
             return -EDGE_LINUX_EFAULT;
-        if (attribute.program_attach_flags && edge_linux_copy_to_user(
+        if (attribute.program_attach_flags) {
+            uint32_t program_attach_flags = attach_flags[index] &
+                (KERNEL_BPF_F_ALLOW_OVERRIDE |
+                 KERNEL_BPF_F_ALLOW_MULTI);
+
+            if (edge_linux_copy_to_user(
                 context,
                 attribute.program_attach_flags +
                     (uint64_t)index * sizeof(uint32_t),
-                &attach_flags[index], sizeof(uint32_t)) < 0)
-            return -EDGE_LINUX_EFAULT;
-        if (link_object_ids[index] >= 0) {
-            status = kernel_bpf_object_user_id(
-                link_object_ids[index], &link_user_id);
-            if (status < 0) return status;
+                &program_attach_flags,
+                sizeof(program_attach_flags)) < 0)
+                return -EDGE_LINUX_EFAULT;
         }
-        if (attribute.link_ids && edge_linux_copy_to_user(
-                context,
-                attribute.link_ids +
-                    (uint64_t)index * sizeof(uint32_t),
-                &link_user_id, sizeof(link_user_id)) < 0)
-            return -EDGE_LINUX_EFAULT;
-        if (attribute.link_attach_flags && edge_linux_copy_to_user(
-                context,
-                attribute.link_attach_flags +
-                    (uint64_t)index * sizeof(uint32_t),
-                &link_attach_flags, sizeof(link_attach_flags)) < 0)
-            return -EDGE_LINUX_EFAULT;
     }
     attribute.program_count = count;
-    attribute.attach_flags = count ? attach_flags[0] : 0u;
+    attribute.attach_flags = count ?
+        attach_flags[0] & (KERNEL_BPF_F_ALLOW_OVERRIDE |
+                           KERNEL_BPF_F_ALLOW_MULTI) : 0u;
     if (edge_linux_copy_to_user(
             context, user_attribute, &attribute,
             sizeof(attribute)) < 0)

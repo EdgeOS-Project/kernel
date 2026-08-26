@@ -1519,6 +1519,11 @@ static void test_program(void) {
     int deny_object;
     int replacement_object;
     int link_object;
+    int first_link;
+    int second_link;
+    int third_link;
+    int fourth_link;
+    uint64_t revision;
 
     strcpy(request.name, "allow_dev");
     object = kernel_bpf_program_create(&request, instructions);
@@ -1531,15 +1536,17 @@ static void test_program(void) {
     assert(kernel_bpf_program_run_cgroup_device(
                object, &context, &result) == 0);
     assert(result == 1u);
-    assert(kernel_bpf_cgroup_attach(3u, object, 0u, -1) == 0);
-    assert(kernel_bpf_cgroup_attach(3u, object, 0u, -1) < 0);
+    assert(kernel_bpf_cgroup_attach(
+               3u, object, 0u, -1, -1, 0u) == 0);
+    assert(kernel_bpf_cgroup_attach(
+               3u, object, 0u, -1, -1, 0u) < 0);
     assert(kernel_bpf_cgroup_query(
                3u, objects, flags, 4u, &count, 0) == 0);
     assert(count == 1u && objects[0] == object && flags[0] == 0u);
     result = 0u;
     assert(kernel_bpf_cgroup_device_run(
                3u, &context, &result) == 0 && result == 1u);
-    assert(kernel_bpf_cgroup_detach(3u, object) == 0);
+    assert(kernel_bpf_cgroup_detach(3u, object, 0u) == 0);
 
     request.expected_attach_type = KERNEL_BPF_CGROUP_DEVICE;
     strcpy(request.name, "deny_dev");
@@ -1559,16 +1566,18 @@ static void test_program(void) {
         &request, instructions);
     assert(replacement_object >= 0);
     assert(kernel_bpf_cgroup_attach(
-               3u, object, KERNEL_BPF_F_ALLOW_MULTI, -1) == 0);
+               3u, object, KERNEL_BPF_F_ALLOW_MULTI,
+               -1, -1, 0u) == 0);
     assert(kernel_bpf_cgroup_attach(
-               3u, deny_object, KERNEL_BPF_F_ALLOW_MULTI, -1) == 0);
+               3u, deny_object, KERNEL_BPF_F_ALLOW_MULTI,
+               -1, -1, 0u) == 0);
     result = 1u;
     assert(kernel_bpf_cgroup_device_run(
                3u, &context, &result) == 0 && result == 0u);
     assert(kernel_bpf_cgroup_attach(
                3u, replacement_object,
                KERNEL_BPF_F_ALLOW_MULTI | KERNEL_BPF_F_REPLACE,
-               deny_object) == 0);
+               deny_object, -1, 0u) == 0);
     result = 0u;
     assert(kernel_bpf_cgroup_device_run(
                3u, &context, &result) == 0 && result == 1u);
@@ -1580,12 +1589,15 @@ static void test_program(void) {
     assert(kernel_bpf_cgroup_query(
                3u, objects, flags, 4u, &count, 0) == 0 && count == 0u);
     assert(kernel_bpf_cgroup_attach(
-               4u, object, KERNEL_BPF_F_ALLOW_MULTI, -1) == 0);
+               4u, object, KERNEL_BPF_F_ALLOW_MULTI,
+               -1, -1, 0u) == 0);
     assert(kernel_bpf_cgroup_attach(
-               4u, deny_object, KERNEL_BPF_F_ALLOW_MULTI, -1) == 0);
-    assert(kernel_bpf_cgroup_detach(4u, object) == 0);
+               4u, deny_object, KERNEL_BPF_F_ALLOW_MULTI,
+               -1, -1, 0u) == 0);
+    assert(kernel_bpf_cgroup_detach(4u, object, 0u) == 0);
     assert(kernel_bpf_cgroup_attach(
-               4u, replacement_object, KERNEL_BPF_F_ALLOW_MULTI, -1) == 0);
+               4u, replacement_object, KERNEL_BPF_F_ALLOW_MULTI,
+               -1, -1, 0u) == 0);
     count = 0u;
     assert(kernel_bpf_cgroup_query(
                4u, objects, flags, 4u, &count, 0) == 0);
@@ -1594,7 +1606,7 @@ static void test_program(void) {
     kernel_bpf_cgroup_release(4u);
 
     link_object = kernel_bpf_cgroup_link_create(
-        5u, object, KERNEL_BPF_CGROUP_DEVICE, 0u);
+        5u, object, KERNEL_BPF_CGROUP_DEVICE, 0u, -1, 0u);
     assert(link_object >= 0);
     {
         kernel_bpf_link_info_t link_info;
@@ -1628,13 +1640,148 @@ static void test_program(void) {
                -EDGE_LINUX_ENOENT);
     }
     link_object = kernel_bpf_cgroup_link_create(
-        5u, replacement_object, KERNEL_BPF_CGROUP_DEVICE, 0u);
+        5u, replacement_object, KERNEL_BPF_CGROUP_DEVICE,
+        0u, -1, 0u);
     assert(link_object >= 0);
     kernel_bpf_object_release(link_object);
     count = 1u;
     assert(kernel_bpf_cgroup_query_links(
                5u, objects, flags, links, 4u, &count, 0) == 0 &&
            count == 0u);
+
+    count = 0u;
+    revision = 0u;
+    assert(kernel_bpf_cgroup_query_links(
+               6u, objects, flags, links, 4u, &count,
+               &revision) == 0);
+    assert(count == 0u && revision == 1u);
+    first_link = kernel_bpf_cgroup_link_create(
+        6u, object, KERNEL_BPF_CGROUP_DEVICE, 0u, -1, 0u);
+    assert(first_link >= 0);
+    count = 0u;
+    revision = 0u;
+    assert(kernel_bpf_cgroup_query_links(
+               6u, objects, flags, links, 4u, &count,
+               &revision) == 0);
+    assert(count == 1u && objects[0] == object &&
+           links[0] == first_link && revision == 2u);
+    assert(kernel_bpf_cgroup_link_create(
+               6u, replacement_object, KERNEL_BPF_CGROUP_DEVICE,
+               KERNEL_BPF_F_BEFORE, -1, revision + 1u) ==
+           -EDGE_LINUX_ESTALE);
+    second_link = kernel_bpf_cgroup_link_create(
+        6u, deny_object, KERNEL_BPF_CGROUP_DEVICE,
+        KERNEL_BPF_F_BEFORE, -1, revision);
+    assert(second_link >= 0);
+    count = 0u;
+    assert(kernel_bpf_cgroup_query_links(
+               6u, objects, flags, links, 4u, &count,
+               &revision) == 0);
+    assert(count == 2u && objects[0] == deny_object &&
+           objects[1] == object && links[0] == second_link &&
+           links[1] == first_link && revision == 3u);
+    third_link = kernel_bpf_cgroup_link_create(
+        6u, replacement_object, KERNEL_BPF_CGROUP_DEVICE,
+        KERNEL_BPF_F_AFTER | KERNEL_BPF_F_LINK,
+        first_link, revision);
+    assert(third_link >= 0);
+    count = 0u;
+    assert(kernel_bpf_cgroup_query_links(
+               6u, objects, flags, links, 4u, &count,
+               &revision) == 0);
+    assert(count == 3u && objects[0] == deny_object &&
+           objects[1] == object && objects[2] == replacement_object &&
+           links[0] == second_link && links[1] == first_link &&
+           links[2] == third_link && revision == 4u);
+    fourth_link = kernel_bpf_cgroup_link_create(
+        6u, object, KERNEL_BPF_CGROUP_DEVICE,
+        KERNEL_BPF_F_BEFORE | KERNEL_BPF_F_LINK,
+        first_link, revision);
+    assert(fourth_link >= 0);
+    count = 0u;
+    assert(kernel_bpf_cgroup_query_links(
+               6u, objects, flags, links, 4u, &count,
+               &revision) == 0);
+    assert(count == 4u && objects[0] == deny_object &&
+           objects[1] == object && objects[2] == object &&
+           objects[3] == replacement_object &&
+           links[0] == second_link && links[1] == fourth_link &&
+           links[2] == first_link && links[3] == third_link &&
+           revision == 5u);
+    assert(kernel_bpf_cgroup_link_create(
+               6u, replacement_object, KERNEL_BPF_CGROUP_DEVICE,
+               KERNEL_BPF_F_BEFORE | KERNEL_BPF_F_PREORDER |
+                   KERNEL_BPF_F_LINK,
+               first_link, revision) == -EDGE_LINUX_EINVAL);
+    kernel_bpf_object_release(fourth_link);
+    kernel_bpf_object_release(third_link);
+    kernel_bpf_object_release(second_link);
+    kernel_bpf_object_release(first_link);
+    count = 1u;
+    assert(kernel_bpf_cgroup_query_links(
+               6u, objects, flags, links, 4u, &count, 0) == 0 &&
+           count == 0u);
+
+    link_object = kernel_bpf_cgroup_link_create(
+        10u, object, KERNEL_BPF_CGROUP_DEVICE,
+        KERNEL_BPF_F_BEFORE | KERNEL_BPF_F_AFTER,
+        -1, 1u);
+    assert(link_object >= 0);
+    kernel_bpf_object_release(link_object);
+
+    count = 0u;
+    revision = 0u;
+    assert(kernel_bpf_cgroup_query(
+               9u, objects, flags, 4u, &count, &revision) == 0);
+    assert(count == 0u && revision == 1u);
+    assert(kernel_bpf_cgroup_attach(
+               9u, object, KERNEL_BPF_F_ALLOW_MULTI,
+               -1, -1, 0u) == 0);
+    count = 0u;
+    revision = 0u;
+    assert(kernel_bpf_cgroup_query(
+               9u, objects, flags, 4u, &count, &revision) == 0);
+    assert(count == 1u && objects[0] == object && revision == 2u);
+    assert(kernel_bpf_cgroup_attach(
+               9u, deny_object,
+               KERNEL_BPF_F_ALLOW_MULTI | KERNEL_BPF_F_BEFORE,
+               -1, -1, revision + 1u) == -EDGE_LINUX_ESTALE);
+    assert(kernel_bpf_cgroup_attach(
+               9u, deny_object,
+               KERNEL_BPF_F_ALLOW_MULTI | KERNEL_BPF_F_BEFORE,
+               -1, -1, revision) == 0);
+    assert(kernel_bpf_cgroup_query(
+               9u, objects, flags, 4u, &count, &revision) == 0);
+    assert(count == 2u && objects[0] == deny_object &&
+           objects[1] == object && revision == 3u);
+    assert(kernel_bpf_cgroup_attach(
+               9u, replacement_object,
+               KERNEL_BPF_F_ALLOW_MULTI | KERNEL_BPF_F_BEFORE |
+                   KERNEL_BPF_F_PREORDER,
+               -1, object, revision) == -EDGE_LINUX_EINVAL);
+    assert(kernel_bpf_cgroup_attach(
+               9u, replacement_object,
+               KERNEL_BPF_F_ALLOW_MULTI | KERNEL_BPF_F_AFTER,
+               -1, object, revision) == 0);
+    assert(kernel_bpf_cgroup_query(
+               9u, objects, flags, 4u, &count, &revision) == 0);
+    assert(count == 3u && objects[0] == deny_object &&
+           objects[1] == object &&
+           objects[2] == replacement_object && revision == 4u);
+    assert(kernel_bpf_cgroup_detach(
+               9u, object, revision + 1u) == -EDGE_LINUX_ESTALE);
+    assert(kernel_bpf_cgroup_detach(9u, object, revision) == 0);
+    assert(kernel_bpf_cgroup_query(
+               9u, objects, flags, 4u, &count, &revision) == 0);
+    assert(count == 2u && objects[0] == deny_object &&
+           objects[1] == replacement_object && revision == 5u);
+    kernel_bpf_cgroup_release(9u);
+    assert(kernel_bpf_cgroup_attach(
+               11u, object,
+               KERNEL_BPF_F_ALLOW_MULTI | KERNEL_BPF_F_BEFORE |
+                   KERNEL_BPF_F_AFTER,
+               -1, -1, 1u) == 0);
+    kernel_bpf_cgroup_release(11u);
     kernel_bpf_object_release(deny_object);
     kernel_bpf_object_release(replacement_object);
     kernel_bpf_object_release(object);
@@ -2599,7 +2746,8 @@ static void test_legacy_cgroup_storage(void) {
     program = kernel_bpf_program_create(
         &program_request, instructions);
     assert(program >= 0);
-    assert(kernel_bpf_cgroup_attach(7u, program, 0u, -1) == 0);
+    assert(kernel_bpf_cgroup_attach(
+               7u, program, 0u, -1, -1, 0u) == 0);
     assert(kernel_bpf_map_next_key(map, 0, &next_key) == 0);
     assert(!memcmp(&next_key, &key, sizeof(key)));
     assert(kernel_bpf_cgroup_device_run(
@@ -2610,7 +2758,7 @@ static void test_legacy_cgroup_storage(void) {
                map, &key, &next_value, KERNEL_BPF_EXIST) == 0);
     assert(kernel_bpf_map_lookup(map, &key, &value) == 0 &&
            value == next_value);
-    assert(kernel_bpf_cgroup_detach(7u, program) == 0);
+    assert(kernel_bpf_cgroup_detach(7u, program, 0u) == 0);
     assert(kernel_bpf_map_lookup(map, &key, &value) == 0 &&
            value == next_value);
     kernel_bpf_cgroup_release(7u);
@@ -2625,7 +2773,7 @@ static void test_legacy_cgroup_storage(void) {
     assert(percpu_map >= 0 && simple_program >= 0);
     assert(kernel_bpf_program_bind_map(simple_program, percpu_map) == 0);
     assert(kernel_bpf_cgroup_attach(
-               8u, simple_program, 0u, -1) == 0);
+               8u, simple_program, 0u, -1, -1, 0u) == 0);
     per_cpu_values[0] = 9u;
     assert(kernel_bpf_map_update(
                percpu_map, &short_key, per_cpu_values,
@@ -2633,7 +2781,7 @@ static void test_legacy_cgroup_storage(void) {
     assert(kernel_bpf_map_lookup(
                percpu_map, &short_key, per_cpu_output) == 0);
     assert(per_cpu_output[0] == 9u);
-    assert(kernel_bpf_cgroup_detach(8u, simple_program) == 0);
+    assert(kernel_bpf_cgroup_detach(8u, simple_program, 0u) == 0);
 
     kernel_bpf_object_release(simple_program);
     kernel_bpf_object_release(percpu_map);

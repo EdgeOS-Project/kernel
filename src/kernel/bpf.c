@@ -5856,6 +5856,8 @@ static uint64_t *bpf_cgroup_revision_locked(uint32_t cgroup_id) {
     if (cgroup_id >= sizeof(g_bpf_cgroup_revisions) /
                          sizeof(g_bpf_cgroup_revisions[0]))
         return 0;
+    if (!g_bpf_cgroup_revisions[cgroup_id])
+        g_bpf_cgroup_revisions[cgroup_id] = 1u;
     return &g_bpf_cgroup_revisions[cgroup_id];
 }
 
@@ -5869,23 +5871,100 @@ static int bpf_cgroup_program_valid_locked(
             object->value.program.expected_attach_type == attach_type);
 }
 
+static uint64_t bpf_attachment_next_sequence_locked(void) {
+    ++g_bpf_attachment_sequence;
+    if (!g_bpf_attachment_sequence) ++g_bpf_attachment_sequence;
+    return g_bpf_attachment_sequence;
+}
+
+static void bpf_cgroup_resequence_locked(
+        uint32_t cgroup_id, kernel_bpf_attachment_t *inserted,
+        kernel_bpf_attachment_t *anchor, int before) {
+    uint64_t original_max = 0u;
+    uint64_t previous = 0u;
+    int inserted_positioned = 0;
+
+    for (uint32_t index = 0;
+         index < EDGE_RUNTIME_MAX_BPF_ATTACHMENTS; ++index) {
+        const kernel_bpf_attachment_t *attachment =
+            &g_bpf_attachments[index];
+
+        if (!attachment->used || attachment == inserted ||
+            attachment->cgroup_id != cgroup_id)
+            continue;
+        if (attachment->sequence > original_max)
+            original_max = attachment->sequence;
+    }
+    if (!anchor && before) {
+        inserted->sequence = bpf_attachment_next_sequence_locked();
+        inserted_positioned = 1;
+    }
+    for (;;) {
+        kernel_bpf_attachment_t *next = 0;
+        uint64_t next_original;
+
+        for (uint32_t index = 0;
+             index < EDGE_RUNTIME_MAX_BPF_ATTACHMENTS; ++index) {
+            kernel_bpf_attachment_t *candidate =
+                &g_bpf_attachments[index];
+
+            if (!candidate->used || candidate == inserted ||
+                candidate->cgroup_id != cgroup_id ||
+                candidate->sequence <= previous ||
+                candidate->sequence > original_max)
+                continue;
+            if (!next || candidate->sequence < next->sequence)
+                next = candidate;
+        }
+        if (!next) break;
+        next_original = next->sequence;
+        if (next == anchor && before) {
+            inserted->sequence = bpf_attachment_next_sequence_locked();
+            inserted_positioned = 1;
+        }
+        next->sequence = bpf_attachment_next_sequence_locked();
+        if (next == anchor && !before) {
+            inserted->sequence = bpf_attachment_next_sequence_locked();
+            inserted_positioned = 1;
+        }
+        previous = next_original;
+    }
+    if (!inserted_positioned)
+        inserted->sequence = bpf_attachment_next_sequence_locked();
+}
+
 int kernel_bpf_cgroup_link_create(uint32_t cgroup_id, int object_id,
-                                  uint32_t attach_type, uint32_t flags) {
+                                  uint32_t attach_type, uint32_t flags,
+                                  int relative_object_id,
+                                  uint64_t expected_revision) {
     kernel_bpf_attachment_t *free_attachment = 0;
+    kernel_bpf_attachment_t *anchor = 0;
     kernel_bpf_object_t *program;
     kernel_bpf_object_t *link;
     uint64_t *revision;
     int link_object_id;
     int result = 0;
+    int before = (flags & KERNEL_BPF_F_BEFORE) != 0;
+    int after = (flags & KERNEL_BPF_F_AFTER) != 0;
+    int anchor_preorder_mismatch = 0;
+    int has_attachments = 0;
 
-    /* Position-relative cgroup links are added with their ordering backend. */
-    if (flags) return -EDGE_LINUX_EINVAL;
+    if ((flags & ~(KERNEL_BPF_F_BEFORE | KERNEL_BPF_F_AFTER |
+                   KERNEL_BPF_F_PREORDER | KERNEL_BPF_F_LINK)) ||
+        (!!(flags & KERNEL_BPF_F_LINK) !=
+         (relative_object_id >= 0)) ||
+        (relative_object_id >= 0 && before == after))
+        return -EDGE_LINUX_EINVAL;
     bpf_lock();
     revision = bpf_cgroup_revision_locked(cgroup_id);
     program = bpf_object_locked(object_id);
     if (!revision ||
         !bpf_cgroup_program_valid_locked(program, attach_type)) {
         result = program ? -EDGE_LINUX_EINVAL : -EDGE_LINUX_EBADF;
+        goto out;
+    }
+    if (expected_revision && expected_revision != *revision) {
+        result = -EDGE_LINUX_ESTALE;
         goto out;
     }
     for (uint32_t index = 0;
@@ -5901,6 +5980,32 @@ int kernel_bpf_cgroup_link_create(uint32_t cgroup_id, int object_id,
             result = -EDGE_LINUX_EINVAL;
             goto out;
         }
+        if (attachment->cgroup_id == cgroup_id &&
+            attachment->attach_type == attach_type)
+            has_attachments = 1;
+        if (attachment->cgroup_id == cgroup_id &&
+            attachment->attach_type == attach_type &&
+            relative_object_id >= 0 &&
+            (((flags & KERNEL_BPF_F_LINK) &&
+              attachment->link_object_id == relative_object_id) ||
+             (!(flags & KERNEL_BPF_F_LINK) &&
+              attachment->object_id == relative_object_id)) &&
+            !anchor) {
+            if (!!(attachment->flags & KERNEL_BPF_F_PREORDER) ==
+                !!(flags & KERNEL_BPF_F_PREORDER))
+                anchor = attachment;
+            else
+                anchor_preorder_mismatch = 1;
+        }
+    }
+    if (relative_object_id >= 0 && !anchor) {
+        result = anchor_preorder_mismatch ?
+            -EDGE_LINUX_EINVAL : -EDGE_LINUX_ENOENT;
+        goto out;
+    }
+    if (relative_object_id < 0 && has_attachments && before && after) {
+        result = -EDGE_LINUX_EINVAL;
+        goto out;
     }
     if (!free_attachment) {
         result = -EDGE_LINUX_ENOSPC;
@@ -5929,11 +6034,11 @@ int kernel_bpf_cgroup_link_create(uint32_t cgroup_id, int object_id,
     free_attachment->cgroup_id = cgroup_id;
     free_attachment->object_id = object_id;
     free_attachment->link_object_id = link_object_id;
-    free_attachment->flags = KERNEL_BPF_F_ALLOW_MULTI;
+    free_attachment->flags = KERNEL_BPF_F_ALLOW_MULTI |
+        (flags & KERNEL_BPF_F_PREORDER);
     free_attachment->attach_type = attach_type;
-    ++g_bpf_attachment_sequence;
-    if (!g_bpf_attachment_sequence) ++g_bpf_attachment_sequence;
-    free_attachment->sequence = g_bpf_attachment_sequence;
+    bpf_cgroup_resequence_locked(
+        cgroup_id, free_attachment, anchor, before);
     ++*revision;
     result = link_object_id;
 out:
@@ -6045,23 +6150,35 @@ int kernel_bpf_link_detach(int link_object_id) {
 }
 
 int kernel_bpf_cgroup_attach(uint32_t cgroup_id, int object_id,
-                             uint32_t flags, int replace_object_id) {
+                             uint32_t flags, int replace_object_id,
+                             int relative_object_id,
+                             uint64_t expected_revision) {
     kernel_bpf_attachment_t *free_attachment = 0;
     kernel_bpf_attachment_t *replacement = 0;
+    kernel_bpf_attachment_t *anchor = 0;
     kernel_bpf_object_t *object;
     uint64_t *revision;
     int released_object = -1;
     int status = 0;
+    int before = (flags & KERNEL_BPF_F_BEFORE) != 0;
+    int after = (flags & KERNEL_BPF_F_AFTER) != 0;
+    int anchor_preorder_mismatch = 0;
+    int has_attachments = 0;
 
     if ((flags & ~(KERNEL_BPF_F_ALLOW_OVERRIDE |
                    KERNEL_BPF_F_ALLOW_MULTI |
-                   KERNEL_BPF_F_REPLACE)) ||
+                   KERNEL_BPF_F_REPLACE |
+                   KERNEL_BPF_F_BEFORE |
+                   KERNEL_BPF_F_AFTER |
+                   KERNEL_BPF_F_PREORDER)) ||
         ((flags & KERNEL_BPF_F_ALLOW_OVERRIDE) &&
          (flags & KERNEL_BPF_F_ALLOW_MULTI)) ||
         ((flags & KERNEL_BPF_F_REPLACE) &&
          !(flags & KERNEL_BPF_F_ALLOW_MULTI)) ||
+        ((flags & KERNEL_BPF_F_REPLACE) && (before || after)) ||
         ((flags & KERNEL_BPF_F_REPLACE) != 0) !=
-            (replace_object_id >= 0))
+            (replace_object_id >= 0) ||
+        (relative_object_id >= 0 && before == after))
         return -EDGE_LINUX_EINVAL;
 
     bpf_lock();
@@ -6076,6 +6193,10 @@ int kernel_bpf_cgroup_attach(uint32_t cgroup_id, int object_id,
         status = object ? -EDGE_LINUX_EINVAL : -EDGE_LINUX_EBADF;
         goto out;
     }
+    if (expected_revision && expected_revision != *revision) {
+        status = -EDGE_LINUX_ESTALE;
+        goto out;
+    }
     for (uint32_t index = 0;
          index < EDGE_RUNTIME_MAX_BPF_ATTACHMENTS; ++index) {
         kernel_bpf_attachment_t *attachment = &g_bpf_attachments[index];
@@ -6084,9 +6205,19 @@ int kernel_bpf_cgroup_attach(uint32_t cgroup_id, int object_id,
             continue;
         }
         if (attachment->cgroup_id != cgroup_id) continue;
+        if (attachment->attach_type == KERNEL_BPF_CGROUP_DEVICE)
+            has_attachments = 1;
+        if (relative_object_id >= 0 && !anchor &&
+            attachment->object_id == relative_object_id) {
+            if (!!(attachment->flags & KERNEL_BPF_F_PREORDER) ==
+                !!(flags & KERNEL_BPF_F_PREORDER))
+                anchor = attachment;
+            else
+                anchor_preorder_mismatch = 1;
+        }
         if (attachment->object_id == object_id &&
             !(flags & KERNEL_BPF_F_REPLACE)) {
-            status = -EDGE_LINUX_EEXIST;
+            status = -EDGE_LINUX_EINVAL;
             goto out;
         }
         if (flags & KERNEL_BPF_F_REPLACE) {
@@ -6099,6 +6230,15 @@ int kernel_bpf_cgroup_attach(uint32_t cgroup_id, int object_id,
             status = -EDGE_LINUX_EINVAL;
             goto out;
         }
+    }
+    if (relative_object_id >= 0 && !anchor) {
+        status = anchor_preorder_mismatch ?
+            -EDGE_LINUX_EINVAL : -EDGE_LINUX_ENOENT;
+        goto out;
+    }
+    if (relative_object_id < 0 && has_attachments && before && after) {
+        status = -EDGE_LINUX_EINVAL;
+        goto out;
     }
     if (flags & KERNEL_BPF_F_REPLACE) {
         kernel_bpf_object_t *replaced =
@@ -6129,7 +6269,10 @@ int kernel_bpf_cgroup_attach(uint32_t cgroup_id, int object_id,
         ++object->references;
         released_object = replacement->object_id;
         replacement->object_id = object_id;
-        replacement->flags = flags & ~KERNEL_BPF_F_REPLACE;
+        replacement->flags = flags &
+            (KERNEL_BPF_F_ALLOW_OVERRIDE |
+             KERNEL_BPF_F_ALLOW_MULTI |
+             KERNEL_BPF_F_PREORDER);
     } else {
         if (!free_attachment) {
             status = -EDGE_LINUX_ENOSPC;
@@ -6149,12 +6292,13 @@ int kernel_bpf_cgroup_attach(uint32_t cgroup_id, int object_id,
         free_attachment->cgroup_id = cgroup_id;
         free_attachment->object_id = object_id;
         free_attachment->link_object_id = -1;
-        free_attachment->flags =
-            flags & ~KERNEL_BPF_F_REPLACE;
+        free_attachment->flags = flags &
+            (KERNEL_BPF_F_ALLOW_OVERRIDE |
+             KERNEL_BPF_F_ALLOW_MULTI |
+             KERNEL_BPF_F_PREORDER);
         free_attachment->attach_type = KERNEL_BPF_CGROUP_DEVICE;
-        ++g_bpf_attachment_sequence;
-        if (!g_bpf_attachment_sequence) ++g_bpf_attachment_sequence;
-        free_attachment->sequence = g_bpf_attachment_sequence;
+        bpf_cgroup_resequence_locked(
+            cgroup_id, free_attachment, anchor, before);
     }
     ++*revision;
 out:
@@ -6164,7 +6308,8 @@ out:
     return status;
 }
 
-int kernel_bpf_cgroup_detach(uint32_t cgroup_id, int object_id) {
+int kernel_bpf_cgroup_detach(uint32_t cgroup_id, int object_id,
+                             uint64_t expected_revision) {
     uint64_t *revision;
     int released[EDGE_RUNTIME_MAX_BPF_ATTACHMENTS];
     uint32_t released_count = 0u;
@@ -6174,6 +6319,10 @@ int kernel_bpf_cgroup_detach(uint32_t cgroup_id, int object_id) {
     if (!revision) {
         bpf_unlock();
         return -EDGE_LINUX_EINVAL;
+    }
+    if (expected_revision && expected_revision != *revision) {
+        bpf_unlock();
+        return -EDGE_LINUX_ESTALE;
     }
     for (uint32_t index = 0;
          index < EDGE_RUNTIME_MAX_BPF_ATTACHMENTS; ++index) {
@@ -6291,7 +6440,7 @@ out:
 }
 
 void kernel_bpf_cgroup_release(uint32_t cgroup_id) {
-    (void)kernel_bpf_cgroup_detach(cgroup_id, -1);
+    (void)kernel_bpf_cgroup_detach(cgroup_id, -1, 0u);
     bpf_lock();
     bpf_legacy_cgroup_storage_release_locked(cgroup_id);
     bpf_unlock();

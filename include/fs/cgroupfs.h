@@ -25,10 +25,13 @@ void cgroupfs_reference_put(uint64_t reference);
 int cgroupfs_bpf_program_attach(vfs_superblock_t *sb,
                                 const vfs_inode_t *inode,
                                 int object_id, uint32_t flags,
-                                int replace_object_id);
+                                int replace_object_id,
+                                int relative_object_id,
+                                uint64_t expected_revision);
 int cgroupfs_bpf_program_detach(vfs_superblock_t *sb,
                                 const vfs_inode_t *inode,
-                                int object_id);
+                                int object_id,
+                                uint64_t expected_revision);
 int cgroupfs_bpf_program_query(vfs_superblock_t *sb,
                                const vfs_inode_t *inode,
                                int effective, int *object_ids,
@@ -38,7 +41,8 @@ int cgroupfs_bpf_program_query(vfs_superblock_t *sb,
 int cgroupfs_bpf_link_create(vfs_superblock_t *sb,
                              const vfs_inode_t *inode,
                              int object_id, uint32_t attach_type,
-                             uint32_t flags);
+                             uint32_t flags, int relative_object_id,
+                             uint64_t expected_revision);
 int cgroupfs_bpf_program_query_links(vfs_superblock_t *sb,
                                      const vfs_inode_t *inode,
                                      int effective, int *object_ids,

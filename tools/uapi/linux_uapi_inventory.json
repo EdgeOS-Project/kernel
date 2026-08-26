@@ -279,6 +279,7 @@
         "BTF object loading, information queries, ID enumeration and descriptor reopening",
         "BTF-backed map creation with retained BTF object lifetime",
         "cgroup link objects with descriptor lifetime, ID enumeration, information queries, program replacement, explicit detach and close-time detach",
+        "cgroup link and legacy program multi-position attachment with link or program FD and ID anchors, prepend and append placement, preorder matching and expected-revision guards",
         "kernel and user ring-buffer maps with mmap, poll and cgroup-device output execution",
         "cgroup array maps with retained cgroup lifetime, replacement and deletion semantics",
         "BPF filesystem mounting, object pinning, access-restricted reopening and unlink lifetime",
@@ -306,7 +307,7 @@
         "resizable-hash concurrent dynamic resizing and full Linux key and value size range",
         "remaining specialized map-family concurrency semantics, plus instruction-array verifier and jump-table integration",
         "additional attachment families and program types",
-        "complete allow-override and multi-position attachment semantics",
+        "complete hierarchical allow-override attachment semantics",
         "complete BTF type-graph validation and program integration"
       ],
       "runtime_tests": [

@@ -3993,7 +3993,9 @@ static int cgroupfs_bpf_target_node_locked(
 int cgroupfs_bpf_program_attach(vfs_superblock_t *sb,
                                 const vfs_inode_t *inode,
                                 int object_id, uint32_t flags,
-                                int replace_object_id) {
+                                int replace_object_id,
+                                int relative_object_id,
+                                uint64_t expected_revision) {
     uint32_t node;
     int status;
 
@@ -4002,14 +4004,16 @@ int cgroupfs_bpf_program_attach(vfs_superblock_t *sb,
     status = cgroupfs_bpf_target_node_locked(sb, inode, &node);
     if (status == 0)
         status = kernel_bpf_cgroup_attach(
-            node, object_id, flags, replace_object_id);
+            node, object_id, flags, replace_object_id,
+            relative_object_id, expected_revision);
     cgroupfs_unlock(&g_cgroupfs_lock);
     return status;
 }
 
 int cgroupfs_bpf_program_detach(vfs_superblock_t *sb,
                                 const vfs_inode_t *inode,
-                                int object_id) {
+                                int object_id,
+                                uint64_t expected_revision) {
     uint32_t node;
     int status;
 
@@ -4017,7 +4021,8 @@ int cgroupfs_bpf_program_detach(vfs_superblock_t *sb,
     cgroupfs_lock(&g_cgroupfs_lock);
     status = cgroupfs_bpf_target_node_locked(sb, inode, &node);
     if (status == 0)
-        status = kernel_bpf_cgroup_detach(node, object_id);
+        status = kernel_bpf_cgroup_detach(
+            node, object_id, expected_revision);
     cgroupfs_unlock(&g_cgroupfs_lock);
     return status;
 }
@@ -4025,7 +4030,8 @@ int cgroupfs_bpf_program_detach(vfs_superblock_t *sb,
 int cgroupfs_bpf_link_create(vfs_superblock_t *sb,
                              const vfs_inode_t *inode,
                              int object_id, uint32_t attach_type,
-                             uint32_t flags) {
+                             uint32_t flags, int relative_object_id,
+                             uint64_t expected_revision) {
     uint32_t node;
     int status;
 
@@ -4034,7 +4040,8 @@ int cgroupfs_bpf_link_create(vfs_superblock_t *sb,
     status = cgroupfs_bpf_target_node_locked(sb, inode, &node);
     if (status == 0)
         status = kernel_bpf_cgroup_link_create(
-            node, object_id, attach_type, flags);
+            node, object_id, attach_type, flags,
+            relative_object_id, expected_revision);
     cgroupfs_unlock(&g_cgroupfs_lock);
     return status;
 }

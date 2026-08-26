@@ -80,6 +80,11 @@
 #define KERNEL_BPF_F_ALLOW_OVERRIDE (1u << 0)
 #define KERNEL_BPF_F_ALLOW_MULTI    (1u << 1)
 #define KERNEL_BPF_F_REPLACE        (1u << 2)
+#define KERNEL_BPF_F_BEFORE         (1u << 3)
+#define KERNEL_BPF_F_AFTER          (1u << 4)
+#define KERNEL_BPF_F_ID             (1u << 5)
+#define KERNEL_BPF_F_PREORDER       (1u << 6)
+#define KERNEL_BPF_F_LINK           (1u << 13)
 
 #define KERNEL_BPF_DEVCG_ACC_MKNOD (1u << 0)
 #define KERNEL_BPF_DEVCG_ACC_READ  (1u << 1)
@@ -312,8 +317,11 @@ int kernel_bpf_program_run_cgroup_device(
     int object_id, const kernel_bpf_cgroup_device_context_t *context,
     uint32_t *result);
 int kernel_bpf_cgroup_attach(uint32_t cgroup_id, int object_id,
-                             uint32_t flags, int replace_object_id);
-int kernel_bpf_cgroup_detach(uint32_t cgroup_id, int object_id);
+                             uint32_t flags, int replace_object_id,
+                             int relative_object_id,
+                             uint64_t expected_revision);
+int kernel_bpf_cgroup_detach(uint32_t cgroup_id, int object_id,
+                             uint64_t expected_revision);
 int kernel_bpf_cgroup_query(uint32_t cgroup_id, int *object_ids,
                             uint32_t *attach_flags, uint32_t capacity,
                             uint32_t *count, uint64_t *revision);
@@ -323,7 +331,9 @@ int kernel_bpf_cgroup_query_links(uint32_t cgroup_id, int *object_ids,
                                   uint32_t capacity, uint32_t *count,
                                   uint64_t *revision);
 int kernel_bpf_cgroup_link_create(uint32_t cgroup_id, int object_id,
-                                  uint32_t attach_type, uint32_t flags);
+                                  uint32_t attach_type, uint32_t flags,
+                                  int relative_object_id,
+                                  uint64_t expected_revision);
 int kernel_bpf_link_update(int link_object_id, int new_object_id,
                            uint32_t flags, int old_object_id);
 int kernel_bpf_link_detach(int link_object_id);
