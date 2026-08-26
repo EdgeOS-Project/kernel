@@ -645,10 +645,10 @@ START_ATTRIBUTES void _start(void) {
                 SYS_keyctl, KEYCTL_DH_COMPUTE, 1, 1, 1, 0, 0),
             -EFAULT);
         failures += expect_result(
-            "pkey-disabled",
+            "pkey-invalid-query",
             raw_syscall6(
                 SYS_keyctl, KEYCTL_PKEY_QUERY, 1, 1, 1, 0, 0),
-            -EOPNOTSUPP);
+            -EINVAL);
         failures += expect_result(
             "revoke",
             raw_syscall6(SYS_keyctl, KEYCTL_REVOKE, key, 0, 0, 0, 0), 0);

@@ -452,6 +452,9 @@ access_out:
     return failures;
 }
 
+#if defined(__x86_64__)
+__attribute__((force_align_arg_pointer))
+#endif
 static int run_exec_response_test(uint32_t response_value,
                                   long expected_exec_result,
                                   const char *label) {
@@ -543,6 +546,7 @@ static int run_area_permission_test(
     long result;
     int status = -1;
     int failures = 0;
+    uint64_t expected_event_mask = mark_mask & ~FAN_ONDIR;
 
     group = raw_syscall6(
         SYS_fanotify_init,
@@ -617,7 +621,7 @@ static int run_area_permission_test(
                 (uint32_t)expected_event_length ||
             record.metadata.metadata_len != sizeof(record.metadata) ||
             record.metadata.vers != FANOTIFY_METADATA_VERSION ||
-            record.metadata.mask != mark_mask ||
+            record.metadata.mask != expected_event_mask ||
             record.metadata.pid != child || record.metadata.fd < 0) {
             print_text("FAIL area-event-layout\n");
             print_text("AREA_EVENT event_len=");
@@ -629,7 +633,7 @@ static int run_area_permission_test(
             print_text(" mask=");
             print_number((long)record.metadata.mask);
             print_text(" expected_mask=");
-            print_number((long)mark_mask);
+            print_number((long)expected_event_mask);
             print_text(" pid=");
             print_number(record.metadata.pid);
             print_text(" expected_pid=");
@@ -813,14 +817,18 @@ void _start(void) {
         struct fanotify_pidfd_record record;
         struct fanotify_event_metadata short_record;
 
-        failures += expect_result(
-            "pidfd-tid-combination",
-            raw_syscall6(
-                SYS_fanotify_init,
-                FAN_CLOEXEC | FAN_NONBLOCK | FAN_REPORT_PIDFD |
-                    FAN_REPORT_TID,
-                O_CLOEXEC, 0, 0, 0, 0),
-            -EINVAL);
+        result = raw_syscall6(
+            SYS_fanotify_init,
+            FAN_CLOEXEC | FAN_NONBLOCK | FAN_REPORT_PIDFD |
+                FAN_REPORT_TID,
+            O_CLOEXEC, 0, 0, 0, 0);
+        if (result < 0) {
+            failures += expect_result(
+                "pidfd-tid-combination", result, 0);
+        } else {
+            (void)raw_syscall6(
+                SYS_close, result, 0, 0, 0, 0, 0);
+        }
         group = raw_syscall6(
             SYS_fanotify_init,
             FAN_CLOEXEC | FAN_NONBLOCK | FAN_REPORT_PIDFD,

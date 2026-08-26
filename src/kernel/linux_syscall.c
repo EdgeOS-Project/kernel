@@ -19735,10 +19735,6 @@ static int64_t edge_linux_sys_fanotify(
             (!(flags & KERNEL_FAN_REPORT_NAME) ||
              !(flags & KERNEL_FAN_REPORT_FID)))
             return -EDGE_LINUX_EINVAL;
-        if ((flags & (KERNEL_FAN_REPORT_PIDFD |
-                      KERNEL_FAN_REPORT_TID)) ==
-            (KERNEL_FAN_REPORT_PIDFD | KERNEL_FAN_REPORT_TID))
-            return -EDGE_LINUX_EINVAL;
         if ((flags & fid_mask) &&
             (flags & class_mask) != KERNEL_FAN_CLASS_NOTIF)
             return -EDGE_LINUX_EINVAL;

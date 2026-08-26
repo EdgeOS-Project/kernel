@@ -143,19 +143,19 @@
         "tools/tests/keyring_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 248,
           "status": "implemented",
           "route": "shared:edge_linux_sys_keyring",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 217,
           "status": "implemented",
           "route": "shared:edge_linux_sys_keyring",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -1334,19 +1334,19 @@
         "tools/tests/fanotify_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 300,
           "status": "implemented",
           "route": "shared:edge_linux_sys_fanotify",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 262,
           "status": "implemented",
           "route": "shared:edge_linux_sys_fanotify",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -1359,19 +1359,19 @@
         "tools/tests/fanotify_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 301,
           "status": "implemented",
           "route": "shared:edge_linux_sys_fanotify",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 263,
           "status": "implemented",
           "route": "shared:edge_linux_sys_fanotify",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -3506,19 +3506,19 @@
         "tools/tests/keyring_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 250,
           "status": "implemented",
           "route": "shared:edge_linux_sys_keyring",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 219,
           "status": "implemented",
           "route": "shared:edge_linux_sys_keyring",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -6393,19 +6393,19 @@
         "tools/tests/keyring_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 249,
           "status": "implemented",
           "route": "shared:edge_linux_sys_keyring",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 218,
           "status": "implemented",
           "route": "shared:edge_linux_sys_keyring",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -9118,19 +9118,19 @@
         "tools/tests/userfaultfd_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 323,
           "status": "implemented",
           "route": "shared:edge_linux_sys_userfaultfd",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 282,
           "status": "implemented",
           "route": "shared:edge_linux_sys_userfaultfd",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },

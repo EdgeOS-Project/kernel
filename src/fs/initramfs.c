@@ -15,6 +15,7 @@
 #ifdef CONFIG_INITRAMFS_GZIP
 #include "lib/gzip.h"
 #endif
+#include "mm/arch_vm.h"
 #include "stdio.h"
 #include "string.h"
 #include "vfs/vfs.h"
@@ -49,6 +50,16 @@ static char g_initramfs_parent_path[VFS_PATH_MAX];
 static char g_initramfs_hardlink_source[VFS_PATH_MAX];
 static char g_initramfs_hardlink_path[VFS_PATH_MAX];
 static volatile uint32_t g_initramfs_unpack_lock;
+
+#define INITRAMFS_PAGE_SIZE 4096u
+
+static void initramfs_release_pages(void *memory, uint32_t pages) {
+    uint8_t *base = (uint8_t *)memory;
+
+    if (!base) return;
+    for (uint32_t page = 0; page < pages; ++page)
+        arch_vm_free_page(base + (uint64_t)page * INITRAMFS_PAGE_SIZE);
+}
 
 static uint32_t align4(uint32_t v) {
     return (v + 3u) & ~3u;
@@ -633,6 +644,8 @@ int initramfs_mount_root(void) {
 
 int initramfs_unpack_memory(const void *data, uint64_t size) {
     initramfs_blob_t blob;
+    void *archive_copy = 0;
+    uint32_t archive_copy_pages = 0;
     void *decoded = 0;
     uint64_t decoded_size = 0;
     int rc;
@@ -642,8 +655,26 @@ int initramfs_unpack_memory(const void *data, uint64_t size) {
         __asm__ __volatile__("" ::: "memory");
     blob.data = (const uint8_t *)data;
     blob.size = (uint32_t)size;
-    if (!initramfs_find_cpio_offset(
+    if (initramfs_find_cpio_offset(
             blob.data, blob.size, &(uint32_t){ 0 })) {
+        /*
+         * A boot loader may place an already decompressed CPIO archive in
+         * low bootstrap memory that the architecture reuses while tmpfs is
+         * being populated.  Linux keeps the initrd reserved until unpacking
+         * finishes; establish the same lifetime here by copying the complete
+         * archive into allocator-owned pages before creating any inode.
+         */
+        archive_copy_pages = (uint32_t)(
+            ((uint64_t)blob.size + INITRAMFS_PAGE_SIZE - 1u) /
+            INITRAMFS_PAGE_SIZE);
+        archive_copy = arch_vm_alloc_pages(archive_copy_pages);
+        if (!archive_copy) {
+            __sync_lock_release(&g_initramfs_unpack_lock);
+            return -1;
+        }
+        memcpy(archive_copy, blob.data, blob.size);
+        blob.data = (const uint8_t *)archive_copy;
+    } else {
 #ifdef CONFIG_INITRAMFS_GZIP
         if (edge_gzip_decompress(
                 data, size, CONFIG_INITRAMFS_MAX_BYTES,
@@ -672,12 +703,14 @@ int initramfs_unpack_memory(const void *data, uint64_t size) {
 #ifdef CONFIG_INITRAMFS_GZIP
         edge_gzip_release(decoded);
 #endif
+        initramfs_release_pages(archive_copy, archive_copy_pages);
         __sync_lock_release(&g_initramfs_unpack_lock);
         return -1;
     }
 #ifdef CONFIG_INITRAMFS_GZIP
     edge_gzip_release(decoded);
 #endif
+    initramfs_release_pages(archive_copy, archive_copy_pages);
     __sync_lock_release(&g_initramfs_unpack_lock);
     return rc;
 }

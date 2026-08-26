@@ -392,6 +392,10 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "clock_adjust_abi_probe",
         "time_set_abi_probe",
         "vhangup_abi_probe",
+#elif defined(UAPI_BATCH_OBJECT_EVENTS_ONLY)
+        "keyring_abi_probe",
+        "fanotify_abi_probe",
+        "userfaultfd_abi_probe",
 #elif defined(UAPI_BATCH_NATIVE_OPTIONAL_ONLY)
         "native_optional_syscalls_abi_probe",
 #else

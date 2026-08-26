@@ -858,6 +858,9 @@ int64_t kernel_fanotify_read(int group_id,
         record.metadata.version = KERNEL_FANOTIFY_METADATA_VERSION;
         record.metadata.metadata_length = KERNEL_FANOTIFY_METADATA_LENGTH;
         record.metadata.mask = event->mask;
+        if (!(group_flags & KERNEL_FANOTIFY_FID_MODE_MASK))
+            record.metadata.mask &=
+                ~(uint64_t)KERNEL_FANOTIFY_EVENT_FLAG_MASK;
         record.metadata.descriptor = descriptor;
         record.metadata.pid = event->pid;
         if (event->mask != KERNEL_FAN_Q_OVERFLOW &&

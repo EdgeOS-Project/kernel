@@ -507,8 +507,7 @@ int main(void) {
                KERNEL_FAN_ACCESS_PERM | KERNEL_FAN_ONDIR,
                "/watched", 1) == 0);
     g_permission_group = directory_group;
-    g_permission_expected_mask =
-        KERNEL_FAN_ACCESS_PERM | KERNEL_FAN_ONDIR;
+    g_permission_expected_mask = KERNEL_FAN_ACCESS_PERM;
     g_permission_expected_range = 0;
     assert(kernel_fanotify_directory_access_permission_check(
                "/watched") == 0);
