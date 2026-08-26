@@ -7100,19 +7100,19 @@
         "tools/tests/sysv_sem_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 66,
           "status": "implemented",
           "route": "shared:edge_linux_sys_sysv_sem",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 191,
           "status": "implemented",
           "route": "shared:edge_linux_sys_sysv_sem",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -7125,19 +7125,19 @@
         "tools/tests/sysv_sem_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 64,
           "status": "implemented",
           "route": "shared:edge_linux_sys_sysv_sem",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 190,
           "status": "implemented",
           "route": "shared:edge_linux_sys_sysv_sem",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -7150,19 +7150,19 @@
         "tools/tests/sysv_sem_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 65,
           "status": "implemented",
           "route": "shared:edge_linux_sys_sysv_sem",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 193,
           "status": "implemented",
           "route": "shared:edge_linux_sys_sysv_sem",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -7175,19 +7175,19 @@
         "tools/tests/sysv_sem_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 220,
           "status": "implemented",
           "route": "shared:edge_linux_sys_sysv_sem",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 192,
           "status": "implemented",
           "route": "shared:edge_linux_sys_sysv_sem",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
