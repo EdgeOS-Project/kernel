@@ -10,7 +10,7 @@
 #define SYS_mmap 9
 #define SYS_munmap 11
 #define SYS_ioctl 16
-#define SYS_sched_yield 24
+#define SYS_clone 56
 #define SYS_exit 60
 #define SYS_socketpair 53
 #define SYS_mount 165
@@ -29,7 +29,7 @@
 #define SYS_read 63
 #define SYS_write 64
 #define SYS_exit 93
-#define SYS_sched_yield 124
+#define SYS_clone 220
 #define SYS_socketpair 199
 #define SYS_munmap 215
 #define SYS_mmap 222
@@ -68,6 +68,7 @@
 #define O_NOCTTY 0x100
 #define EAGAIN 11
 #define EEXIST 17
+#define SIGCHLD 17
 #define S_IFCHR 0020000
 #define TIOCGPTN 0x80045430u
 #define TIOCSPTLCK 0x40045431u
@@ -381,6 +382,8 @@ static int submit_async_read(
         (uint8_t *)cq_ring + parameters->cq_off.cqes);
     uint32_t sq_index = *sq_tail & *sq_mask;
     uint32_t cq_index;
+    uint32_t spins;
+    long child;
     long entered;
 
     bytes_zero(&sqes[sq_index], sizeof(sqes[sq_index]));
@@ -398,16 +401,30 @@ static int submit_async_read(
         SYS_io_uring_enter, ring, 1, 0, 0, 0, 0);
     if (entered != 1 || *sq_head != *sq_tail || *cq_head != *cq_tail)
         return -1;
-    (void)raw_syscall6(SYS_sched_yield, 0, 0, 0, 0, 0, 0);
-    if (*cq_head != *cq_tail) return -1;
-    if (raw_syscall6(
+    child = raw_syscall6(
+        SYS_clone, SIGCHLD, 0, 0, 0, 0, 0);
+    if (child < 0) return -1;
+    if (child == 0) {
+        long written = raw_syscall6(
             SYS_write, writer, (long)source,
-            length, 0, 0, 0) != (long)length)
+            length, 0, 0, 0);
+        raw_syscall6(
+            SYS_exit, written == (long)length ? 0 : 1,
+            0, 0, 0, 0, 0);
+        for (;;) { }
+    }
+    /*
+     * The submitting task performs no syscall after the producer runs. A CQE
+     * observed here therefore proves that the kernel worker advances without
+     * being serviced as a side effect of another owner syscall.
+     */
+    for (spins = 0u; spins < 200000000u; ++spins) {
+        if (__atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) != *cq_head)
+            break;
+        __asm__ volatile("" ::: "memory");
+    }
+    if (*cq_head == *cq_tail)
         return -1;
-    entered = raw_syscall6(
-        SYS_io_uring_enter, ring, 0, 1,
-        IORING_ENTER_GETEVENTS, 0, 0);
-    if (entered != 0 || *cq_head == *cq_tail) return -1;
     cq_index = *cq_head & *cq_mask;
     if (cqes[cq_index].user_data != user_data) return -1;
     entered = cqes[cq_index].result;

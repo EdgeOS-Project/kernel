@@ -6,6 +6,7 @@
 
 #include "kernel/io_uring_runtime.h"
 #include "kernel/anonymous_fd.h"
+#include "kernel/deferred_work.h"
 #include "kernel/event_runtime.h"
 #include "kernel/eventfd.h"
 #include "kernel/fd_runtime.h"
@@ -345,6 +346,8 @@ static int32_t io_uring_event_retain_locked(
 #define IO_URING_PENDING_WORKER 9u
 #define IO_URING_WORKER_FIXED_FILE (1u << 0)
 #define IO_URING_WORKER_CQE_SKIP_SUCCESS (1u << 6)
+#define IO_URING_OP_READ_FIXED 4u
+#define IO_URING_OP_WRITE_FIXED 5u
 
 static kernel_io_uring_t g_io_urings[KERNEL_IO_URING_MAX_RINGS];
 static kernel_io_uring_fixed_buffer_t
@@ -4930,6 +4933,7 @@ unlock:
 finish:
     if (kernel_fd_operation_view(&descriptor_lease))
         (void)kernel_fd_operation_release(&descriptor_lease);
+    if (result == 0) kernel_deferred_work_request();
     return result;
 }
 
@@ -5075,6 +5079,307 @@ unlock:
         return 0;
     return kernel_io_uring_completion_add_async(
         ring_id, user_data, result, completion_flags);
+}
+
+typedef struct io_uring_independent_work {
+    kernel_fd_operation_lease_t descriptor_lease;
+    kernel_io_uring_fixed_buffer_t buffer;
+    struct edge_linux_io_uring_sqe submission;
+    kernel_io_file_range_info_t information;
+    uint64_t sequence;
+    uint64_t buffer_offset;
+    int32_t ring_id;
+    int32_t terminal_result;
+    uint32_t first_page_offset;
+    uint8_t writing;
+} io_uring_independent_work_t;
+
+static void io_uring_independent_work_release(
+        io_uring_independent_work_t *work) {
+    if (!work) return;
+    io_uring_fixed_buffer_release(&work->buffer);
+    if (kernel_fd_operation_view(&work->descriptor_lease))
+        (void)kernel_fd_operation_release(&work->descriptor_lease);
+}
+
+static int io_uring_independent_file_range(
+        kernel_fd_operation_lease_t *lease,
+        kernel_io_file_range_operation_t operation,
+        uint64_t offset, void *buffer, uint32_t length,
+        kernel_io_file_range_info_t *information) {
+    kernel_io_file_range_request_t request;
+
+    memset(&request, 0, sizeof(request));
+    request.operation = operation;
+    request.offset = offset;
+    request.buffer = buffer;
+    request.length = length;
+    request.information = information;
+    return (int)kernel_fd_operation_file_range(lease, &request);
+}
+
+static int io_uring_independent_work_supported(
+        io_uring_independent_work_t *work) {
+    int positional;
+    int result;
+
+    if (!work || work->submission.operation_flags)
+        return 0;
+    positional = work->submission.offset != UINT64_MAX;
+    result = io_uring_independent_file_range(
+        &work->descriptor_lease, KERNEL_IO_FILE_RANGE_QUERY,
+        0u, 0, 0u, &work->information);
+    if (result < 0) {
+        work->terminal_result = result;
+        return 1;
+    }
+    if (work->information.kind != KERNEL_IO_FILE_REGULAR &&
+        work->information.kind != KERNEL_IO_FILE_PIPE)
+        return 0;
+    if (positional && work->information.kind != KERNEL_IO_FILE_REGULAR) {
+        work->terminal_result = -EDGE_LINUX_ESPIPE;
+        return 1;
+    }
+    if ((work->writing && !work->information.writable) ||
+        (!work->writing && !work->information.readable)) {
+        work->terminal_result = -EDGE_LINUX_EBADF;
+        return 1;
+    }
+    if (work->writing && work->information.append)
+        return 0;
+    return 1;
+}
+
+static int io_uring_independent_work_prepare(
+        uint32_t *flat_cursor, io_uring_independent_work_t *work) {
+    const uint32_t flat_limit =
+        KERNEL_IO_URING_MAX_RINGS * KERNEL_IO_URING_MAX_PENDING;
+
+    if (!flat_cursor || !work) return -EDGE_LINUX_EINVAL;
+    while (*flat_cursor < flat_limit) {
+        kernel_io_uring_pending_t *pending;
+        kernel_io_uring_fixed_buffer_t *buffer;
+        kernel_io_uring_t *ring;
+        uint64_t end;
+        uint64_t flags;
+        uint32_t flat = (*flat_cursor)++;
+        uint32_t ring_index = flat / KERNEL_IO_URING_MAX_PENDING;
+        uint32_t slot = flat % KERNEL_IO_URING_MAX_PENDING;
+        int result;
+
+        memset(work, 0, sizeof(*work));
+        work->ring_id = -1;
+        flags = spin_lock_irqsave(&g_io_uring_lock);
+        ring = &g_io_urings[ring_index];
+        pending = &ring->pending[slot];
+        if (!ring->used || !pending->used ||
+            pending->kind != IO_URING_PENDING_WORKER ||
+            pending->ready_latched ||
+            (pending->opcode != IO_URING_OP_READ_FIXED &&
+             pending->opcode != IO_URING_OP_WRITE_FIXED) ||
+            pending->worker_submission.operation_flags) {
+            spin_unlock_irqrestore(&g_io_uring_lock, flags);
+            continue;
+        }
+        work->ring_id = (int32_t)ring_index;
+        work->sequence = pending->sequence;
+        work->submission = pending->worker_submission;
+        work->writing = pending->opcode == IO_URING_OP_WRITE_FIXED;
+        result = kernel_fd_operation_clone(
+            &work->descriptor_lease, &pending->descriptor_lease);
+        if (result < 0) {
+            spin_unlock_irqrestore(&g_io_uring_lock, flags);
+            continue;
+        }
+        if (work->submission.buffer_index >= ring->fixed_buffer_count) {
+            work->terminal_result = -EDGE_LINUX_EFAULT;
+        } else {
+            buffer = &ring->fixed_buffers[work->submission.buffer_index];
+            end = work->submission.address + work->submission.length;
+            if (!buffer->address ||
+                end < work->submission.address ||
+                work->submission.address < buffer->address ||
+                end > buffer->address + buffer->length ||
+                end < buffer->address) {
+                work->terminal_result = -EDGE_LINUX_EFAULT;
+            } else if (!buffer->page_count) {
+                work->terminal_result = -EDGE_LINUX_EFAULT;
+            } else {
+                result = io_uring_fixed_buffer_retain(
+                    &work->buffer, buffer);
+                if (result < 0) work->terminal_result = result;
+                else {
+                    work->buffer_offset =
+                        work->submission.address - buffer->address;
+                    work->first_page_offset = (uint32_t)(
+                        buffer->address &
+                        (KERNEL_IO_URING_PAGE_SIZE - 1u));
+                }
+            }
+        }
+        spin_unlock_irqrestore(&g_io_uring_lock, flags);
+
+        if (!work->terminal_result &&
+            !io_uring_independent_work_supported(work)) {
+            io_uring_independent_work_release(work);
+            continue;
+        }
+        if (!work->terminal_result) {
+            result = kernel_fd_operation_ready(
+                &work->descriptor_lease,
+                work->writing ? KERNEL_IO_WRITE_CURRENT :
+                                KERNEL_IO_READ_CURRENT);
+            if (result == 0) {
+                io_uring_independent_work_release(work);
+                continue;
+            }
+            if (result < 0) work->terminal_result = result;
+        }
+
+        flags = spin_lock_irqsave(&g_io_uring_lock);
+        ring = io_uring_lookup_locked(work->ring_id);
+        pending = ring ? &ring->pending[slot] : 0;
+        if (!pending || !pending->used ||
+            pending->kind != IO_URING_PENDING_WORKER ||
+            pending->sequence != work->sequence ||
+            pending->ready_latched) {
+            spin_unlock_irqrestore(&g_io_uring_lock, flags);
+            io_uring_independent_work_release(work);
+            continue;
+        }
+        pending->ready_latched = 1u;
+        spin_unlock_irqrestore(&g_io_uring_lock, flags);
+        return 1;
+    }
+    return 0;
+}
+
+static int32_t io_uring_independent_work_execute(
+        io_uring_independent_work_t *work) {
+    kernel_io_buffer_t bounce;
+    uint64_t current_offset;
+    uint64_t transferred = 0u;
+    int positional;
+    int result;
+
+    if (!work) return -EDGE_LINUX_EINVAL;
+    if (work->terminal_result) return work->terminal_result;
+    if (!work->submission.length) return 0;
+    positional = work->submission.offset != UINT64_MAX;
+    current_offset = positional ? work->submission.offset :
+                                  work->information.offset;
+    result = kernel_io_buffer_acquire(&bounce);
+    if (result < 0) return result;
+    while (transferred < work->submission.length) {
+        uint32_t chunk = (uint32_t)(
+            work->submission.length - transferred > KERNEL_IO_BUFFER_SIZE ?
+                KERNEL_IO_BUFFER_SIZE :
+                work->submission.length - transferred);
+        uint32_t copied = 0u;
+        int completed;
+
+        if (work->writing) {
+            while (copied < chunk) {
+                uint64_t absolute = work->first_page_offset +
+                    work->buffer_offset + transferred + copied;
+                uint32_t page = (uint32_t)(
+                    absolute / KERNEL_IO_URING_PAGE_SIZE);
+                uint32_t within = (uint32_t)(
+                    absolute % KERNEL_IO_URING_PAGE_SIZE);
+                uint32_t part = KERNEL_IO_URING_PAGE_SIZE - within;
+                kernel_io_uring_page_t *entry =
+                    io_uring_fixed_buffer_page(&work->buffer, page);
+
+                if (!entry || !entry->address) {
+                    result = transferred ? (int)transferred :
+                        -EDGE_LINUX_EFAULT;
+                    goto finish;
+                }
+                if (part > chunk - copied) part = chunk - copied;
+                memcpy(bounce.data + copied,
+                       (uint8_t *)entry->address + within, part);
+                copied += part;
+            }
+        }
+        completed = io_uring_independent_file_range(
+            &work->descriptor_lease,
+            work->writing ? KERNEL_IO_FILE_RANGE_WRITE :
+                            KERNEL_IO_FILE_RANGE_READ,
+            current_offset, bounce.data, chunk, 0);
+        if (completed < 0) {
+            result = transferred ? (int)transferred : completed;
+            goto finish;
+        }
+        if ((uint32_t)completed > chunk) {
+            result = transferred ? (int)transferred :
+                -EDGE_LINUX_EIO;
+            goto finish;
+        }
+        if (!work->writing) {
+            copied = 0u;
+            while (copied < (uint32_t)completed) {
+                uint64_t absolute = work->first_page_offset +
+                    work->buffer_offset + transferred + copied;
+                uint32_t page = (uint32_t)(
+                    absolute / KERNEL_IO_URING_PAGE_SIZE);
+                uint32_t within = (uint32_t)(
+                    absolute % KERNEL_IO_URING_PAGE_SIZE);
+                uint32_t part = KERNEL_IO_URING_PAGE_SIZE - within;
+                kernel_io_uring_page_t *entry =
+                    io_uring_fixed_buffer_page(&work->buffer, page);
+
+                if (!entry || !entry->address) {
+                    result = transferred ? (int)transferred :
+                        -EDGE_LINUX_EFAULT;
+                    goto finish;
+                }
+                if (part > (uint32_t)completed - copied)
+                    part = (uint32_t)completed - copied;
+                memcpy((uint8_t *)entry->address + within,
+                       bounce.data + copied, part);
+                copied += part;
+            }
+        }
+        transferred += (uint32_t)completed;
+        current_offset += (uint32_t)completed;
+        if ((uint32_t)completed != chunk) break;
+    }
+    result = (int)transferred;
+    if (!positional &&
+        work->information.kind == KERNEL_IO_FILE_REGULAR && transferred)
+        (void)io_uring_independent_file_range(
+            &work->descriptor_lease,
+            KERNEL_IO_FILE_RANGE_COMMIT_OFFSET,
+            work->information.offset + transferred, 0, 0u, 0);
+    if (work->writing && transferred)
+        (void)io_uring_independent_file_range(
+            &work->descriptor_lease,
+            KERNEL_IO_FILE_RANGE_COMPLETE_WRITE,
+            0u, 0, 0u, 0);
+finish:
+    kernel_io_buffer_release(&bounce);
+    return result;
+}
+
+uint32_t kernel_io_uring_worker_collect(uint32_t budget) {
+    uint32_t completed = 0u;
+    uint32_t flat_cursor = 0u;
+
+    while (budget--) {
+        io_uring_independent_work_t work;
+        int32_t operation_result;
+        int prepared = io_uring_independent_work_prepare(
+            &flat_cursor, &work);
+
+        if (prepared <= 0) break;
+        operation_result = io_uring_independent_work_execute(&work);
+        io_uring_independent_work_release(&work);
+        (void)kernel_io_uring_worker_finish(
+            work.ring_id, work.sequence, operation_result, 0u);
+        if (operation_result == -EDGE_LINUX_EAGAIN) continue;
+        ++completed;
+    }
+    return completed;
 }
 
 typedef struct io_uring_pending_snapshot {

@@ -6741,6 +6741,7 @@ static void arm64_deferred_work_pump(void) {
     bsd_kthread_pump();
 #endif
     kernel_scheduler_load_tick();
+    (void)kernel_io_uring_worker_collect(8u);
     kernel_boot_log_poll();
     vfs_writeback_poll();
     fb_user_mmap_pump_deferred();
@@ -26669,6 +26670,39 @@ static int64_t arm64_fd_operation_file_range(
         case KERNEL_IO_FILE_RANGE_WRITE:
             if (!request->buffer && length)
                 return -LINUX_EFAULT;
+            if (file->kind == KERNEL_FD_PIPE_WRITE ||
+                file->kind == KERNEL_FD_PIPE_RW) {
+                uint16_t pipe_index =
+                    file->kind == KERNEL_FD_PIPE_RW ?
+                        file->pipe_write_index : file->pipe_index;
+                kernel_pipe_t *pipe;
+                kernel_pipe_io_decision_t decision;
+                uint32_t written;
+                int was_empty;
+
+                if (pipe_index >= g_pipe_capacity ||
+                    !g_pipes[pipe_index].used)
+                    return -LINUX_EBADF;
+                pipe = &g_pipes[pipe_index];
+                decision = kernel_pipe_write_decide(
+                    pipe, length, length <= KERNEL_PIPE_BUF, 1);
+                if (decision == KERNEL_PIPE_IO_COMPLETE) return 0;
+                if (decision == KERNEL_PIPE_IO_BROKEN)
+                    return -LINUX_EPIPE;
+                if (decision == KERNEL_PIPE_IO_WOULD_BLOCK ||
+                    decision == KERNEL_PIPE_IO_WAIT)
+                    return -LINUX_EAGAIN;
+                if (decision != KERNEL_PIPE_IO_READY)
+                    return -LINUX_EBADF;
+                was_empty = !pipe->count;
+                written = kernel_pipe_write_kernel(
+                    pipe, request->buffer, length);
+                if (written) {
+                    pipe_wake_readers(pipe_index);
+                    if (was_empty) pipe_poll_wake_waiters(pipe_index);
+                }
+                return written ? (int64_t)written : -LINUX_EAGAIN;
+            }
             if (file->kind != KERNEL_FD_FILE || !file->sb ||
                 !file->sb->ops || !file->sb->ops->write)
                 return -LINUX_EINVAL;

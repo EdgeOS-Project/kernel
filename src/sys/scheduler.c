@@ -13,6 +13,7 @@
 #include "kernel/boot_logfile.h"
 #include "kernel/deferred_work.h"
 #include "kernel/drm_runtime.h"
+#include "kernel/io_uring_runtime.h"
 #include "kernel/timer_policy.h"
 #include "sys/boottime.h"
 #include "sys/syscall.h"
@@ -873,6 +874,7 @@ static void scheduler_idle_loop(void) {
             continue;
         }
         syscall_network_poll();
+        (void)kernel_io_uring_worker_collect(8u);
 #ifdef CONFIG_BSD_DRIVER_BRIDGE
         bsd_kthread_pump();
 #endif

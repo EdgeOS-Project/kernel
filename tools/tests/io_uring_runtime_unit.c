@@ -50,6 +50,11 @@ static uint32_t g_kernel_read_length;
 static uint32_t g_kernel_write_calls;
 static uint32_t g_kernel_write_length;
 static uint8_t g_io_bounce[KERNEL_IO_BUFFER_SIZE];
+static uint32_t g_deferred_work_requests;
+
+void kernel_deferred_work_request(void) {
+    ++g_deferred_work_requests;
+}
 
 int kernel_io_buffer_acquire(kernel_io_buffer_t *buffer) {
     assert(buffer);
@@ -356,8 +361,21 @@ int64_t kernel_fd_operation_file_range(
         memset(request->information, 0,
                sizeof(*request->information));
         request->information->kind = KERNEL_IO_FILE_PIPE;
-        request->information->readable = 1u;
+        request->information->readable = descriptor != 74;
+        request->information->writable = descriptor == 74;
         return 0;
+    }
+    if (descriptor == 73 &&
+        request->operation == KERNEL_IO_FILE_RANGE_READ) {
+        assert(request->buffer);
+        memcpy(request->buffer, g_file_data, request->length);
+        return request->length;
+    }
+    if (descriptor == 74 &&
+        request->operation == KERNEL_IO_FILE_RANGE_WRITE) {
+        assert(request->buffer);
+        memcpy(g_file_data, request->buffer, request->length);
+        return request->length;
     }
     if (request->operation != KERNEL_IO_FILE_RANGE_READ)
         return -EDGE_LINUX_EOPNOTSUPP;
@@ -2194,6 +2212,9 @@ int main(void) {
         };
         struct edge_linux_io_uring_params pinned_parameters = {0};
         struct edge_linux_io_uring_params clone_parameters = {0};
+        kernel_io_uring_page_t independent_cq;
+        struct edge_linux_io_uring_cqe *independent_completion;
+        struct edge_linux_io_uring_sqe independent_submission = {0};
         int32_t clone_ring_id;
         const char output[] = "fixed-buffer-write";
         const char input[] = "fixed-buffer-read";
@@ -2215,6 +2236,12 @@ int main(void) {
                    &pinned_buffer, 0, 1u) == 0);
         assert(g_references[first_page] == 1u);
         assert(g_references[first_page + 1u] == 1u);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_CQ_RING,
+                   0u, &independent_cq) == 0);
+        independent_completion = (struct edge_linux_io_uring_cqe *)(
+            (uint8_t *)independent_cq.address +
+            pinned_parameters.cq_off.cqes);
 
         memcpy(&g_pages[first_page][0x80u], output, sizeof(output));
         memset(g_file_data, 0, sizeof(g_file_data));
@@ -2264,6 +2291,54 @@ int main(void) {
         assert(g_kernel_read_calls == 1u);
         assert(g_kernel_read_length == sizeof(input));
 
+        independent_submission.opcode = 4u;
+        independent_submission.flags = 1u << 4;
+        independent_submission.descriptor = 73;
+        independent_submission.offset = UINT64_MAX;
+        independent_submission.address = input_address;
+        independent_submission.length = sizeof(input);
+        independent_submission.buffer_index = 0u;
+        independent_submission.user_data = 0x494e445245414431ull;
+        g_ready_descriptor = -1;
+        assert(kernel_io_uring_worker_add(
+                   second_ring_id, 42, &independent_submission,
+                   KERNEL_IO_READ_CURRENT) == 0);
+        assert(g_deferred_work_requests != 0u);
+        assert(kernel_io_uring_worker_collect(8u) == 0u);
+        assert(kernel_io_uring_completion_count(second_ring_id) == 0u);
+        memcpy(g_file_data, input, sizeof(input));
+        memset(&g_pages[first_page][0x180u], 0, sizeof(input));
+        g_ready_descriptor = 73;
+        g_ready_generation = g_descriptor_generation[73];
+        assert(kernel_io_uring_worker_collect(8u) == 1u);
+        assert(kernel_io_uring_completion_count(second_ring_id) == 1u);
+        assert(independent_completion[0].user_data ==
+                   independent_submission.user_data &&
+               independent_completion[0].result == (int32_t)sizeof(input));
+        assert(memcmp(&g_pages[first_page][0x180u],
+                      input, sizeof(input)) == 0);
+
+        independent_submission.opcode = 5u;
+        independent_submission.descriptor = 74;
+        independent_submission.address = output_address;
+        independent_submission.length = sizeof(output);
+        independent_submission.user_data = 0x494e445752495445ull;
+        memcpy(&g_pages[first_page][0x80u], output, sizeof(output));
+        memset(g_file_data, 0, sizeof(g_file_data));
+        g_ready_descriptor = 74;
+        g_ready_generation = g_descriptor_generation[74];
+        assert(kernel_io_uring_worker_add(
+                   second_ring_id, 42, &independent_submission,
+                   KERNEL_IO_WRITE_CURRENT) == 0);
+        assert(kernel_io_uring_worker_collect(8u) == 1u);
+        assert(kernel_io_uring_completion_count(second_ring_id) == 2u);
+        assert(independent_completion[1].user_data ==
+                   independent_submission.user_data &&
+               independent_completion[1].result ==
+                   (int32_t)sizeof(output));
+        assert(memcmp(g_file_data, output, sizeof(output)) == 0);
+        g_ready_descriptor = -1;
+
         memcpy(&g_pages[first_page][0xff8u], output, 8u);
         memcpy(&g_pages[first_page + 1u][0], output + 8u,
                sizeof(output) - 8u);
@@ -2311,6 +2386,7 @@ int main(void) {
         assert(kernel_io_uring_buffers_unregister(clone_ring_id) == 0);
         assert(g_references[first_page] == 0u);
         assert(g_references[first_page + 1u] == 0u);
+        test_page_release(0, &independent_cq);
         kernel_io_uring_release(clone_ring_id);
 
         assert(kernel_io_uring_buffers_register_user(

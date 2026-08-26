@@ -1771,6 +1771,30 @@ static int64_t x86_fd_operation_file_range(
                 request->buffer, length);
         case KERNEL_IO_FILE_RANGE_WRITE:
             if (!request->buffer && length) return -EFAULT;
+            if (entry->kind == FD_PIPE_W || entry->kind == FD_PIPE_RW) {
+                edge_pipe_t *pipe;
+                kernel_pipe_io_decision_t decision;
+                uint32_t written;
+
+                if (entry->pipe_id < 0 ||
+                    entry->pipe_id >= EDGE_MAX_PIPES)
+                    return -EBADF;
+                pipe = &g_pipes[entry->pipe_id];
+                if (!pipe->used) return -EBADF;
+                decision = kernel_pipe_write_decide(
+                    pipe, length,
+                    length <= KERNEL_PIPE_RUNTIME_BUF, 1);
+                if (decision == KERNEL_PIPE_IO_COMPLETE) return 0;
+                if (decision == KERNEL_PIPE_IO_BROKEN) return -EPIPE;
+                if (decision == KERNEL_PIPE_IO_WOULD_BLOCK ||
+                    decision == KERNEL_PIPE_IO_WAIT)
+                    return -EAGAIN;
+                if (decision != KERNEL_PIPE_IO_READY) return -EBADF;
+                written = kernel_pipe_write_kernel(
+                    pipe, request->buffer, length);
+                if (written) fd_wake_pipe_waiters(entry->pipe_id);
+                return written ? (int64_t)written : -EAGAIN;
+            }
             if (entry->kind == FD_MEMFD) {
                 edge_memfd_t *memory = memfd_get(entry->pipe_id);
                 if (!memory) return -EBADF;

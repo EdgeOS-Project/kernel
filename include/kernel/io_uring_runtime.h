@@ -375,6 +375,12 @@ int kernel_io_uring_worker_materialize_next(
 int kernel_io_uring_worker_finish(
     int32_t ring_id, uint64_t sequence, int32_t result,
     uint32_t completion_flags);
+/*
+ * Run fixed-buffer requests that no longer require the submitting task's
+ * address space. The caller supplies a strict budget because this function is
+ * also used from the scheduler's general deferred-work turn.
+ */
+uint32_t kernel_io_uring_worker_collect(uint32_t budget);
 uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us);
 int kernel_io_uring_mmap_info(int32_t ring_id, uint64_t offset,
                               uint64_t length, uint32_t *page_count);
