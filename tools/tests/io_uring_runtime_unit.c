@@ -54,6 +54,18 @@ static uint32_t g_file_sync_data_calls;
 static uint8_t g_io_bounce[KERNEL_IO_BUFFER_SIZE];
 static uint32_t g_deferred_work_requests;
 static int32_t g_zcrx_export_object_id = -1;
+static uint32_t g_command_cancel_count;
+static int32_t g_command_cancel_ring;
+static uint64_t g_command_cancel_id;
+static uint64_t g_command_cancel_token;
+
+static void test_command_cancel(
+        int32_t ring_id, uint64_t command_id, uint64_t token) {
+    ++g_command_cancel_count;
+    g_command_cancel_ring = ring_id;
+    g_command_cancel_id = command_id;
+    g_command_cancel_token = token;
+}
 
 int edge_net_device_snapshot(
         int32_t ifindex, edge_net_device_snapshot_t *snapshot) {
@@ -3059,6 +3071,61 @@ int main(void) {
         test_page_release(0, &overflow_cq);
         test_page_release(0, &overflow_sq);
         kernel_io_uring_release(second_ring_id);
+    }
+    {
+        struct edge_linux_io_uring_params command_parameters = {0};
+        kernel_io_uring_page_t command_cq;
+        struct edge_linux_io_uring_cqe *command_completion;
+        kernel_io_uring_cancel_match_t cancel_match = {0};
+        uint64_t canceled_user_data = 0u;
+        uint64_t command_id;
+
+        assert(kernel_io_uring_create(
+                   4u, &command_parameters, &second_ring_id) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_CQ_RING,
+                   0u, &command_cq) == 0);
+        command_completion = (struct edge_linux_io_uring_cqe *)(
+            (uint8_t *)command_cq.address +
+                command_parameters.cq_off.cqes);
+        assert(kernel_io_uring_command_add(
+                   second_ring_id, 0x434d44434f4d50ull, 15, 46u,
+                   test_command_cancel, 0xabcdu, &command_id) == 0);
+        assert(command_id && g_fixed_file_references == 1u);
+        assert(kernel_io_uring_command_complete(
+                   second_ring_id, command_id, 17, 0x40u) == 0);
+        assert(g_fixed_file_references == 0u);
+        assert(kernel_io_uring_completion_count(second_ring_id) == 1u);
+        assert(command_completion[0].user_data == 0x434d44434f4d50ull &&
+               command_completion[0].result == 17 &&
+               command_completion[0].flags == 0x40u);
+
+        assert(kernel_io_uring_command_add(
+                   second_ring_id, 0x434d4443414e43ull, 16, 46u,
+                   test_command_cancel, 0x1234u, &command_id) == 0);
+        cancel_match.user_data = 0x434d4443414e43ull;
+        cancel_match.flags = KERNEL_IO_URING_CANCEL_USERDATA;
+        assert(kernel_io_uring_pending_cancel_match(
+                   second_ring_id, &cancel_match,
+                   &canceled_user_data) == 0);
+        assert(canceled_user_data == 0x434d4443414e43ull);
+        assert(g_command_cancel_count == 1u &&
+               g_command_cancel_ring == second_ring_id &&
+               g_command_cancel_id == command_id &&
+               g_command_cancel_token == 0x1234u);
+        assert(g_fixed_file_references == 0u);
+
+        assert(kernel_io_uring_command_add(
+                   second_ring_id, 0x434d4452454c53ull, 17, 46u,
+                   test_command_cancel, 0x5678u, &command_id) == 0);
+        assert(g_fixed_file_references == 1u);
+        test_page_release(0, &command_cq);
+        kernel_io_uring_release(second_ring_id);
+        assert(g_command_cancel_count == 2u &&
+               g_command_cancel_ring == second_ring_id &&
+               g_command_cancel_id == command_id &&
+               g_command_cancel_token == 0x5678u);
+        assert(g_fixed_file_references == 0u);
     }
     {
         struct edge_linux_io_uring_params worker_parameters = {0};

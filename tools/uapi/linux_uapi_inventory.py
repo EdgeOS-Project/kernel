@@ -224,9 +224,11 @@ EDGEOS_ASSESSMENTS = [
             "SQPOLL setup, affinity validation, non-fixed descriptor feature reporting and SQ_WAKEUP or SQ_WAIT enter control",
             "NVMe controller and namespace URING_CMD consumers with scalar, vector and fixed registered data, SQE128 payloads, CQE32 results, timeout handling and Linux command-class errors",
             "BSG SCSI URING_CMD consumers with SQE128 and CQE32 layouts, scalar and fixed registered input data, command validation, status packing and a VirtIO-SCSI passthrough backend",
+            "FUSE URING_CMD transport with synchronous initialization, SQE128 register and commit-and-fetch commands, per-CPU queue IDs, persistent buffers, cancellation, retained descriptions and asynchronous CQEs",
         ],
         "missing": [
-            "remaining supported FUSE, btrfs and ublk URING_CMD device consumers",
+            "btrfs encoded read and write ioctls require a writable compression-aware btrfs backend",
+            "ublk URING_CMD requires a real userspace block-device backend; no ublk control or queue device is exposed",
             "remaining ia32 and x32 semantic coverage across supported operations",
         ],
         "runtime_tests": [
@@ -245,6 +247,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/io_uring_uring_cmd_abi_probe.c",
             "tools/tests/io_uring_nvme_uring_cmd_abi_probe.c",
             "tools/tests/io_uring_bsg_uring_cmd_abi_probe.c",
+            "tools/tests/io_uring_fuse_uring_cmd_abi_probe.c",
             "tools/tests/io_uring_epoll_wait_abi_probe.c",
             "tools/tests/io_uring_link_timeout_abi_probe.c",
             "tools/tests/io_uring_futex_wait_abi_probe.c",

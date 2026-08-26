@@ -502,6 +502,14 @@ config FUSE_FS
       This supports production userspace filesystems such as ceph-fuse without
       placing their filesystem policy in the kernel.
 
+config FUSE_IO_URING
+    bool "FUSE io_uring transport"
+    depends on FUSE_FS && IO_URING
+    default y
+    help
+      Enable the Linux FUSE io_uring command transport, including persistent
+      per-CPU request buffers and commit-and-fetch operation.
+
 config OVERLAY_FS
     bool "basic OverlayFS support (runtime whiteouts, no persistent xattr whiteouts yet)"
     default n

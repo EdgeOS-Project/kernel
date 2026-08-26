@@ -7,7 +7,10 @@
 
 #include "fs/fuse.h"
 #include "fs/fuse_kernel.h"
+#include "kernel/io_uring_runtime.h"
+#include "kernel/mm_runtime.h"
 #include "kernel/process_runtime.h"
+#include "kernel/smp.h"
 #include "mm/arch_vm.h"
 #include "stdio.h"
 #include "string.h"
@@ -21,8 +24,15 @@
 #define FUSE_MESSAGE_PAGES ((FUSE_MESSAGE_MAX + 4095u) / 4096u)
 #define FUSE_READDIR_BUFFER 16384u
 #define FUSE_SUPERBLOCK_PAGES ((sizeof(vfs_superblock_t) + 4095u) / 4096u)
+#define FUSE_URING_ENTRY_MAX 128u
+#define FUSE_URING_HEADER_LENGTH 288u
+#define FUSE_URING_IN_OUT_OFFSET 0u
+#define FUSE_URING_OP_OFFSET 128u
+#define FUSE_URING_ENTRY_OFFSET 256u
+#define FUSE_URING_MIN_PAYLOAD 8192u
 
 #define LINUX_EIO 5
+#define LINUX_EFAULT 14
 #define LINUX_ENOMEM 12
 #define LINUX_EBUSY 16
 #define LINUX_ENODEV 19
@@ -37,6 +47,8 @@
 #define LINUX_ENODATA 61
 #define LINUX_ERANGE 34
 #define LINUX_EOPNOTSUPP 95
+#define LINUX_ENOTTY 25
+#define LINUX_ENOTCONN 107
 
 #define LINUX_O_RDONLY 0u
 #define LINUX_O_WRONLY 1u
@@ -56,6 +68,8 @@ typedef struct edge_fuse_request {
     uint8_t state;
     uint8_t *message;
     uint32_t request_length;
+    uint32_t input_length;
+    uint32_t tail_length;
     uint32_t reply_length;
     uint64_t unique;
     uintptr_t owner_context;
@@ -63,6 +77,39 @@ typedef struct edge_fuse_request {
     uint32_t opcode;
     uint64_t nodeid;
 } edge_fuse_request_t;
+
+enum fuse_uring_entry_state {
+    FUSE_URING_ENTRY_FREE = 0,
+    FUSE_URING_ENTRY_AVAILABLE,
+    FUSE_URING_ENTRY_DELIVERING,
+    FUSE_URING_ENTRY_USERSPACE
+};
+
+typedef struct edge_fuse_uring_entry {
+    uint8_t state;
+    uint8_t reserved;
+    uint16_t qid;
+    int32_t ring_id;
+    int32_t descriptor;
+    uint64_t command_id;
+    uint64_t address_space;
+    uint64_t headers_address;
+    uint64_t payload_address;
+    uint64_t commit_id;
+    uint32_t headers_length;
+    uint32_t payload_length;
+} edge_fuse_uring_entry_t;
+
+typedef struct edge_fuse_uring_ent_in_out {
+    uint64_t flags;
+    uint64_t commit_id;
+    uint32_t payload_size;
+    uint32_t padding;
+    uint64_t reserved;
+} edge_fuse_uring_ent_in_out_t;
+
+_Static_assert(sizeof(edge_fuse_uring_ent_in_out_t) == 32u,
+               "FUSE io_uring entry header size mismatch");
 
 typedef struct edge_fuse_replay {
     uintptr_t context;
@@ -107,8 +154,10 @@ typedef struct edge_fuse_session {
     uint8_t daemon_open;
     uint8_t mounted;
     uint8_t init_state;
+    uint8_t sync_init;
     uintptr_t init_owner_context;
     edge_fuse_request_t requests[FUSE_REQUEST_MAX];
+    edge_fuse_uring_entry_t uring_entries[FUSE_URING_ENTRY_MAX];
     edge_fuse_node_page_t *node_pages;
 } edge_fuse_session_t;
 
@@ -119,6 +168,7 @@ static edge_fuse_replay_t g_fuse_replays[FUSE_REPLAY_MAX];
 static spinlock_t g_fuse_replays_lock;
 
 static void fuse_free_pages(void *allocation, uint32_t pages);
+static void fuse_uring_dispatch(edge_fuse_session_t *session);
 
 static int fuse_replay_sequence(uintptr_t context, uint32_t *sequence) {
     uint64_t flags;
@@ -521,10 +571,13 @@ static int fuse_rpc(edge_fuse_session_t *session, uint32_t opcode,
         memcpy(message + sizeof(*header) + input_length, tail, tail_length);
     flags = spin_lock_irqsave(&session->lock);
     request->request_length = total;
+    request->input_length = input_length;
+    request->tail_length = tail_length;
     request->reply_length = 0;
     request->state = FUSE_REQUEST_QUEUED;
     spin_unlock_irqrestore(&session->lock, flags);
     kernel_runtime_fuse_notify(session->description_identity);
+    fuse_uring_dispatch(session);
 
 wait_for_reply:
     for (;;) {
@@ -1212,6 +1265,340 @@ int edge_fuse_is_device(uint64_t linux_rdev) {
     return major == EDGE_FUSE_DEVICE_MAJOR && minor == EDGE_FUSE_DEVICE_MINOR;
 }
 
+static void fuse_uring_command_cancel(
+        int32_t ring_id, uint64_t command_id, uint64_t token) {
+    edge_fuse_uring_entry_t *entry =
+        (edge_fuse_uring_entry_t *)(uintptr_t)token;
+    edge_fuse_session_t *session = 0;
+    uint64_t flags;
+
+    if (!entry || !command_id) return;
+    for (uint32_t index = 0; index < FUSE_SESSION_MAX; ++index) {
+        uintptr_t candidate = (uintptr_t)entry;
+        uintptr_t first = (uintptr_t)
+            &g_fuse_sessions[index].uring_entries[0];
+        uintptr_t last = (uintptr_t)
+            &g_fuse_sessions[index].uring_entries[FUSE_URING_ENTRY_MAX];
+
+        if (candidate >= first && candidate < last) {
+            session = &g_fuse_sessions[index];
+            break;
+        }
+    }
+    if (!session) return;
+    flags = spin_lock_irqsave(&session->lock);
+    if (entry->state != FUSE_URING_ENTRY_FREE &&
+        entry->ring_id == ring_id &&
+        (!entry->command_id || entry->command_id == command_id))
+        memset(entry, 0, sizeof(*entry));
+    spin_unlock_irqrestore(&session->lock, flags);
+}
+
+static int fuse_uring_copy_request(
+        const edge_fuse_uring_entry_t *entry,
+        const edge_fuse_request_t *request) {
+    edge_fuse_uring_ent_in_out_t ring_header;
+    uint8_t headers[FUSE_URING_HEADER_LENGTH];
+
+    if (!entry || !request || !request->message ||
+        request->request_length < sizeof(struct fuse_in_header) ||
+        request->input_length > 128u ||
+        request->tail_length > entry->payload_length)
+        return -LINUX_EINVAL;
+    memset(headers, 0, sizeof(headers));
+    memcpy(headers + FUSE_URING_IN_OUT_OFFSET, request->message,
+           sizeof(struct fuse_in_header));
+    if (request->input_length)
+        memcpy(headers + FUSE_URING_OP_OFFSET,
+               request->message + sizeof(struct fuse_in_header),
+               request->input_length);
+    memset(&ring_header, 0, sizeof(ring_header));
+    ring_header.commit_id = request->unique;
+    ring_header.payload_size = request->tail_length;
+    memcpy(headers + FUSE_URING_ENTRY_OFFSET,
+           &ring_header, sizeof(ring_header));
+    if (kernel_mm_address_space_copy(
+            entry->address_space, entry->headers_address,
+            headers, sizeof(headers),
+            KERNEL_MM_PROCESS_VM_WRITE) < 0)
+        return -LINUX_EFAULT;
+    if (request->tail_length && kernel_mm_address_space_copy(
+            entry->address_space, entry->payload_address,
+            request->message + sizeof(struct fuse_in_header) +
+                request->input_length,
+            request->tail_length,
+            KERNEL_MM_PROCESS_VM_WRITE) < 0)
+        return -LINUX_EFAULT;
+    return 0;
+}
+
+static void fuse_uring_dispatch(edge_fuse_session_t *session) {
+    for (;;) {
+        edge_fuse_uring_entry_t entry_snapshot;
+        edge_fuse_uring_entry_t *entry = 0;
+        edge_fuse_request_t *request = 0;
+        uint64_t flags;
+        uint64_t command_id;
+        int32_t ring_id;
+        int result;
+
+        if (!session) return;
+        flags = spin_lock_irqsave(&session->lock);
+        for (uint32_t index = 0;
+             index < FUSE_URING_ENTRY_MAX; ++index) {
+            if (session->uring_entries[index].state ==
+                    FUSE_URING_ENTRY_AVAILABLE &&
+                session->uring_entries[index].command_id) {
+                entry = &session->uring_entries[index];
+                break;
+            }
+        }
+        for (uint32_t index = 0; entry && index < FUSE_REQUEST_MAX;
+             ++index) {
+            if (session->requests[index].state == FUSE_REQUEST_QUEUED) {
+                request = &session->requests[index];
+                break;
+            }
+        }
+        if (!entry || !request) {
+            spin_unlock_irqrestore(&session->lock, flags);
+            return;
+        }
+        entry->state = FUSE_URING_ENTRY_DELIVERING;
+        request->state = FUSE_REQUEST_READING;
+        entry_snapshot = *entry;
+        spin_unlock_irqrestore(&session->lock, flags);
+
+        result = fuse_uring_copy_request(&entry_snapshot, request);
+        command_id = entry_snapshot.command_id;
+        ring_id = entry_snapshot.ring_id;
+
+        flags = spin_lock_irqsave(&session->lock);
+        if (entry->state == FUSE_URING_ENTRY_DELIVERING &&
+            entry->command_id == command_id &&
+            request->state == FUSE_REQUEST_READING) {
+            if (result == 0) {
+                entry->state = FUSE_URING_ENTRY_USERSPACE;
+                entry->commit_id = request->unique;
+                entry->command_id = 0u;
+                request->state = FUSE_REQUEST_DELIVERED;
+            } else {
+                memset(entry, 0, sizeof(*entry));
+                request->state = FUSE_REQUEST_QUEUED;
+            }
+        }
+        spin_unlock_irqrestore(&session->lock, flags);
+
+        if (kernel_io_uring_command_complete(
+                ring_id, command_id, result, 0u) < 0 && result == 0) {
+            flags = spin_lock_irqsave(&session->lock);
+            if (entry->state == FUSE_URING_ENTRY_USERSPACE &&
+                entry->commit_id == request->unique) {
+                memset(entry, 0, sizeof(*entry));
+                if (request->state == FUSE_REQUEST_DELIVERED)
+                    request->state = FUSE_REQUEST_QUEUED;
+            }
+            spin_unlock_irqrestore(&session->lock, flags);
+        }
+    }
+}
+
+static int fuse_uring_register(
+        edge_fuse_session_t *session,
+        const edge_fuse_uring_command_t *command) {
+    edge_fuse_uring_entry_t *entry = 0;
+    uint64_t command_id = 0u;
+    uint64_t flags;
+    uint32_t cpu_count = edge_smp_present_count();
+    int result;
+
+    if (!session || !command) return -LINUX_EINVAL;
+    if (!cpu_count) cpu_count = 1u;
+    if (command->qid >= cpu_count ||
+        command->headers_length < FUSE_URING_HEADER_LENGTH ||
+        command->payload_length < FUSE_URING_MIN_PAYLOAD ||
+        command->payload_length < session->max_write)
+        return -LINUX_EINVAL;
+    flags = spin_lock_irqsave(&session->lock);
+    if (!session->daemon_open) {
+        spin_unlock_irqrestore(&session->lock, flags);
+        return -LINUX_ENODEV;
+    }
+    if (session->init_state != 2u) {
+        spin_unlock_irqrestore(&session->lock, flags);
+        return -LINUX_EAGAIN;
+    }
+    for (uint32_t index = 0; index < FUSE_URING_ENTRY_MAX; ++index) {
+        if (session->uring_entries[index].state !=
+            FUSE_URING_ENTRY_FREE)
+            continue;
+        entry = &session->uring_entries[index];
+        memset(entry, 0, sizeof(*entry));
+        entry->state = FUSE_URING_ENTRY_AVAILABLE;
+        entry->qid = command->qid;
+        entry->ring_id = command->ring_id;
+        entry->descriptor = command->descriptor;
+        entry->address_space = command->address_space;
+        entry->headers_address = command->headers_address;
+        entry->payload_address = command->payload_address;
+        entry->headers_length = command->headers_length;
+        entry->payload_length = command->payload_length;
+        break;
+    }
+    spin_unlock_irqrestore(&session->lock, flags);
+    if (!entry) return -LINUX_ENOMEM;
+
+    result = kernel_io_uring_command_add(
+        command->ring_id, command->user_data,
+        command->descriptor, 46u, fuse_uring_command_cancel,
+        (uint64_t)(uintptr_t)entry, &command_id);
+    flags = spin_lock_irqsave(&session->lock);
+    if (result == 0 && entry->state == FUSE_URING_ENTRY_AVAILABLE)
+        entry->command_id = command_id;
+    else
+        memset(entry, 0, sizeof(*entry));
+    spin_unlock_irqrestore(&session->lock, flags);
+    if (result < 0) return result;
+    fuse_uring_dispatch(session);
+    return 0;
+}
+
+static int fuse_uring_commit_fetch(
+        edge_fuse_session_t *session,
+        const edge_fuse_uring_command_t *command) {
+    edge_fuse_uring_ent_in_out_t ring_header;
+    struct fuse_out_header output_header;
+    edge_fuse_uring_entry_t *entry = 0;
+    edge_fuse_request_t *request = 0;
+    uint64_t command_id = 0u;
+    uint64_t flags;
+    int result;
+
+    uint32_t cpu_count = edge_smp_present_count();
+
+    if (!session || !command || !command->commit_id)
+        return -LINUX_EINVAL;
+    if (!cpu_count) cpu_count = 1u;
+    if (command->qid >= cpu_count ||
+        command->headers_length < FUSE_URING_HEADER_LENGTH ||
+        command->payload_length < FUSE_URING_MIN_PAYLOAD ||
+        command->payload_length < session->max_write)
+        return -LINUX_EINVAL;
+    flags = spin_lock_irqsave(&session->lock);
+    if (!session->daemon_open) {
+        spin_unlock_irqrestore(&session->lock, flags);
+        return -LINUX_ENODEV;
+    }
+    for (uint32_t index = 0; index < FUSE_URING_ENTRY_MAX; ++index) {
+        edge_fuse_uring_entry_t *candidate =
+            &session->uring_entries[index];
+        if (candidate->state == FUSE_URING_ENTRY_USERSPACE &&
+            candidate->qid == command->qid &&
+            candidate->commit_id == command->commit_id) {
+            entry = candidate;
+            break;
+        }
+    }
+    for (uint32_t index = 0; entry && index < FUSE_REQUEST_MAX; ++index) {
+        if (session->requests[index].state == FUSE_REQUEST_DELIVERED &&
+            session->requests[index].unique == command->commit_id) {
+            request = &session->requests[index];
+            break;
+        }
+    }
+    if (!entry || !request) {
+        spin_unlock_irqrestore(&session->lock, flags);
+        return -LINUX_ENOENT;
+    }
+    entry->state = FUSE_URING_ENTRY_DELIVERING;
+    spin_unlock_irqrestore(&session->lock, flags);
+
+    if (kernel_mm_address_space_copy(
+            command->address_space,
+            command->headers_address + FUSE_URING_IN_OUT_OFFSET,
+            &output_header, sizeof(output_header),
+            KERNEL_MM_PROCESS_VM_READ) < 0 ||
+        kernel_mm_address_space_copy(
+            command->address_space,
+            command->headers_address + FUSE_URING_ENTRY_OFFSET,
+            &ring_header, sizeof(ring_header),
+            KERNEL_MM_PROCESS_VM_READ) < 0) {
+        result = -LINUX_EFAULT;
+        goto restore;
+    }
+    if (ring_header.flags || ring_header.padding || ring_header.reserved ||
+        ring_header.commit_id != command->commit_id ||
+        ring_header.payload_size > command->payload_length ||
+        output_header.unique != command->commit_id ||
+        output_header.len != sizeof(output_header) +
+            ring_header.payload_size ||
+        output_header.len > FUSE_MESSAGE_MAX) {
+        result = -LINUX_EINVAL;
+        goto restore;
+    }
+    if (ring_header.payload_size && kernel_mm_address_space_copy(
+            command->address_space,
+            command->payload_address,
+            request->message + sizeof(output_header),
+            ring_header.payload_size,
+            KERNEL_MM_PROCESS_VM_READ) < 0) {
+        result = -LINUX_EFAULT;
+        goto restore;
+    }
+    memcpy(request->message, &output_header, sizeof(output_header));
+
+    result = kernel_io_uring_command_add(
+        command->ring_id, command->user_data,
+        command->descriptor, 46u, fuse_uring_command_cancel,
+        (uint64_t)(uintptr_t)entry, &command_id);
+    if (result < 0) goto restore;
+
+    flags = spin_lock_irqsave(&session->lock);
+    request->reply_length = output_header.len;
+    request->state = FUSE_REQUEST_REPLIED;
+    entry->state = FUSE_URING_ENTRY_AVAILABLE;
+    entry->ring_id = command->ring_id;
+    entry->descriptor = command->descriptor;
+    entry->command_id = command_id;
+    entry->address_space = command->address_space;
+    entry->headers_address = command->headers_address;
+    entry->payload_address = command->payload_address;
+    entry->headers_length = command->headers_length;
+    entry->payload_length = command->payload_length;
+    entry->commit_id = 0u;
+    spin_unlock_irqrestore(&session->lock, flags);
+    kernel_runtime_fuse_reply_notify(
+        session->description_identity, request->owner_context);
+    fuse_uring_dispatch(session);
+    return 0;
+
+restore:
+    flags = spin_lock_irqsave(&session->lock);
+    if (entry && entry->state == FUSE_URING_ENTRY_DELIVERING)
+        entry->state = FUSE_URING_ENTRY_USERSPACE;
+    spin_unlock_irqrestore(&session->lock, flags);
+    return result;
+}
+
+int edge_fuse_device_uring_cmd(
+        uint64_t identity,
+        const edge_fuse_uring_command_t *command) {
+    edge_fuse_session_t *session = fuse_session_find(identity);
+
+    if (!session) session = fuse_session_create(identity);
+    if (!session) return -LINUX_ENOSPC;
+    if (!command || command->reserved)
+        return -LINUX_EINVAL;
+    switch (command->operation) {
+    case EDGE_FUSE_IO_URING_CMD_REGISTER:
+        return fuse_uring_register(session, command);
+    case EDGE_FUSE_IO_URING_CMD_COMMIT_AND_FETCH:
+        return fuse_uring_commit_fetch(session, command);
+    default:
+        return -LINUX_EINVAL;
+    }
+}
+
 int edge_fuse_device_read(uint64_t identity, void *buffer, uint32_t length) {
     edge_fuse_session_t *session = fuse_session_find(identity);
     edge_fuse_request_t *request = 0;
@@ -1358,14 +1745,49 @@ int edge_fuse_device_poll(uint64_t identity, uint32_t events) {
     return (int)result;
 }
 
+int edge_fuse_device_ioctl(uint64_t identity, uint32_t command) {
+    edge_fuse_session_t *session;
+    uint64_t flags;
+
+    if (command != EDGE_FUSE_DEV_IOC_SYNC_INIT)
+        return -LINUX_ENOTTY;
+    session = fuse_session_find(identity);
+    if (!session) session = fuse_session_create(identity);
+    if (!session) return -LINUX_ENOSPC;
+    flags = spin_lock_irqsave(&session->lock);
+    if (session->mounted) {
+        spin_unlock_irqrestore(&session->lock, flags);
+        return -LINUX_EINVAL;
+    }
+    session->sync_init = 1u;
+    spin_unlock_irqrestore(&session->lock, flags);
+    return 0;
+}
+
 void edge_fuse_device_close(uint64_t identity) {
     edge_fuse_session_t *session = fuse_session_find(identity);
+    int32_t rings[FUSE_URING_ENTRY_MAX];
+    uint64_t commands[FUSE_URING_ENTRY_MAX];
+    uint32_t command_count = 0u;
     uint64_t flags;
     if (!session) return;
     flags = spin_lock_irqsave(&session->lock);
     session->daemon_open = 0;
+    for (uint32_t index = 0; index < FUSE_URING_ENTRY_MAX; ++index) {
+        edge_fuse_uring_entry_t *entry = &session->uring_entries[index];
+
+        if (entry->command_id) {
+            rings[command_count] = entry->ring_id;
+            commands[command_count++] = entry->command_id;
+        }
+        memset(entry, 0, sizeof(*entry));
+    }
     if (!session->references) session->used = 0;
     spin_unlock_irqrestore(&session->lock, flags);
+    for (uint32_t index = 0; index < command_count; ++index)
+        (void)kernel_io_uring_command_complete(
+            rings[index], commands[index],
+            -LINUX_ENOTCONN, 0u);
 }
 
 int edge_fuse_mount(uint64_t identity, const char *target,

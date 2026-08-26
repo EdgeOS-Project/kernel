@@ -12,6 +12,7 @@
 #include "drivers/nvme.h"
 #include "drivers/virtio_scsi.h"
 #include "fs/cgroupfs.h"
+#include "fs/fuse.h"
 #include "fs/swap.h"
 #include "kernel/aio_runtime.h"
 #include "kernel/arch_cpu.h"
@@ -12964,6 +12965,77 @@ static int64_t edge_linux_io_uring_execute_uring_cmd(
         result = kernel_vfs_resolve_fd(
             submission->descriptor, &target);
         if (result < 0) return result;
+#if defined(CONFIG_FUSE_FS) && defined(CONFIG_FUSE_IO_URING)
+        if (target.resolved_path &&
+            strcmp(target.resolved_path, EDGE_FUSE_DEVICE_PATH) == 0) {
+            struct edge_fuse_uring_cmd_req {
+                uint64_t flags;
+                uint64_t commit_id;
+                uint16_t qid;
+                uint8_t padding[6];
+            } request;
+            struct edge_linux_iovec vectors[2];
+            edge_fuse_uring_command_t fuse_command;
+            uint32_t setup_flags = 0u;
+
+            if (submission->opcode != EDGE_LINUX_IORING_OP_URING_CMD ||
+                command_flags || submission->ioprio ||
+                submission->length != 2u || !submission->address ||
+                submission->buffer_index || submission->personality ||
+                submission->splice_descriptor)
+                return -EDGE_LINUX_EINVAL;
+            result = kernel_io_uring_setup_flags(
+                ring_id, &setup_flags);
+            if (result < 0) return result;
+            if (!(setup_flags & EDGE_LINUX_IORING_SETUP_SQE128))
+                return -EDGE_LINUX_EINVAL;
+            memcpy(&request, command_payload, sizeof(request));
+            if (request.flags || request.padding[0] ||
+                request.padding[1] || request.padding[2] ||
+                request.padding[3] || request.padding[4] ||
+                request.padding[5])
+                return -EDGE_LINUX_EINVAL;
+            if (command != EDGE_FUSE_IO_URING_CMD_REGISTER &&
+                command != EDGE_FUSE_IO_URING_CMD_COMMIT_AND_FETCH)
+                return -EDGE_LINUX_EINVAL;
+            if ((command == EDGE_FUSE_IO_URING_CMD_REGISTER &&
+                 request.commit_id) ||
+                (command == EDGE_FUSE_IO_URING_CMD_COMMIT_AND_FETCH &&
+                 !request.commit_id))
+                return -EDGE_LINUX_EINVAL;
+            for (uint32_t index = 0; index < 2u; ++index) {
+                result = edge_linux_io_uring_copy_iovec_from_user(
+                    context, submission->address, index,
+                    &vectors[index]);
+                if (result < 0) return result;
+                if (!vectors[index].iov_base && vectors[index].iov_len)
+                    return -EDGE_LINUX_EFAULT;
+                if (vectors[index].iov_len > UINT32_MAX)
+                    return -EDGE_LINUX_EINVAL;
+            }
+            memset(&description, 0, sizeof(description));
+            result = kernel_vfs_describe_descriptor(
+                submission->descriptor, &description);
+            if (result < 0) return result;
+            if (!description.identity)
+                return -EDGE_LINUX_ENODEV;
+            memset(&fuse_command, 0, sizeof(fuse_command));
+            fuse_command.ring_id = ring_id;
+            fuse_command.descriptor = submission->descriptor;
+            fuse_command.user_data = submission->user_data;
+            fuse_command.address_space = arch_mm_current_address_space();
+            fuse_command.headers_address = vectors[0].iov_base;
+            fuse_command.headers_length = (uint32_t)vectors[0].iov_len;
+            fuse_command.payload_address = vectors[1].iov_base;
+            fuse_command.payload_length = (uint32_t)vectors[1].iov_len;
+            fuse_command.commit_id = request.commit_id;
+            fuse_command.qid = request.qid;
+            fuse_command.operation = (uint8_t)command;
+            result = edge_fuse_device_uring_cmd(
+                description.identity, &fuse_command);
+            return result < 0 ? result : EDGE_LINUX_IORING_PENDING_RESULT;
+        }
+#endif
         if (target.resolved_path &&
             strcmp(target.resolved_path, "/dev/nvme0") == 0)
             return edge_linux_io_uring_nvme_cmd(
@@ -16400,6 +16472,8 @@ static int64_t edge_linux_fd_duplicate(
 static int64_t edge_linux_sys_ioctl(
     edge_linux_syscall_context_t *context) {
     kernel_ioctl_request_t request;
+    kernel_vfs_target_t target;
+    kernel_vfs_descriptor_t vfs_descriptor;
     kernel_namespace_descriptor_t namespace_descriptor;
     kernel_namespace_ioctl_output_t namespace_output;
     int32_t descriptor;
@@ -16438,6 +16512,23 @@ static int64_t edge_linux_sys_ioctl(
             descriptor, EDGE_LINUX_O_NONBLOCK,
             enabled ? EDGE_LINUX_O_NONBLOCK : 0);
     }
+#ifdef CONFIG_FUSE_FS
+    if (request.command == EDGE_FUSE_DEV_IOC_SYNC_INIT) {
+        memset(&target, 0, sizeof(target));
+        status = kernel_vfs_resolve_fd(descriptor, &target);
+        if (status < 0) return status;
+        if (target.resolved_path &&
+            strcmp(target.resolved_path, EDGE_FUSE_DEVICE_PATH) == 0) {
+            memset(&vfs_descriptor, 0, sizeof(vfs_descriptor));
+            status = kernel_vfs_describe_descriptor(
+                descriptor, &vfs_descriptor);
+            if (status < 0) return status;
+            if (!vfs_descriptor.identity) return -EDGE_LINUX_ENODEV;
+            return edge_fuse_device_ioctl(
+                vfs_descriptor.identity, request.command);
+        }
+    }
+#endif
     status = edge_linux_seccomp_listener_ioctl(
         context, descriptor, request.command, request.argument);
     if (status != -EDGE_LINUX_ENOTTY) return status;

@@ -152,6 +152,8 @@ typedef struct kernel_io_uring_pending {
     io_uring_worker_vectors_t *worker_vectors;
     io_uring_worker_buffer_t *worker_buffer;
     io_uring_worker_vector_buffers_t *worker_vector_buffers;
+    kernel_io_uring_command_cancel_t command_cancel;
+    uint64_t command_token;
     struct edge_linux_io_uring_sqe worker_submission;
 } kernel_io_uring_pending_t;
 
@@ -402,6 +404,7 @@ static int32_t io_uring_event_retain_locked(
 #define IO_URING_PENDING_RECV_ZC 8u
 #define IO_URING_PENDING_WORKER 9u
 #define IO_URING_PENDING_TX_TIMESTAMP 10u
+#define IO_URING_PENDING_COMMAND 11u
 #define IO_URING_WORKER_FIXED_FILE (1u << 0)
 #define IO_URING_WORKER_CQE_SKIP_SUCCESS (1u << 6)
 #define IO_URING_OP_READV 1u
@@ -439,7 +442,8 @@ static int io_uring_pending_owns_descriptor(uint8_t kind) {
            kind == IO_URING_PENDING_READ_MULTISHOT ||
            kind == IO_URING_PENDING_RECV_ZC ||
            kind == IO_URING_PENDING_WORKER ||
-           kind == IO_URING_PENDING_TX_TIMESTAMP;
+           kind == IO_URING_PENDING_TX_TIMESTAMP ||
+           kind == IO_URING_PENDING_COMMAND;
 }
 
 static int io_uring_napi_id_valid_locked(uint32_t napi_id) {
@@ -1300,6 +1304,12 @@ static void io_uring_release_storage(kernel_io_uring_t *ring) {
             pending->kind == IO_URING_PENDING_WORKER)
             io_uring_worker_vector_buffers_release(
                 pending->worker_vector_buffers);
+        if (pending->used &&
+            pending->kind == IO_URING_PENDING_COMMAND &&
+            pending->command_cancel)
+            pending->command_cancel(
+                (int32_t)(ring - g_io_urings), pending->sequence,
+                pending->command_token);
     }
     for (uint32_t page = 0;
          page < KERNEL_IO_URING_MAX_PBUF_PAGES; ++page) {
@@ -5515,6 +5525,9 @@ int kernel_io_uring_pending_cancel_match(
     uint64_t link_timeout_user_data = 0;
     int link_timeout_canceled = 0;
     uint64_t futex_wait_id = 0u;
+    kernel_io_uring_command_cancel_t command_cancel = 0;
+    uint64_t command_token = 0u;
+    uint64_t command_id = 0u;
     kernel_io_uring_t *ring;
     uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
     uint32_t slot;
@@ -5540,7 +5553,9 @@ int kernel_io_uring_pending_cancel_match(
                 ring->pending[slot].kind ==
                     IO_URING_PENDING_TX_TIMESTAMP ||
                 ring->pending[slot].kind ==
-                    IO_URING_PENDING_WORKER) {
+                    IO_URING_PENDING_WORKER ||
+                ring->pending[slot].kind ==
+                    IO_URING_PENDING_COMMAND) {
                 result = kernel_fd_operation_move(
                     &descriptor_lease,
                     &ring->pending[slot].descriptor_lease);
@@ -5572,6 +5587,11 @@ int kernel_io_uring_pending_cancel_match(
             if (ring->pending[slot].kind == IO_URING_PENDING_WORKER)
                 worker_vector_buffers =
                     ring->pending[slot].worker_vector_buffers;
+            if (ring->pending[slot].kind == IO_URING_PENDING_COMMAND) {
+                command_cancel = ring->pending[slot].command_cancel;
+                command_token = ring->pending[slot].command_token;
+                command_id = ring->pending[slot].sequence;
+            }
             memset(&ring->pending[slot], 0, sizeof(ring->pending[slot]));
             break;
         }
@@ -5604,10 +5624,75 @@ int kernel_io_uring_pending_cancel_match(
         kernel_epoll_object_release(epoll_index);
     if (futex_wait_id)
         (void)kernel_futex_async_wait_cancel(futex_wait_id);
+    if (command_cancel)
+        command_cancel(ring_id, command_id, command_token);
     if (link_timeout_canceled)
         (void)kernel_io_uring_completion_add_async(
             ring_id, link_timeout_user_data,
             -EDGE_LINUX_ECANCELED, 0u);
+    return result;
+}
+
+int kernel_io_uring_command_add(
+        int32_t ring_id, uint64_t user_data, int32_t descriptor,
+        uint8_t opcode, kernel_io_uring_command_cancel_t cancel,
+        uint64_t token, uint64_t *command_id) {
+    kernel_fd_operation_lease_t descriptor_lease = {0};
+    kernel_io_uring_t *ring;
+    uint64_t file_description_id = 0u;
+    uint64_t flags;
+    uint32_t slot;
+    int result;
+
+    if (!command_id || descriptor < 0)
+        return -EDGE_LINUX_EINVAL;
+    *command_id = 0u;
+    result = kernel_fd_operation_acquire(
+        descriptor, &descriptor_lease);
+    if (result < 0) return result;
+    result = kernel_fd_operation_description_id(
+        &descriptor_lease, &file_description_id);
+    if (result < 0) goto out;
+
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+    } else {
+        for (slot = 0; slot < KERNEL_IO_URING_MAX_PENDING; ++slot)
+            if (!ring->pending[slot].used) break;
+        if (slot == KERNEL_IO_URING_MAX_PENDING) {
+            result = -EDGE_LINUX_EAGAIN;
+        } else {
+            kernel_io_uring_pending_t *pending = &ring->pending[slot];
+
+            memset(pending, 0, sizeof(*pending));
+            pending->used = 1u;
+            pending->kind = IO_URING_PENDING_COMMAND;
+            pending->opcode = opcode;
+            pending->descriptor = descriptor;
+            pending->file_description_id = file_description_id;
+            pending->user_data = user_data;
+            pending->command_cancel = cancel;
+            pending->command_token = token;
+            ++ring->next_pending_sequence;
+            if (!ring->next_pending_sequence)
+                ++ring->next_pending_sequence;
+            pending->sequence = ring->next_pending_sequence;
+            result = kernel_fd_operation_move(
+                &pending->descriptor_lease, &descriptor_lease);
+            if (result < 0) {
+                memset(pending, 0, sizeof(*pending));
+            } else {
+                *command_id = pending->sequence;
+            }
+        }
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+
+out:
+    if (kernel_fd_operation_view(&descriptor_lease))
+        (void)kernel_fd_operation_release(&descriptor_lease);
     return result;
 }
 
@@ -6682,6 +6767,52 @@ static int io_uring_link_timeout_disarm(
     }
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     return result;
+}
+
+int kernel_io_uring_command_complete(
+        int32_t ring_id, uint64_t command_id, int32_t result,
+        uint32_t completion_flags) {
+    kernel_fd_operation_lease_t descriptor_lease = {0};
+    kernel_io_uring_t *ring;
+    uint64_t timeout_user_data = 0u;
+    uint64_t user_data = 0u;
+    uint64_t flags;
+    int found = 0;
+
+    if (!command_id) return -EDGE_LINUX_EINVAL;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (ring) {
+        for (uint32_t slot = 0;
+             slot < KERNEL_IO_URING_MAX_PENDING; ++slot) {
+            kernel_io_uring_pending_t *pending = &ring->pending[slot];
+
+            if (!pending->used ||
+                pending->kind != IO_URING_PENDING_COMMAND ||
+                pending->sequence != command_id)
+                continue;
+            if (kernel_fd_operation_move(
+                    &descriptor_lease,
+                    &pending->descriptor_lease) < 0)
+                break;
+            user_data = pending->user_data;
+            memset(pending, 0, sizeof(*pending));
+            found = 1;
+            break;
+        }
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (kernel_fd_operation_view(&descriptor_lease))
+        (void)kernel_fd_operation_release(&descriptor_lease);
+    if (!found)
+        return ring ? -EDGE_LINUX_ENOENT : -EDGE_LINUX_EBADF;
+    if (io_uring_link_timeout_disarm(
+            ring_id, command_id, &timeout_user_data) == 0)
+        (void)kernel_io_uring_completion_add_async(
+            ring_id, timeout_user_data,
+            -EDGE_LINUX_ECANCELED, 0u);
+    return kernel_io_uring_completion_add_async(
+        ring_id, user_data, result, completion_flags);
 }
 
 static uint32_t io_uring_link_timeout_expire(

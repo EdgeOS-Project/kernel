@@ -105,6 +105,9 @@ typedef int (*kernel_io_uring_waitid_copy_t)(
     uint64_t address_space, uint64_t user_address,
     const kernel_process_wait_result_t *result, int event_present);
 
+typedef void (*kernel_io_uring_command_cancel_t)(
+    int32_t ring_id, uint64_t command_id, uint64_t token);
+
 #define KERNEL_IO_URING_CANCEL_ALL       (1u << 0)
 #define KERNEL_IO_URING_CANCEL_FD        (1u << 1)
 #define KERNEL_IO_URING_CANCEL_ANY       (1u << 2)
@@ -382,6 +385,13 @@ int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data);
 int kernel_io_uring_pending_cancel_match(
     int32_t ring_id, const kernel_io_uring_cancel_match_t *match,
     uint64_t *canceled_user_data);
+int kernel_io_uring_command_add(
+    int32_t ring_id, uint64_t user_data, int32_t descriptor,
+    uint8_t opcode, kernel_io_uring_command_cancel_t cancel,
+    uint64_t token, uint64_t *command_id);
+int kernel_io_uring_command_complete(
+    int32_t ring_id, uint64_t command_id, int32_t result,
+    uint32_t flags);
 int kernel_io_uring_worker_add(
     int32_t ring_id, int32_t owner_pid,
     const struct edge_linux_io_uring_sqe *submission,
