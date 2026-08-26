@@ -107,6 +107,8 @@
      IO_URING_FIXED_FILES_PER_PAGE)
 #define IO_URING_MAX_COMPLETION_OVERFLOW 128u
 
+typedef struct io_uring_worker_vectors io_uring_worker_vectors_t;
+
 typedef struct kernel_io_uring_pending {
     uint8_t used;
     uint8_t kind;
@@ -143,6 +145,7 @@ typedef struct kernel_io_uring_pending {
     kernel_fd_operation_lease_t descriptor_lease;
     int32_t worker_owner_pid;
     uint32_t worker_reserved;
+    io_uring_worker_vectors_t *worker_vectors;
     struct edge_linux_io_uring_sqe worker_submission;
 } kernel_io_uring_pending_t;
 
@@ -157,6 +160,14 @@ typedef struct kernel_io_uring_fixed_buffer {
     kernel_io_uring_page_t inline_pages[
         KERNEL_IO_URING_INLINE_FIXED_BUFFER_PAGES];
 } kernel_io_uring_fixed_buffer_t;
+
+struct io_uring_worker_vectors {
+    uint32_t references;
+    uint32_t page_count;
+    uint32_t count;
+    uint32_t reserved;
+    struct edge_linux_iovec vectors[];
+};
 
 #define IO_URING_ZCRX_BITMAP_WORDS \
     ((KERNEL_IO_URING_MAX_ZCRX_CHUNKS + 63u) / 64u)
@@ -347,8 +358,12 @@ static int32_t io_uring_event_retain_locked(
 #define IO_URING_PENDING_WORKER 9u
 #define IO_URING_WORKER_FIXED_FILE (1u << 0)
 #define IO_URING_WORKER_CQE_SKIP_SUCCESS (1u << 6)
+#define IO_URING_OP_READV 1u
+#define IO_URING_OP_WRITEV 2u
 #define IO_URING_OP_READ_FIXED 4u
 #define IO_URING_OP_WRITE_FIXED 5u
+#define IO_URING_OP_READV_FIXED 60u
+#define IO_URING_OP_WRITEV_FIXED 61u
 
 static kernel_io_uring_t g_io_urings[KERNEL_IO_URING_MAX_RINGS];
 static kernel_io_uring_fixed_buffer_t
@@ -685,6 +700,55 @@ static void io_uring_fixed_buffer_release(
     memset(buffer, 0, sizeof(*buffer));
 }
 
+static io_uring_worker_vectors_t *io_uring_worker_vectors_create(
+        const struct edge_linux_iovec *vectors, uint32_t count) {
+    io_uring_worker_vectors_t *capture;
+    uint64_t bytes;
+    uint64_t page_count;
+
+    if (!count) return 0;
+    if (!vectors || !g_io_uring_allocator.allocate_metadata_pages ||
+        !g_io_uring_allocator.release_metadata_pages)
+        return 0;
+    bytes = sizeof(*capture) +
+        (uint64_t)count * sizeof(capture->vectors[0]);
+    if (bytes < sizeof(*capture)) return 0;
+    page_count = (bytes + KERNEL_IO_URING_PAGE_SIZE - 1u) /
+        KERNEL_IO_URING_PAGE_SIZE;
+    if (!page_count || page_count > UINT32_MAX) return 0;
+    capture = (io_uring_worker_vectors_t *)
+        g_io_uring_allocator.allocate_metadata_pages(
+            g_io_uring_allocator.context, (uint32_t)page_count);
+    if (!capture) return 0;
+    memset(capture, 0,
+           (size_t)page_count * KERNEL_IO_URING_PAGE_SIZE);
+    capture->references = 1u;
+    capture->page_count = (uint32_t)page_count;
+    capture->count = count;
+    memcpy(capture->vectors, vectors,
+           (size_t)count * sizeof(vectors[0]));
+    return capture;
+}
+
+static io_uring_worker_vectors_t *io_uring_worker_vectors_retain(
+        io_uring_worker_vectors_t *capture) {
+    if (!capture || !capture->references) return 0;
+    (void)__atomic_add_fetch(
+        &capture->references, 1u, __ATOMIC_RELAXED);
+    return capture;
+}
+
+static void io_uring_worker_vectors_release(
+        io_uring_worker_vectors_t *capture) {
+    if (!capture) return;
+    if (__atomic_sub_fetch(
+            &capture->references, 1u, __ATOMIC_ACQ_REL) != 0u)
+        return;
+    g_io_uring_allocator.release_metadata_pages(
+        g_io_uring_allocator.context, capture,
+        capture->page_count);
+}
+
 static int io_uring_fixed_buffer_pin(
         kernel_io_uring_fixed_buffer_t *destination,
         uint64_t address_space,
@@ -873,6 +937,10 @@ static void io_uring_release_storage(kernel_io_uring_t *ring) {
             pending->kind == IO_URING_PENDING_FUTEX)
             (void)kernel_futex_async_wait_cancel(
                 pending->futex_wait_id);
+        if (pending->used &&
+            pending->kind == IO_URING_PENDING_WORKER)
+            io_uring_worker_vectors_release(
+                pending->worker_vectors);
     }
     for (uint32_t page = 0;
          page < KERNEL_IO_URING_MAX_PBUF_PAGES; ++page) {
@@ -4774,6 +4842,7 @@ int kernel_io_uring_pending_cancel_match(
         uint64_t *canceled_user_data) {
     kernel_fd_operation_lease_t descriptor_lease = {0};
     kernel_io_uring_page_t read_page = {0};
+    io_uring_worker_vectors_t *worker_vectors = 0;
     int32_t epoll_index = -1;
     uint64_t canceled_sequence = 0;
     uint64_t link_timeout_user_data = 0;
@@ -4827,6 +4896,8 @@ int kernel_io_uring_pending_cancel_match(
             }
             canceled_sequence = ring->pending[slot].sequence;
             *canceled_user_data = ring->pending[slot].user_data;
+            if (ring->pending[slot].kind == IO_URING_PENDING_WORKER)
+                worker_vectors = ring->pending[slot].worker_vectors;
             memset(&ring->pending[slot], 0, sizeof(ring->pending[slot]));
             break;
         }
@@ -4852,6 +4923,7 @@ int kernel_io_uring_pending_cancel_match(
     if (read_page.address)
         g_io_uring_allocator.release(
             g_io_uring_allocator.context, &read_page);
+    io_uring_worker_vectors_release(worker_vectors);
     if (epoll_index >= 0)
         kernel_epoll_object_release(epoll_index);
     if (futex_wait_id)
@@ -4877,13 +4949,17 @@ int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data) {
 int kernel_io_uring_worker_add(
         int32_t ring_id, int32_t owner_pid,
         const struct edge_linux_io_uring_sqe *submission,
-        uint32_t ready_operation, uint32_t runtime_flags) {
+        uint32_t ready_operation, uint32_t runtime_flags,
+        const struct edge_linux_iovec *vectors,
+        uint32_t vector_count) {
     kernel_fd_operation_lease_t descriptor_lease = {0};
     kernel_fd_operation_lease_t *fixed_lease = 0;
+    io_uring_worker_vectors_t *worker_vectors = 0;
     kernel_io_uring_pending_t *pending = 0;
     kernel_io_uring_t *ring;
     uint64_t file_description_id = 0u;
     uint64_t flags;
+    int vector_operation;
     int result;
 
     if (!submission || owner_pid <= 0 ||
@@ -4894,10 +4970,23 @@ int kernel_io_uring_worker_add(
                            KERNEL_IO_TRANSFER_SYNC_DATA |
                            KERNEL_IO_TRANSFER_SYNC_FILE)))
         return -EDGE_LINUX_EINVAL;
+    vector_operation = submission->opcode == IO_URING_OP_READV ||
+                       submission->opcode == IO_URING_OP_WRITEV ||
+                       submission->opcode == IO_URING_OP_READV_FIXED ||
+                       submission->opcode == IO_URING_OP_WRITEV_FIXED;
+    if ((vector_operation && vector_count != submission->length) ||
+        (!vector_operation && (vectors || vector_count)) ||
+        (vector_count && !vectors))
+        return -EDGE_LINUX_EINVAL;
+    if (vector_count) {
+        worker_vectors = io_uring_worker_vectors_create(
+            vectors, vector_count);
+        if (!worker_vectors) return -EDGE_LINUX_ENOMEM;
+    }
     if (!(submission->flags & IO_URING_WORKER_FIXED_FILE)) {
         result = kernel_fd_operation_acquire(
             submission->descriptor, &descriptor_lease);
-        if (result < 0) return result;
+        if (result < 0) goto finish;
         result = kernel_fd_operation_description_id(
             &descriptor_lease, &file_description_id);
         if (result < 0) goto finish;
@@ -4957,6 +5046,8 @@ int kernel_io_uring_worker_add(
     pending->sequence = ring->next_pending_sequence;
     pending->worker_owner_pid = owner_pid;
     pending->worker_reserved = runtime_flags;
+    pending->worker_vectors = worker_vectors;
+    worker_vectors = 0;
     pending->worker_submission = *submission;
     result = 0;
 unlock:
@@ -4964,6 +5055,7 @@ unlock:
 finish:
     if (kernel_fd_operation_view(&descriptor_lease))
         (void)kernel_fd_operation_release(&descriptor_lease);
+    io_uring_worker_vectors_release(worker_vectors);
     if (result == 0) kernel_deferred_work_request();
     return result;
 }
@@ -5065,6 +5157,7 @@ int kernel_io_uring_worker_finish(
         int32_t ring_id, uint64_t sequence, int32_t result,
         uint32_t completion_flags) {
     kernel_fd_operation_lease_t descriptor_lease = {0};
+    io_uring_worker_vectors_t *worker_vectors = 0;
     kernel_io_uring_pending_t *pending = 0;
     kernel_io_uring_t *ring;
     uint64_t user_data = 0u;
@@ -5098,11 +5191,13 @@ int kernel_io_uring_worker_finish(
     finish_result = kernel_fd_operation_move(
         &descriptor_lease, &pending->descriptor_lease);
     if (finish_result < 0) goto unlock;
+    worker_vectors = pending->worker_vectors;
     memset(pending, 0, sizeof(*pending));
 unlock:
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     if (kernel_fd_operation_view(&descriptor_lease))
         (void)kernel_fd_operation_release(&descriptor_lease);
+    io_uring_worker_vectors_release(worker_vectors);
     if (finish_result < 0 || result == -EDGE_LINUX_EAGAIN)
         return finish_result;
     if ((submission_flags & IO_URING_WORKER_CQE_SKIP_SUCCESS) &&
@@ -5115,6 +5210,7 @@ unlock:
 typedef struct io_uring_independent_work {
     kernel_fd_operation_lease_t descriptor_lease;
     kernel_io_uring_fixed_buffer_t buffer;
+    io_uring_worker_vectors_t *vectors;
     struct edge_linux_io_uring_sqe submission;
     kernel_io_file_range_info_t information;
     uint64_t sequence;
@@ -5124,12 +5220,14 @@ typedef struct io_uring_independent_work {
     uint32_t first_page_offset;
     uint32_t runtime_flags;
     uint8_t writing;
+    uint8_t vector_operation;
 } io_uring_independent_work_t;
 
 static void io_uring_independent_work_release(
         io_uring_independent_work_t *work) {
     if (!work) return;
     io_uring_fixed_buffer_release(&work->buffer);
+    io_uring_worker_vectors_release(work->vectors);
     if (kernel_fd_operation_view(&work->descriptor_lease))
         (void)kernel_fd_operation_release(&work->descriptor_lease);
 }
@@ -5218,7 +5316,9 @@ static int io_uring_independent_work_prepare(
             pending->kind != IO_URING_PENDING_WORKER ||
             pending->ready_latched ||
             (pending->opcode != IO_URING_OP_READ_FIXED &&
-             pending->opcode != IO_URING_OP_WRITE_FIXED)) {
+             pending->opcode != IO_URING_OP_WRITE_FIXED &&
+             pending->opcode != IO_URING_OP_READV_FIXED &&
+             pending->opcode != IO_URING_OP_WRITEV_FIXED)) {
             spin_unlock_irqrestore(&g_io_uring_lock, flags);
             continue;
         }
@@ -5226,36 +5326,71 @@ static int io_uring_independent_work_prepare(
         work->sequence = pending->sequence;
         work->submission = pending->worker_submission;
         work->runtime_flags = pending->worker_reserved;
-        work->writing = pending->opcode == IO_URING_OP_WRITE_FIXED;
+        work->writing = pending->opcode == IO_URING_OP_WRITE_FIXED ||
+                        pending->opcode == IO_URING_OP_WRITEV_FIXED;
+        work->vector_operation =
+            pending->opcode == IO_URING_OP_READV_FIXED ||
+            pending->opcode == IO_URING_OP_WRITEV_FIXED;
         result = kernel_fd_operation_clone(
             &work->descriptor_lease, &pending->descriptor_lease);
         if (result < 0) {
             spin_unlock_irqrestore(&g_io_uring_lock, flags);
             continue;
         }
-        if (work->submission.buffer_index >= ring->fixed_buffer_count) {
+        if (work->vector_operation && work->submission.length) {
+            work->vectors = io_uring_worker_vectors_retain(
+                pending->worker_vectors);
+            if (!work->vectors ||
+                work->vectors->count != work->submission.length)
+                work->terminal_result = -EDGE_LINUX_EFAULT;
+        }
+        if (work->vector_operation && !work->submission.length) {
+            /* A zero-vector request completes without a fixed buffer. */
+        } else if (work->submission.buffer_index >=
+                   ring->fixed_buffer_count) {
             work->terminal_result = -EDGE_LINUX_EFAULT;
         } else {
             buffer = &ring->fixed_buffers[work->submission.buffer_index];
-            end = work->submission.address + work->submission.length;
-            if (!buffer->address ||
-                end < work->submission.address ||
-                work->submission.address < buffer->address ||
-                end > buffer->address + buffer->length ||
-                end < buffer->address) {
-                work->terminal_result = -EDGE_LINUX_EFAULT;
-            } else if (!buffer->page_count) {
+            if (!buffer->address || !buffer->page_count ||
+                buffer->address > UINT64_MAX - buffer->length) {
                 work->terminal_result = -EDGE_LINUX_EFAULT;
             } else {
-                result = io_uring_fixed_buffer_retain(
-                    &work->buffer, buffer);
-                if (result < 0) work->terminal_result = result;
-                else {
-                    work->buffer_offset =
-                        work->submission.address - buffer->address;
-                    work->first_page_offset = (uint32_t)(
-                        buffer->address &
-                        (KERNEL_IO_URING_PAGE_SIZE - 1u));
+                if (work->vector_operation && !work->terminal_result) {
+                    for (uint32_t index = 0;
+                         index < work->vectors->count; ++index) {
+                        const struct edge_linux_iovec *vector =
+                            &work->vectors->vectors[index];
+
+                        end = vector->iov_base + vector->iov_len;
+                        if (end < vector->iov_base ||
+                            vector->iov_base < buffer->address ||
+                            end > buffer->address + buffer->length) {
+                            work->terminal_result =
+                                -EDGE_LINUX_EFAULT;
+                            break;
+                        }
+                    }
+                } else if (!work->vector_operation) {
+                    end = work->submission.address +
+                          work->submission.length;
+                    if (end < work->submission.address ||
+                        work->submission.address < buffer->address ||
+                        end > buffer->address + buffer->length)
+                        work->terminal_result =
+                            -EDGE_LINUX_EFAULT;
+                    else
+                        work->buffer_offset =
+                            work->submission.address - buffer->address;
+                }
+                if (!work->terminal_result) {
+                    result = io_uring_fixed_buffer_retain(
+                        &work->buffer, buffer);
+                    if (result < 0)
+                        work->terminal_result = result;
+                    else
+                        work->first_page_offset = (uint32_t)(
+                            buffer->address &
+                            (KERNEL_IO_URING_PAGE_SIZE - 1u));
                 }
             }
         }
@@ -5296,11 +5431,41 @@ static int io_uring_independent_work_prepare(
     return 0;
 }
 
+static int io_uring_independent_buffer_copy(
+        io_uring_independent_work_t *work, uint64_t buffer_offset,
+        void *linear, uint32_t length, int from_fixed) {
+    uint32_t copied = 0u;
+
+    while (copied < length) {
+        uint64_t absolute = work->first_page_offset +
+            buffer_offset + copied;
+        uint32_t page = (uint32_t)(
+            absolute / KERNEL_IO_URING_PAGE_SIZE);
+        uint32_t within = (uint32_t)(
+            absolute % KERNEL_IO_URING_PAGE_SIZE);
+        uint32_t part = KERNEL_IO_URING_PAGE_SIZE - within;
+        kernel_io_uring_page_t *entry =
+            io_uring_fixed_buffer_page(&work->buffer, page);
+
+        if (!entry || !entry->address) return -EDGE_LINUX_EFAULT;
+        if (part > length - copied) part = length - copied;
+        if (from_fixed)
+            memcpy((uint8_t *)linear + copied,
+                   (uint8_t *)entry->address + within, part);
+        else
+            memcpy((uint8_t *)entry->address + within,
+                   (uint8_t *)linear + copied, part);
+        copied += part;
+    }
+    return 0;
+}
+
 static int32_t io_uring_independent_work_execute(
         io_uring_independent_work_t *work) {
     kernel_io_buffer_t bounce;
     uint64_t current_offset;
     uint64_t transferred = 0u;
+    uint32_t segment_count;
     int positional;
     int result;
 
@@ -5317,81 +5482,63 @@ static int32_t io_uring_independent_work_execute(
         current_offset = work->information.size;
     result = kernel_io_buffer_acquire(&bounce);
     if (result < 0) return result;
-    while (transferred < work->submission.length) {
-        uint32_t chunk = (uint32_t)(
-            work->submission.length - transferred > KERNEL_IO_BUFFER_SIZE ?
-                KERNEL_IO_BUFFER_SIZE :
-                work->submission.length - transferred);
-        uint32_t copied = 0u;
-        int completed;
+    segment_count = work->vector_operation ?
+        work->vectors->count : 1u;
+    for (uint32_t segment = 0; segment < segment_count; ++segment) {
+        uint64_t buffer_offset = work->vector_operation ?
+            work->vectors->vectors[segment].iov_base -
+                work->buffer.address :
+            work->buffer_offset;
+        uint64_t segment_length = work->vector_operation ?
+            work->vectors->vectors[segment].iov_len :
+            work->submission.length;
+        uint64_t segment_done = 0u;
 
-        if (work->writing) {
-            while (copied < chunk) {
-                uint64_t absolute = work->first_page_offset +
-                    work->buffer_offset + transferred + copied;
-                uint32_t page = (uint32_t)(
-                    absolute / KERNEL_IO_URING_PAGE_SIZE);
-                uint32_t within = (uint32_t)(
-                    absolute % KERNEL_IO_URING_PAGE_SIZE);
-                uint32_t part = KERNEL_IO_URING_PAGE_SIZE - within;
-                kernel_io_uring_page_t *entry =
-                    io_uring_fixed_buffer_page(&work->buffer, page);
+        while (segment_done < segment_length) {
+            uint32_t chunk = (uint32_t)(
+                segment_length - segment_done > KERNEL_IO_BUFFER_SIZE ?
+                    KERNEL_IO_BUFFER_SIZE :
+                    segment_length - segment_done);
+            int completed;
 
-                if (!entry || !entry->address) {
-                    result = transferred ? (int)transferred :
-                        -EDGE_LINUX_EFAULT;
-                    goto finish;
-                }
-                if (part > chunk - copied) part = chunk - copied;
-                memcpy(bounce.data + copied,
-                       (uint8_t *)entry->address + within, part);
-                copied += part;
+            if (work->writing &&
+                io_uring_independent_buffer_copy(
+                    work, buffer_offset + segment_done,
+                    bounce.data, chunk, 1) < 0) {
+                result = transferred ? (int)transferred :
+                    -EDGE_LINUX_EFAULT;
+                goto complete;
             }
-        }
-        completed = io_uring_independent_file_range(
-            &work->descriptor_lease,
-            work->writing ? KERNEL_IO_FILE_RANGE_WRITE :
-                            KERNEL_IO_FILE_RANGE_READ,
-            current_offset, bounce.data, chunk, 0);
-        if (completed < 0) {
-            result = transferred ? (int)transferred : completed;
-            goto finish;
-        }
-        if ((uint32_t)completed > chunk) {
-            result = transferred ? (int)transferred :
-                -EDGE_LINUX_EIO;
-            goto finish;
-        }
-        if (!work->writing) {
-            copied = 0u;
-            while (copied < (uint32_t)completed) {
-                uint64_t absolute = work->first_page_offset +
-                    work->buffer_offset + transferred + copied;
-                uint32_t page = (uint32_t)(
-                    absolute / KERNEL_IO_URING_PAGE_SIZE);
-                uint32_t within = (uint32_t)(
-                    absolute % KERNEL_IO_URING_PAGE_SIZE);
-                uint32_t part = KERNEL_IO_URING_PAGE_SIZE - within;
-                kernel_io_uring_page_t *entry =
-                    io_uring_fixed_buffer_page(&work->buffer, page);
-
-                if (!entry || !entry->address) {
-                    result = transferred ? (int)transferred :
-                        -EDGE_LINUX_EFAULT;
-                    goto finish;
-                }
-                if (part > (uint32_t)completed - copied)
-                    part = (uint32_t)completed - copied;
-                memcpy((uint8_t *)entry->address + within,
-                       bounce.data + copied, part);
-                copied += part;
+            completed = io_uring_independent_file_range(
+                &work->descriptor_lease,
+                work->writing ? KERNEL_IO_FILE_RANGE_WRITE :
+                                KERNEL_IO_FILE_RANGE_READ,
+                current_offset, bounce.data, chunk, 0);
+            if (completed < 0) {
+                result = transferred ? (int)transferred : completed;
+                goto complete;
             }
+            if ((uint32_t)completed > chunk) {
+                result = transferred ? (int)transferred :
+                    -EDGE_LINUX_EIO;
+                goto complete;
+            }
+            if (!work->writing && completed &&
+                io_uring_independent_buffer_copy(
+                    work, buffer_offset + segment_done,
+                    bounce.data, (uint32_t)completed, 0) < 0) {
+                result = transferred ? (int)transferred :
+                    -EDGE_LINUX_EFAULT;
+                goto complete;
+            }
+            transferred += (uint32_t)completed;
+            segment_done += (uint32_t)completed;
+            current_offset += (uint32_t)completed;
+            if ((uint32_t)completed != chunk) goto complete;
         }
-        transferred += (uint32_t)completed;
-        current_offset += (uint32_t)completed;
-        if ((uint32_t)completed != chunk) break;
     }
     result = (int)transferred;
+complete:
     if (!positional &&
         work->information.kind == KERNEL_IO_FILE_REGULAR && transferred)
         (void)io_uring_independent_file_range(
@@ -5414,7 +5561,6 @@ static int32_t io_uring_independent_work_execute(
             0u, 0, 0u, 0);
         if (sync_result < 0) result = sync_result;
     }
-finish:
     kernel_io_buffer_release(&bounce);
     return result;
 }
@@ -5581,6 +5727,7 @@ static int io_uring_multishot_buffer_select(
 typedef struct io_uring_pending_release {
     kernel_fd_operation_lease_t descriptor_lease;
     kernel_io_uring_page_t read_page;
+    io_uring_worker_vectors_t *worker_vectors;
     int32_t epoll_index;
     uint64_t futex_wait_id;
 } io_uring_pending_release_t;
@@ -5610,6 +5757,8 @@ static int io_uring_pending_remove_locked(
         release->epoll_index = pending->descriptor;
     if (pending->kind == IO_URING_PENDING_FUTEX)
         release->futex_wait_id = pending->futex_wait_id;
+    if (pending->kind == IO_URING_PENDING_WORKER)
+        release->worker_vectors = pending->worker_vectors;
     memset(pending, 0, sizeof(*pending));
     return 0;
 }
@@ -5623,6 +5772,7 @@ static void io_uring_pending_release_finish(
     if (release->read_page.address)
         g_io_uring_allocator.release(
             g_io_uring_allocator.context, &release->read_page);
+    io_uring_worker_vectors_release(release->worker_vectors);
     if (release->epoll_index >= 0)
         kernel_epoll_object_release(release->epoll_index);
     if (release->futex_wait_id)

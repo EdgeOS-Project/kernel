@@ -56,6 +56,7 @@
 #define IORING_UNREGISTER_BUFFERS 1u
 #define IORING_OP_READ_FIXED 4u
 #define IORING_OP_WRITE_FIXED 5u
+#define IORING_OP_READV_FIXED 60u
 #define IOSQE_ASYNC (1u << 4)
 #define IORING_OFF_SQ_RING 0x00000000ull
 #define IORING_OFF_CQ_RING 0x08000000ull
@@ -446,6 +447,93 @@ static int submit_async_read(
     return (int)entered;
 }
 
+static int submit_async_vector_read(
+        long ring, struct io_uring_params *parameters,
+        void *sq_ring, void *cq_ring, struct io_uring_sqe *sqes,
+        int32_t descriptor, uint64_t first_address,
+        uint32_t first_length, uint64_t second_address,
+        uint32_t second_length, uint64_t user_data,
+        int32_t writer, const void *source) {
+    volatile uint32_t *sq_head = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.head);
+    volatile uint32_t *sq_tail = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.tail);
+    volatile uint32_t *sq_mask = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.ring_mask);
+    volatile uint32_t *sq_array = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.array);
+    volatile uint32_t *cq_head = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters->cq_off.head);
+    volatile uint32_t *cq_tail = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters->cq_off.tail);
+    volatile uint32_t *cq_mask = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters->cq_off.ring_mask);
+    struct io_uring_cqe *cqes = (struct io_uring_cqe *)(void *)(
+        (uint8_t *)cq_ring + parameters->cq_off.cqes);
+    struct linux_iovec *vectors;
+    uint32_t sq_index = *sq_tail & *sq_mask;
+    uint32_t cq_index;
+    uint32_t spins;
+    uint32_t total = first_length + second_length;
+    long child;
+    long entered;
+    long mapping;
+
+    mapping = raw_syscall6(
+        SYS_mmap, 0, PAGE_SIZE, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (result_is_error(mapping)) return -1;
+    vectors = (struct linux_iovec *)(uintptr_t)mapping;
+    vectors[0].base = first_address;
+    vectors[0].length = first_length;
+    vectors[1].base = second_address;
+    vectors[1].length = second_length;
+    bytes_zero(&sqes[sq_index], sizeof(sqes[sq_index]));
+    sqes[sq_index].opcode = IORING_OP_READV_FIXED;
+    sqes[sq_index].flags = IOSQE_ASYNC;
+    sqes[sq_index].descriptor = descriptor;
+    sqes[sq_index].offset = UINT64_MAX;
+    sqes[sq_index].address = (uint64_t)(uintptr_t)vectors;
+    sqes[sq_index].length = 2u;
+    sqes[sq_index].user_data = user_data;
+    sqes[sq_index].buffer_index = 0u;
+    sq_array[sq_index] = sq_index;
+    __atomic_store_n(sq_tail, *sq_tail + 1u, __ATOMIC_RELEASE);
+    entered = raw_syscall6(
+        SYS_io_uring_enter, ring, 1, 0, 0, 0, 0);
+    if (entered != 1 || *sq_head != *sq_tail || *cq_head != *cq_tail) {
+        (void)raw_syscall6(
+            SYS_munmap, mapping, PAGE_SIZE, 0, 0, 0, 0);
+        return -1;
+    }
+    if (raw_syscall6(
+            SYS_munmap, mapping, PAGE_SIZE, 0, 0, 0, 0) != 0)
+        return -1;
+    child = raw_syscall6(
+        SYS_clone, SIGCHLD, 0, 0, 0, 0, 0);
+    if (child < 0) return -1;
+    if (child == 0) {
+        long written = raw_syscall6(
+            SYS_write, writer, (long)source,
+            total, 0, 0, 0);
+        raw_syscall6(
+            SYS_exit, written == (long)total ? 0 : 1,
+            0, 0, 0, 0, 0);
+        for (;;) { }
+    }
+    for (spins = 0u; spins < 200000000u; ++spins) {
+        if (__atomic_load_n(cq_tail, __ATOMIC_ACQUIRE) != *cq_head)
+            break;
+        __asm__ volatile("" ::: "memory");
+    }
+    if (*cq_head == *cq_tail) return -1;
+    cq_index = *cq_head & *cq_mask;
+    if (cqes[cq_index].user_data != user_data) return -1;
+    entered = cqes[cq_index].result;
+    __atomic_store_n(cq_head, *cq_head + 1u, __ATOMIC_RELEASE);
+    return (int)entered;
+}
+
 static int run_probe(void) {
     static const char first[] = "registered-before-unmap\n";
     static const char second[] = "read-after-unmap\n";
@@ -643,6 +731,29 @@ static int run_probe(void) {
         SYS_read, output_pipe[0], (long)observed,
         sizeof(first), 0, 0, 0) != (long)sizeof(first);
     failures += !bytes_equal(observed, first, sizeof(first));
+
+    failures += submit_async_vector_read(
+        ring, &parameters, sq_ring, cq_ring, sqes,
+        input_pipe[0], buffer.base + SECOND_OFFSET + 512u, 7u,
+        buffer.base + SECOND_OFFSET + 768u,
+        sizeof(second) - 7u, 0x4153594e43564543ull,
+        input_pipe[1], second) != (int)sizeof(second);
+    failures += submit(
+        ring, &parameters, sq_ring, cq_ring, sqes,
+        IORING_OP_WRITE_FIXED, output_pipe[1],
+        buffer.base + SECOND_OFFSET + 512u, 7u,
+        0x5645435645524946ull) != 7;
+    failures += submit(
+        ring, &parameters, sq_ring, cq_ring, sqes,
+        IORING_OP_WRITE_FIXED, output_pipe[1],
+        buffer.base + SECOND_OFFSET + 768u,
+        sizeof(second) - 7u, 0x5645435645524932ull) !=
+        (int)(sizeof(second) - 7u);
+    bytes_zero(observed, sizeof(observed));
+    failures += raw_syscall6(
+        SYS_read, output_pipe[0], (long)observed,
+        sizeof(second), 0, 0, 0) != (long)sizeof(second);
+    failures += !bytes_equal(observed, second, sizeof(second));
 
     result = raw_syscall6(
         SYS_socketpair, AF_UNIX, SOCK_STREAM, 0,

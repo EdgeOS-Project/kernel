@@ -386,7 +386,10 @@ int64_t kernel_fd_operation_file_range(
     if (descriptor == 74 &&
         request->operation == KERNEL_IO_FILE_RANGE_WRITE) {
         assert(request->buffer);
-        memcpy(g_file_data, request->buffer, request->length);
+        assert(request->offset + request->length <=
+               sizeof(g_file_data));
+        memcpy(g_file_data + request->offset,
+               request->buffer, request->length);
         return request->length;
     }
     if (descriptor == 75 &&
@@ -2252,6 +2255,7 @@ int main(void) {
         const uint64_t output_address = 0x700080u;
         const uint64_t input_address = 0x700180u;
         const uint64_t crossing_address = 0x700ff8u;
+        struct edge_linux_iovec fixed_vectors[2];
 
         assert(g_references[first_page] == 0u);
         assert(g_references[first_page + 1u] == 0u);
@@ -2333,7 +2337,7 @@ int main(void) {
         g_ready_descriptor = -1;
         assert(kernel_io_uring_worker_add(
                    second_ring_id, 42, &independent_submission,
-                   KERNEL_IO_READ_CURRENT, 0u) == 0);
+                   KERNEL_IO_READ_CURRENT, 0u, 0, 0u) == 0);
         assert(g_deferred_work_requests != 0u);
         assert(kernel_io_uring_worker_collect(8u) == 0u);
         assert(kernel_io_uring_completion_count(second_ring_id) == 0u);
@@ -2360,7 +2364,7 @@ int main(void) {
         g_ready_generation = g_descriptor_generation[74];
         assert(kernel_io_uring_worker_add(
                    second_ring_id, 42, &independent_submission,
-                   KERNEL_IO_WRITE_CURRENT, 0u) == 0);
+                   KERNEL_IO_WRITE_CURRENT, 0u, 0, 0u) == 0);
         assert(kernel_io_uring_worker_collect(8u) == 1u);
         assert(kernel_io_uring_completion_count(second_ring_id) == 2u);
         assert(independent_completion[1].user_data ==
@@ -2382,7 +2386,8 @@ int main(void) {
                    second_ring_id, 42, &independent_submission,
                    KERNEL_IO_WRITE_CURRENT,
                    KERNEL_IO_TRANSFER_APPEND |
-                       KERNEL_IO_TRANSFER_SYNC_DATA) == 0);
+                       KERNEL_IO_TRANSFER_SYNC_DATA,
+                   0, 0u) == 0);
         assert(kernel_io_uring_worker_collect(8u) == 1u);
         assert(kernel_io_uring_completion_count(second_ring_id) == 3u);
         assert(independent_completion[2].user_data ==
@@ -2393,6 +2398,46 @@ int main(void) {
         assert(g_file_write_completions == 1u);
         assert(g_file_sync_data_calls == 1u);
         independent_submission.operation_flags = 0u;
+        g_ready_descriptor = -1;
+
+        memcpy(&g_pages[first_page][0x80u], output, 5u);
+        memcpy(&g_pages[first_page][0x180u], output + 5u,
+               sizeof(output) - 5u);
+        fixed_vectors[0].iov_base = output_address;
+        fixed_vectors[0].iov_len = 5u;
+        fixed_vectors[1].iov_base = input_address;
+        fixed_vectors[1].iov_len = sizeof(output) - 5u;
+        independent_submission.opcode = 61u;
+        independent_submission.descriptor = 74;
+        independent_submission.address = 0xdead0000u;
+        independent_submission.length = 2u;
+        independent_submission.user_data = 0x494e44564543544full;
+        memset(g_file_data, 0, sizeof(g_file_data));
+        g_ready_descriptor = 74;
+        g_ready_generation = g_descriptor_generation[74];
+        assert(kernel_io_uring_worker_add(
+                   second_ring_id, 42, &independent_submission,
+                   KERNEL_IO_WRITE_CURRENT, 0u,
+                   fixed_vectors, 2u) == 0);
+        memset(fixed_vectors, 0, sizeof(fixed_vectors));
+        assert(kernel_io_uring_worker_collect(8u) == 1u);
+        assert(kernel_io_uring_completion_count(second_ring_id) == 4u);
+        assert(independent_completion[3].user_data ==
+                   independent_submission.user_data &&
+               independent_completion[3].result ==
+                   (int32_t)sizeof(output));
+        assert(memcmp(g_file_data, output, sizeof(output)) == 0);
+        independent_submission.length = 0u;
+        independent_submission.user_data = 0x494e445645435a45ull;
+        assert(kernel_io_uring_worker_add(
+                   second_ring_id, 42, &independent_submission,
+                   KERNEL_IO_WRITE_CURRENT, 0u, 0, 0u) == 0);
+        assert(kernel_io_uring_worker_collect(8u) == 1u);
+        assert(kernel_io_uring_completion_count(second_ring_id) == 5u);
+        assert(independent_completion[4].user_data ==
+                   independent_submission.user_data &&
+               independent_completion[4].result == 0);
+        independent_submission.opcode = 5u;
         g_ready_descriptor = -1;
 
         memcpy(&g_pages[first_page][0xff8u], output, 8u);
@@ -2757,7 +2802,7 @@ int main(void) {
         g_ready_generation = g_descriptor_generation[12];
         assert(kernel_io_uring_worker_add(
                    second_ring_id, 42, &worker_submission,
-                   KERNEL_IO_READ_CURRENT, 0u) == 0);
+                   KERNEL_IO_READ_CURRENT, 0u, 0, 0u) == 0);
         assert(g_fixed_file_references == 1u);
         assert(kernel_io_uring_worker_materialize_next(
                    41, -1, &worker_request) == 0);
@@ -2795,7 +2840,7 @@ int main(void) {
         g_ready_generation = g_descriptor_generation[13];
         assert(kernel_io_uring_worker_add(
                    second_ring_id, 42, &worker_submission,
-                   KERNEL_IO_READ_CURRENT, 0u) == 0);
+                   KERNEL_IO_READ_CURRENT, 0u, 0, 0u) == 0);
         assert(g_fixed_file_references == 2u);
         assert(kernel_io_uring_files_unregister(second_ring_id) == 0);
         assert(g_fixed_file_references == 1u);
@@ -2819,7 +2864,7 @@ int main(void) {
         g_ready_generation = g_descriptor_generation[14];
         assert(kernel_io_uring_worker_add(
                    second_ring_id, 42, &worker_submission,
-                   KERNEL_IO_READ_CURRENT, 0u) == 0);
+                   KERNEL_IO_READ_CURRENT, 0u, 0, 0u) == 0);
         assert(g_fixed_file_references == 1u);
         cancel_match.user_data = worker_submission.user_data;
         cancel_match.flags = KERNEL_IO_URING_CANCEL_USERDATA;

@@ -13432,18 +13432,64 @@ static uint32_t edge_linux_io_uring_worker_ready_operation(
 }
 
 static int edge_linux_io_uring_worker_add(
+        edge_linux_syscall_context_t *context,
         int32_t ring_id,
         const struct edge_linux_io_uring_sqe *submission) {
+    kernel_io_vector_scratch_t scratch;
+    const struct edge_linux_iovec *vectors = 0;
+    uint64_t fixed_total = 0u;
+    uint32_t vector_count = 0u;
+    int fixed_vectors;
+    int vector_operation;
     uint32_t runtime_flags;
     int result;
 
+    if (!context) return -EDGE_LINUX_EINVAL;
     result = edge_linux_aio_decode_rw_flags(
         submission->operation_flags, &runtime_flags);
     if (result < 0) return result;
+    vector_operation =
+        submission->opcode == EDGE_LINUX_IORING_OP_READV ||
+        submission->opcode == EDGE_LINUX_IORING_OP_WRITEV ||
+        submission->opcode == EDGE_LINUX_IORING_OP_READV_FIXED ||
+        submission->opcode == EDGE_LINUX_IORING_OP_WRITEV_FIXED;
+    fixed_vectors =
+        submission->opcode == EDGE_LINUX_IORING_OP_READV_FIXED ||
+        submission->opcode == EDGE_LINUX_IORING_OP_WRITEV_FIXED;
+    if (vector_operation) {
+        vector_count = submission->length;
+        if (vector_count > EDGE_LINUX_IOV_MAX)
+            return -EDGE_LINUX_EINVAL;
+        if (vector_count && !submission->address)
+            return -EDGE_LINUX_EFAULT;
+        if (vector_count &&
+            (kernel_io_current_vector_scratch(&scratch) < 0 ||
+             !scratch.vectors || scratch.capacity < vector_count))
+            return -EDGE_LINUX_ENOMEM;
+        for (uint32_t index = 0; index < vector_count; ++index) {
+            uint64_t length;
+
+            result = edge_linux_io_uring_copy_iovec_from_user(
+                context, submission->address, index,
+                &scratch.vectors[index]);
+            if (result < 0) return result;
+            if (!fixed_vectors) continue;
+            length = scratch.vectors[index].iov_len;
+            if (!length) return -EDGE_LINUX_EFAULT;
+            if (length > EDGE_LINUX_MAX_RW_COUNT - fixed_total)
+                return -EDGE_LINUX_EINVAL;
+            result = kernel_io_uring_fixed_buffer_validate(
+                ring_id, submission->buffer_index,
+                scratch.vectors[index].iov_base, length);
+            if (result < 0) return result;
+            fixed_total += length;
+        }
+        vectors = vector_count ? scratch.vectors : 0;
+    }
     return kernel_io_uring_worker_add(
         ring_id, kernel_current_pid(), submission,
         edge_linux_io_uring_worker_ready_operation(submission),
-        runtime_flags);
+        runtime_flags, vectors, vector_count);
 }
 
 static uint32_t edge_linux_io_uring_worker_service(
@@ -13804,7 +13850,7 @@ static int64_t edge_linux_sys_io_uring_enter(
             if ((submission.flags & EDGE_LINUX_IOSQE_ASYNC) &&
                 edge_linux_io_uring_worker_eligible(&submission)) {
                 operation_result = edge_linux_io_uring_worker_add(
-                    ring_id, &submission);
+                    context, ring_id, &submission);
                 if (operation_result == 0)
                     operation_result = EDGE_LINUX_IORING_PENDING_RESULT;
             } else {
@@ -13814,7 +13860,7 @@ static int64_t edge_linux_sys_io_uring_enter(
                 if (operation_result == -EDGE_LINUX_EAGAIN &&
                     edge_linux_io_uring_worker_eligible(&submission)) {
                     operation_result = edge_linux_io_uring_worker_add(
-                        ring_id, &submission);
+                        context, ring_id, &submission);
                     if (operation_result == 0)
                         operation_result =
                             EDGE_LINUX_IORING_PENDING_RESULT;

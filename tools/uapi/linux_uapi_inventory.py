@@ -212,11 +212,12 @@ EDGEOS_ASSESSMENTS = [
             "single-backend pinned fixed-buffer transfers for supported device-specific character descriptors",
             "read and write SQEs deferred through an owner-context worker with retained ordinary or fixed file descriptions, readiness gating, EAGAIN retry, cancellation and CQE_SKIP_SUCCESS completion rules",
             "independent READ_FIXED and WRITE_FIXED worker progression with pinned buffers, retained file descriptions and supported RWF_APPEND, RWF_NOAPPEND, RWF_DSYNC and RWF_SYNC semantics while the owner executes no syscall",
+            "independent READV_FIXED and WRITEV_FIXED worker progression with captured vector metadata and retained pinned buffers after the vector table is unmapped",
             "RECV_ZC for TCP sockets with nodev ZCRX areas, retained descriptions, CQE32 offsets, refill control and copy fallback",
             "SQPOLL setup, affinity validation, non-fixed descriptor feature reporting and SQ_WAKEUP or SQ_WAIT enter control",
         ],
         "missing": [
-            "independent worker progression for ordinary buffers and fixed vectors while the owner executes no syscall",
+            "independent worker progression for ordinary buffers while the owner executes no syscall",
             "device-backed ZCRX registration and ZCRX import/export sharing",
             "remaining URING_CMD socket and device command consumers",
             "remaining ia32 and x32 semantic coverage across supported operations",

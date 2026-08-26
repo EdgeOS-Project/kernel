@@ -114,7 +114,7 @@ class LinuxUapiInventoryTests(unittest.TestCase):
         )
         self.assertEqual(assessment["status"], "partial")
         self.assertIn(
-            "independent worker progression for ordinary buffers and fixed vectors while the owner executes no syscall",
+            "independent worker progression for ordinary buffers while the owner executes no syscall",
             assessment["missing"],
         )
 
