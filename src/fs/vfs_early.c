@@ -421,6 +421,7 @@ int vfs_set_mount_propagation(const char *target, uint32_t propagation,
         propagation > VFS_MOUNT_UNBINDABLE) return -1;
     selected = vfs_find_visible_mount(target);
     if (!selected) return -1;
+    if (strcmp(selected->mountpoint, target) != 0) return -1;
     for (index = 0; index < g_mount_count; ++index) {
         vfs_superblock_t *mount = &g_mount_at(index);
         if (mount != selected &&

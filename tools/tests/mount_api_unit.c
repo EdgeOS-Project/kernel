@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "kernel/linux_mount.h"
+#include "kernel/linux_errno.h"
 #include "kernel/mount_api.h"
 
 static int mount_calls;
@@ -101,8 +102,9 @@ int main(void) {
     failures += check(
         kernel_mount_api_context_configure(
             context, KERNEL_MOUNT_API_SET_FLAG,
-            "ro", 0, 0, workspace, sizeof(workspace)) == 0,
-        "flag configuration");
+            "ro", 0, 0, workspace, sizeof(workspace)) ==
+            -EDGE_LINUX_EINVAL,
+        "VFS flag rejection");
     failures += check(
         kernel_mount_api_context_configure(
             context, KERNEL_MOUNT_API_CREATE,
@@ -123,7 +125,7 @@ int main(void) {
     failures += check(
         (captured_flags & (EDGE_LINUX_MS_RDONLY |
                            EDGE_LINUX_MS_NOEXEC)) ==
-            (EDGE_LINUX_MS_RDONLY | EDGE_LINUX_MS_NOEXEC),
+            EDGE_LINUX_MS_NOEXEC,
         "new mount attributes");
 
     tree = kernel_mount_api_tree_open("/mnt/source", 1, 1);
@@ -149,8 +151,9 @@ int main(void) {
     failures += check(
         kernel_mount_api_context_configure(
             picked, KERNEL_MOUNT_API_SET_FLAG,
-            "noatime", 0, 0, workspace, sizeof(workspace)) == 0,
-        "picked context flag");
+            "noatime", 0, 0, workspace, sizeof(workspace)) ==
+            -EDGE_LINUX_EINVAL,
+        "picked VFS flag rejection");
     failures += check(
         kernel_mount_api_context_configure(
             picked, KERNEL_MOUNT_API_RECONFIGURE,
@@ -161,7 +164,7 @@ int main(void) {
     failures += check(
         (captured_flags & (EDGE_LINUX_MS_REMOUNT |
                            EDGE_LINUX_MS_NOATIME)) ==
-            (EDGE_LINUX_MS_REMOUNT | EDGE_LINUX_MS_NOATIME),
+            EDGE_LINUX_MS_REMOUNT,
         "picked descriptor remount flags");
 
     failures += check(kernel_mount_api_retain(tree) == 0,

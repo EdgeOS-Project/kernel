@@ -2337,6 +2337,7 @@ int vfs_set_mount_propagation(const char *target, uint32_t propagation,
         }
         return -1;
     }
+    if (strcmp(selected->mountpoint, target) != 0) return -1;
     for (int i = 0; i < g_mount_count; ++i) {
         vfs_superblock_t *mount = &g_mount_at(i);
         if (mount != selected &&

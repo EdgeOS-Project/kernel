@@ -49,6 +49,7 @@
 #define MOVE_MOUNT_F_EMPTY_PATH 0x4
 #define MOUNT_ATTR_NOSUID 0x2
 #define MOUNT_ATTR_NOEXEC 0x8
+#define EINVAL 22
 #define ENODEV 19
 
 struct mount_attr {
@@ -99,10 +100,33 @@ static void print_text(const char *text) {
         SYS_write, 1, (long)text, (long)text_length(text), 0, 0, 0);
 }
 
+static void print_number(long value) {
+    char digits[24];
+    unsigned long magnitude;
+    unsigned long position = sizeof(digits);
+
+    if (value < 0) {
+        print_text("-");
+        magnitude = (unsigned long)(-(value + 1)) + 1u;
+    } else {
+        magnitude = (unsigned long)value;
+    }
+    do {
+        digits[--position] = (char)('0' + magnitude % 10u);
+        magnitude /= 10u;
+    } while (magnitude && position);
+    (void)raw_syscall6(SYS_write, 1, (long)&digits[position],
+                       sizeof(digits) - position, 0, 0, 0);
+}
+
 static int expect_result(const char *name, long actual, long expected) {
     if (actual == expected) return 0;
     print_text("FAIL ");
     print_text(name);
+    print_text(" actual=");
+    print_number(actual);
+    print_text(" expected=");
+    print_number(expected);
     print_text("\n");
     return 1;
 }
@@ -180,7 +204,7 @@ static int run_tests(void) {
         "fsconfig noexec",
         raw_syscall6(SYS_fsconfig, context, FSCONFIG_SET_FLAG,
                      (long)"noexec", 0, 0, 0),
-        0);
+        -EINVAL);
     failures += expect_result(
         "fsconfig create",
         raw_syscall6(SYS_fsconfig, context, FSCONFIG_CMD_CREATE,
@@ -235,7 +259,7 @@ static int run_tests(void) {
             "fspick reconfigure flag",
             raw_syscall6(SYS_fsconfig, tree, FSCONFIG_SET_FLAG,
                          (long)"noatime", 0, 0, 0),
-            0);
+            -EINVAL);
         failures += expect_result(
             "fspick reconfigure",
             raw_syscall6(SYS_fsconfig, tree, FSCONFIG_CMD_RECONFIGURE,

@@ -265,34 +265,18 @@ static int mount_api_append_option(kernel_mount_api_object_t *object,
     return 0;
 }
 
-static int mount_api_parameter_flag(kernel_mount_api_object_t *object,
-                                    const char *key) {
-    uint64_t set = 0;
-    uint64_t clear = 0;
+static int mount_api_is_vfs_flag_name(const char *key) {
+    static const char *const names[] = {
+        "ro", "rw", "nosuid", "suid", "nodev", "dev",
+        "noexec", "exec", "sync", "async", "dirsync", "noatime",
+        "atime", "nodiratime", "diratime", "lazytime", "nolazytime",
+        "iversion", "noiversion",
+    };
 
-    if (mount_api_name_is(key, "ro")) set = EDGE_LINUX_MS_RDONLY;
-    else if (mount_api_name_is(key, "rw")) clear = EDGE_LINUX_MS_RDONLY;
-    else if (mount_api_name_is(key, "nosuid")) set = EDGE_LINUX_MS_NOSUID;
-    else if (mount_api_name_is(key, "suid")) clear = EDGE_LINUX_MS_NOSUID;
-    else if (mount_api_name_is(key, "nodev")) set = EDGE_LINUX_MS_NODEV;
-    else if (mount_api_name_is(key, "dev")) clear = EDGE_LINUX_MS_NODEV;
-    else if (mount_api_name_is(key, "noexec")) set = EDGE_LINUX_MS_NOEXEC;
-    else if (mount_api_name_is(key, "exec")) clear = EDGE_LINUX_MS_NOEXEC;
-    else if (mount_api_name_is(key, "sync")) set = EDGE_LINUX_MS_SYNCHRONOUS;
-    else if (mount_api_name_is(key, "async")) clear = EDGE_LINUX_MS_SYNCHRONOUS;
-    else if (mount_api_name_is(key, "dirsync")) set = EDGE_LINUX_MS_DIRSYNC;
-    else if (mount_api_name_is(key, "noatime")) set = EDGE_LINUX_MS_NOATIME;
-    else if (mount_api_name_is(key, "atime")) clear = EDGE_LINUX_MS_NOATIME;
-    else if (mount_api_name_is(key, "nodiratime")) set = EDGE_LINUX_MS_NODIRATIME;
-    else if (mount_api_name_is(key, "diratime")) clear = EDGE_LINUX_MS_NODIRATIME;
-    else if (mount_api_name_is(key, "lazytime")) set = EDGE_LINUX_MS_LAZYTIME;
-    else if (mount_api_name_is(key, "nolazytime")) clear = EDGE_LINUX_MS_LAZYTIME;
-    else if (mount_api_name_is(key, "iversion")) set = EDGE_LINUX_MS_I_VERSION;
-    else if (mount_api_name_is(key, "noiversion")) clear = EDGE_LINUX_MS_I_VERSION;
-    else return 0;
-    object->mount_flags &= ~clear;
-    object->mount_flags |= set;
-    return 1;
+    for (uint32_t index = 0;
+         index < sizeof(names) / sizeof(names[0]); ++index)
+        if (mount_api_name_is(key, names[index])) return 1;
+    return 0;
 }
 
 int kernel_mount_api_context_configure(
@@ -316,7 +300,9 @@ int kernel_mount_api_context_configure(
     switch (command) {
         case KERNEL_MOUNT_API_SET_FLAG:
             if (!key || value || auxiliary) result = -EDGE_LINUX_EINVAL;
-            else if (!mount_api_parameter_flag(object, key))
+            else if (mount_api_is_vfs_flag_name(key))
+                result = -EDGE_LINUX_EINVAL;
+            else
                 result = mount_api_append_option(object, key, 0);
             break;
         case KERNEL_MOUNT_API_SET_STRING:

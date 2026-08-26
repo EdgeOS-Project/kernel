@@ -22915,6 +22915,9 @@ static int64_t edge_linux_sys_mkdir(
     mask = (uint16_t)(kernel_current_umask() & 0777u);
     mode = (uint16_t)(requested_mode & 07777u);
     mode = (uint16_t)((mode & 07000u) | ((mode & 0777u) & ~mask));
+    if (vfs_mount_flags_for_path(workspace.resolved) &
+        VFS_MOUNT_READONLY)
+        return -EDGE_LINUX_EROFS;
     status = kernel_landlock_check_path(
         workspace.resolved, EDGE_LINUX_LANDLOCK_ACCESS_FS_MAKE_DIR);
     if (status < 0) return status;

@@ -2305,7 +2305,7 @@ static filesystem_ops_t g_proc_ops = {
 };
 
 int procfs_mount(const char *dev, const char *target) {
-    if (!target || vfs_mount_exists(target, "proc", dev && dev[0] ? dev : "proc")) return target ? 0 : -1;
+    if (!target) return -1;
     memset(&g_proc_sb, 0, sizeof(g_proc_sb));
     strcpy(g_proc_sb.fs_name, "proc");
     strcpy(g_proc_sb.dev_name, dev && dev[0] ? dev : "proc");

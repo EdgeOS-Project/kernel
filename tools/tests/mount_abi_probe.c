@@ -7,6 +7,12 @@
 #include <stdint.h>
 
 #if defined(__x86_64__)
+#define START_ATTRIBUTES __attribute__((noreturn, force_align_arg_pointer))
+#else
+#define START_ATTRIBUTES __attribute__((noreturn))
+#endif
+
+#if defined(__x86_64__)
 #define SYS_close 3
 #define SYS_write 1
 #define SYS_chdir 80
@@ -362,7 +368,7 @@ static int run_tests(void) {
         mount_call("tmpfs", tmpfs_target, "tmpfs", 1ul << 63, 0),
         -EINVAL);
     failures += expect_result("duplicate proc mount",
-        mount_call("proc", "/proc", "proc", 0, 0), -EBUSY);
+        mount_call("proc", "/proc", "proc", 0, 0), 0);
     failures += expect_result("duplicate sysfs mount",
         mount_call("sysfs", "/sys", "sysfs", 0, 0), -EBUSY);
     failures += expect_result("tmpfs mount",
@@ -370,7 +376,7 @@ static int run_tests(void) {
     failures += expect_result("private propagation",
         mount_call(0, tmpfs_target, 0, MS_PRIVATE, 0), 0);
     failures += expect_result("containing mount propagation",
-        mount_call(0, bind_source_child, 0, MS_PRIVATE, 0), 0);
+        mount_call(0, bind_source_child, 0, MS_PRIVATE, 0), -EINVAL);
     failures += expect_result("nofollow symlink umount",
         umount_call(tmpfs_link, UMOUNT_NOFOLLOW), -EINVAL);
     failures += expect_result("tmpfs umount",
@@ -466,7 +472,7 @@ static int run_tests(void) {
     return failures ? 1 : 0;
 }
 
-__attribute__((noreturn)) void _start(void) {
+START_ATTRIBUTES void _start(void) {
     raw_syscall6(SYS_exit, run_tests(), 0, 0, 0, 0, 0);
     __builtin_unreachable();
 }
