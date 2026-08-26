@@ -322,6 +322,9 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "itimer_abi_probe",
         "signal_state_abi_probe",
         "signal_targeting_abi_probe",
+#elif defined(UAPI_BATCH_SOCKET_TRANSFER_ONLY)
+        "socket_accept_abi_probe",
+        "socket_message_abi_probe",
 #elif defined(UAPI_BATCH_NATIVE_OPTIONAL_ONLY)
         "native_optional_syscalls_abi_probe",
 #else

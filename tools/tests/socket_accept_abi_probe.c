@@ -360,7 +360,19 @@ out:
     return failures ? 1 : 0;
 }
 
-void _start(void) {
+static __attribute__((noreturn, noinline, used)) void probe_entry(void) {
     (void)raw_syscall1(SYS_exit, run_probe());
     for (;;) {}
 }
+
+#if defined(__x86_64__)
+__attribute__((naked, noreturn)) void _start(void) {
+    __asm__ __volatile__(
+        "andq $-16, %rsp\n"
+        "call probe_entry\n");
+}
+#else
+void _start(void) {
+    probe_entry();
+}
+#endif

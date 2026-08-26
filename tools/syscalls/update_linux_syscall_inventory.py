@@ -63,6 +63,8 @@ LINUX_RESERVED_SYSCALL_PROBE = (
     "tools/tests/linux_reserved_syscalls_abi_probe.c"
 )
 VERIFIED_SYSCALL_PROBES = {
+    "accept": "tools/tests/socket_accept_abi_probe.c",
+    "accept4": "tools/tests/socket_accept_abi_probe.c",
     "access": "tools/tests/metadata_mutation_abi_probe.c",
     "chdir": "tools/tests/fs_context_abi_probe.c",
     "chmod": "tools/tests/metadata_mutation_abi_probe.c",
@@ -173,6 +175,9 @@ VERIFIED_SYSCALL_PROBES = {
     "readlink": "tools/tests/path_mutation_abi_probe.c",
     "readlinkat": "tools/tests/path_mutation_abi_probe.c",
     "readv": "tools/tests/vector_io_abi_probe.c",
+    "recvfrom": "tools/tests/socket_message_abi_probe.c",
+    "recvmmsg": "tools/tests/socket_message_abi_probe.c",
+    "recvmsg": "tools/tests/socket_message_abi_probe.c",
     "removexattr": "tools/tests/xattr_abi_probe.c",
     "rename": "tools/tests/path_mutation_abi_probe.c",
     "renameat": "tools/tests/path_mutation_abi_probe.c",
@@ -208,6 +213,9 @@ VERIFIED_SYSCALL_PROBES = {
     "semget": "tools/tests/sysv_sem_abi_probe.c",
     "semop": "tools/tests/sysv_sem_abi_probe.c",
     "semtimedop": "tools/tests/sysv_sem_abi_probe.c",
+    "sendmmsg": "tools/tests/socket_message_abi_probe.c",
+    "sendmsg": "tools/tests/socket_message_abi_probe.c",
+    "sendto": "tools/tests/socket_message_abi_probe.c",
     "set_mempolicy": "tools/tests/numa_policy_abi_probe.c",
     "set_mempolicy_home_node": "tools/tests/numa_policy_abi_probe.c",
     "setdomainname": "tools/tests/shared_syscall_smoke.c",
