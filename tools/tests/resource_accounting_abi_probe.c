@@ -18,7 +18,8 @@
 #include <unistd.h>
 
 _Static_assert(sizeof(struct rlimit) == 16, "64-bit Linux rlimit layout");
-_Static_assert(offsetof(struct rusage, __reserved) == 144,
+_Static_assert(offsetof(struct rusage, ru_nivcsw) +
+                   sizeof(((struct rusage *)0)->ru_nivcsw) == 144,
                "64-bit Linux kernel rusage payload");
 _Static_assert(sizeof(struct tms) == 32, "64-bit Linux tms layout");
 

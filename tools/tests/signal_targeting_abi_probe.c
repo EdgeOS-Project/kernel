@@ -15,6 +15,7 @@
 #define SYS_getpid 39
 #define SYS_getuid 102
 #define SYS_getpgid 121
+#define SYS_setpgid 109
 #define SYS_gettid 186
 #define SYS_kill 62
 #define SYS_tkill 200
@@ -27,6 +28,7 @@
 #define SYS_getpid 172
 #define SYS_getuid 174
 #define SYS_getpgid 155
+#define SYS_setpgid 154
 #define SYS_gettid 178
 #define SYS_kill 129
 #define SYS_tkill 130
@@ -174,9 +176,12 @@ static int test_signal_targeting(void) {
     long pid = raw_syscall1(SYS_getpid, 0);
     long tid = raw_syscall1(SYS_gettid, 0);
     long uid = raw_syscall1(SYS_getuid, 0);
-    long pgrp = raw_syscall1(SYS_getpgid, 0);
+    long pgrp;
     int failures = 0;
 
+    failures += expect_result("setpgid_self",
+        raw_syscall2(SYS_setpgid, 0, 0), 0);
+    pgrp = raw_syscall1(SYS_getpgid, 0);
     failures += expect_result("sigprocmask_block",
         raw_syscall4(SYS_rt_sigprocmask, SIG_BLOCK, (long)&blocked, 0,
                      sizeof(blocked)), 0);

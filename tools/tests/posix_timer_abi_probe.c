@@ -402,6 +402,9 @@ static int run_tests(void) {
     return failures ? 1 : 0;
 }
 
+#if defined(__x86_64__)
+__attribute__((force_align_arg_pointer))
+#endif
 __attribute__((noreturn)) void _start(void) {
     raw_syscall6(SYS_exit, run_tests(), 0, 0, 0, 0, 0);
     __builtin_unreachable();
