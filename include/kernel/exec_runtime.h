@@ -29,7 +29,13 @@ typedef struct kernel_exec_request {
     uint8_t vector_word_size;
     uint8_t memory_descriptor_supplied;
     uint8_t nofollow;
+    const char *const *argv_kernel;
+    const char *const *envp_kernel;
+    uint32_t argc_kernel;
+    uint32_t envc_kernel;
 } kernel_exec_request_t;
+
+#define KERNEL_EXEC_ENTER_DEFERRED 1
 
 typedef struct kernel_exec_descriptor_source {
     vfs_inode_t inode;

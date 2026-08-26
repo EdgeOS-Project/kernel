@@ -24,6 +24,7 @@ typedef struct kernel_clone_request {
     uint32_t exit_signal;
     uint8_t clone3;
     void *user_registers;
+    int32_t *child_global_pid_out;
 } kernel_clone_request_t;
 
 typedef enum kernel_clone_signal_handlers {

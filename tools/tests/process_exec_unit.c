@@ -40,6 +40,7 @@ static int g_failures;
 static int g_events[64];
 static uint32_t g_event_count;
 static int g_fail_event;
+static int g_enter_result;
 static int g_resolve_symlink;
 static int g_script;
 static char g_path[KERNEL_EXEC_PATH_CAPACITY];
@@ -123,6 +124,7 @@ static void reset_mocks(void) {
     memset(g_interpreter_script, 0, sizeof(g_interpreter_script));
     g_event_count = 0;
     g_fail_event = 0;
+    g_enter_result = -EDGE_LINUX_EFAULT;
     g_resolve_symlink = 0;
     g_script = 0;
     g_credentials.identity.uid = 1000;
@@ -177,6 +179,17 @@ int linux_exec_payload_capture_vector_with(
     (void)copy_from_user;
     (void)user_vector;
     expect_true("exec vector word size", vector_word_size == sizeof(uint64_t));
+    record_event(environment ?
+                 EVENT_CAPTURE_ENVIRONMENT : EVENT_CAPTURE_ARGUMENTS);
+    return 0;
+}
+
+int linux_exec_payload_append(linux_exec_payload_t *payload,
+                              const char *string, int environment,
+                              uint32_t *offset_out) {
+    (void)payload;
+    expect_true("kernel exec string", string && string[0]);
+    if (offset_out) *offset_out = 0;
     record_event(environment ?
                  EVENT_CAPTURE_ENVIRONMENT : EVENT_CAPTURE_ARGUMENTS);
     return 0;
@@ -356,7 +369,7 @@ void process_exec_arch_wake_vfork_parent(kernel_exec_state_t *state) {
 int process_exec_arch_enter(kernel_exec_state_t *state) {
     (void)state;
     record_event(EVENT_ENTER);
-    return -EDGE_LINUX_EFAULT;
+    return g_enter_result;
 }
 
 void process_exec_arch_abort(kernel_exec_state_t *state) {
@@ -556,6 +569,51 @@ static void test_postcommit_failure_is_fatal(void) {
                   sizeof(expected) / sizeof(expected[0]));
 }
 
+static void test_kernel_vectors_defer_user_entry(void) {
+    static const char *const arguments[] = {
+        "/sbin/request-key", "create",
+    };
+    static const char *const environment[] = {
+        "HOME=/",
+    };
+    static const int expected[] = {
+        EVENT_INITIALIZE,
+        EVENT_CAPTURE_ARGUMENTS,
+        EVENT_CAPTURE_ARGUMENTS,
+        EVENT_CAPTURE_ENVIRONMENT,
+        EVENT_RESOLVE,
+        EVENT_PROBE,
+        EVENT_GET_CREDENTIALS,
+        EVENT_PREPARE,
+        EVENT_UNSHARE,
+        EVENT_DE_THREAD,
+        EVENT_COMMIT,
+        EVENT_RESET,
+        EVENT_SET_CREDENTIALS,
+        EVENT_IDENTITY,
+        EVENT_DELETE_TIMERS,
+        EVENT_WAKE_VFORK,
+        EVENT_PUBLISH,
+        EVENT_CLOSE,
+        EVENT_ENTER,
+    };
+    kernel_exec_request_t request = base_request("/sbin/request-key");
+    int64_t result;
+
+    reset_mocks();
+    request.argv_user = 0;
+    request.envp_user = 0;
+    request.argv_kernel = arguments;
+    request.argc_kernel = sizeof(arguments) / sizeof(arguments[0]);
+    request.envp_kernel = environment;
+    request.envc_kernel = sizeof(environment) / sizeof(environment[0]);
+    g_enter_result = KERNEL_EXEC_ENTER_DEFERRED;
+    result = kernel_process_exec(&request);
+    expect_true("kernel exec deferred result", result == 0);
+    expect_events("kernel exec deferred order", expected,
+                  sizeof(expected) / sizeof(expected[0]));
+}
+
 static void test_dethread_failure_rolls_back(void) {
     static const int expected[] = {
         EVENT_INITIALIZE,
@@ -588,6 +646,7 @@ int main(void) {
     test_precommit_failure_rolls_back();
     test_dethread_failure_rolls_back();
     test_postcommit_failure_is_fatal();
+    test_kernel_vectors_defer_user_entry();
     if (g_failures) {
         fprintf(stderr, "process exec unit failures: %d\n", g_failures);
         return 1;

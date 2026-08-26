@@ -10327,7 +10327,9 @@ void process_list_print(void) {
     }
 }
 
-int process_spawn_exec_env(const char *path, int argc, char **argv, int envc, char **envp) {
+static int process_spawn_exec_env_internal(
+    const char *path, int argc, char **argv, int envc, char **envp,
+    int defer_start) {
     task_t *parent = process_current_task();
     int child_idx = -1;
     char resolved_path[256];
@@ -10581,15 +10583,45 @@ int process_spawn_exec_env(const char *path, int argc, char **argv, int envc, ch
 #endif
     (void)process_cgroup_account_publish(child->pid);
     if (g_task_prestart_hook) g_task_prestart_hook(child);
-    scheduler_task_make_runnable(child, (uint32_t)process_pick_target_cpu());
+    if (!defer_start)
+        scheduler_task_make_runnable(
+            child, (uint32_t)process_pick_target_cpu());
 
     cr3_write(old_cr3);
     if (rflags & (1ULL << 9)) __asm__ __volatile__("sti");
     return child->pid;
 }
 
+int process_spawn_exec_env(
+    const char *path, int argc, char **argv, int envc, char **envp) {
+    return process_spawn_exec_env_internal(
+        path, argc, argv, envc, envp, 0);
+}
+
 int process_spawn_exec(const char *path, int argc, char **argv) {
     return process_spawn_exec_env(path, argc, argv, 0, 0);
+}
+
+int32_t arch_process_spawn_kernel_exec(
+    const char *path, uint32_t argc, const char *const *argv,
+    uint32_t envc, const char *const *envp, void *user_registers) {
+    (void)user_registers;
+    return process_spawn_exec_env_internal(
+        path, (int)argc, (char **)argv, (int)envc, (char **)envp, 1);
+}
+
+int arch_process_spawn_kernel_start(int32_t global_pid) {
+    return process_publish_new_task(global_pid);
+}
+
+void arch_process_spawn_kernel_abort(int32_t global_pid) {
+    task_t *task = task_find_by_pid(global_pid);
+
+    if (!task || task->state != TASK_BLOCKED || task->on_cpu ||
+        task->on_runqueue)
+        return;
+    task_child_unlink(task);
+    task_release_unused(task);
 }
 
 int process_set_fork_frame_rsp(int pid, uint64_t rsp) {

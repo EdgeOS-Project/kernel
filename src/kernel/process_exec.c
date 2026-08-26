@@ -397,14 +397,36 @@ int64_t kernel_process_exec(const kernel_exec_request_t *request) {
     status = kernel_exec_payload_acquire(
         state.owner_pid, &state.payload_handle, &state.payload);
     if (status < 0) return exec_fail(&state, status);
-    status = linux_exec_payload_capture_vector_with(
-        state.payload, &state, process_exec_arch_copy_from_user,
-        request->argv_user, request->vector_word_size, 0);
-    if (status < 0) return exec_fail(&state, status);
-    status = linux_exec_payload_capture_vector_with(
-        state.payload, &state, process_exec_arch_copy_from_user,
-        request->envp_user, request->vector_word_size, 1);
-    if (status < 0) return exec_fail(&state, status);
+    if (request->argv_kernel || request->envp_kernel) {
+        if ((!request->argv_kernel && request->argc_kernel) ||
+            (!request->envp_kernel && request->envc_kernel) ||
+            request->argc_kernel > KERNEL_EXEC_RECORD_ARG_MAX ||
+            request->envc_kernel > KERNEL_EXEC_RECORD_ENV_MAX)
+            return exec_fail(&state, -EDGE_LINUX_E2BIG);
+        for (uint32_t index = 0; index < request->argc_kernel; ++index) {
+            if (!request->argv_kernel[index])
+                return exec_fail(&state, -EDGE_LINUX_EFAULT);
+            status = linux_exec_payload_append(
+                state.payload, request->argv_kernel[index], 0, 0);
+            if (status < 0) return exec_fail(&state, status);
+        }
+        for (uint32_t index = 0; index < request->envc_kernel; ++index) {
+            if (!request->envp_kernel[index])
+                return exec_fail(&state, -EDGE_LINUX_EFAULT);
+            status = linux_exec_payload_append(
+                state.payload, request->envp_kernel[index], 1, 0);
+            if (status < 0) return exec_fail(&state, status);
+        }
+    } else {
+        status = linux_exec_payload_capture_vector_with(
+            state.payload, &state, process_exec_arch_copy_from_user,
+            request->argv_user, request->vector_word_size, 0);
+        if (status < 0) return exec_fail(&state, status);
+        status = linux_exec_payload_capture_vector_with(
+            state.payload, &state, process_exec_arch_copy_from_user,
+            request->envp_user, request->vector_word_size, 1);
+        if (status < 0) return exec_fail(&state, status);
+    }
     status = exec_resolve_image(&state, request->nofollow != 0);
     if (status < 0) return exec_fail(&state, status);
     status = linux_exec_payload_ensure_argv0(
@@ -458,6 +480,7 @@ int64_t kernel_process_exec(const kernel_exec_request_t *request) {
     status = process_exec_arch_close_on_exec(&state);
     if (status < 0) return exec_fail(&state, status);
     status = process_exec_arch_enter(&state);
+    if (status == KERNEL_EXEC_ENTER_DEFERRED) return 0;
     return exec_fail(
         &state, status < 0 ? status : -EDGE_LINUX_EFAULT);
 }

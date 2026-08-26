@@ -36,15 +36,16 @@ EDGEOS_ASSESSMENTS = [
             "raw finite-field key agreement through user-key payloads for standard groups and nonstandard parameters above 8192 bits with Linux MPI-limb output sizing",
             "SP800-108 counter-mode SHA-224 and SHA-256 derivation with Linux output and other-info limits",
             "SP800-108 counter-mode SHA-1, SHA-384 and SHA-512 derivation when those digest algorithms are configured",
+            "request-key helper construction with assumed authorization, positive instantiation, negative caching and caller-selected rejection errors",
             "ia32 and x32 iovec and key-derivation parameter layouts",
         ],
         "missing": [
-            "positive request-key construction authorization and successful instantiate, negate and reject operations",
             "asymmetric key operations",
         ],
         "runtime_tests": [
             "tools/tests/keyring_abi_probe.c",
             "tools/tests/keyring_dh_abi_probe.c",
+            "tools/tests/keyring_request_abi_probe.c",
             "tools/tests/keyring_runtime_unit.c",
             "tools/tests/ia32_keyctl_compat_uapi_probe.c",
             "tools/tests/x32_keyctl_compat_uapi_probe.c",
@@ -61,6 +62,8 @@ EDGEOS_ASSESSMENTS = [
                 "64-bit MPI-limb output sizing, "
                 "size negotiation and SHA-1, SHA-224, SHA-256, "
                 "SHA-384 or SHA-512 KDF output, "
+                "plus request-key helper authorization, instantiation, "
+                "negative caching and caller-selected rejection errors, "
                 "plus ia32 and x32 boundary-checked iovec and KDF layouts"
             ),
         },

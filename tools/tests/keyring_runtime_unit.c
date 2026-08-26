@@ -14,6 +14,8 @@ static uint64_t test_time_us = 1000000u;
 static uint32_t parent_thread_count = 1u;
 static kernel_linux_identity_t parent_process_identity;
 static kernel_pipe_runtime_t watch_pipe;
+static int request_helper_mode;
+static int request_helper_calls;
 
 typedef struct test_key_notification {
     uint32_t type_subtype;
@@ -91,6 +93,63 @@ static kernel_linux_identity_t identity_in_user_namespace(
     return result;
 }
 
+static int invoke_request_helper(
+    void *context, int32_t authorization, int32_t target,
+    uint32_t uid, uint32_t gid, int32_t thread_keyring,
+    int32_t process_keyring, int32_t session_keyring) {
+    kernel_linux_identity_t helper = identity(500, 500, 100, uid);
+    kernel_keyring_user_access_t access = {
+        .copy_from_user = copy_from_user,
+        .copy_to_user = copy_to_user,
+        .context = context,
+        .iovec_pointer_size = sizeof(uint64_t),
+        .keyctl_kdf_pointer_size = sizeof(uint64_t),
+    };
+    static const char constructed[] = "constructed-payload";
+    uint64_t arguments[4] = {0};
+    char callout[64] = {0};
+    int64_t result;
+
+    (void)gid;
+    (void)thread_keyring;
+    (void)process_keyring;
+    (void)session_keyring;
+    ++request_helper_calls;
+    assert(kernel_keyring_request_authority_grant(
+               &helper, authorization) == 0);
+    arguments[0] = (uint64_t)(uint32_t)target;
+    result = kernel_keyring_keyctl(
+        &helper, &access, EDGE_LINUX_KEYCTL_ASSUME_AUTHORITY, arguments);
+    assert(result == authorization);
+    arguments[0] =
+        (uint64_t)(int64_t)EDGE_LINUX_KEY_SPEC_REQKEY_AUTH_KEY;
+    arguments[1] = (uint64_t)(uintptr_t)callout;
+    arguments[2] = sizeof(callout);
+    assert(kernel_keyring_keyctl(
+               &helper, &access, EDGE_LINUX_KEYCTL_READ, arguments) > 0);
+    assert(!strcmp(callout, "unit-callout"));
+    memset(arguments, 0, sizeof(arguments));
+    arguments[0] = (uint64_t)(uint32_t)target;
+    if (request_helper_mode == 1) {
+        arguments[1] = (uint64_t)(uintptr_t)constructed;
+        arguments[2] = sizeof(constructed) - 1u;
+        result = kernel_keyring_keyctl(
+            &helper, &access, EDGE_LINUX_KEYCTL_INSTANTIATE, arguments);
+    } else if (request_helper_mode == 2) {
+        arguments[1] = 30u;
+        result = kernel_keyring_keyctl(
+            &helper, &access, EDGE_LINUX_KEYCTL_NEGATE, arguments);
+    } else {
+        arguments[1] = 30u;
+        arguments[2] = EDGE_LINUX_EACCES;
+        result = kernel_keyring_keyctl(
+            &helper, &access, EDGE_LINUX_KEYCTL_REJECT, arguments);
+    }
+    assert(result == 0);
+    kernel_keyring_task_exit(helper.global_tid, helper.global_tgid, 1);
+    return 0;
+}
+
 int kernel_process_linux_identity(int32_t pid,
                                   kernel_linux_identity_t *result) {
     if (!result || pid != parent_process_identity.global_tid) return -1;
@@ -123,6 +182,7 @@ int main(void) {
         .context = 0,
         .iovec_pointer_size = sizeof(uint64_t),
         .keyctl_kdf_pointer_size = sizeof(uint64_t),
+        .invoke_request_helper = invoke_request_helper,
     };
     static const char payload[] = "payload";
     static const char replacement[] = "replacement";
@@ -348,6 +408,54 @@ int main(void) {
                &stranger, &access, (uint64_t)(uintptr_t)"user",
                (uint64_t)(uintptr_t)"unit-key", 0, 0) ==
            -EDGE_LINUX_ENOKEY);
+
+    {
+        static const char constructed[] = "constructed-payload";
+        int64_t requested;
+
+        request_helper_mode = 1;
+        request_helper_calls = 0;
+        requested = kernel_keyring_request_key(
+            &parent, &access, (uint64_t)(uintptr_t)"user",
+            (uint64_t)(uintptr_t)"constructed-positive",
+            (uint64_t)(uintptr_t)"unit-callout",
+            EDGE_LINUX_KEY_SPEC_SESSION_KEYRING);
+        assert(requested > 0 && request_helper_calls == 1);
+        memset(output, 0, sizeof(output));
+        memset(arguments, 0, sizeof(arguments));
+        arguments[0] = (uint64_t)requested;
+        arguments[1] = (uint64_t)(uintptr_t)output;
+        arguments[2] = sizeof(output);
+        assert(kernel_keyring_keyctl(
+                   &parent, &access, EDGE_LINUX_KEYCTL_READ,
+                   arguments) == (int64_t)(sizeof(constructed) - 1u));
+        assert(!memcmp(output, constructed, sizeof(constructed) - 1u));
+
+        request_helper_mode = 2;
+        assert(kernel_keyring_request_key(
+                   &parent, &access, (uint64_t)(uintptr_t)"user",
+                   (uint64_t)(uintptr_t)"constructed-negative",
+                   (uint64_t)(uintptr_t)"unit-callout",
+                   EDGE_LINUX_KEY_SPEC_SESSION_KEYRING) ==
+               -EDGE_LINUX_ENOKEY);
+        assert(request_helper_calls == 2);
+        assert(kernel_keyring_request_key(
+                   &parent, &access, (uint64_t)(uintptr_t)"user",
+                   (uint64_t)(uintptr_t)"constructed-negative",
+                   (uint64_t)(uintptr_t)"unit-callout",
+                   EDGE_LINUX_KEY_SPEC_SESSION_KEYRING) ==
+               -EDGE_LINUX_ENOKEY);
+        assert(request_helper_calls == 2);
+
+        request_helper_mode = 3;
+        assert(kernel_keyring_request_key(
+                   &parent, &access, (uint64_t)(uintptr_t)"user",
+                   (uint64_t)(uintptr_t)"constructed-rejected",
+                   (uint64_t)(uintptr_t)"unit-callout",
+                   EDGE_LINUX_KEY_SPEC_SESSION_KEYRING) ==
+               -EDGE_LINUX_EACCES);
+        assert(request_helper_calls == 3);
+    }
 
     memset(arguments, 0, sizeof(arguments));
     arguments[0] =

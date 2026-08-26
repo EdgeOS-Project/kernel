@@ -90,6 +90,10 @@ typedef int (*kernel_keyring_copy_from_user_fn)(
     void *context, void *destination, uint64_t source, uint64_t length);
 typedef int (*kernel_keyring_copy_to_user_fn)(
     void *context, uint64_t destination, const void *source, uint64_t length);
+typedef int (*kernel_keyring_request_helper_fn)(
+    void *context, int32_t authorization, int32_t target,
+    uint32_t uid, uint32_t gid, int32_t thread_keyring,
+    int32_t process_keyring, int32_t session_keyring);
 
 typedef struct kernel_keyring_user_access {
     kernel_keyring_copy_from_user_fn copy_from_user;
@@ -97,6 +101,7 @@ typedef struct kernel_keyring_user_access {
     void *context;
     uint32_t iovec_pointer_size;
     uint32_t keyctl_kdf_pointer_size;
+    kernel_keyring_request_helper_fn invoke_request_helper;
 } kernel_keyring_user_access_t;
 
 int64_t kernel_keyring_add_key(
@@ -113,6 +118,8 @@ int64_t kernel_keyring_keyctl(
     const kernel_linux_identity_t *identity,
     const kernel_keyring_user_access_t *access,
     uint32_t command, const uint64_t arguments[4]);
+int kernel_keyring_request_authority_grant(
+    const kernel_linux_identity_t *identity, int32_t authorization);
 void kernel_keyring_task_exit(int32_t global_tid, int32_t global_tgid,
                               int whole_thread_group);
 

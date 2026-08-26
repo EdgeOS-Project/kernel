@@ -468,6 +468,11 @@ int64_t kernel_process_wait(const kernel_process_wait_request_t *request,
 int64_t kernel_process_wait_for_tid(
     const kernel_process_wait_request_t *request,
     kernel_process_wait_result_t *result, int32_t waiter_tid);
+int32_t arch_process_spawn_kernel_exec(
+    const char *path, uint32_t argc, const char *const *argv,
+    uint32_t envc, const char *const *envp, void *user_registers);
+int arch_process_spawn_kernel_start(int32_t global_pid);
+void arch_process_spawn_kernel_abort(int32_t global_pid);
 int64_t arch_process_wait(const kernel_process_wait_query_t *query,
                           kernel_process_wait_result_t *result,
                           void *user_registers);

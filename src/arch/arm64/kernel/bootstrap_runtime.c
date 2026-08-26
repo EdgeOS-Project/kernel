@@ -2305,6 +2305,7 @@ static spinlock_t g_task_lock;
  */
 static volatile uint64_t g_kernel_execution_owner_hardware_plus_one;
 static volatile uint8_t g_scheduler_runtime_ready;
+static kernel_task_t *g_kernel_deferred_exec_task;
 static kernel_tty_state_t g_tty_states[ARM64_TTY_PL011_BASE + 16u];
 static kernel_pty_t g_ptys[KERNEL_PTY_MAX];
 static uint8_t g_pl011_rx[ARM64_PL011_RX_CAPACITY];
@@ -33070,9 +33071,90 @@ int process_exec_arch_enter(kernel_exec_state_t *state) {
     edge_linux_ptrace_exec_stop(&task->frame);
     kernel_exec_payload_release(&state->payload_handle);
     state->payload = 0;
+    if (task == g_kernel_deferred_exec_task)
+        return KERNEL_EXEC_ENTER_DEFERRED;
     arch_user_enter(
         task->ttbr0, entry, native->stack.stack_pointer,
         g_kernel_resume_sp);
+}
+
+int32_t arch_process_spawn_kernel_exec(
+    const char *path, uint32_t argc, const char *const *argv,
+    uint32_t envc, const char *const *envp, void *user_registers) {
+    kernel_clone_request_t clone;
+    kernel_exec_request_t exec;
+    kernel_task_t *parent = current_task();
+    kernel_task_t *child;
+    int32_t global_pid = 0;
+    int32_t visible_pid;
+    int child_slot;
+    uint32_t parent_slot;
+    uint64_t interrupt_flags;
+    int64_t result;
+
+    if (!parent || !path || !argv || !argc || !user_registers)
+        return -LINUX_EINVAL;
+    bytes_zero(&clone, sizeof(clone));
+    clone.exit_signal = LINUX_SIGCHLD;
+    clone.user_registers = user_registers;
+    clone.child_global_pid_out = &global_pid;
+    __asm__ __volatile__(
+        "mrs %0, daif\n\tmsr daifset, #2"
+        : "=r"(interrupt_flags) :: "memory");
+    visible_pid = (int32_t)kernel_process_clone(&clone);
+    child_slot = global_pid > 0 ? task_find_pid(global_pid) : -1;
+    if (visible_pid <= 0 || child_slot < 0) {
+        __asm__ __volatile__(
+            "msr daif, %0" :: "r"(interrupt_flags) : "memory");
+        return visible_pid < 0 ? visible_pid : -LINUX_EIO;
+    }
+    child = &g_tasks[child_slot];
+    task_state_set(child, KERNEL_TASK_EMBRYO);
+    parent_slot = (uint32_t)(parent - g_tasks);
+    current_task_set((uint32_t)child_slot);
+    arch_vm_address_space_activate(child->ttbr0);
+    g_kernel_deferred_exec_task = child;
+    bytes_zero(&exec, sizeof(exec));
+    exec.path = (char *)path;
+    exec.argv_kernel = argv;
+    exec.envp_kernel = envp;
+    exec.argc_kernel = argc;
+    exec.envc_kernel = envc;
+    exec.vector_word_size = sizeof(uint64_t);
+    result = kernel_process_exec(&exec);
+    g_kernel_deferred_exec_task = 0;
+    current_task_set(parent_slot);
+    arch_vm_address_space_activate(parent->ttbr0);
+    if (result < 0) {
+        task_zero(child);
+        global_pid = (int32_t)result;
+    }
+    __asm__ __volatile__(
+        "msr daif, %0" :: "r"(interrupt_flags) : "memory");
+    return global_pid;
+}
+
+int arch_process_spawn_kernel_start(int32_t global_pid) {
+    int slot = task_find_pid(global_pid);
+    kernel_task_t *task;
+
+    if (slot < 0) return -LINUX_ESRCH;
+    task = &g_tasks[slot];
+    if (task->state != KERNEL_TASK_EMBRYO)
+        return -LINUX_EINVAL;
+    task_state_set(task, KERNEL_TASK_RUNNABLE);
+    return 0;
+}
+
+void arch_process_spawn_kernel_abort(int32_t global_pid) {
+    int slot = task_find_pid(global_pid);
+    kernel_task_t *task;
+
+    if (slot < 0) return;
+    task = &g_tasks[slot];
+    if (task->state != KERNEL_TASK_EMBRYO)
+        return;
+    task_zero(task);
 }
 
 void process_exec_arch_abort(kernel_exec_state_t *state) {

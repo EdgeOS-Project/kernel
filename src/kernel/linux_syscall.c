@@ -272,6 +272,97 @@ static int edge_linux_keyring_copy_to_user(
         (edge_linux_syscall_context_t *)opaque, destination, source, length);
 }
 
+static void edge_linux_keyring_decimal(char *buffer, int32_t value) {
+    char digits[11];
+    uint32_t count = 0;
+    uint32_t magnitude;
+    uint32_t offset = 0;
+
+    if (value < 0) {
+        buffer[offset++] = '-';
+        magnitude = (uint32_t)(-(int64_t)value);
+    } else {
+        magnitude = (uint32_t)value;
+    }
+    do {
+        digits[count++] = (char)('0' + magnitude % 10u);
+        magnitude /= 10u;
+    } while (magnitude);
+    while (count) buffer[offset++] = digits[--count];
+    buffer[offset] = 0;
+}
+
+static int edge_linux_keyring_request_helper(
+    void *opaque, int32_t authorization, int32_t target,
+    uint32_t uid, uint32_t gid, int32_t thread_keyring,
+    int32_t process_keyring, int32_t session_keyring) {
+    char target_string[12];
+    char uid_string[12];
+    char gid_string[12];
+    char thread_string[12];
+    char process_string[12];
+    char session_string[12];
+    char *arguments[9];
+    char *environment[3];
+    edge_linux_syscall_context_t *context =
+        (edge_linux_syscall_context_t *)opaque;
+    kernel_linux_identity_t caller_identity;
+    kernel_linux_identity_t helper_identity;
+    kernel_process_wait_request_t wait_request;
+    kernel_process_wait_result_t wait_result;
+    int32_t visible_pid;
+    int32_t pid;
+
+    if (!context || !context->user_registers ||
+        kernel_current_linux_identity(&caller_identity) < 0)
+        return -EDGE_LINUX_ESRCH;
+    edge_linux_keyring_decimal(target_string, target);
+    edge_linux_keyring_decimal(uid_string, (int32_t)uid);
+    edge_linux_keyring_decimal(gid_string, (int32_t)gid);
+    edge_linux_keyring_decimal(thread_string, thread_keyring);
+    edge_linux_keyring_decimal(process_string, process_keyring);
+    edge_linux_keyring_decimal(session_string, session_keyring);
+    arguments[0] = "/sbin/request-key";
+    arguments[1] = "create";
+    arguments[2] = target_string;
+    arguments[3] = uid_string;
+    arguments[4] = gid_string;
+    arguments[5] = thread_string;
+    arguments[6] = process_string;
+    arguments[7] = session_string;
+    arguments[8] = 0;
+    environment[0] = "HOME=/";
+    environment[1] = "PATH=/sbin:/bin:/usr/sbin:/usr/bin";
+    environment[2] = 0;
+    pid = arch_process_spawn_kernel_exec(
+        "/sbin/request-key", 8, (const char *const *)arguments,
+        2, (const char *const *)environment, context->user_registers);
+    if (pid < 0) return -EDGE_LINUX_ENOENT;
+    if (kernel_process_linux_identity(pid, &helper_identity) < 0 ||
+        kernel_keyring_request_authority_grant(
+            &helper_identity, authorization) < 0) {
+        arch_process_spawn_kernel_abort(pid);
+        return -EDGE_LINUX_EPERM;
+    }
+    if (arch_process_spawn_kernel_start(pid) < 0) {
+        kernel_keyring_task_exit(
+            helper_identity.global_tid, helper_identity.global_tgid, 1);
+        arch_process_spawn_kernel_abort(pid);
+        return -EDGE_LINUX_EIO;
+    }
+    if (edge_pid_namespace_global_to_visible(
+            caller_identity.pid_namespace_id, pid, &visible_pid) < 0)
+        return -EDGE_LINUX_ECHILD;
+    memset(&wait_request, 0, sizeof(wait_request));
+    wait_request.selector = visible_pid;
+    wait_request.flags = KERNEL_PROCESS_WAIT_EXITED;
+    wait_request.pid_namespace_id = caller_identity.pid_namespace_id;
+    if (kernel_process_wait(
+            &wait_request, &wait_result, context->user_registers) <= 0)
+        return -EDGE_LINUX_ECHILD;
+    return 0;
+}
+
 static int64_t edge_linux_sys_keyring(
     edge_linux_syscall_context_t *context) {
 #ifndef CONFIG_KEYS
@@ -288,6 +379,7 @@ static int64_t edge_linux_sys_keyring(
         .keyctl_kdf_pointer_size =
             context->architecture == EDGE_LINUX_ARCH_IA32 ?
                 sizeof(uint32_t) : sizeof(uint64_t),
+        .invoke_request_helper = edge_linux_keyring_request_helper,
     };
     uint64_t arguments[4];
 

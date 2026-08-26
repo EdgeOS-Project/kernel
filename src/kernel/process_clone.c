@@ -221,6 +221,8 @@ int64_t kernel_process_clone(const kernel_clone_request_t *request) {
         return clone_fail(&state, status);
     }
     state.published = 1;
+    if (request->child_global_pid_out)
+        *request->child_global_pid_out = state.child_global_pid;
 
     if (state.userfaultfd_wait_ticket)
         kernel_userfaultfd_wait_fork(

@@ -84,13 +84,16 @@ enum kernel_key_kind {
 typedef struct kernel_key_object {
     uint8_t used;
     uint8_t constructing;
+    uint8_t negative;
     uint8_t revoked;
     uint8_t invalidated;
     uint8_t restriction_set;
     uint8_t reject_links;
     uint8_t kind;
-    uint8_t padding;
     int32_t serial;
+    int32_t reject_error;
+    int32_t request_target;
+    int32_t request_destination;
     uint32_t uid;
     uint32_t gid;
     uint32_t user_namespace_id;
@@ -115,6 +118,8 @@ typedef struct kernel_key_task_state {
     int32_t thread_keyring;
     int32_t session_keyring;
     int32_t request_key_default;
+    int32_t offered_authorization;
+    int32_t assumed_authorization;
     uint32_t uid;
     uint32_t euid;
     uint32_t suid;
@@ -253,6 +258,16 @@ static kernel_key_object_t *key_find_locked(int32_t serial) {
     return 0;
 }
 
+static kernel_key_object_t *key_find_any_locked(int32_t serial) {
+    uint32_t index;
+
+    if (serial <= 0) return 0;
+    for (index = 0; index < KERNEL_KEY_MAX; ++index)
+        if (g_keys[index].used && g_keys[index].serial == serial)
+            return &g_keys[index];
+    return 0;
+}
+
 static int key_serial_has_task_reference_locked(int32_t serial) {
     uint32_t index;
 
@@ -261,7 +276,9 @@ static int key_serial_has_task_reference_locked(int32_t serial) {
         const kernel_key_task_state_t *state = &g_key_tasks[index];
         if (state->used &&
             (state->thread_keyring == serial ||
-             state->session_keyring == serial))
+             state->session_keyring == serial ||
+             state->offered_authorization == serial ||
+             state->assumed_authorization == serial))
             return 1;
     }
     return 0;
@@ -294,7 +311,7 @@ static void key_release_unreferenced_locked(int32_t serial,
         key_serial_has_task_reference_locked(serial) ||
         key_serial_has_link_reference_locked(serial))
         return;
-    key = key_find_locked(serial);
+    key = key_find_any_locked(serial);
     if (!key) return;
     child_count = key->kind == KERNEL_KEY_KIND_KEYRING ?
         key->link_count : 0u;
@@ -320,6 +337,9 @@ static int key_validate(const kernel_key_object_t *key) {
     if (!key || key->invalidated) return -EDGE_LINUX_ENOKEY;
     if (key->revoked) return -EDGE_LINUX_EKEYREVOKED;
     if (key_is_expired(key)) return -EDGE_LINUX_EKEYEXPIRED;
+    if (key->negative)
+        return -(key->reject_error > 0 ? key->reject_error :
+                 EDGE_LINUX_ENOKEY);
     return 0;
 }
 
@@ -587,6 +607,11 @@ static kernel_key_object_t *key_resolve_locked(
         return key_user_ring_locked(identity, 1);
     case EDGE_LINUX_KEY_SPEC_GROUP_KEYRING:
         return 0;
+    case EDGE_LINUX_KEY_SPEC_REQKEY_AUTH_KEY:
+        return key_find_any_locked(state->assumed_authorization);
+    case EDGE_LINUX_KEY_SPEC_REQUESTOR_KEYRING:
+        ring = key_find_any_locked(state->assumed_authorization);
+        return ring ? key_find_locked(ring->request_destination) : 0;
     default:
         return 0;
     }
@@ -1144,6 +1169,73 @@ static kernel_key_object_t *key_search_locked(
     return 0;
 }
 
+static kernel_key_object_t *key_search_request_locked(
+    const kernel_linux_identity_t *identity,
+    kernel_key_task_state_t *state, kernel_key_object_t *ring,
+    const char *type, const char *description, uint32_t depth) {
+    uint32_t index;
+
+    if (!ring || ring->kind != KERNEL_KEY_KIND_KEYRING ||
+        depth > KERNEL_KEY_SEARCH_DEPTH_MAX ||
+        key_permission_locked(identity, state, ring, 8u) < 0)
+        return 0;
+    for (index = 0; index < ring->link_count; ++index) {
+        kernel_key_object_t *key = key_find_locked(ring->links[index]);
+
+        if (!key || key->invalidated || key->revoked ||
+            key_is_expired(key))
+            continue;
+        if (!strcmp(key->type, type) &&
+            !strcmp(key->description, description) &&
+            key_permission_locked(identity, state, key, 8u) == 0)
+            return key;
+    }
+    for (index = 0; index < ring->link_count; ++index) {
+        kernel_key_object_t *key = key_find_locked(ring->links[index]);
+        kernel_key_object_t *found;
+
+        if (!key || key->kind != KERNEL_KEY_KIND_KEYRING) continue;
+        found = key_search_request_locked(
+            identity, state, key, type, description, depth + 1u);
+        if (found) return found;
+    }
+    return 0;
+}
+
+static kernel_key_object_t *key_request_destination_locked(
+    const kernel_linux_identity_t *identity,
+    kernel_key_task_state_t *state, int32_t requested) {
+    kernel_key_object_t *ring = 0;
+    int32_t selection;
+
+    if (requested)
+        return key_resolve_locked(identity, state, requested, 1);
+    selection = state->request_key_default;
+    if (selection == EDGE_LINUX_KEY_REQKEY_DEFL_REQUESTOR_KEYRING) {
+        kernel_key_object_t *authorization =
+            key_find_any_locked(state->assumed_authorization);
+        if (authorization)
+            ring = key_find_locked(authorization->request_destination);
+    } else if (selection == EDGE_LINUX_KEY_REQKEY_DEFL_THREAD_KEYRING) {
+        ring = key_thread_ring_locked(identity, state, 1);
+    } else if (selection == EDGE_LINUX_KEY_REQKEY_DEFL_PROCESS_KEYRING) {
+        ring = key_process_ring_locked(identity, 1);
+    } else if (selection == EDGE_LINUX_KEY_REQKEY_DEFL_SESSION_KEYRING) {
+        ring = key_resolve_locked(
+            identity, state, EDGE_LINUX_KEY_SPEC_SESSION_KEYRING, 1);
+    } else if (selection == EDGE_LINUX_KEY_REQKEY_DEFL_USER_KEYRING) {
+        ring = key_user_ring_locked(identity, 0);
+    } else if (selection ==
+               EDGE_LINUX_KEY_REQKEY_DEFL_USER_SESSION_KEYRING) {
+        ring = key_user_ring_locked(identity, 1);
+    }
+    if (!ring)
+        ring = key_resolve_locked(
+            identity, state, EDGE_LINUX_KEY_SPEC_SESSION_KEYRING, 1);
+    if (!ring) ring = key_user_ring_locked(identity, 1);
+    return ring;
+}
+
 static uint32_t key_append_decimal(char *buffer, uint32_t offset,
                                    uint32_t value) {
     char digits[10];
@@ -1193,6 +1285,259 @@ static int key_copy_result(
                      access->context, destination, source, copy) < 0))
         return -EDGE_LINUX_EFAULT;
     return (int)required;
+}
+
+static void key_request_authority_clear_locked(
+    kernel_key_task_state_t *state, kernel_key_object_t *authorization) {
+    int32_t serial;
+
+    if (!authorization) return;
+    serial = authorization->serial;
+    authorization->revoked = 1u;
+    if (state) {
+        if (state->offered_authorization == serial)
+            state->offered_authorization = 0;
+        if (state->assumed_authorization == serial)
+            state->assumed_authorization = 0;
+    }
+    key_notify_locked(authorization, KERNEL_KEY_NOTIFY_REVOKED, 0u);
+    key_release_unreferenced_locked(serial, 0u);
+}
+
+int kernel_keyring_request_authority_grant(
+    const kernel_linux_identity_t *identity, int32_t authorization) {
+    kernel_key_task_state_t *state;
+    kernel_key_object_t *key;
+    int result = -EDGE_LINUX_ENOKEY;
+
+    if (!identity || authorization <= 0) return -EDGE_LINUX_EINVAL;
+    key_lock(&g_key_lock);
+    key = key_find_any_locked(authorization);
+    state = key_task_get_locked(identity);
+    if (!state) {
+        result = -EDGE_LINUX_ENFILE;
+    } else if (key && !key->revoked && !key->invalidated &&
+               !strcmp(key->type, ".request_key_auth")) {
+        state->offered_authorization = authorization;
+        state->assumed_authorization = 0;
+        result = 0;
+    }
+    key_unlock(&g_key_lock);
+    return result;
+}
+
+static int64_t keyctl_assume_authority(
+    const kernel_linux_identity_t *identity, int32_t target) {
+    kernel_key_task_state_t *state;
+    kernel_key_object_t *authorization;
+    int64_t result;
+
+    if (target < 0) return -EDGE_LINUX_EINVAL;
+    key_lock(&g_key_lock);
+    state = key_task_get_locked(identity);
+    if (!state) {
+        result = -EDGE_LINUX_ENFILE;
+    } else if (!target) {
+        state->assumed_authorization = 0;
+        result = 0;
+    } else {
+        authorization = key_find_any_locked(state->offered_authorization);
+        if (!authorization || authorization->revoked ||
+            authorization->invalidated ||
+            authorization->request_target != target) {
+            result = -EDGE_LINUX_ENOKEY;
+        } else {
+            state->assumed_authorization = authorization->serial;
+            result = authorization->serial;
+        }
+    }
+    key_unlock(&g_key_lock);
+    return result;
+}
+
+static int64_t keyctl_instantiate_buffer(
+    const kernel_linux_identity_t *identity, int32_t target_serial,
+    uint32_t payload_length, int32_t ring_serial) {
+    kernel_key_task_state_t *state;
+    kernel_key_object_t *authorization;
+    kernel_key_object_t *target;
+    kernel_key_object_t *destination;
+    int64_t result = -EDGE_LINUX_EPERM;
+
+    key_lock(&g_key_lock);
+    state = key_task_get_locked(identity);
+    authorization = state ?
+        key_find_any_locked(state->assumed_authorization) : 0;
+    target = key_find_any_locked(target_serial);
+    if (!state) {
+        result = -EDGE_LINUX_ENFILE;
+    } else if (authorization && !authorization->revoked &&
+               authorization->request_target == target_serial &&
+               target && target->constructing) {
+        destination = ring_serial ? key_resolve_locked(
+            identity, state, ring_serial, 1) :
+            key_find_locked(authorization->request_destination);
+        if (!destination) {
+            result = -EDGE_LINUX_ENOKEY;
+        } else if (destination->kind != KERNEL_KEY_KIND_KEYRING) {
+            result = -EDGE_LINUX_ENOTDIR;
+        } else {
+            if (!key_ring_contains_locked(destination, target->serial, 0u))
+                result = key_link_created_locked(target, destination);
+            else
+                result = 0;
+            if (result == 0) {
+                target->payload_length = payload_length;
+                if (payload_length)
+                    memcpy(target->payload, g_key_payload_scratch,
+                           payload_length);
+                target->negative = 0u;
+                target->reject_error = 0;
+                target->constructing = 0u;
+                key_notify_locked(
+                    target, KERNEL_KEY_NOTIFY_INSTANTIATED, 0u);
+                key_request_authority_clear_locked(state, authorization);
+            }
+        }
+    }
+    key_unlock(&g_key_lock);
+    return result;
+}
+
+static int64_t keyctl_instantiate(
+    const kernel_linux_identity_t *identity,
+    const kernel_keyring_user_access_t *access,
+    int32_t target, uint64_t payload, uint64_t payload_length,
+    int32_t ring) {
+    int64_t result;
+
+    if (payload_length > 1024u * 1024u - 1u)
+        return -EDGE_LINUX_EINVAL;
+    if (payload_length > KERNEL_KEY_PAYLOAD_MAX)
+        return -EDGE_LINUX_ENOMEM;
+    key_lock(&g_key_copy_lock);
+    if (payload_length &&
+        (!payload || !access->copy_from_user ||
+         access->copy_from_user(access->context, g_key_payload_scratch,
+                                payload, payload_length) < 0)) {
+        key_unlock(&g_key_copy_lock);
+        return -EDGE_LINUX_EFAULT;
+    }
+    result = keyctl_instantiate_buffer(
+        identity, target, (uint32_t)payload_length, ring);
+    key_unlock(&g_key_copy_lock);
+    return result;
+}
+
+static int64_t keyctl_instantiate_iov(
+    const kernel_linux_identity_t *identity,
+    const kernel_keyring_user_access_t *access,
+    int32_t target, uint64_t vectors, uint64_t raw_count,
+    int32_t ring) {
+    uint64_t total = 0u;
+    uint32_t count = (uint32_t)raw_count;
+    int64_t result;
+
+    if (raw_count != count || count > KERNEL_KEY_IOV_MAX)
+        return -EDGE_LINUX_EINVAL;
+    if (!vectors) count = 0u;
+    key_lock(&g_key_copy_lock);
+    for (uint32_t index = 0; index < count; ++index) {
+        kernel_key_user_iovec_t vector;
+
+        if (access->iovec_pointer_size == sizeof(uint32_t)) {
+            kernel_key_user_iovec32_t compat_vector;
+            if (!access->copy_from_user ||
+                access->copy_from_user(
+                    access->context, &compat_vector,
+                    vectors + (uint64_t)index * sizeof(compat_vector),
+                    sizeof(compat_vector)) < 0) {
+                result = -EDGE_LINUX_EFAULT;
+                goto out;
+            }
+            vector.base = compat_vector.base;
+            vector.length = compat_vector.length;
+        } else if (!access->copy_from_user ||
+                   access->copy_from_user(
+                       access->context, &vector,
+                       vectors + (uint64_t)index * sizeof(vector),
+                       sizeof(vector)) < 0) {
+            result = -EDGE_LINUX_EFAULT;
+            goto out;
+        }
+        if (vector.length > 1024u * 1024u - 1u - total) {
+            result = -EDGE_LINUX_EINVAL;
+            goto out;
+        }
+        if (vector.length > KERNEL_KEY_PAYLOAD_MAX - total) {
+            result = -EDGE_LINUX_ENOMEM;
+            goto out;
+        }
+        if (vector.length &&
+            (!vector.base || access->copy_from_user(
+                access->context, g_key_payload_scratch + total,
+                vector.base, vector.length) < 0)) {
+            result = -EDGE_LINUX_EFAULT;
+            goto out;
+        }
+        total += vector.length;
+    }
+    result = keyctl_instantiate_buffer(
+        identity, target, (uint32_t)total, ring);
+out:
+    key_unlock(&g_key_copy_lock);
+    return result;
+}
+
+static int64_t keyctl_reject(
+    const kernel_linux_identity_t *identity, int32_t target_serial,
+    uint32_t timeout, uint32_t error, int32_t ring_serial) {
+    kernel_key_task_state_t *state;
+    kernel_key_object_t *authorization;
+    kernel_key_object_t *target;
+    kernel_key_object_t *destination;
+    int64_t result = -EDGE_LINUX_EPERM;
+
+    if (!error || error >= 4095u || error == 512u || error == 513u ||
+        error == 514u || error == 516u)
+        return -EDGE_LINUX_EINVAL;
+    key_lock(&g_key_lock);
+    state = key_task_get_locked(identity);
+    authorization = state ?
+        key_find_any_locked(state->assumed_authorization) : 0;
+    target = key_find_any_locked(target_serial);
+    if (!state) {
+        result = -EDGE_LINUX_ENFILE;
+    } else if (authorization && !authorization->revoked &&
+               authorization->request_target == target_serial &&
+               target && target->constructing) {
+        destination = ring_serial ? key_resolve_locked(
+            identity, state, ring_serial, 1) :
+            key_find_locked(authorization->request_destination);
+        if (!destination) {
+            result = -EDGE_LINUX_ENOKEY;
+        } else if (destination->kind != KERNEL_KEY_KIND_KEYRING) {
+            result = -EDGE_LINUX_ENOTDIR;
+        } else {
+            if (!key_ring_contains_locked(destination, target->serial, 0u))
+                result = key_link_created_locked(target, destination);
+            else
+                result = 0;
+            if (result == 0) {
+                target->negative = 1u;
+                target->reject_error = (int32_t)error;
+                target->constructing = 0u;
+                target->expires_us = timeout ?
+                    boottime_monotonic_us() +
+                        (uint64_t)timeout * 1000000u : 0u;
+                key_notify_locked(
+                    target, KERNEL_KEY_NOTIFY_INSTANTIATED, 0u);
+                key_request_authority_clear_locked(state, authorization);
+            }
+        }
+    }
+    key_unlock(&g_key_lock);
+    return result;
 }
 
 static int key_prepare_strings(
@@ -1327,6 +1672,13 @@ int64_t kernel_keyring_request_key(
     kernel_key_object_t *roots[5];
     kernel_key_object_t *found = 0;
     kernel_key_object_t *destination = 0;
+    kernel_key_object_t *target = 0;
+    kernel_key_object_t *authorization = 0;
+    int32_t target_serial = 0;
+    int32_t authorization_serial = 0;
+    int32_t thread_serial = 0;
+    int32_t process_serial = 0;
+    int32_t session_serial = 0;
     int result;
 
     if (!identity || !access) return -EDGE_LINUX_ESRCH;
@@ -1358,24 +1710,119 @@ int64_t kernel_keyring_request_key(
     roots[3] = key_user_ring_locked(identity, 1);
     roots[4] = key_user_ring_locked(identity, 0);
     for (uint32_t index = 0; index < 5u && !found; ++index)
-        found = key_search_locked(
+        found = key_search_request_locked(
             identity, state, roots[index], g_key_type_scratch,
             g_key_description_scratch, 0u);
-    if (!found) {
+    if (found) {
+        if (found->negative) {
+            result = -(found->reject_error > 0 ? found->reject_error :
+                       EDGE_LINUX_ENOKEY);
+            goto out;
+        }
+        if (destination_keyring) {
+            destination = key_resolve_locked(
+                identity, state, destination_keyring, 1);
+            if (!destination) {
+                result = -EDGE_LINUX_ENOKEY;
+                goto out;
+            }
+            result = key_link_locked(
+                identity, state, found, destination, 0);
+            if (result < 0) goto out;
+        }
+        result = found->serial;
+        goto out;
+    }
+    if (!callout || !access->invoke_request_helper) {
         result = -EDGE_LINUX_ENOKEY;
         goto out;
     }
-    if (destination_keyring) {
-        destination = key_resolve_locked(
-            identity, state, destination_keyring, 1);
-        if (!destination) {
-            result = -EDGE_LINUX_ENOKEY;
-            goto out;
-        }
-        result = key_link_locked(identity, state, found, destination, 0);
-        if (result < 0) goto out;
+    destination = key_request_destination_locked(
+        identity, state, destination_keyring);
+    if (!destination) {
+        result = -EDGE_LINUX_ENOKEY;
+        goto out;
     }
-    result = found->serial;
+    if (destination->kind != KERNEL_KEY_KIND_KEYRING) {
+        result = -EDGE_LINUX_ENOTDIR;
+        goto out;
+    }
+    if (key_permission_locked(identity, state, destination, 4u) < 0) {
+        result = -EDGE_LINUX_EACCES;
+        goto out;
+    }
+    target = key_allocate_locked(
+        key_kind_from_type(g_key_type_scratch), g_key_type_scratch,
+        g_key_description_scratch, identity->fsuid, identity->fsgid,
+        identity->user_namespace_id,
+        EDGE_LINUX_KEY_POS_ALL | EDGE_LINUX_KEY_USR_VIEW);
+    if (!target) {
+        result = -EDGE_LINUX_EDQUOT;
+        goto out;
+    }
+    target->constructing = 1u;
+    result = key_link_created_locked(target, destination);
+    if (result < 0) {
+        memset(target, 0, sizeof(*target));
+        goto out;
+    }
+    authorization = key_allocate_locked(
+        KERNEL_KEY_KIND_USER, ".request_key_auth", "create",
+        identity->fsuid, identity->fsgid, identity->user_namespace_id,
+        EDGE_LINUX_KEY_POS_ALL | EDGE_LINUX_KEY_USR_VIEW |
+            EDGE_LINUX_KEY_USR_READ | EDGE_LINUX_KEY_USR_SEARCH);
+    if (!authorization) {
+        target->constructing = 0u;
+        target->negative = 1u;
+        target->reject_error = EDGE_LINUX_ENOKEY;
+        result = -EDGE_LINUX_EDQUOT;
+        goto out;
+    }
+    authorization->request_target = target->serial;
+    authorization->request_destination = destination->serial;
+    authorization->payload_length =
+        (uint32_t)strlen(g_key_callout_scratch) + 1u;
+    memcpy(authorization->payload, g_key_callout_scratch,
+           authorization->payload_length);
+    target_serial = target->serial;
+    authorization_serial = authorization->serial;
+    thread_serial = roots[0] ? roots[0]->serial : 0;
+    process_serial = roots[1] ? roots[1]->serial : 0;
+    session_serial = roots[2] ? roots[2]->serial : 0;
+
+    key_unlock(&g_key_lock);
+    key_unlock(&g_key_copy_lock);
+    result = access->invoke_request_helper(
+        access->context, authorization_serial, target_serial,
+        identity->fsuid, identity->fsgid, thread_serial,
+        process_serial, session_serial);
+
+    key_lock(&g_key_lock);
+    target = key_find_any_locked(target_serial);
+    authorization = key_find_any_locked(authorization_serial);
+    if (target && target->constructing) {
+        target->constructing = 0u;
+        target->negative = 1u;
+        target->reject_error = EDGE_LINUX_ENOKEY;
+        target->expires_us = boottime_monotonic_us() + 60000000u;
+        key_notify_locked(target, KERNEL_KEY_NOTIFY_INSTANTIATED, 0u);
+    }
+    if (authorization && !authorization->revoked) {
+        authorization->revoked = 1u;
+        key_release_unreferenced_locked(authorization_serial, 0u);
+    }
+    if (!target) {
+        result = -EDGE_LINUX_ENOKEY;
+    } else if (target->negative) {
+        result = -(target->reject_error > 0 ? target->reject_error :
+                   EDGE_LINUX_ENOKEY);
+    } else if (target->constructing) {
+        result = -EDGE_LINUX_ENOKEY;
+    } else {
+        result = target->serial;
+    }
+    key_unlock(&g_key_lock);
+    return result;
 out:
     key_unlock(&g_key_lock);
     key_unlock(&g_key_copy_lock);
@@ -1479,65 +1926,25 @@ int64_t kernel_keyring_keyctl(
     if (!identity || !access || !arguments) return -EDGE_LINUX_EINVAL;
     if (command == EDGE_LINUX_KEYCTL_SESSION_TO_PARENT)
         return keyctl_session_to_parent(identity);
-    if (command == EDGE_LINUX_KEYCTL_ASSUME_AUTHORITY) {
-        int32_t serial = (int32_t)arguments[0];
-
-        if (serial < 0) return -EDGE_LINUX_EINVAL;
-        return serial ? -EDGE_LINUX_ENOKEY : 0;
-    }
-    if (command == EDGE_LINUX_KEYCTL_INSTANTIATE) {
-        if (arguments[2] > 1024u * 1024u - 1u)
-            return -EDGE_LINUX_EINVAL;
-        return -EDGE_LINUX_EPERM;
-    }
-    if (command == EDGE_LINUX_KEYCTL_INSTANTIATE_IOV) {
-        uint64_t total = 0u;
-        uint32_t count = (uint32_t)arguments[2];
-
-        if (arguments[2] != count || count > KERNEL_KEY_IOV_MAX)
-            return -EDGE_LINUX_EINVAL;
-        if (!arguments[1]) count = 0u;
-        for (uint32_t index = 0; index < count; ++index) {
-            kernel_key_user_iovec_t vector;
-
-            if (access->iovec_pointer_size == sizeof(uint32_t)) {
-                kernel_key_user_iovec32_t compat_vector;
-
-                if (!access->copy_from_user ||
-                    access->copy_from_user(
-                        access->context, &compat_vector,
-                        arguments[1] +
-                            (uint64_t)index * sizeof(compat_vector),
-                        sizeof(compat_vector)) < 0)
-                    return -EDGE_LINUX_EFAULT;
-                vector.base = compat_vector.base;
-                vector.length = compat_vector.length;
-            } else if (!access->copy_from_user ||
-                       access->copy_from_user(
-                           access->context, &vector,
-                           arguments[1] +
-                               (uint64_t)index * sizeof(vector),
-                           sizeof(vector)) < 0) {
-                return -EDGE_LINUX_EFAULT;
-            }
-            if (vector.length > UINT64_MAX - total)
-                return -EDGE_LINUX_EINVAL;
-            total += vector.length;
-        }
-        if (total > 1024u * 1024u - 1u)
-            return -EDGE_LINUX_EINVAL;
-        return -EDGE_LINUX_EPERM;
-    }
+    if (command == EDGE_LINUX_KEYCTL_ASSUME_AUTHORITY)
+        return keyctl_assume_authority(
+            identity, (int32_t)arguments[0]);
+    if (command == EDGE_LINUX_KEYCTL_INSTANTIATE)
+        return keyctl_instantiate(
+            identity, access, (int32_t)arguments[0], arguments[1],
+            arguments[2], (int32_t)arguments[3]);
+    if (command == EDGE_LINUX_KEYCTL_INSTANTIATE_IOV)
+        return keyctl_instantiate_iov(
+            identity, access, (int32_t)arguments[0], arguments[1],
+            arguments[2], (int32_t)arguments[3]);
     if (command == EDGE_LINUX_KEYCTL_NEGATE)
-        return -EDGE_LINUX_EPERM;
-    if (command == EDGE_LINUX_KEYCTL_REJECT) {
-        uint32_t error = (uint32_t)arguments[2];
-
-        if (!error || error >= 4095u || error == 512u ||
-            error == 513u || error == 514u || error == 516u)
-            return -EDGE_LINUX_EINVAL;
-        return -EDGE_LINUX_EPERM;
-    }
+        return keyctl_reject(
+            identity, (int32_t)arguments[0], (uint32_t)arguments[1],
+            EDGE_LINUX_ENOKEY, (int32_t)arguments[2]);
+    if (command == EDGE_LINUX_KEYCTL_REJECT)
+        return keyctl_reject(
+            identity, (int32_t)arguments[0], (uint32_t)arguments[1],
+            (uint32_t)arguments[2], (int32_t)arguments[3]);
     if (command == EDGE_LINUX_KEYCTL_DH_COMPUTE)
         return keyctl_dh_compute(identity, access, arguments);
     if (command == EDGE_LINUX_KEYCTL_PKEY_QUERY ||
@@ -1999,6 +2406,7 @@ void kernel_keyring_task_exit(int32_t global_tid, int32_t global_tgid,
     key_lock(&g_key_lock);
     for (index = 0; index < KERNEL_KEY_TASK_MAX; ++index) {
         kernel_key_task_state_t *state = &g_key_tasks[index];
+        int32_t authorization;
         int32_t session_keyring;
         int32_t thread_keyring;
         if (!state->used ||
@@ -2007,6 +2415,8 @@ void kernel_keyring_task_exit(int32_t global_tid, int32_t global_tgid,
             continue;
         thread_keyring = state->thread_keyring;
         session_keyring = state->session_keyring;
+        authorization = state->assumed_authorization ?
+            state->assumed_authorization : state->offered_authorization;
         if (state->thread_keyring) {
             kernel_key_object_t *ring = key_find_locked(
                 state->thread_keyring);
@@ -2015,6 +2425,7 @@ void kernel_keyring_task_exit(int32_t global_tid, int32_t global_tgid,
         memset(state, 0, sizeof(*state));
         key_release_unreferenced_locked(thread_keyring, 0u);
         key_release_unreferenced_locked(session_keyring, 0u);
+        key_release_unreferenced_locked(authorization, 0u);
     }
     if (whole_thread_group) {
         for (index = 0; index < KERNEL_KEY_MAX; ++index) {
