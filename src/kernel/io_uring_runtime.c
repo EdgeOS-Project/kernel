@@ -108,6 +108,7 @@
 #define IO_URING_MAX_COMPLETION_OVERFLOW 128u
 
 typedef struct io_uring_worker_vectors io_uring_worker_vectors_t;
+typedef struct io_uring_worker_buffer io_uring_worker_buffer_t;
 
 typedef struct kernel_io_uring_pending {
     uint8_t used;
@@ -146,6 +147,7 @@ typedef struct kernel_io_uring_pending {
     int32_t worker_owner_pid;
     uint32_t worker_reserved;
     io_uring_worker_vectors_t *worker_vectors;
+    io_uring_worker_buffer_t *worker_buffer;
     struct edge_linux_io_uring_sqe worker_submission;
 } kernel_io_uring_pending_t;
 
@@ -167,6 +169,12 @@ struct io_uring_worker_vectors {
     uint32_t count;
     uint32_t reserved;
     struct edge_linux_iovec vectors[];
+};
+
+struct io_uring_worker_buffer {
+    uint32_t references;
+    uint32_t page_count;
+    kernel_io_uring_fixed_buffer_t buffer;
 };
 
 #define IO_URING_ZCRX_BITMAP_WORDS \
@@ -362,8 +370,11 @@ static int32_t io_uring_event_retain_locked(
 #define IO_URING_OP_WRITEV 2u
 #define IO_URING_OP_READ_FIXED 4u
 #define IO_URING_OP_WRITE_FIXED 5u
+#define IO_URING_OP_READ 22u
+#define IO_URING_OP_WRITE 23u
 #define IO_URING_OP_READV_FIXED 60u
 #define IO_URING_OP_WRITEV_FIXED 61u
+#define IO_URING_MAX_RW_COUNT 0x7ffff000u
 
 static kernel_io_uring_t g_io_urings[KERNEL_IO_URING_MAX_RINGS];
 static kernel_io_uring_fixed_buffer_t
@@ -752,6 +763,68 @@ static void io_uring_worker_vectors_release(
 static int io_uring_fixed_buffer_pin(
         kernel_io_uring_fixed_buffer_t *destination,
         uint64_t address_space,
+        const struct edge_linux_iovec *source, uint64_t tag);
+
+static io_uring_worker_buffer_t *io_uring_worker_buffer_create(
+        uint64_t address_space, uint64_t address, uint64_t length,
+        int *error) {
+    io_uring_worker_buffer_t *capture;
+    struct edge_linux_iovec vector;
+    uint64_t page_count;
+    int result;
+
+    if (!error) return 0;
+    *error = -EDGE_LINUX_ENOMEM;
+    if (!length || !address ||
+        !g_io_uring_allocator.allocate_metadata_pages ||
+        !g_io_uring_allocator.release_metadata_pages)
+        goto invalid;
+    page_count = (sizeof(*capture) + KERNEL_IO_URING_PAGE_SIZE - 1u) /
+        KERNEL_IO_URING_PAGE_SIZE;
+    if (!page_count || page_count > UINT32_MAX) return 0;
+    capture = (io_uring_worker_buffer_t *)
+        g_io_uring_allocator.allocate_metadata_pages(
+            g_io_uring_allocator.context, (uint32_t)page_count);
+    if (!capture) return 0;
+    memset(capture, 0,
+           (size_t)page_count * KERNEL_IO_URING_PAGE_SIZE);
+    capture->references = 1u;
+    capture->page_count = (uint32_t)page_count;
+    vector.iov_base = address;
+    vector.iov_len = length;
+    result = io_uring_fixed_buffer_pin(
+        &capture->buffer, address_space, &vector, 0u);
+    if (result < 0) {
+        g_io_uring_allocator.release_metadata_pages(
+            g_io_uring_allocator.context, capture,
+            capture->page_count);
+        *error = result;
+        return 0;
+    }
+    *error = 0;
+    return capture;
+
+invalid:
+    *error = !length ? 0 :
+        (!address ? -EDGE_LINUX_EFAULT : -EDGE_LINUX_ENOMEM);
+    return 0;
+}
+
+static void io_uring_worker_buffer_release(
+        io_uring_worker_buffer_t *capture) {
+    if (!capture) return;
+    if (__atomic_sub_fetch(
+            &capture->references, 1u, __ATOMIC_ACQ_REL) != 0u)
+        return;
+    io_uring_fixed_buffer_release(&capture->buffer);
+    g_io_uring_allocator.release_metadata_pages(
+        g_io_uring_allocator.context, capture,
+        capture->page_count);
+}
+
+static int io_uring_fixed_buffer_pin(
+        kernel_io_uring_fixed_buffer_t *destination,
+        uint64_t address_space,
         const struct edge_linux_iovec *source, uint64_t tag) {
     uint64_t page_address;
     uint64_t page_bytes;
@@ -941,6 +1014,10 @@ static void io_uring_release_storage(kernel_io_uring_t *ring) {
             pending->kind == IO_URING_PENDING_WORKER)
             io_uring_worker_vectors_release(
                 pending->worker_vectors);
+        if (pending->used &&
+            pending->kind == IO_URING_PENDING_WORKER)
+            io_uring_worker_buffer_release(
+                pending->worker_buffer);
     }
     for (uint32_t page = 0;
          page < KERNEL_IO_URING_MAX_PBUF_PAGES; ++page) {
@@ -4843,6 +4920,7 @@ int kernel_io_uring_pending_cancel_match(
     kernel_fd_operation_lease_t descriptor_lease = {0};
     kernel_io_uring_page_t read_page = {0};
     io_uring_worker_vectors_t *worker_vectors = 0;
+    io_uring_worker_buffer_t *worker_buffer = 0;
     int32_t epoll_index = -1;
     uint64_t canceled_sequence = 0;
     uint64_t link_timeout_user_data = 0;
@@ -4898,6 +4976,8 @@ int kernel_io_uring_pending_cancel_match(
             *canceled_user_data = ring->pending[slot].user_data;
             if (ring->pending[slot].kind == IO_URING_PENDING_WORKER)
                 worker_vectors = ring->pending[slot].worker_vectors;
+            if (ring->pending[slot].kind == IO_URING_PENDING_WORKER)
+                worker_buffer = ring->pending[slot].worker_buffer;
             memset(&ring->pending[slot], 0, sizeof(ring->pending[slot]));
             break;
         }
@@ -4924,6 +5004,7 @@ int kernel_io_uring_pending_cancel_match(
         g_io_uring_allocator.release(
             g_io_uring_allocator.context, &read_page);
     io_uring_worker_vectors_release(worker_vectors);
+    io_uring_worker_buffer_release(worker_buffer);
     if (epoll_index >= 0)
         kernel_epoll_object_release(epoll_index);
     if (futex_wait_id)
@@ -4951,15 +5032,17 @@ int kernel_io_uring_worker_add(
         const struct edge_linux_io_uring_sqe *submission,
         uint32_t ready_operation, uint32_t runtime_flags,
         const struct edge_linux_iovec *vectors,
-        uint32_t vector_count) {
+        uint32_t vector_count, uint64_t address_space) {
     kernel_fd_operation_lease_t descriptor_lease = {0};
     kernel_fd_operation_lease_t *fixed_lease = 0;
     io_uring_worker_vectors_t *worker_vectors = 0;
+    io_uring_worker_buffer_t *worker_buffer = 0;
     kernel_io_uring_pending_t *pending = 0;
     kernel_io_uring_t *ring;
     uint64_t file_description_id = 0u;
     uint64_t flags;
     int vector_operation;
+    int ordinary_scalar;
     int result;
 
     if (!submission || owner_pid <= 0 ||
@@ -4974,6 +5057,8 @@ int kernel_io_uring_worker_add(
                        submission->opcode == IO_URING_OP_WRITEV ||
                        submission->opcode == IO_URING_OP_READV_FIXED ||
                        submission->opcode == IO_URING_OP_WRITEV_FIXED;
+    ordinary_scalar = submission->opcode == IO_URING_OP_READ ||
+                      submission->opcode == IO_URING_OP_WRITE;
     if ((vector_operation && vector_count != submission->length) ||
         (!vector_operation && (vectors || vector_count)) ||
         (vector_count && !vectors))
@@ -4990,6 +5075,15 @@ int kernel_io_uring_worker_add(
         result = kernel_fd_operation_description_id(
             &descriptor_lease, &file_description_id);
         if (result < 0) goto finish;
+        if (ordinary_scalar && submission->length) {
+            uint64_t length =
+                submission->length > IO_URING_MAX_RW_COUNT ?
+                    IO_URING_MAX_RW_COUNT : submission->length;
+
+            worker_buffer = io_uring_worker_buffer_create(
+                address_space, submission->address, length, &result);
+            if (!worker_buffer) goto finish;
+        }
     }
 
     flags = spin_lock_irqsave(&g_io_uring_lock);
@@ -5014,6 +5108,15 @@ int kernel_io_uring_worker_add(
         result = kernel_fd_operation_description_id(
             &descriptor_lease, &file_description_id);
         if (result < 0) goto unlock;
+        if (ordinary_scalar && submission->length) {
+            uint64_t length =
+                submission->length > IO_URING_MAX_RW_COUNT ?
+                    IO_URING_MAX_RW_COUNT : submission->length;
+
+            worker_buffer = io_uring_worker_buffer_create(
+                address_space, submission->address, length, &result);
+            if (!worker_buffer) goto unlock;
+        }
     }
     for (uint32_t slot = 0;
          slot < KERNEL_IO_URING_MAX_PENDING; ++slot) {
@@ -5048,6 +5151,8 @@ int kernel_io_uring_worker_add(
     pending->worker_reserved = runtime_flags;
     pending->worker_vectors = worker_vectors;
     worker_vectors = 0;
+    pending->worker_buffer = worker_buffer;
+    worker_buffer = 0;
     pending->worker_submission = *submission;
     result = 0;
 unlock:
@@ -5056,6 +5161,7 @@ finish:
     if (kernel_fd_operation_view(&descriptor_lease))
         (void)kernel_fd_operation_release(&descriptor_lease);
     io_uring_worker_vectors_release(worker_vectors);
+    io_uring_worker_buffer_release(worker_buffer);
     if (result == 0) kernel_deferred_work_request();
     return result;
 }
@@ -5158,6 +5264,7 @@ int kernel_io_uring_worker_finish(
         uint32_t completion_flags) {
     kernel_fd_operation_lease_t descriptor_lease = {0};
     io_uring_worker_vectors_t *worker_vectors = 0;
+    io_uring_worker_buffer_t *worker_buffer = 0;
     kernel_io_uring_pending_t *pending = 0;
     kernel_io_uring_t *ring;
     uint64_t user_data = 0u;
@@ -5192,12 +5299,14 @@ int kernel_io_uring_worker_finish(
         &descriptor_lease, &pending->descriptor_lease);
     if (finish_result < 0) goto unlock;
     worker_vectors = pending->worker_vectors;
+    worker_buffer = pending->worker_buffer;
     memset(pending, 0, sizeof(*pending));
 unlock:
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     if (kernel_fd_operation_view(&descriptor_lease))
         (void)kernel_fd_operation_release(&descriptor_lease);
     io_uring_worker_vectors_release(worker_vectors);
+    io_uring_worker_buffer_release(worker_buffer);
     if (finish_result < 0 || result == -EDGE_LINUX_EAGAIN)
         return finish_result;
     if ((submission_flags & IO_URING_WORKER_CQE_SKIP_SUCCESS) &&
@@ -5221,6 +5330,7 @@ typedef struct io_uring_independent_work {
     uint32_t runtime_flags;
     uint8_t writing;
     uint8_t vector_operation;
+    uint8_t fixed_buffer;
 } io_uring_independent_work_t;
 
 static void io_uring_independent_work_release(
@@ -5315,7 +5425,9 @@ static int io_uring_independent_work_prepare(
         if (!ring->used || !pending->used ||
             pending->kind != IO_URING_PENDING_WORKER ||
             pending->ready_latched ||
-            (pending->opcode != IO_URING_OP_READ_FIXED &&
+            (pending->opcode != IO_URING_OP_READ &&
+             pending->opcode != IO_URING_OP_WRITE &&
+             pending->opcode != IO_URING_OP_READ_FIXED &&
              pending->opcode != IO_URING_OP_WRITE_FIXED &&
              pending->opcode != IO_URING_OP_READV_FIXED &&
              pending->opcode != IO_URING_OP_WRITEV_FIXED)) {
@@ -5326,11 +5438,16 @@ static int io_uring_independent_work_prepare(
         work->sequence = pending->sequence;
         work->submission = pending->worker_submission;
         work->runtime_flags = pending->worker_reserved;
-        work->writing = pending->opcode == IO_URING_OP_WRITE_FIXED ||
+        work->writing = pending->opcode == IO_URING_OP_WRITE ||
+                        pending->opcode == IO_URING_OP_WRITE_FIXED ||
                         pending->opcode == IO_URING_OP_WRITEV_FIXED;
         work->vector_operation =
             pending->opcode == IO_URING_OP_READV_FIXED ||
             pending->opcode == IO_URING_OP_WRITEV_FIXED;
+        work->fixed_buffer =
+            pending->opcode == IO_URING_OP_READ_FIXED ||
+            pending->opcode == IO_URING_OP_WRITE_FIXED ||
+            work->vector_operation;
         result = kernel_fd_operation_clone(
             &work->descriptor_lease, &pending->descriptor_lease);
         if (result < 0) {
@@ -5344,7 +5461,25 @@ static int io_uring_independent_work_prepare(
                 work->vectors->count != work->submission.length)
                 work->terminal_result = -EDGE_LINUX_EFAULT;
         }
-        if (work->vector_operation && !work->submission.length) {
+        if (!work->fixed_buffer) {
+            if (work->submission.length) {
+                if (!pending->worker_buffer) {
+                    work->terminal_result = -EDGE_LINUX_EFAULT;
+                } else {
+                    result = io_uring_fixed_buffer_retain(
+                        &work->buffer,
+                        &pending->worker_buffer->buffer);
+                    if (result < 0)
+                        work->terminal_result = result;
+                    else {
+                        work->buffer_offset = 0u;
+                        work->first_page_offset = (uint32_t)(
+                            work->buffer.address &
+                            (KERNEL_IO_URING_PAGE_SIZE - 1u));
+                    }
+                }
+            }
+        } else if (work->vector_operation && !work->submission.length) {
             /* A zero-vector request completes without a fixed buffer. */
         } else if (work->submission.buffer_index >=
                    ring->fixed_buffer_count) {
@@ -5491,7 +5626,8 @@ static int32_t io_uring_independent_work_execute(
             work->buffer_offset;
         uint64_t segment_length = work->vector_operation ?
             work->vectors->vectors[segment].iov_len :
-            work->submission.length;
+            (work->fixed_buffer ? work->submission.length :
+                                  work->buffer.length);
         uint64_t segment_done = 0u;
 
         while (segment_done < segment_length) {
@@ -5728,6 +5864,7 @@ typedef struct io_uring_pending_release {
     kernel_fd_operation_lease_t descriptor_lease;
     kernel_io_uring_page_t read_page;
     io_uring_worker_vectors_t *worker_vectors;
+    io_uring_worker_buffer_t *worker_buffer;
     int32_t epoll_index;
     uint64_t futex_wait_id;
 } io_uring_pending_release_t;
@@ -5759,6 +5896,8 @@ static int io_uring_pending_remove_locked(
         release->futex_wait_id = pending->futex_wait_id;
     if (pending->kind == IO_URING_PENDING_WORKER)
         release->worker_vectors = pending->worker_vectors;
+    if (pending->kind == IO_URING_PENDING_WORKER)
+        release->worker_buffer = pending->worker_buffer;
     memset(pending, 0, sizeof(*pending));
     return 0;
 }
@@ -5773,6 +5912,7 @@ static void io_uring_pending_release_finish(
         g_io_uring_allocator.release(
             g_io_uring_allocator.context, &release->read_page);
     io_uring_worker_vectors_release(release->worker_vectors);
+    io_uring_worker_buffer_release(release->worker_buffer);
     if (release->epoll_index >= 0)
         kernel_epoll_object_release(release->epoll_index);
     if (release->futex_wait_id)

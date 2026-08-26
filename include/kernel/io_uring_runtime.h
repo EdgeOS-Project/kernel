@@ -369,7 +369,8 @@ int kernel_io_uring_worker_add(
     int32_t ring_id, int32_t owner_pid,
     const struct edge_linux_io_uring_sqe *submission,
     uint32_t ready_operation, uint32_t runtime_flags,
-    const struct edge_linux_iovec *vectors, uint32_t vector_count);
+    const struct edge_linux_iovec *vectors, uint32_t vector_count,
+    uint64_t address_space);
 int kernel_io_uring_worker_materialize_next(
     int32_t owner_pid, int32_t ring_filter,
     kernel_io_uring_worker_request_t *request);

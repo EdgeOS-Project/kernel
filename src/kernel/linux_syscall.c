@@ -11877,10 +11877,12 @@ static int64_t edge_linux_io_uring_execute_rw(
         (positional ? KERNEL_IO_READ_POSITIONAL : KERNEL_IO_READ_CURRENT);
     current_offset = positional ? submission->offset : 0;
     if (!vector) {
+        uint64_t length = submission->length > EDGE_LINUX_MAX_RW_COUNT ?
+            EDGE_LINUX_MAX_RW_COUNT : submission->length;
         int64_t completed = fixed ?
             kernel_io_uring_fixed_buffer_transfer(
                 ring_id, submission->buffer_index,
-                submission->address, submission->length,
+                submission->address, length,
                 submission->descriptor, current_offset, operation,
                 runtime_flags, context->user_registers) :
             KERNEL_IO_VECTOR_SCALAR_FALLBACK;
@@ -11889,7 +11891,7 @@ static int64_t edge_linux_io_uring_execute_rw(
             return completed;
         return kernel_io_user_transfer(
             submission->descriptor, submission->address,
-            submission->length, current_offset, operation,
+            length, current_offset, operation,
             runtime_flags, context->user_registers);
     }
 
@@ -13489,7 +13491,8 @@ static int edge_linux_io_uring_worker_add(
     return kernel_io_uring_worker_add(
         ring_id, kernel_current_pid(), submission,
         edge_linux_io_uring_worker_ready_operation(submission),
-        runtime_flags, vectors, vector_count);
+        runtime_flags, vectors, vector_count,
+        arch_mm_current_address_space());
 }
 
 static uint32_t edge_linux_io_uring_worker_service(

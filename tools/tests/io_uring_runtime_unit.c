@@ -2337,7 +2337,7 @@ int main(void) {
         g_ready_descriptor = -1;
         assert(kernel_io_uring_worker_add(
                    second_ring_id, 42, &independent_submission,
-                   KERNEL_IO_READ_CURRENT, 0u, 0, 0u) == 0);
+                   KERNEL_IO_READ_CURRENT, 0u, 0, 0u, 0u) == 0);
         assert(g_deferred_work_requests != 0u);
         assert(kernel_io_uring_worker_collect(8u) == 0u);
         assert(kernel_io_uring_completion_count(second_ring_id) == 0u);
@@ -2364,7 +2364,7 @@ int main(void) {
         g_ready_generation = g_descriptor_generation[74];
         assert(kernel_io_uring_worker_add(
                    second_ring_id, 42, &independent_submission,
-                   KERNEL_IO_WRITE_CURRENT, 0u, 0, 0u) == 0);
+                   KERNEL_IO_WRITE_CURRENT, 0u, 0, 0u, 0u) == 0);
         assert(kernel_io_uring_worker_collect(8u) == 1u);
         assert(kernel_io_uring_completion_count(second_ring_id) == 2u);
         assert(independent_completion[1].user_data ==
@@ -2387,7 +2387,7 @@ int main(void) {
                    KERNEL_IO_WRITE_CURRENT,
                    KERNEL_IO_TRANSFER_APPEND |
                        KERNEL_IO_TRANSFER_SYNC_DATA,
-                   0, 0u) == 0);
+                   0, 0u, 0u) == 0);
         assert(kernel_io_uring_worker_collect(8u) == 1u);
         assert(kernel_io_uring_completion_count(second_ring_id) == 3u);
         assert(independent_completion[2].user_data ==
@@ -2418,7 +2418,7 @@ int main(void) {
         assert(kernel_io_uring_worker_add(
                    second_ring_id, 42, &independent_submission,
                    KERNEL_IO_WRITE_CURRENT, 0u,
-                   fixed_vectors, 2u) == 0);
+                   fixed_vectors, 2u, 0u) == 0);
         memset(fixed_vectors, 0, sizeof(fixed_vectors));
         assert(kernel_io_uring_worker_collect(8u) == 1u);
         assert(kernel_io_uring_completion_count(second_ring_id) == 4u);
@@ -2431,12 +2431,47 @@ int main(void) {
         independent_submission.user_data = 0x494e445645435a45ull;
         assert(kernel_io_uring_worker_add(
                    second_ring_id, 42, &independent_submission,
-                   KERNEL_IO_WRITE_CURRENT, 0u, 0, 0u) == 0);
+                   KERNEL_IO_WRITE_CURRENT, 0u, 0, 0u, 0u) == 0);
         assert(kernel_io_uring_worker_collect(8u) == 1u);
         assert(kernel_io_uring_completion_count(second_ring_id) == 5u);
         assert(independent_completion[4].user_data ==
                    independent_submission.user_data &&
                independent_completion[4].result == 0);
+
+        independent_submission.opcode = 23u;
+        independent_submission.descriptor = 74;
+        independent_submission.address = output_address;
+        independent_submission.length = sizeof(output);
+        independent_submission.user_data = 0x494e444f52445752ull;
+        memcpy(&g_pages[first_page][0x80u], output, sizeof(output));
+        memset(g_file_data, 0, sizeof(g_file_data));
+        assert(g_references[first_page] == 1u);
+        assert(kernel_io_uring_worker_add(
+                   second_ring_id, 42, &independent_submission,
+                   KERNEL_IO_WRITE_CURRENT, 0u, 0, 0u,
+                   0xabc000u) == 0);
+        assert(g_references[first_page] == 2u);
+        assert(kernel_io_uring_worker_collect(8u) == 1u);
+        assert(g_references[first_page] == 1u);
+        assert(kernel_io_uring_completion_count(second_ring_id) == 6u);
+        assert(independent_completion[5].user_data ==
+                   independent_submission.user_data &&
+               independent_completion[5].result ==
+                   (int32_t)sizeof(output));
+        assert(memcmp(g_file_data, output, sizeof(output)) == 0);
+        independent_submission.opcode = 22u;
+        independent_submission.descriptor = 73;
+        independent_submission.user_data = 0x494e444f52444341ull;
+        g_ready_descriptor = -1;
+        assert(kernel_io_uring_worker_add(
+                   second_ring_id, 42, &independent_submission,
+                   KERNEL_IO_READ_CURRENT, 0u, 0, 0u,
+                   0xabc000u) == 0);
+        assert(g_references[first_page] == 2u);
+        assert(kernel_io_uring_pending_cancel(
+                   second_ring_id,
+                   independent_submission.user_data) == 0);
+        assert(g_references[first_page] == 1u);
         independent_submission.opcode = 5u;
         g_ready_descriptor = -1;
 
@@ -2802,7 +2837,7 @@ int main(void) {
         g_ready_generation = g_descriptor_generation[12];
         assert(kernel_io_uring_worker_add(
                    second_ring_id, 42, &worker_submission,
-                   KERNEL_IO_READ_CURRENT, 0u, 0, 0u) == 0);
+                   KERNEL_IO_READ_CURRENT, 0u, 0, 0u, 0u) == 0);
         assert(g_fixed_file_references == 1u);
         assert(kernel_io_uring_worker_materialize_next(
                    41, -1, &worker_request) == 0);
@@ -2840,7 +2875,7 @@ int main(void) {
         g_ready_generation = g_descriptor_generation[13];
         assert(kernel_io_uring_worker_add(
                    second_ring_id, 42, &worker_submission,
-                   KERNEL_IO_READ_CURRENT, 0u, 0, 0u) == 0);
+                   KERNEL_IO_READ_CURRENT, 0u, 0, 0u, 0u) == 0);
         assert(g_fixed_file_references == 2u);
         assert(kernel_io_uring_files_unregister(second_ring_id) == 0);
         assert(g_fixed_file_references == 1u);
@@ -2864,7 +2899,7 @@ int main(void) {
         g_ready_generation = g_descriptor_generation[14];
         assert(kernel_io_uring_worker_add(
                    second_ring_id, 42, &worker_submission,
-                   KERNEL_IO_READ_CURRENT, 0u, 0, 0u) == 0);
+                   KERNEL_IO_READ_CURRENT, 0u, 0, 0u, 0u) == 0);
         assert(g_fixed_file_references == 1u);
         cancel_match.user_data = worker_submission.user_data;
         cancel_match.flags = KERNEL_IO_URING_CANCEL_USERDATA;
