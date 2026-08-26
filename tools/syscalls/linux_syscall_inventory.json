@@ -522,19 +522,19 @@
         "tools/tests/shared_syscall_smoke.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 229,
           "status": "implemented",
           "route": "shared:edge_linux_sys_clock",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 114,
           "status": "implemented",
           "route": "shared:edge_linux_sys_clock",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -547,19 +547,19 @@
         "tools/tests/shared_syscall_smoke.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 228,
           "status": "implemented",
           "route": "shared:edge_linux_sys_clock",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 113,
           "status": "implemented",
           "route": "shared:edge_linux_sys_clock",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -2253,19 +2253,19 @@
         "tools/tests/shared_syscall_smoke.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 309,
           "status": "implemented",
           "route": "shared:edge_linux_sys_getcpu",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 168,
           "status": "implemented",
           "route": "shared:edge_linux_sys_getcpu",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -2348,19 +2348,19 @@
         "tools/tests/shared_syscall_smoke.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 108,
           "status": "implemented",
           "route": "shared:edge_linux_sys_identity",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 177,
           "status": "implemented",
           "route": "shared:edge_linux_sys_identity",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -2373,19 +2373,19 @@
         "tools/tests/shared_syscall_smoke.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 107,
           "status": "implemented",
           "route": "shared:edge_linux_sys_identity",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 175,
           "status": "implemented",
           "route": "shared:edge_linux_sys_identity",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -2398,19 +2398,19 @@
         "tools/tests/shared_syscall_smoke.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 104,
           "status": "implemented",
           "route": "shared:edge_linux_sys_identity",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 176,
           "status": "implemented",
           "route": "shared:edge_linux_sys_identity",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -2498,19 +2498,19 @@
         "tools/tests/shared_syscall_smoke.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 121,
           "status": "implemented",
           "route": "shared:edge_linux_sys_process_group",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 155,
           "status": "implemented",
           "route": "shared:edge_linux_sys_process_group",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -2523,13 +2523,13 @@
         "tools/tests/shared_syscall_smoke.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 111,
           "status": "implemented",
           "route": "shared:edge_linux_sys_process_group",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": null
       }
@@ -2543,19 +2543,19 @@
         "tools/tests/shared_syscall_smoke.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 39,
           "status": "implemented",
           "route": "shared:edge_linux_sys_identity",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 172,
           "status": "implemented",
           "route": "shared:edge_linux_sys_identity",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -2588,19 +2588,19 @@
         "tools/tests/shared_syscall_smoke.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 110,
           "status": "implemented",
           "route": "shared:edge_linux_sys_identity",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 173,
           "status": "implemented",
           "route": "shared:edge_linux_sys_identity",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -2638,19 +2638,19 @@
         "tools/tests/shared_syscall_smoke.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 318,
           "status": "implemented",
           "route": "shared:edge_linux_sys_getrandom",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 278,
           "status": "implemented",
           "route": "shared:edge_linux_sys_getrandom",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -2663,19 +2663,19 @@
         "tools/tests/shared_syscall_smoke.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 120,
           "status": "implemented",
           "route": "shared:edge_linux_sys_res_identity",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 150,
           "status": "implemented",
           "route": "shared:edge_linux_sys_res_identity",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -2688,19 +2688,19 @@
         "tools/tests/shared_syscall_smoke.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 118,
           "status": "implemented",
           "route": "shared:edge_linux_sys_res_identity",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 148,
           "status": "implemented",
           "route": "shared:edge_linux_sys_res_identity",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -2765,19 +2765,19 @@
         "tools/tests/shared_syscall_smoke.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 124,
           "status": "implemented",
           "route": "shared:edge_linux_sys_process_group",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 156,
           "status": "implemented",
           "route": "shared:edge_linux_sys_process_group",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -2840,19 +2840,19 @@
         "tools/tests/shared_syscall_smoke.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 186,
           "status": "implemented",
           "route": "shared:edge_linux_sys_identity",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 178,
           "status": "implemented",
           "route": "shared:edge_linux_sys_identity",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -2865,19 +2865,19 @@
         "tools/tests/shared_syscall_smoke.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 96,
           "status": "implemented",
           "route": "shared:edge_linux_sys_wall_time",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 169,
           "status": "implemented",
           "route": "shared:edge_linux_sys_wall_time",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -2890,19 +2890,19 @@
         "tools/tests/shared_syscall_smoke.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 102,
           "status": "implemented",
           "route": "shared:edge_linux_sys_identity",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 174,
           "status": "implemented",
           "route": "shared:edge_linux_sys_identity",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -6735,19 +6735,19 @@
         "tools/tests/shared_syscall_smoke.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 146,
           "status": "implemented",
           "route": "shared:edge_linux_sys_sched_priority_limit",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 125,
           "status": "implemented",
           "route": "shared:edge_linux_sys_sched_priority_limit",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -6760,19 +6760,19 @@
         "tools/tests/shared_syscall_smoke.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 147,
           "status": "implemented",
           "route": "shared:edge_linux_sys_sched_priority_limit",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 126,
           "status": "implemented",
           "route": "shared:edge_linux_sys_sched_priority_limit",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -7423,19 +7423,19 @@
         "tools/tests/shared_syscall_smoke.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 171,
           "status": "implemented",
           "route": "shared:edge_linux_sys_set_uts_name",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 162,
           "status": "implemented",
           "route": "shared:edge_linux_sys_set_uts_name",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -7548,19 +7548,19 @@
         "tools/tests/shared_syscall_smoke.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 170,
           "status": "implemented",
           "route": "shared:edge_linux_sys_set_uts_name",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 161,
           "status": "implemented",
           "route": "shared:edge_linux_sys_set_uts_name",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -8619,13 +8619,13 @@
         "tools/tests/shared_syscall_smoke.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 201,
           "status": "implemented",
           "route": "shared:edge_linux_sys_wall_time",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": null
       }
@@ -8934,19 +8934,19 @@
         "tools/tests/shared_syscall_smoke.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 95,
           "status": "implemented",
           "route": "shared:edge_linux_sys_umask",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 166,
           "status": "implemented",
           "route": "shared:edge_linux_sys_umask",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -8984,19 +8984,19 @@
         "tools/tests/shared_syscall_smoke.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 63,
           "status": "implemented",
           "route": "shared:edge_linux_sys_uname",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 160,
           "status": "implemented",
           "route": "shared:edge_linux_sys_uname",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },

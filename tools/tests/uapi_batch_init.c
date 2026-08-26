@@ -290,6 +290,8 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "eventfd_abi_probe",
         "timerfd_abi_probe",
         "inotify_abi_probe",
+#elif defined(UAPI_BATCH_SHARED_SMOKE_ONLY)
+        "shared_syscall_smoke",
 #elif defined(UAPI_BATCH_NATIVE_OPTIONAL_ONLY)
         "native_optional_syscalls_abi_probe",
 #else
