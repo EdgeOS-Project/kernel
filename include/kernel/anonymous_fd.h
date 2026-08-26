@@ -25,6 +25,7 @@ typedef enum kernel_anonymous_fd_kind {
     KERNEL_ANONYMOUS_FD_LANDLOCK,
     KERNEL_ANONYMOUS_FD_BPF,
     KERNEL_ANONYMOUS_FD_SECCOMP,
+    KERNEL_ANONYMOUS_FD_ZCRX,
 } kernel_anonymous_fd_kind_t;
 
 typedef struct kernel_anonymous_fd_poll_state {

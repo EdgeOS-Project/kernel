@@ -52,6 +52,7 @@ static uint32_t g_kernel_write_length;
 static uint32_t g_file_sync_data_calls;
 static uint8_t g_io_bounce[KERNEL_IO_BUFFER_SIZE];
 static uint32_t g_deferred_work_requests;
+static int32_t g_zcrx_export_object_id = -1;
 
 void kernel_deferred_work_request(void) {
     ++g_deferred_work_requests;
@@ -133,6 +134,16 @@ int kernel_futex_async_wait_cancel(uint64_t wait_id) {
 int kernel_anonymous_fd_descriptor_object_id(
         int32_t descriptor, kernel_anonymous_fd_kind_t kind) {
     return kind == KERNEL_ANONYMOUS_FD_IO_URING && descriptor == 98 ? 1 : -1;
+}
+
+int kernel_anonymous_fd_install_descriptor(
+        kernel_anonymous_fd_kind_t kind, int32_t object_id,
+        uint32_t status_flags, uint32_t descriptor_flags) {
+    if (kind != KERNEL_ANONYMOUS_FD_ZCRX || status_flags ||
+        descriptor_flags != 1u)
+        return -EDGE_LINUX_EINVAL;
+    g_zcrx_export_object_id = object_id;
+    return 97;
 }
 
 int kernel_fd_operation_acquire(
@@ -1941,6 +1952,14 @@ int main(void) {
         kernel_io_uring_page_t zcrx_rq;
         struct edge_linux_io_uring_cqe *zcrx_completion;
         uint64_t *zcrx_extra;
+        int32_t imported_ring_id;
+        struct edge_linux_io_uring_params imported_parameters = {
+            .flags = (1u << 11) | (1u << 12) | (1u << 13),
+        };
+        struct edge_linux_io_uring_zcrx_ifq_reg imported = {
+            .flags = 1u,
+        };
+        kernel_io_uring_page_t imported_rq;
         const uint8_t payload[] = {'z', 'c', 'r', 'x'};
         uint32_t references = g_fixed_file_references;
 
@@ -1994,9 +2013,33 @@ int main(void) {
                    second_ring_id, registration.zcrx_id) == 0);
         assert(*page_u32(&zcrx_rq, registration.offsets.head) == 1u);
 
+        g_zcrx_export_object_id = -1;
+        assert(kernel_io_uring_zcrx_export_descriptor(
+                   second_ring_id, registration.zcrx_id) == 97);
+        assert(g_zcrx_export_object_id >= 0);
+        assert(kernel_io_uring_create(
+                   4u, &imported_parameters, &imported_ring_id) == 0);
+        assert(kernel_io_uring_zcrx_import(
+                   imported_ring_id, g_zcrx_export_object_id,
+                   &imported) == 0);
+        assert(imported.offsets.head == registration.offsets.head);
+        assert(imported.offsets.tail == registration.offsets.tail);
+        assert(imported.offsets.rqes == registration.offsets.rqes);
+        assert(kernel_io_uring_mmap_page(
+                   imported_ring_id,
+                   KERNEL_IO_URING_OFF_ZCRX_REGION,
+                   0u, &imported_rq) == 0);
+        assert(imported_rq.address == zcrx_rq.address);
+        test_page_release(0, &imported_rq);
+
         test_page_release(0, &zcrx_rq);
         test_page_release(0, &zcrx_cq);
         kernel_io_uring_release(second_ring_id);
+        assert(kernel_io_uring_zcrx_flush(
+                   imported_ring_id, imported.zcrx_id) == 0);
+        kernel_io_uring_zcrx_export_release(
+            g_zcrx_export_object_id);
+        kernel_io_uring_release(imported_ring_id);
         assert(g_fixed_file_references == references);
     }
     {

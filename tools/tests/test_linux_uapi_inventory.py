@@ -118,6 +118,10 @@ class LinuxUapiInventoryTests(unittest.TestCase):
             assessment["missing"],
         )
         self.assertIn(
+            "device-backed ZCRX registration",
+            assessment["missing"],
+        )
+        self.assertNotIn(
             "device-backed ZCRX registration and ZCRX import/export sharing",
             assessment["missing"],
         )

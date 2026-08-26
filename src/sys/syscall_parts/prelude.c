@@ -1538,6 +1538,7 @@ typedef enum {
     FD_LANDLOCK,
     FD_BPF,
     FD_SECCOMP,
+    FD_ZCRX,
 } edge_fd_kind_t;
 
 typedef struct {

@@ -14836,8 +14836,40 @@ static int64_t edge_linux_io_uring_zcrx_register(
             context, &registration, argument,
             sizeof(registration)) < 0)
         return -EDGE_LINUX_EFAULT;
-    if ((registration.flags & EDGE_LINUX_IORING_ZCRX_REG_IMPORT) ||
-        !(registration.flags & EDGE_LINUX_IORING_ZCRX_REG_NODEV))
+    if (registration.zcrx_id || registration.reserved[0] ||
+        registration.reserved[1])
+        return -EDGE_LINUX_EINVAL;
+    if (registration.flags &
+        ~(EDGE_LINUX_IORING_ZCRX_REG_IMPORT |
+          EDGE_LINUX_IORING_ZCRX_REG_NODEV))
+        return -EDGE_LINUX_EINVAL;
+    if (registration.flags & EDGE_LINUX_IORING_ZCRX_REG_IMPORT) {
+        int32_t export_id;
+
+        if (registration.flags &
+            ~EDGE_LINUX_IORING_ZCRX_REG_IMPORT)
+            return -EDGE_LINUX_EINVAL;
+        if (registration.receive_queue || registration.rq_entries ||
+            registration.area || registration.region ||
+            registration.notification)
+            return -EDGE_LINUX_EINVAL;
+        export_id = kernel_anonymous_fd_descriptor_object_id(
+            (int32_t)registration.interface_index,
+            KERNEL_ANONYMOUS_FD_ZCRX);
+        if (export_id < 0) return -EDGE_LINUX_EBADF;
+        result = kernel_io_uring_zcrx_import(
+            ring_id, export_id, &registration);
+        if (result < 0) return result;
+        if (edge_linux_copy_to_user(
+                context, argument, &registration,
+                sizeof(registration)) < 0) {
+            (void)kernel_io_uring_zcrx_unregister(
+                ring_id, registration.zcrx_id);
+            return -EDGE_LINUX_EFAULT;
+        }
+        return 0;
+    }
+    if (!(registration.flags & EDGE_LINUX_IORING_ZCRX_REG_NODEV))
         return -EDGE_LINUX_EOPNOTSUPP;
     if (registration.flags != EDGE_LINUX_IORING_ZCRX_REG_NODEV)
         return -EDGE_LINUX_EINVAL;
@@ -14910,7 +14942,22 @@ static int64_t edge_linux_io_uring_zcrx_control(
             ring_id, control.zcrx_id,
             (uint32_t)control.operation_data[0]);
     case EDGE_LINUX_IORING_ZCRX_CTRL_EXPORT:
-        return -EDGE_LINUX_EOPNOTSUPP;
+        for (uint32_t index = 0; index < 6u; ++index)
+            if (control.operation_data[index])
+                return -EDGE_LINUX_EINVAL;
+        {
+            int descriptor = kernel_io_uring_zcrx_export_descriptor(
+                ring_id, control.zcrx_id);
+            if (descriptor < 0) return descriptor;
+            control.operation_data[0] = (uint32_t)descriptor;
+            if (edge_linux_copy_to_user(
+                    context, argument, &control,
+                    sizeof(control)) < 0) {
+                (void)kernel_fd_close(descriptor);
+                return -EDGE_LINUX_EFAULT;
+            }
+            return 0;
+        }
     default:
         return -EDGE_LINUX_EOPNOTSUPP;
     }

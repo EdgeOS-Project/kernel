@@ -353,6 +353,13 @@ int kernel_io_uring_zcrx_flush(int32_t ring_id, uint32_t zcrx_id);
 int kernel_io_uring_zcrx_arm_notification(
     int32_t ring_id, uint32_t zcrx_id, uint32_t notification_type);
 int kernel_io_uring_zcrx_unregister(int32_t ring_id, uint32_t zcrx_id);
+int kernel_io_uring_zcrx_export_descriptor(
+    int32_t ring_id, uint32_t zcrx_id);
+int kernel_io_uring_zcrx_export_retain(int32_t export_id);
+void kernel_io_uring_zcrx_export_release(int32_t export_id);
+int kernel_io_uring_zcrx_import(
+    int32_t ring_id, int32_t export_id,
+    struct edge_linux_io_uring_zcrx_ifq_reg *registration);
 int kernel_io_uring_zcrx_recv_add(
     int32_t ring_id, uint64_t user_data, int32_t descriptor,
     uint32_t zcrx_id, uint32_t maximum_length);

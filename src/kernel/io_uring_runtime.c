@@ -215,12 +215,18 @@ typedef struct kernel_io_uring_zcrx {
     uint32_t stats_offset;
     uint64_t notification_user_data;
     uint32_t notification_type_mask;
-    uint32_t reserved;
+    uint32_t references;
+    uint32_t metadata_page_count;
     kernel_io_uring_fixed_buffer_t area;
     kernel_io_uring_page_t
         region_pages[KERNEL_IO_URING_MAX_ZCRX_RQ_PAGES];
     uint64_t free_bitmap[IO_URING_ZCRX_BITMAP_WORDS];
 } kernel_io_uring_zcrx_t;
+
+typedef struct kernel_io_uring_zcrx_export {
+    kernel_io_uring_zcrx_t *zcrx;
+    uint32_t descriptor_references;
+} kernel_io_uring_zcrx_export_t;
 
 typedef struct kernel_io_uring_provided_buffer {
     uint64_t address;
@@ -320,7 +326,8 @@ typedef struct kernel_io_uring {
     uint16_t pbuf_page_groups[KERNEL_IO_URING_MAX_PBUF_PAGES];
     uint8_t pbuf_page_used[KERNEL_IO_URING_MAX_PBUF_PAGES];
     kernel_io_uring_zcrx_t
-        zcrx[KERNEL_IO_URING_MAX_ZCRX_CONTEXTS];
+        *zcrx[KERNEL_IO_URING_MAX_ZCRX_CONTEXTS];
+    uint8_t zcrx_reserved[KERNEL_IO_URING_MAX_ZCRX_CONTEXTS];
     uint64_t next_provided_buffer_sequence;
     uint32_t clock_id;
     kernel_io_uring_pending_t pending[KERNEL_IO_URING_MAX_PENDING];
@@ -405,6 +412,8 @@ static kernel_io_uring_page_allocator_t g_io_uring_allocator;
 static spinlock_t g_io_uring_lock;
 static kernel_io_uring_napi_id_t
     g_io_uring_napi_ids[KERNEL_IO_URING_MAX_NAPI_IDS];
+static kernel_io_uring_zcrx_export_t
+    g_io_uring_zcrx_exports[16];
 
 #define IO_URING_NAPI_TRACKING_DYNAMIC 0u
 #define IO_URING_NAPI_TRACKING_STATIC 1u
@@ -1119,10 +1128,24 @@ static int io_uring_fixed_buffer_copy_in(
 
 static void io_uring_zcrx_release(kernel_io_uring_zcrx_t *zcrx) {
     if (!zcrx) return;
+    if (__atomic_sub_fetch(
+            &zcrx->references, 1u, __ATOMIC_ACQ_REL) != 0u)
+        return;
     io_uring_fixed_buffer_release(&zcrx->area);
     io_uring_release_pages(
         zcrx->region_pages, zcrx->region_page_count);
-    memset(zcrx, 0, sizeof(*zcrx));
+    g_io_uring_allocator.release_metadata_pages(
+        g_io_uring_allocator.context, zcrx,
+        zcrx->metadata_page_count);
+}
+
+static kernel_io_uring_zcrx_t *io_uring_zcrx_retain(
+        kernel_io_uring_zcrx_t *zcrx) {
+    if (!zcrx || !zcrx->used || !zcrx->references)
+        return 0;
+    (void)__atomic_add_fetch(
+        &zcrx->references, 1u, __ATOMIC_RELAXED);
+    return zcrx;
 }
 
 static kernel_fd_operation_lease_t *io_uring_fixed_file_lease(
@@ -1162,7 +1185,7 @@ static void io_uring_release_storage(kernel_io_uring_t *ring) {
         io_uring_fixed_buffer_release(&ring->fixed_buffers[index]);
     for (uint32_t index = 0;
          index < KERNEL_IO_URING_MAX_ZCRX_CONTEXTS; ++index)
-        io_uring_zcrx_release(&ring->zcrx[index]);
+        io_uring_zcrx_release(ring->zcrx[index]);
     for (uint32_t slot = 0;
          slot < KERNEL_IO_URING_MAX_PENDING; ++slot) {
         kernel_io_uring_pending_t *pending = &ring->pending[slot];
@@ -3660,10 +3683,8 @@ static void io_uring_zcrx_reservation_clear(
     uint64_t flags = spin_lock_irqsave(&g_io_uring_lock);
     kernel_io_uring_t *ring = io_uring_lookup_locked(ring_id);
 
-    if (ring && zcrx_id < KERNEL_IO_URING_MAX_ZCRX_CONTEXTS &&
-        ring->zcrx[zcrx_id].used == 2u)
-        memset(&ring->zcrx[zcrx_id], 0,
-               sizeof(ring->zcrx[zcrx_id]));
+    if (ring && zcrx_id < KERNEL_IO_URING_MAX_ZCRX_CONTEXTS)
+        ring->zcrx_reserved[zcrx_id] = 0u;
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
 }
 
@@ -3759,11 +3780,12 @@ int kernel_io_uring_zcrx_register_nodev(
     } else {
         for (zcrx_id = 0;
              zcrx_id < KERNEL_IO_URING_MAX_ZCRX_CONTEXTS; ++zcrx_id)
-            if (!ring->zcrx[zcrx_id].used) break;
+            if (!ring->zcrx[zcrx_id] &&
+                !ring->zcrx_reserved[zcrx_id]) break;
         if (zcrx_id == KERNEL_IO_URING_MAX_ZCRX_CONTEXTS)
             result = -EDGE_LINUX_ENOSPC;
         else
-            ring->zcrx[zcrx_id].used = 2u;
+            ring->zcrx_reserved[zcrx_id] = 1u;
     }
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     if (result < 0) return result;
@@ -3780,6 +3802,8 @@ int kernel_io_uring_zcrx_register_nodev(
     memset(candidate, 0,
            (size_t)candidate_pages * KERNEL_IO_URING_PAGE_SIZE);
     candidate->used = 1u;
+    candidate->references = 1u;
+    candidate->metadata_page_count = candidate_pages;
     candidate->id = zcrx_id;
     candidate->rq_entries = entries;
     candidate->receive_buffer_length = KERNEL_IO_URING_PAGE_SIZE;
@@ -3832,11 +3856,12 @@ int kernel_io_uring_zcrx_register_nodev(
 
     flags = spin_lock_irqsave(&g_io_uring_lock);
     ring = io_uring_lookup_locked(ring_id);
-    if (!ring || ring->zcrx[zcrx_id].used != 2u) {
+    if (!ring || !ring->zcrx_reserved[zcrx_id]) {
         result = ring ? -EDGE_LINUX_EBUSY : -EDGE_LINUX_EBADF;
     } else {
-        ring->zcrx[zcrx_id] = *candidate;
-        memset(candidate, 0, sizeof(*candidate));
+        ring->zcrx[zcrx_id] = candidate;
+        ring->zcrx_reserved[zcrx_id] = 0u;
+        candidate = 0;
         result = 0;
     }
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
@@ -3855,50 +3880,191 @@ int kernel_io_uring_zcrx_register_nodev(
     if (!(region->flags & 1u))
         region->mmap_offset = KERNEL_IO_URING_OFF_ZCRX_REGION +
             ((uint64_t)zcrx_id << KERNEL_IO_URING_OFF_ZCRX_SHIFT);
-    g_io_uring_allocator.release_metadata_pages(
-        g_io_uring_allocator.context, candidate, candidate_pages);
     return 0;
 
 fail_candidate:
     io_uring_zcrx_release(candidate);
-    g_io_uring_allocator.release_metadata_pages(
-        g_io_uring_allocator.context, candidate, candidate_pages);
     io_uring_zcrx_reservation_clear(ring_id, zcrx_id);
     return result;
 }
 
 int kernel_io_uring_zcrx_unregister(
         int32_t ring_id, uint32_t zcrx_id) {
-    kernel_io_uring_zcrx_t *released;
+    kernel_io_uring_zcrx_t *released = 0;
     kernel_io_uring_t *ring;
     uint64_t flags;
-    uint32_t pages;
     int result = 0;
 
     if (zcrx_id >= KERNEL_IO_URING_MAX_ZCRX_CONTEXTS)
         return -EDGE_LINUX_ENXIO;
-    pages = (uint32_t)((sizeof(*released) +
-        KERNEL_IO_URING_PAGE_SIZE - 1u) / KERNEL_IO_URING_PAGE_SIZE);
-    released = (kernel_io_uring_zcrx_t *)
-        g_io_uring_allocator.allocate_metadata_pages(
-            g_io_uring_allocator.context, pages);
-    if (!released) return -EDGE_LINUX_ENOMEM;
-    memset(released, 0, (size_t)pages * KERNEL_IO_URING_PAGE_SIZE);
     flags = spin_lock_irqsave(&g_io_uring_lock);
     ring = io_uring_lookup_locked(ring_id);
     if (!ring) {
         result = -EDGE_LINUX_EBADF;
-    } else if (ring->zcrx[zcrx_id].used != 1u) {
+    } else if (!ring->zcrx[zcrx_id]) {
         result = -EDGE_LINUX_ENXIO;
     } else {
-        *released = ring->zcrx[zcrx_id];
-        memset(&ring->zcrx[zcrx_id], 0,
-               sizeof(ring->zcrx[zcrx_id]));
+        released = ring->zcrx[zcrx_id];
+        ring->zcrx[zcrx_id] = 0;
     }
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     if (result == 0) io_uring_zcrx_release(released);
-    g_io_uring_allocator.release_metadata_pages(
-        g_io_uring_allocator.context, released, pages);
+    return result;
+}
+
+int kernel_io_uring_zcrx_export_descriptor(
+        int32_t ring_id, uint32_t zcrx_id) {
+    kernel_io_uring_zcrx_t *zcrx = 0;
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    uint32_t export_id;
+    int descriptor;
+    int result = 0;
+
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+        goto unlock;
+    }
+    if (zcrx_id >= KERNEL_IO_URING_MAX_ZCRX_CONTEXTS ||
+        !ring->zcrx[zcrx_id]) {
+        result = -EDGE_LINUX_ENXIO;
+        goto unlock;
+    }
+    for (export_id = 0;
+         export_id < sizeof(g_io_uring_zcrx_exports) /
+             sizeof(g_io_uring_zcrx_exports[0]); ++export_id)
+        if (!g_io_uring_zcrx_exports[export_id].descriptor_references)
+            break;
+    if (export_id == sizeof(g_io_uring_zcrx_exports) /
+            sizeof(g_io_uring_zcrx_exports[0])) {
+        result = -EDGE_LINUX_ENFILE;
+        goto unlock;
+    }
+    zcrx = io_uring_zcrx_retain(ring->zcrx[zcrx_id]);
+    if (!zcrx) {
+        result = -EDGE_LINUX_ENXIO;
+        goto unlock;
+    }
+    g_io_uring_zcrx_exports[export_id].zcrx = zcrx;
+    g_io_uring_zcrx_exports[export_id].descriptor_references = 1u;
+unlock:
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (result < 0) return result;
+    descriptor = kernel_anonymous_fd_install_descriptor(
+        KERNEL_ANONYMOUS_FD_ZCRX, (int32_t)export_id, 0u, 1u);
+    if (descriptor < 0) {
+        kernel_io_uring_zcrx_export_release((int32_t)export_id);
+        return descriptor;
+    }
+    return descriptor;
+}
+
+int kernel_io_uring_zcrx_export_retain(int32_t export_id) {
+    kernel_io_uring_zcrx_export_t *export;
+    uint64_t flags;
+    int result = 0;
+
+    if (export_id < 0 ||
+        (uint32_t)export_id >= sizeof(g_io_uring_zcrx_exports) /
+            sizeof(g_io_uring_zcrx_exports[0]))
+        return -EDGE_LINUX_EBADF;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    export = &g_io_uring_zcrx_exports[export_id];
+    if (!export->descriptor_references || !export->zcrx)
+        result = -EDGE_LINUX_EBADF;
+    else if (export->descriptor_references == UINT32_MAX)
+        result = -EDGE_LINUX_EOVERFLOW;
+    else if (!io_uring_zcrx_retain(export->zcrx))
+        result = -EDGE_LINUX_EBADF;
+    else
+        ++export->descriptor_references;
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    return result;
+}
+
+void kernel_io_uring_zcrx_export_release(int32_t export_id) {
+    kernel_io_uring_zcrx_t *zcrx = 0;
+    kernel_io_uring_zcrx_export_t *export;
+    uint64_t flags;
+
+    if (export_id < 0 ||
+        (uint32_t)export_id >= sizeof(g_io_uring_zcrx_exports) /
+            sizeof(g_io_uring_zcrx_exports[0]))
+        return;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    export = &g_io_uring_zcrx_exports[export_id];
+    if (export->descriptor_references && export->zcrx) {
+        zcrx = export->zcrx;
+        --export->descriptor_references;
+        if (!export->descriptor_references)
+            memset(export, 0, sizeof(*export));
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    io_uring_zcrx_release(zcrx);
+}
+
+int kernel_io_uring_zcrx_import(
+        int32_t ring_id, int32_t export_id,
+        struct edge_linux_io_uring_zcrx_ifq_reg *registration) {
+    kernel_io_uring_zcrx_t *zcrx;
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    uint32_t zcrx_id;
+    int result = 0;
+
+    if (!registration || registration->flags != 1u ||
+        registration->receive_queue || registration->rq_entries ||
+        registration->area || registration->region ||
+        registration->notification || registration->zcrx_id ||
+        registration->reserved[0] || registration->reserved[1])
+        return -EDGE_LINUX_EINVAL;
+    if (export_id < 0 ||
+        (uint32_t)export_id >= sizeof(g_io_uring_zcrx_exports) /
+            sizeof(g_io_uring_zcrx_exports[0]))
+        return -EDGE_LINUX_EBADF;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+        goto unlock;
+    }
+    if (!(ring->setup_flags & IORING_SETUP_DEFER_TASKRUN) ||
+        !(ring->setup_flags &
+          (IORING_SETUP_CQE32 | IORING_SETUP_CQE_MIXED))) {
+        result = -EDGE_LINUX_EINVAL;
+        goto unlock;
+    }
+    if (!g_io_uring_zcrx_exports[export_id].descriptor_references ||
+        !g_io_uring_zcrx_exports[export_id].zcrx) {
+        result = -EDGE_LINUX_EBADF;
+        goto unlock;
+    }
+    for (zcrx_id = 0;
+         zcrx_id < KERNEL_IO_URING_MAX_ZCRX_CONTEXTS; ++zcrx_id)
+        if (!ring->zcrx[zcrx_id] &&
+            !ring->zcrx_reserved[zcrx_id]) break;
+    if (zcrx_id == KERNEL_IO_URING_MAX_ZCRX_CONTEXTS) {
+        result = -EDGE_LINUX_ENOSPC;
+        goto unlock;
+    }
+    zcrx = io_uring_zcrx_retain(
+        g_io_uring_zcrx_exports[export_id].zcrx);
+    if (!zcrx) {
+        result = -EDGE_LINUX_EBADF;
+        goto unlock;
+    }
+    ring->zcrx[zcrx_id] = zcrx;
+    registration->zcrx_id = zcrx_id;
+    registration->offsets.head = 0u;
+    registration->offsets.tail = 4u;
+    registration->offsets.rqes = 64u;
+    registration->offsets.reserved2 = 0u;
+    registration->offsets.reserved[0] = 0u;
+    registration->offsets.reserved[1] = 0u;
+unlock:
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
     return result;
 }
 
@@ -3918,11 +4084,11 @@ int kernel_io_uring_zcrx_flush(
         goto unlock;
     }
     if (zcrx_id >= KERNEL_IO_URING_MAX_ZCRX_CONTEXTS ||
-        ring->zcrx[zcrx_id].used != 1u) {
+        !ring->zcrx[zcrx_id]) {
         result = -EDGE_LINUX_ENXIO;
         goto unlock;
     }
-    zcrx = &ring->zcrx[zcrx_id];
+    zcrx = ring->zcrx[zcrx_id];
     result = io_uring_zcrx_region_copy(
         zcrx, 4u, &tail, sizeof(tail), 0);
     if (result < 0) goto unlock;
@@ -3974,12 +4140,12 @@ int kernel_io_uring_zcrx_arm_notification(
     if (!ring) {
         result = -EDGE_LINUX_EBADF;
     } else if (zcrx_id >= KERNEL_IO_URING_MAX_ZCRX_CONTEXTS ||
-               ring->zcrx[zcrx_id].used != 1u) {
+               !ring->zcrx[zcrx_id]) {
         result = -EDGE_LINUX_ENXIO;
-    } else if (!(ring->zcrx[zcrx_id].fired_notifications & mask)) {
+    } else if (!(ring->zcrx[zcrx_id]->fired_notifications & mask)) {
         result = -EDGE_LINUX_EINVAL;
     } else {
-        ring->zcrx[zcrx_id].fired_notifications &= (uint8_t)~mask;
+        ring->zcrx[zcrx_id]->fired_notifications &= (uint8_t)~mask;
     }
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
     return result;
@@ -4972,7 +5138,7 @@ int kernel_io_uring_zcrx_recv_add(
     if (!ring) {
         result = -EDGE_LINUX_EBADF;
     } else if (zcrx_id >= KERNEL_IO_URING_MAX_ZCRX_CONTEXTS ||
-               ring->zcrx[zcrx_id].used != 1u) {
+               !ring->zcrx[zcrx_id]) {
         result = -EDGE_LINUX_EINVAL;
     } else {
         for (slot = 0; slot < KERNEL_IO_URING_MAX_PENDING; ++slot)
@@ -6591,14 +6757,14 @@ uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us) {
             final_release.epoll_index = -1;
             if (pending.zcrx_id >=
                     KERNEL_IO_URING_MAX_ZCRX_CONTEXTS ||
-                ring->zcrx[pending.zcrx_id].used != 1u ||
+                !ring->zcrx[pending.zcrx_id] ||
                 kernel_fd_operation_clone(
                     &poll_lease,
                     &ring->pending[slot].descriptor_lease) < 0) {
                 spin_unlock_irqrestore(&g_io_uring_lock, flags);
                 continue;
             }
-            zcrx = &ring->zcrx[pending.zcrx_id];
+            zcrx = ring->zcrx[pending.zcrx_id];
             if (io_uring_zcrx_chunk_take_locked(zcrx, &chunk) < 0) {
                 notify_empty =
                     io_uring_zcrx_notification_prepare_locked(
@@ -6623,9 +6789,9 @@ uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us) {
                 ring = io_uring_lookup_locked(ring_id);
                 if (ring && pending.zcrx_id <
                         KERNEL_IO_URING_MAX_ZCRX_CONTEXTS &&
-                    ring->zcrx[pending.zcrx_id].used == 1u)
+                    ring->zcrx[pending.zcrx_id])
                     io_uring_zcrx_chunk_return_locked(
-                        &ring->zcrx[pending.zcrx_id], chunk);
+                        ring->zcrx[pending.zcrx_id], chunk);
                 spin_unlock_irqrestore(&g_io_uring_lock, flags);
                 (void)kernel_fd_operation_release(&poll_lease);
                 continue;
@@ -6642,9 +6808,9 @@ uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us) {
                 ring = io_uring_lookup_locked(ring_id);
                 if (ring && pending.zcrx_id <
                         KERNEL_IO_URING_MAX_ZCRX_CONTEXTS &&
-                    ring->zcrx[pending.zcrx_id].used == 1u)
+                    ring->zcrx[pending.zcrx_id])
                     io_uring_zcrx_chunk_return_locked(
-                        &ring->zcrx[pending.zcrx_id], chunk);
+                        ring->zcrx[pending.zcrx_id], chunk);
                 spin_unlock_irqrestore(&g_io_uring_lock, flags);
                 continue;
             }
@@ -6655,11 +6821,11 @@ uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us) {
                 ring->pending[slot].kind != IO_URING_PENDING_RECV_ZC ||
                 ring->pending[slot].sequence != pending.sequence ||
                 pending.zcrx_id >= KERNEL_IO_URING_MAX_ZCRX_CONTEXTS ||
-                ring->zcrx[pending.zcrx_id].used != 1u) {
+                !ring->zcrx[pending.zcrx_id]) {
                 spin_unlock_irqrestore(&g_io_uring_lock, flags);
                 continue;
             }
-            zcrx = &ring->zcrx[pending.zcrx_id];
+            zcrx = ring->zcrx[pending.zcrx_id];
             completion_user_data = ring->pending[slot].user_data;
             if (result <= 0) {
                 io_uring_zcrx_chunk_return_locked(zcrx, chunk);
@@ -6937,10 +7103,10 @@ int kernel_io_uring_mmap_info(int32_t ring_id, uint64_t offset,
     if (zcrx < 0) {
         result = zcrx;
     } else if (zcrx) {
-        kernel_io_uring_zcrx_t *context = &ring->zcrx[zcrx_id];
+        kernel_io_uring_zcrx_t *context = ring->zcrx[zcrx_id];
 
         pages = 0;
-        if (context->used != 1u || context->region_user_provided)
+        if (!context || context->region_user_provided)
             result = -EDGE_LINUX_EINVAL;
         else {
             count = context->region_page_count;
@@ -6998,9 +7164,9 @@ int kernel_io_uring_mmap_page(int32_t ring_id, uint64_t offset,
     if (zcrx < 0) {
         result = zcrx;
     } else if (zcrx) {
-        kernel_io_uring_zcrx_t *context = &ring->zcrx[zcrx_id];
+        kernel_io_uring_zcrx_t *context = ring->zcrx[zcrx_id];
 
-        if (context->used != 1u || context->region_user_provided) {
+        if (!context || context->region_user_provided) {
             pages = 0;
             count = 0u;
             result = -EDGE_LINUX_EINVAL;

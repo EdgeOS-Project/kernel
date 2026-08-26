@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #if defined(__x86_64__)
+#define ENTRY_ALIGNMENT __attribute__((force_align_arg_pointer))
 #define SYS_write 1
 #define SYS_close 3
 #define SYS_mmap 9
@@ -17,6 +18,7 @@
 #define SYS_getsockname 51
 #define SYS_exit 60
 #elif defined(__aarch64__)
+#define ENTRY_ALIGNMENT
 #define SYS_close 57
 #define SYS_write 64
 #define SYS_exit 93
@@ -57,13 +59,18 @@
 #define IORING_OFF_SQ_RING 0x00000000ull
 #define IORING_OFF_CQ_RING 0x08000000ull
 #define IORING_OFF_SQES 0x10000000ull
+#define IORING_OFF_ZCRX_REGION 0x30000000ull
+#define IORING_OFF_ZCRX_SHIFT 16u
 #define IORING_REGISTER_ZCRX_IFQ 32u
 #define IORING_REGISTER_ZCRX_CTRL 36u
 #define IORING_OP_RECV_ZC 58u
 #define IORING_RECV_MULTISHOT (1u << 1)
 #define IORING_CQE_F_MORE (1u << 1)
+#define ZCRX_REG_IMPORT 1u
 #define ZCRX_REG_NODEV 2u
 #define ZCRX_CTRL_FLUSH_RQ 0u
+#define ZCRX_CTRL_EXPORT 1u
+#define EBADF 9
 
 struct probe_sockaddr_in {
     uint16_t family;
@@ -249,6 +256,33 @@ static void print_text(const char *text) {
         SYS_write, 1, (long)text, (long)strlen(text), 0, 0, 0);
 }
 
+static void print_number(long value) {
+    char digits[24];
+    unsigned long magnitude;
+    unsigned long count = 0u;
+
+    if (value < 0) {
+        print_text("-");
+        magnitude = (unsigned long)(-(value + 1)) + 1u;
+    } else {
+        magnitude = (unsigned long)value;
+    }
+    do {
+        digits[count++] = (char)('0' + magnitude % 10u);
+        magnitude /= 10u;
+    } while (magnitude);
+    while (count)
+        (void)raw_syscall6(
+            SYS_write, 1, (long)&digits[--count], 1, 0, 0, 0);
+}
+
+static void print_error(const char *label, long result) {
+    print_text(label);
+    print_text(" result=");
+    print_number(result);
+    print_text("\n");
+}
+
 static int record_failure(int failed, const char *label) {
     if (failed) print_text(label);
     return failed;
@@ -305,27 +339,44 @@ static int create_tcp_pair(long descriptors[2]) {
     address.address = 0x0100007fu;
     listener = raw_syscall6(
         SYS_socket, AF_INET, SOCK_STREAM, 0, 0, 0, 0);
-    if (listener < 0) goto fail;
+    if (listener < 0) {
+        print_error("ZCRX_TCP_LISTENER_SOCKET_FAIL", listener);
+        goto fail;
+    }
     if (raw_syscall6(
             SYS_bind, listener, (long)&address,
-            sizeof(address), 0, 0, 0) < 0)
+            sizeof(address), 0, 0, 0) < 0) {
+        print_text("ZCRX_TCP_BIND_FAIL\n");
         goto fail;
-    if (raw_syscall6(SYS_listen, listener, 1, 0, 0, 0, 0) < 0)
+    }
+    if (raw_syscall6(SYS_listen, listener, 1, 0, 0, 0, 0) < 0) {
+        print_text("ZCRX_TCP_LISTEN_FAIL\n");
         goto fail;
+    }
     if (raw_syscall6(
             SYS_getsockname, listener, (long)&address,
-            (long)&address_length, 0, 0, 0) < 0)
+            (long)&address_length, 0, 0, 0) < 0) {
+        print_text("ZCRX_TCP_GETSOCKNAME_FAIL\n");
         goto fail;
+    }
     client = raw_syscall6(
         SYS_socket, AF_INET, SOCK_STREAM, 0, 0, 0, 0);
-    if (client < 0) goto fail;
+    if (client < 0) {
+        print_text("ZCRX_TCP_CLIENT_SOCKET_FAIL\n");
+        goto fail;
+    }
     if (raw_syscall6(
             SYS_connect, client, (long)&address,
-            sizeof(address), 0, 0, 0) < 0)
+            sizeof(address), 0, 0, 0) < 0) {
+        print_text("ZCRX_TCP_CONNECT_FAIL\n");
         goto fail;
+    }
     accepted = raw_syscall6(
         SYS_accept, listener, 0, 0, 0, 0, 0);
-    if (accepted < 0) goto fail;
+    if (accepted < 0) {
+        print_text("ZCRX_TCP_ACCEPT_FAIL\n");
+        goto fail;
+    }
     (void)raw_syscall6(SYS_close, listener, 0, 0, 0, 0, 0);
     descriptors[0] = client;
     descriptors[1] = accepted;
@@ -587,12 +638,156 @@ done:
     return failures;
 }
 
-void _start(void) {
+static int test_export_import(void) {
+    struct io_uring_zcrx_ifq_reg registration;
+    struct io_uring_zcrx_ifq_reg imported_registration;
+    struct io_uring_zcrx_area_reg area;
+    struct io_uring_region_desc region;
+    struct io_uring_zcrx_ctrl control;
+    probe_ring_t origin;
+    probe_ring_t imported;
+    void *origin_region = 0;
+    void *imported_region = 0;
+    long export_descriptor = -1;
+    uint32_t setup_flags = IORING_SETUP_SINGLE_ISSUER |
+        IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_CQE32;
+    int failures = 0;
+
+    memset(g_receive_area, 0, sizeof(g_receive_area));
+    if (ring_open(&origin, setup_flags)) {
+        print_text("ZCRX_EXPORT_ORIGIN_SETUP_FAIL\n");
+        return 1;
+    }
+    if (ring_open(&imported, setup_flags)) {
+        print_text("ZCRX_IMPORT_RING_SETUP_FAIL\n");
+        ring_close(&origin);
+        return 1;
+    }
+
+    memset(&registration, 0, sizeof(registration));
+    memset(&area, 0, sizeof(area));
+    memset(&region, 0, sizeof(region));
+    area.address = (uint64_t)(uintptr_t)g_receive_area;
+    area.length = PAGE_SIZE;
+    region.size = PAGE_SIZE;
+    registration.rq_entries = 8u;
+    registration.flags = ZCRX_REG_NODEV;
+    registration.area = (uint64_t)(uintptr_t)&area;
+    registration.region = (uint64_t)(uintptr_t)&region;
+    failures += record_failure(raw_syscall6(
+        SYS_io_uring_register, origin.descriptor,
+        IORING_REGISTER_ZCRX_IFQ, (long)&registration, 1, 0, 0) != 0,
+        "ZCRX_EXPORT_REGISTER_FAIL\n");
+    if (failures) goto done;
+
+    memset(&control, 0, sizeof(control));
+    control.zcrx_id = registration.zcrx_id;
+    control.operation = ZCRX_CTRL_EXPORT;
+    control.operation_data[5] = 1u;
+    failures += record_failure(raw_syscall6(
+        SYS_io_uring_register, origin.descriptor,
+        IORING_REGISTER_ZCRX_CTRL, (long)&control, 0, 0, 0) != -EINVAL,
+        "ZCRX_EXPORT_RESERVED_VALIDATION_FAIL\n");
+    memset(control.operation_data, 0, sizeof(control.operation_data));
+    failures += record_failure(raw_syscall6(
+        SYS_io_uring_register, origin.descriptor,
+        IORING_REGISTER_ZCRX_CTRL, (long)&control, 0, 0, 0) != 0,
+        "ZCRX_EXPORT_FAIL\n");
+    export_descriptor = (int32_t)(uint32_t)control.operation_data[0];
+    failures += record_failure(
+        export_descriptor < 0, "ZCRX_EXPORT_DESCRIPTOR_FAIL\n");
+    if (failures) goto done;
+
+    memset(&imported_registration, 0, sizeof(imported_registration));
+    imported_registration.interface_index = UINT32_MAX;
+    imported_registration.receive_queue = 1u;
+    imported_registration.flags = ZCRX_REG_IMPORT;
+    failures += record_failure(raw_syscall6(
+        SYS_io_uring_register, imported.descriptor,
+        IORING_REGISTER_ZCRX_IFQ, (long)&imported_registration,
+        1, 0, 0) != -EINVAL,
+        "ZCRX_IMPORT_VALIDATION_ORDER_FAIL\n");
+    imported_registration.receive_queue = 0u;
+    failures += record_failure(raw_syscall6(
+        SYS_io_uring_register, imported.descriptor,
+        IORING_REGISTER_ZCRX_IFQ, (long)&imported_registration,
+        1, 0, 0) != -EBADF,
+        "ZCRX_IMPORT_BAD_DESCRIPTOR_FAIL\n");
+
+    imported_registration.interface_index = (uint32_t)export_descriptor;
+    failures += record_failure(raw_syscall6(
+        SYS_io_uring_register, imported.descriptor,
+        IORING_REGISTER_ZCRX_IFQ, (long)&imported_registration,
+        1, 0, 0) != 0,
+        "ZCRX_IMPORT_FAIL\n");
+    failures += record_failure(
+        imported_registration.offsets.head != registration.offsets.head ||
+        imported_registration.offsets.tail != registration.offsets.tail ||
+        imported_registration.offsets.rqes != registration.offsets.rqes,
+        "ZCRX_IMPORT_OUTPUT_FAIL\n");
+    if (failures) goto done;
+
+    origin_region = map_memory(
+        origin.descriptor, region.mmap_offset, MAP_SHARED);
+    imported_region = map_memory(
+        imported.descriptor,
+        IORING_OFF_ZCRX_REGION +
+            ((uint64_t)imported_registration.zcrx_id <<
+             IORING_OFF_ZCRX_SHIFT),
+        MAP_SHARED);
+    failures += record_failure(
+        !origin_region || !imported_region,
+        "ZCRX_IMPORT_REGION_MMAP_FAIL\n");
+    if (failures) goto done;
+
+    *(volatile uint32_t *)((uint8_t *)origin_region +
+        registration.offsets.tail) = 3u;
+    failures += record_failure(
+        *(volatile uint32_t *)((uint8_t *)imported_region +
+            imported_registration.offsets.tail) != 3u,
+        "ZCRX_IMPORT_REGION_SHARING_FAIL\n");
+    *(volatile uint32_t *)((uint8_t *)imported_region +
+        imported_registration.offsets.tail) = 0u;
+
+    (void)raw_syscall6(
+        SYS_munmap, (long)origin_region, PAGE_SIZE, 0, 0, 0, 0);
+    origin_region = 0;
+    ring_close(&origin);
+    origin.descriptor = -1;
+    (void)raw_syscall6(
+        SYS_close, export_descriptor, 0, 0, 0, 0, 0);
+    export_descriptor = -1;
+
+    memset(&control, 0, sizeof(control));
+    control.zcrx_id = imported_registration.zcrx_id;
+    control.operation = ZCRX_CTRL_FLUSH_RQ;
+    failures += record_failure(raw_syscall6(
+        SYS_io_uring_register, imported.descriptor,
+        IORING_REGISTER_ZCRX_CTRL, (long)&control, 0, 0, 0) != 0,
+        "ZCRX_IMPORT_LIFETIME_FAIL\n");
+
+done:
+    if (origin_region)
+        (void)raw_syscall6(
+            SYS_munmap, (long)origin_region, PAGE_SIZE, 0, 0, 0, 0);
+    if (imported_region)
+        (void)raw_syscall6(
+            SYS_munmap, (long)imported_region, PAGE_SIZE, 0, 0, 0, 0);
+    if (export_descriptor >= 0)
+        (void)raw_syscall6(
+            SYS_close, export_descriptor, 0, 0, 0, 0, 0);
+    ring_close(&imported);
+    ring_close(&origin);
+    return failures;
+}
+
+ENTRY_ALIGNMENT void _start(void) {
     int failures = 0;
 
     failures += record_failure(
         test_required_setup_flags(), "ZCRX_SETUP_VALIDATION_FAIL\n");
     failures += test_receive();
+    failures += test_export_import();
     print_text(failures ? "io-uring-zcrx: FAIL\n" :
                           "io-uring-zcrx: PASS\n");
     (void)raw_syscall6(

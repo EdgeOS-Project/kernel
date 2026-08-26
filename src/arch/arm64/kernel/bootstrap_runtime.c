@@ -902,6 +902,7 @@ static uint32_t g_fd_table_reserve_count;
 #define KERNEL_FD_LANDLOCK 26u
 #define KERNEL_FD_BPF 27u
 #define KERNEL_FD_SECCOMP 28u
+#define KERNEL_FD_ZCRX 29u
 
 #define ARM64_EPOLL_SOURCE_FILE_KMSG          0x00000001u
 #define ARM64_EPOLL_SOURCE_FILE_DRM_CARD      0x00000002u
@@ -10420,6 +10421,9 @@ static int arm64_anonymous_fd_install(
     case KERNEL_ANONYMOUS_FD_SECCOMP:
         local_kind = KERNEL_FD_SECCOMP;
         break;
+    case KERNEL_ANONYMOUS_FD_ZCRX:
+        local_kind = KERNEL_FD_ZCRX;
+        break;
     default:
         return -LINUX_EINVAL;
     }
@@ -10507,6 +10511,9 @@ static int arm64_anonymous_fd_object_id(
         break;
     case KERNEL_ANONYMOUS_FD_SECCOMP:
         expected = KERNEL_FD_SECCOMP;
+        break;
+    case KERNEL_ANONYMOUS_FD_ZCRX:
+        expected = KERNEL_FD_ZCRX;
         break;
     default:
         return -LINUX_EINVAL;
@@ -10917,6 +10924,10 @@ static int fd_retain_backing_object(const bootstrap_fd_t *fd) {
     }
     if (fd->kind == KERNEL_FD_SECCOMP) {
         result = edge_seccomp_listener_retain(fd->event_index);
+        return result < 0 ? result : 0;
+    }
+    if (fd->kind == KERNEL_FD_ZCRX) {
+        result = kernel_io_uring_zcrx_export_retain(fd->event_index);
         return result < 0 ? result : 0;
     }
     if (fd->kind == KERNEL_FD_SOCKET &&
@@ -16626,6 +16637,8 @@ static void fd_drop_backing_object(bootstrap_fd_t *fd) {
         kernel_bpf_object_release(fd->event_index);
     if (fd->kind == KERNEL_FD_SECCOMP)
         edge_seccomp_listener_release(fd->event_index);
+    if (fd->kind == KERNEL_FD_ZCRX)
+        kernel_io_uring_zcrx_export_release(fd->event_index);
     if ((fd->kind == KERNEL_FD_PIPE_READ ||
          fd->kind == KERNEL_FD_PIPE_WRITE ||
          fd->kind == KERNEL_FD_PIPE_RW) &&

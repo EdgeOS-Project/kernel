@@ -12184,6 +12184,9 @@ static int x86_anonymous_fd_install(
     case KERNEL_ANONYMOUS_FD_SECCOMP:
         local_kind = FD_SECCOMP;
         break;
+    case KERNEL_ANONYMOUS_FD_ZCRX:
+        local_kind = FD_ZCRX;
+        break;
     default:
         return -EINVAL;
     }
@@ -12242,6 +12245,9 @@ static int x86_anonymous_fd_object_id(
         break;
     case KERNEL_ANONYMOUS_FD_SECCOMP:
         expected = FD_SECCOMP;
+        break;
+    case KERNEL_ANONYMOUS_FD_ZCRX:
+        expected = FD_ZCRX;
         break;
     default:
         return -EINVAL;

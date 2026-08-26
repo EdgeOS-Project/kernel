@@ -6102,6 +6102,8 @@ static void fd_drop_backing_object(edge_fd_t *e) {
         kernel_bpf_object_release(e->pipe_id);
     if (e->kind == FD_SECCOMP)
         edge_seccomp_listener_release(e->pipe_id);
+    if (e->kind == FD_ZCRX)
+        kernel_io_uring_zcrx_export_release(e->pipe_id);
     if (e->kind == FD_NAMESPACE)
         edge_namespace_handle_release(
             (edge_namespace_kind_t)e->namespace_kind, e->namespace_id);
@@ -6195,6 +6197,8 @@ static int fd_add_backing_object(edge_fd_t *e) {
         return kernel_bpf_object_retain(e->pipe_id) == 0 ? 0 : -1;
     if (e->kind == FD_SECCOMP)
         return edge_seccomp_listener_retain(e->pipe_id) == 0 ? 0 : -1;
+    if (e->kind == FD_ZCRX)
+        return kernel_io_uring_zcrx_export_retain(e->pipe_id) == 0 ? 0 : -1;
     if (e->kind == FD_NAMESPACE) {
         if (e->namespace_kind >= EDGE_NAMESPACE_KIND_COUNT ||
             edge_namespace_handle_retain(
