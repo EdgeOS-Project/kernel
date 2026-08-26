@@ -13,6 +13,7 @@
 #define SYS_recvfrom 45
 #define SYS_bind 49
 #define SYS_setsockopt 54
+#define SYS_getsockopt 55
 #define SYS_exit 60
 #define SYS_bpf 321
 #elif defined(__aarch64__)
@@ -26,6 +27,7 @@
 #define SYS_sendto 206
 #define SYS_recvfrom 207
 #define SYS_setsockopt 208
+#define SYS_getsockopt 209
 #define SYS_bpf 280
 #else
 #error "bpf_socket_filter_abi_probe requires a Linux 64-bit architecture"
@@ -36,9 +38,13 @@
 #define AF_INET 2
 #define SOCK_DGRAM 2
 #define SOL_SOCKET 1
+#define SO_GET_FILTER 26
 #define SO_DETACH_FILTER 27
+#define SO_LOCK_FILTER 44
 #define SO_ATTACH_BPF 50
 #define MSG_DONTWAIT 0x40
+#define EPERM 1
+#define EACCES 13
 #define EAGAIN 11
 #define SIOCGIFFLAGS 0x8913
 #define SIOCSIFFLAGS 0x8914
@@ -211,6 +217,7 @@ START_ATTRIBUTES void _start(void) {
     char sent = 'x';
     char received = 0;
     int zero = 0;
+    int one = 1;
     long receiver;
     long sender;
     long reject_program;
@@ -270,11 +277,58 @@ START_ATTRIBUTES void _start(void) {
                 raw_syscall6(SYS_recvfrom, receiver, (long)&received, 1,
                              MSG_DONTWAIT, 0, 0), 1);
             failures += expect_result("length-value", received, 'y');
+            {
+                uint32_t filter_length = 0u;
+                failures += expect_result(
+                    "ebpf-filter-not-readable",
+                    raw_syscall6(
+                        SYS_getsockopt, receiver, SOL_SOCKET,
+                        SO_GET_FILTER, 0, (long)&filter_length, 0),
+                    -EACCES);
+            }
             failures += expect_result(
-                "detach",
+                "lock-filter",
+                raw_syscall6(SYS_setsockopt, receiver, SOL_SOCKET,
+                             SO_LOCK_FILTER, (long)&one,
+                             sizeof(one), 0), 0);
+            {
+                int locked = 0;
+                uint32_t locked_length = sizeof(locked);
+                failures += expect_result(
+                    "get-lock-filter",
+                    raw_syscall6(SYS_getsockopt, receiver, SOL_SOCKET,
+                                 SO_LOCK_FILTER, (long)&locked,
+                                 (long)&locked_length, 0), 0);
+                failures += expect_result(
+                    "lock-filter-value", locked, 1);
+                failures += expect_result(
+                    "lock-filter-length", locked_length, sizeof(locked));
+            }
+            failures += expect_result(
+                "locked-attach",
+                attach_program((int)receiver, (int)reject_program),
+                -EPERM);
+            failures += expect_result(
+                "locked-detach",
                 raw_syscall6(SYS_setsockopt, receiver, SOL_SOCKET,
                              SO_DETACH_FILTER, (long)&zero,
-                             sizeof(zero), 0), 0);
+                             sizeof(zero), 0), -EPERM);
+            failures += expect_result(
+                "locked-clear",
+                raw_syscall6(SYS_setsockopt, receiver, SOL_SOCKET,
+                             SO_LOCK_FILTER, (long)&zero,
+                             sizeof(zero), 0), -EPERM);
+            sent = 'z';
+            failures += expect_result(
+                "locked-filter-send",
+                raw_syscall6(SYS_sendto, sender, (long)&sent, 1, 0,
+                             (long)&address, sizeof(address)), 1);
+            failures += expect_result(
+                "locked-filter-recv",
+                raw_syscall6(SYS_recvfrom, receiver, (long)&received, 1,
+                             MSG_DONTWAIT, 0, 0), 1);
+            failures += expect_result(
+                "locked-filter-value", received, 'z');
             (void)raw_syscall6(
                 SYS_close, reject_program, 0, 0, 0, 0, 0);
         }

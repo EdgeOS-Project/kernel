@@ -207,6 +207,11 @@ int kernel_socket_option_state_set_integer(
     case KERNEL_SOCKET_OPTION_NETLINK_PACKET_INFO:
         state->netlink_packet_info = value != 0;
         break;
+    case KERNEL_SOCKET_OPTION_FILTER_LOCKED:
+        if (state->filter_locked && !value)
+            return -EDGE_LINUX_EPERM;
+        state->filter_locked = value != 0;
+        break;
     default:
         return -EDGE_LINUX_EINVAL;
     }
@@ -350,6 +355,9 @@ int kernel_socket_option_state_get_integer(
         break;
     case KERNEL_SOCKET_OPTION_NETLINK_PACKET_INFO:
         *value = state->netlink_packet_info;
+        break;
+    case KERNEL_SOCKET_OPTION_FILTER_LOCKED:
+        *value = state->filter_locked;
         break;
     default:
         return -EDGE_LINUX_EINVAL;

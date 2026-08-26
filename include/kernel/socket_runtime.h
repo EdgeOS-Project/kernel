@@ -301,6 +301,7 @@ typedef enum kernel_socket_option_id {
     KERNEL_SOCKET_OPTION_SEND_TIMEOUT_US,
     KERNEL_SOCKET_OPTION_IP_HEADER_INCLUDED,
     KERNEL_SOCKET_OPTION_NETLINK_PACKET_INFO,
+    KERNEL_SOCKET_OPTION_FILTER_LOCKED,
 } kernel_socket_option_id_t;
 
 #define KERNEL_SOCKET_MULTICAST_MEMBERSHIP_MAX 16u
@@ -372,6 +373,7 @@ typedef struct kernel_socket_option_state {
     uint8_t tcp_nodelay;
     uint8_t ip_header_included;
     uint8_t netlink_packet_info;
+    uint8_t filter_locked;
     uint32_t icmp6_filter[KERNEL_SOCKET_ICMP6_FILTER_WORDS];
     kernel_socket_multicast_membership_t
         multicast_memberships[KERNEL_SOCKET_MULTICAST_MEMBERSHIP_MAX];
@@ -574,6 +576,10 @@ int kernel_socket_option_attach_filter(
 int kernel_socket_option_attach_bpf_filter(
     int32_t descriptor, int32_t object_id);
 int kernel_socket_option_detach_filter(int32_t descriptor);
+int kernel_socket_option_get_filter(
+    int32_t descriptor, uint64_t user_program, uint32_t program_capacity,
+    void *copy_context, edge_linux_copy_to_user_fn copy_to_user,
+    uint32_t *program_length);
 int kernel_socket_packet_set_option(
     int32_t descriptor, uint32_t option, const void *value,
     uint32_t value_length);

@@ -590,6 +590,8 @@ int kernel_socket_option_attach_filter(
     if (!user_program || !program_length || !copy_from_user_fn ||
         program_length > EDGE_LINUX_PACKET_FILTER_MAX)
         return -EDGE_LINUX_EINVAL;
+    if (!view.state) return -EDGE_LINUX_EIO;
+    if (view.state->filter_locked) return -EDGE_LINUX_EPERM;
     if (!view.filter || !view.filter_length) return -EDGE_LINUX_EIO;
     *view.filter_length = 0;
     if (copy_from_user_fn(
@@ -619,6 +621,8 @@ int kernel_socket_option_attach_bpf_filter(
     int status = edge_socket_runtime_option_view(descriptor, &view);
 
     if (status < 0) return status;
+    if (!view.state) return -EDGE_LINUX_EIO;
+    if (view.state->filter_locked) return -EDGE_LINUX_EPERM;
     if (!view.bpf_filter_object_id || !view.filter_length)
         return -EDGE_LINUX_EIO;
     status = kernel_bpf_program_info(object_id, &info);
@@ -646,6 +650,8 @@ int kernel_socket_option_detach_filter(int32_t descriptor) {
     int status = edge_socket_runtime_option_view(descriptor, &view);
 
     if (status < 0) return status;
+    if (!view.state) return -EDGE_LINUX_EIO;
+    if (view.state->filter_locked) return -EDGE_LINUX_EPERM;
     if (!view.filter_length || !view.bpf_filter_object_id)
         return -EDGE_LINUX_EIO;
     if (!*view.filter_length && *view.bpf_filter_object_id < 0)
@@ -660,6 +666,33 @@ int kernel_socket_option_detach_filter(int32_t descriptor) {
         *view.bpf_filter_object_id = -1;
         kernel_bpf_object_release(object_id);
     }
+    return 0;
+}
+
+int kernel_socket_option_get_filter(
+    int32_t descriptor, uint64_t user_program, uint32_t program_capacity,
+    void *copy_context, edge_linux_copy_to_user_fn copy_to_user_fn,
+    uint32_t *program_length) {
+    kernel_socket_option_runtime_view_t view;
+    int status;
+
+    if (!program_length) return -EDGE_LINUX_EINVAL;
+    status = edge_socket_runtime_option_view(descriptor, &view);
+    if (status < 0) return status;
+    if (!view.filter_length || !view.bpf_filter_object_id)
+        return -EDGE_LINUX_EIO;
+    if (*view.bpf_filter_object_id >= 0)
+        return -EDGE_LINUX_EACCES;
+    *program_length = *view.filter_length;
+    if (!*program_length || !program_capacity) return 0;
+    if (program_capacity < *program_length)
+        return -EDGE_LINUX_EINVAL;
+    if (!user_program || !copy_to_user_fn)
+        return -EDGE_LINUX_EFAULT;
+    if (copy_to_user_fn(
+            copy_context, user_program, view.filter,
+            (uint64_t)*program_length * sizeof(view.filter[0])) < 0)
+        return -EDGE_LINUX_EFAULT;
     return 0;
 }
 

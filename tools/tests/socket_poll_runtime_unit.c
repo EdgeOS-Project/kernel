@@ -431,6 +431,18 @@ static void test_option_state_policy(void) {
                0, KERNEL_SOCKET_OPTION_KEEPALIVE, 1, 0) < 0);
     assert(kernel_socket_option_state_get_integer(
                0, KERNEL_SOCKET_OPTION_KEEPALIVE, &observed) < 0);
+
+    kernel_socket_option_state_initialize(&state, 4096u);
+    assert(kernel_socket_option_state_set_integer(
+               &state, KERNEL_SOCKET_OPTION_FILTER_LOCKED, 1, 0) == 0);
+    assert(kernel_socket_option_state_get_integer(
+               &state, KERNEL_SOCKET_OPTION_FILTER_LOCKED, &observed) == 0);
+    assert(observed == 1);
+    assert(kernel_socket_option_state_set_integer(
+               &state, KERNEL_SOCKET_OPTION_FILTER_LOCKED, 1, 0) == 0);
+    assert(kernel_socket_option_state_set_integer(
+               &state, KERNEL_SOCKET_OPTION_FILTER_LOCKED, 0, 0) ==
+           -EDGE_LINUX_EPERM);
 }
 
 static void test_unix_socket_poll_policy(void) {

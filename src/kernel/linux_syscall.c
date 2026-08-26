@@ -326,6 +326,12 @@ static int edge_linux_directory_copy_to_user(
         (edge_linux_syscall_context_t *)opaque, destination, source, size);
 }
 
+static int edge_linux_socket_copy_to_user(
+    void *opaque, uint64_t destination, const void *source, uint64_t size) {
+    return edge_linux_copy_to_user(
+        (edge_linux_syscall_context_t *)opaque, destination, source, size);
+}
+
 static int edge_linux_validate_user_range(
     edge_linux_syscall_context_t *context, uint64_t address,
     uint64_t size, int write) {
@@ -17086,6 +17092,8 @@ static const edge_linux_socket_integer_option_t
          KERNEL_SOCKET_OPTION_REUSE_PORT, EDGE_SOCKET_OPTION_BOOLEAN},
         {EDGE_LINUX_SOL_SOCKET, EDGE_LINUX_SO_PASSCRED,
          KERNEL_SOCKET_OPTION_PASS_CREDENTIALS, EDGE_SOCKET_OPTION_BOOLEAN},
+        {EDGE_LINUX_SOL_SOCKET, EDGE_LINUX_SO_LOCK_FILTER,
+         KERNEL_SOCKET_OPTION_FILTER_LOCKED, EDGE_SOCKET_OPTION_BOOLEAN},
         {EDGE_LINUX_SOL_SOCKET, EDGE_LINUX_SO_RCVLOWAT,
          KERNEL_SOCKET_OPTION_RECEIVE_LOW_WATER, 0},
         {EDGE_LINUX_SOL_SOCKET, EDGE_LINUX_SO_SNDLOWAT,
@@ -17780,6 +17788,22 @@ static int64_t edge_linux_socket_option_get(
     }
 
     if (level == EDGE_LINUX_SOL_SOCKET) {
+        if (name == EDGE_LINUX_SO_GET_FILTER) {
+            uint32_t program_length = 0u;
+            status = kernel_socket_option_get_filter(
+                descriptor, context->arguments[3], capacity,
+                context, edge_linux_socket_copy_to_user,
+                &program_length);
+            if (status < 0) return status;
+            if (direct_length) {
+                *direct_length = program_length;
+            } else if (edge_linux_copy_to_user(
+                           context, context->arguments[4], &program_length,
+                           sizeof(program_length)) < 0) {
+                return -EDGE_LINUX_EFAULT;
+            }
+            return 0;
+        }
         if (name == EDGE_LINUX_SO_TYPE)
             integer = (int32_t)info->type;
         else if (name == EDGE_LINUX_SO_DOMAIN)
