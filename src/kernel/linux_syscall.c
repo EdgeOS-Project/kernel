@@ -5091,6 +5091,7 @@ static int64_t edge_linux_sys_memfd_secret(
 #define EDGE_LINUX_BPF_MAP_GET_FD_BY_ID  14u
 #define EDGE_LINUX_BPF_OBJ_GET_INFO_BY_FD 15u
 #define EDGE_LINUX_BPF_PROG_QUERY        16u
+#define EDGE_LINUX_BPF_RAW_TRACEPOINT_OPEN 17u
 #define EDGE_LINUX_BPF_BTF_LOAD          18u
 #define EDGE_LINUX_BPF_BTF_GET_FD_BY_ID  19u
 #define EDGE_LINUX_BPF_MAP_LOOKUP_AND_DELETE_ELEM 21u
@@ -5206,6 +5207,12 @@ typedef struct edge_linux_bpf_program_load_attribute {
     uint32_t interface_index;
     uint32_t expected_attach_type;
 } edge_linux_bpf_program_load_attribute_t;
+
+typedef struct edge_linux_bpf_raw_tracepoint_attribute {
+    uint64_t name;
+    uint32_t program_descriptor;
+    uint32_t padding;
+} edge_linux_bpf_raw_tracepoint_attribute_t;
 
 typedef struct edge_linux_bpf_program_attach_attribute {
     uint32_t target_descriptor;
@@ -6345,6 +6352,38 @@ out:
     return status;
 }
 
+static int64_t edge_linux_bpf_raw_tracepoint_open(
+        edge_linux_syscall_context_t *context, uint64_t user_attribute,
+        uint32_t attribute_size) {
+    edge_linux_bpf_raw_tracepoint_attribute_t attribute;
+    char name[128];
+    int program_object_id;
+    int link_object_id;
+    int status;
+
+    status = edge_linux_bpf_copy_attribute(
+        context, &attribute, sizeof(attribute),
+        offsetof(edge_linux_bpf_raw_tracepoint_attribute_t, padding),
+        user_attribute, attribute_size);
+    if (status < 0) return status;
+    if (!attribute.name || attribute.padding)
+        return -EDGE_LINUX_EINVAL;
+    status = edge_linux_copy_user_string(
+        context, attribute.name, name, sizeof(name),
+        EDGE_LINUX_EINVAL);
+    if (status < 0) return status;
+    program_object_id = kernel_bpf_descriptor_object(
+        (int32_t)attribute.program_descriptor,
+        KERNEL_BPF_OBJECT_PROGRAM);
+    if (program_object_id < 0) return program_object_id;
+    link_object_id = kernel_bpf_raw_tracepoint_open(
+        name, program_object_id);
+    if (link_object_id < 0) return link_object_id;
+    status = kernel_bpf_create_descriptor(link_object_id);
+    if (status < 0) kernel_bpf_object_release(link_object_id);
+    return status;
+}
+
 static int64_t edge_linux_bpf_object_id_command(
     edge_linux_syscall_context_t *context, uint32_t command,
     uint64_t user_attribute, uint32_t attribute_size) {
@@ -7044,6 +7083,11 @@ static int64_t edge_linux_sys_bpf(
     if (command == EDGE_LINUX_BPF_PROG_TEST_RUN)
         return edge_linux_bpf_program_test_run(
             context, user_attribute, attribute_size);
+    if (command == EDGE_LINUX_BPF_RAW_TRACEPOINT_OPEN) {
+        if (!privileged) return -EDGE_LINUX_EPERM;
+        return edge_linux_bpf_raw_tracepoint_open(
+            context, user_attribute, attribute_size);
+    }
     if (command == EDGE_LINUX_BPF_OBJ_PIN ||
         command == EDGE_LINUX_BPF_OBJ_GET)
         return edge_linux_bpf_object_path(
@@ -23406,6 +23450,8 @@ int edge_linux_syscall_dispatch(edge_linux_syscall_context_t *context) {
     }
     if (force_reschedule)
         (void)kernel_arch_current_request_reschedule();
+    kernel_bpf_raw_tracepoint_sys_enter(
+        context->user_registers, context->raw_number);
     if (context->route_status == EDGE_LINUX_SYSCALL_ENOSYS) {
         context->result = -EDGE_LINUX_ENOSYS;
         return EDGE_LINUX_SYSCALL_HANDLED;

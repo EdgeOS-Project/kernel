@@ -9,12 +9,14 @@
 #define SYS_close 3
 #define SYS_exit 60
 #define SYS_bpf 321
+#define SYS_getpid 39
 #elif defined(__aarch64__)
 #define START_ATTRIBUTES __attribute__((noreturn))
 #define SYS_close 57
 #define SYS_write 64
 #define SYS_exit 93
 #define SYS_bpf 280
+#define SYS_getpid 172
 #else
 #error "bpf_stack_trace_abi_probe requires a Linux 64-bit architecture"
 #endif
@@ -24,8 +26,11 @@
 #define BPF_MAP_UPDATE_ELEM 2
 #define BPF_MAP_DELETE_ELEM 3
 #define BPF_MAP_GET_NEXT_KEY 4
+#define BPF_PROG_LOAD 5
+#define BPF_RAW_TRACEPOINT_OPEN 17
 #define BPF_MAP_LOOKUP_AND_DELETE_ELEM 21
 #define BPF_MAP_TYPE_STACK_TRACE 7
+#define BPF_PROG_TYPE_RAW_TRACEPOINT 17
 #define BPF_F_STACK_BUILD_ID (1u << 5)
 #define BPF_ANY 0
 
@@ -58,6 +63,34 @@ struct bpf_map_element_attribute {
     uint64_t key;
     uint64_t value;
     uint64_t flags;
+};
+
+struct bpf_instruction {
+    uint8_t code;
+    uint8_t registers;
+    int16_t offset;
+    int32_t immediate;
+};
+
+struct bpf_program_load_attribute {
+    uint32_t program_type;
+    uint32_t instruction_count;
+    uint64_t instructions;
+    uint64_t license;
+    uint32_t log_level;
+    uint32_t log_size;
+    uint64_t log_buffer;
+    uint32_t kernel_version;
+    uint32_t program_flags;
+    char program_name[16];
+    uint32_t interface_index;
+    uint32_t expected_attach_type;
+};
+
+struct bpf_raw_tracepoint_attribute {
+    uint64_t name;
+    uint32_t program_descriptor;
+    uint32_t padding;
 };
 
 void *memset(void *destination, int value, unsigned long length) {
@@ -190,12 +223,54 @@ static long map_element(long command, int map_fd, uint32_t *key,
         sizeof(attribute), 0, 0, 0);
 }
 
+static long load_stack_program(int map_fd) {
+    static const char license[] = "GPL";
+    struct bpf_instruction instructions[] = {
+        { .code = 0x18u, .registers = 0x12u,
+          .immediate = map_fd },
+        {0},
+        { .code = 0xb7u, .registers = 3u, .immediate = 0 },
+        { .code = 0x85u, .immediate = 27 },
+        { .code = 0xb7u, .registers = 0u, .immediate = 0 },
+        { .code = 0x95u },
+    };
+    struct bpf_program_load_attribute attribute = {0};
+
+    attribute.program_type = BPF_PROG_TYPE_RAW_TRACEPOINT;
+    attribute.instruction_count =
+        sizeof(instructions) / sizeof(instructions[0]);
+    attribute.instructions = (uint64_t)(uintptr_t)instructions;
+    attribute.license = (uint64_t)(uintptr_t)license;
+    attribute.program_name[0] = 's';
+    attribute.program_name[1] = 't';
+    attribute.program_name[2] = 'a';
+    attribute.program_name[3] = 'c';
+    attribute.program_name[4] = 'k';
+    return raw_syscall6(
+        SYS_bpf, BPF_PROG_LOAD, (long)&attribute,
+        sizeof(attribute), 0, 0, 0);
+}
+
+static long open_raw_tracepoint(int program_fd) {
+    static const char name[] = "sys_enter";
+    struct bpf_raw_tracepoint_attribute attribute = {
+        .name = (uint64_t)(uintptr_t)name,
+        .program_descriptor = (uint32_t)program_fd,
+    };
+
+    return raw_syscall6(
+        SYS_bpf, BPF_RAW_TRACEPOINT_OPEN, (long)&attribute,
+        sizeof(attribute), 0, 0, 0);
+}
+
 START_ATTRIBUTES void _start(void) {
     uint64_t value[4] = {0};
     uint32_t key = 0u;
     uint32_t next = 0u;
     long descriptor;
     long build_id_descriptor;
+    long program_descriptor;
+    long tracepoint_descriptor;
     int failures = 0;
 
     failures += expect_result("small-value", create_map(4u, 0u), -EINVAL);
@@ -243,6 +318,39 @@ START_ATTRIBUTES void _start(void) {
             map_element(BPF_MAP_GET_NEXT_KEY,
                         (int)descriptor, 0, (uint64_t *)&next),
             -ENOENT);
+        program_descriptor = load_stack_program((int)descriptor);
+        if (program_descriptor < 0) {
+            failures += expect_result(
+                "load-stack-program", program_descriptor, 0);
+        } else {
+            tracepoint_descriptor = open_raw_tracepoint(
+                (int)program_descriptor);
+            if (tracepoint_descriptor < 0) {
+                failures += expect_result(
+                    "open-raw-tracepoint", tracepoint_descriptor, 0);
+            } else {
+                (void)raw_syscall6(SYS_getpid, 0, 0, 0, 0, 0, 0);
+                failures += expect_result(
+                    "next-populated",
+                    map_element(BPF_MAP_GET_NEXT_KEY,
+                                (int)descriptor, 0,
+                                (uint64_t *)&next),
+                    0);
+                failures += expect_result(
+                    "lookup-populated",
+                    map_element(BPF_MAP_LOOKUP_ELEM,
+                                (int)descriptor, &next, value),
+                    0);
+                if (!value[0]) {
+                    print_text("FAIL populated-stack-zero\n");
+                    ++failures;
+                }
+                (void)raw_syscall6(
+                    SYS_close, tracepoint_descriptor, 0, 0, 0, 0, 0);
+            }
+            (void)raw_syscall6(
+                SYS_close, program_descriptor, 0, 0, 0, 0, 0);
+        }
         (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
     }
 

@@ -625,6 +625,8 @@ static void test_stack_trace_map(void) {
     uint32_t next_key = 0u;
     int has_more = 0;
     int object;
+    int program;
+    int link;
 
     strcpy(request.name, "stack_trace");
     object = kernel_bpf_map_create(&request);
@@ -649,6 +651,40 @@ static void test_stack_trace_map(void) {
     assert(kernel_bpf_map_batch_next(
                object, &cursor, &key, value, 0, &has_more) ==
            -EDGE_LINUX_ENOTSUPP);
+    {
+        kernel_bpf_instruction_t instructions[] = {
+            { .code = 0x18u, .registers = 0x12u,
+              .immediate = object },
+            {0},
+            { .code = 0xb7u, .registers = 3u, .immediate = 0 },
+            { .code = 0x85u, .immediate = 27 },
+            { .code = 0xb7u, .registers = 0u, .immediate = 0 },
+            { .code = 0x95u },
+        };
+        kernel_bpf_program_create_request_t program_request = {
+            .type = KERNEL_BPF_PROG_TYPE_RAW_TRACEPOINT,
+            .instruction_count =
+                sizeof(instructions) / sizeof(instructions[0]),
+            .gpl_compatible = 1u,
+            .map_references_resolved = 1u,
+        };
+        strcpy(program_request.name, "stackid");
+        program = kernel_bpf_program_create(
+            &program_request, instructions);
+        assert(program >= 0);
+        link = kernel_bpf_raw_tracepoint_open("sys_enter", program);
+        assert(link >= 0);
+        kernel_bpf_raw_tracepoint_sys_enter(0, 39u);
+        assert(kernel_bpf_map_next_key(object, 0, &next_key) == 0);
+        assert(kernel_bpf_map_lookup(object, &next_key, value) == 0);
+        assert(value[0] != 0u);
+        kernel_bpf_object_release(link);
+        memset(value, 0, sizeof(value));
+        kernel_bpf_raw_tracepoint_sys_enter(0, 39u);
+        assert(kernel_bpf_map_lookup(object, &next_key, value) == 0);
+        assert(value[0] != 0u);
+        kernel_bpf_object_release(program);
+    }
     kernel_bpf_object_release(object);
 
     request.flags = KERNEL_BPF_MAP_STACK_BUILD_ID;

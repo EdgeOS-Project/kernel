@@ -368,7 +368,7 @@ EDGEOS_ASSESSMENTS = [
             "explicit map binding to program lifetime with program map-ID reporting",
             "runtime statistics enable descriptors with close-time disable semantics",
             "program test-run and unknown-command error ordering for the supported program family",
-            "stack-trace map creation, build-ID value layouts, rounded bucket addressing and empty syscall operations",
+            "stack-trace map creation, build-ID value layouts, rounded bucket addressing, raw sys_enter tracepoint attachment and get_stackid helper population",
             "CPU-map creation, CPU and queue validation, entry lifecycle, optional program descriptor rejection and Linux unsupported-operation behavior",
             "device-map and device-hash creation, network-interface validation, entry lifecycle, capacity, iteration and program descriptor behavior",
             "XSK-map creation, syscall lookup rejection, socket descriptor and family error behavior, deletion, key iteration and unsupported batch behavior",
@@ -385,7 +385,7 @@ EDGEOS_ASSESSMENTS = [
             "ia32 and x32 fixed-width map-create and map-element attribute layouts",
         ],
         "missing": [
-            "struct-ops maps, sparse 4 GiB arena ranges and arena kfunc integration, socket-map and reuseport program attachment and redirect execution, modern local-storage program helper access, socket diagnostic export, stack-trace helper population, CPU-map packet redirect execution, device-map packet redirect execution and AF_XDP socket-backed XSK-map entries",
+            "struct-ops maps, sparse 4 GiB arena ranges and arena kfunc integration, socket-map and reuseport program attachment and redirect execution, modern local-storage program helper access, socket diagnostic export, CPU-map packet redirect execution, device-map packet redirect execution and AF_XDP socket-backed XSK-map entries",
             "resizable-hash concurrent dynamic resizing and full Linux key and value size range",
             "remaining specialized map-family concurrency semantics, plus instruction-array verifier and jump-table integration",
             "additional attachment families and program types",
@@ -426,7 +426,8 @@ EDGEOS_ASSESSMENTS = [
                 "BPF filesystem object pinning, explicit program-map binding, "
                 "runtime statistics descriptors and supported program-test "
                 "error behavior, stack-trace map creation, value-depth limits, "
-                "rounded bucket addressing and empty map operations, CPU-map "
+                "rounded bucket addressing, raw sys_enter tracepoint attachment "
+                "and get_stackid helper population, CPU-map "
                 "creation, qsize state, CPU bounds, program descriptor errors "
                 "and unsupported operations, device-map and device-hash "
                 "interface validation, lifecycle, capacity and iteration, "
