@@ -154,6 +154,13 @@ static int expect_true(const char *name, int condition) {
     return 1;
 }
 
+static int contains_id(const uint64_t *ids, long count, uint64_t id) {
+    for (long index = 0; index < count; ++index) {
+        if (ids[index] == id) return 1;
+    }
+    return 0;
+}
+
 static long list_namespaces(struct ns_id_req *request,
                             uint64_t *ids, unsigned long count,
                             unsigned int flags) {
@@ -217,58 +224,85 @@ static int test_validation(void) {
 
 static int test_initial_tree(void) {
     struct ns_id_req request;
+    uint64_t initial_ids[32];
+    uint64_t uts_ids[32];
+    uint64_t mount_ids[32];
+    uint64_t uts_id = 0;
+    static const char uts_path[] = "/proc/self/ns/uts";
+    long uts_fd;
+    long initial_count;
+    long uts_count;
+    long mount_count;
     long listed;
     int failures = 0;
 
     memset(&request, 0, sizeof(request));
     request.size = sizeof(request);
-    listed = list_namespaces(&request, g_namespace_ids, 32, 0);
-    failures += expect_result("initial namespace count", listed, 8);
-    if (listed == 8) {
-        for (long index = 0; index < listed; ++index)
-            failures += expect_true(
-                "initial namespace order",
-                g_namespace_ids[index] == (uint64_t)index + 1u);
+    initial_count = list_namespaces(&request, initial_ids, 32, 0);
+    failures += expect_true("initial namespaces present", initial_count > 0);
+    if (initial_count > 0) {
+        failures += expect_true("initial namespace ID is nonzero",
+                                initial_ids[0] != 0);
+        for (long index = 1; index < initial_count; ++index)
+            failures += expect_true("initial namespace order",
+                initial_ids[index] > initial_ids[index - 1]);
     }
 
+    uts_fd = raw_syscall6(SYS_openat, AT_FDCWD, (long)uts_path,
+                          O_RDONLY | O_CLOEXEC, 0, 0, 0);
+    failures += expect_true("open initial UTS namespace", uts_fd >= 0);
+    if (uts_fd >= 0) {
+        failures += expect_result("initial NS_GET_ID",
+            raw_syscall6(SYS_ioctl, uts_fd, NS_GET_ID,
+                         (long)&uts_id, 0, 0, 0), 0);
+        (void)raw_syscall6(SYS_close, uts_fd, 0, 0, 0, 0, 0);
+    }
     request.ns_type = CLONE_NEWUTS;
-    listed = list_namespaces(&request, g_namespace_ids, 32, 0);
-    failures += expect_result("UTS namespace count", listed, 1);
+    uts_count = list_namespaces(&request, uts_ids, 32, 0);
+    failures += expect_true("UTS namespace present", uts_count > 0);
     failures += expect_true("UTS namespace ID",
-                            listed == 1 && g_namespace_ids[0] == 2);
+        uts_count > 0 && contains_id(uts_ids, uts_count, uts_id));
+    request.ns_type = CLONE_NEWNS;
+    mount_count = list_namespaces(&request, mount_ids, 32, 0);
+    failures += expect_true("mount namespace present", mount_count > 0);
     request.ns_type = CLONE_NEWUTS | CLONE_NEWNS;
     listed = list_namespaces(&request, g_namespace_ids, 32, 0);
-    failures += expect_result("multi-type namespace count", listed, 2);
-    failures += expect_true(
-        "multi-type namespace IDs",
-        listed == 2 && g_namespace_ids[0] == 2 &&
-        g_namespace_ids[1] == 8);
+    failures += expect_result("multi-type namespace count", listed,
+                              uts_count + mount_count);
+    for (long index = 0; index < listed; ++index) {
+        failures += expect_true("multi-type namespace membership",
+            contains_id(uts_ids, uts_count, g_namespace_ids[index]) ||
+            contains_id(mount_ids, mount_count, g_namespace_ids[index]));
+        if (index)
+            failures += expect_true("multi-type namespace order",
+                g_namespace_ids[index] > g_namespace_ids[index - 1]);
+    }
 
     request.ns_type = 0;
-    request.ns_id = 7;
-    listed = list_namespaces(&request, g_namespace_ids, 1, 0);
-    failures += expect_result("pagination count", listed, 1);
-    failures += expect_true("pagination ID",
-                            listed == 1 && g_namespace_ids[0] == 8);
-    request.ns_id = 8;
-    failures += expect_result(
-        "pagination end",
-        list_namespaces(&request, g_namespace_ids, 1, 0), -ENOENT);
-    failures += expect_result(
-        "zero capacity at end", list_namespaces(&request, 0, 0, 0),
-        -ENOENT);
+    if (initial_count > 1) {
+        request.ns_id = initial_ids[initial_count - 2];
+        listed = list_namespaces(&request, g_namespace_ids, 1, 0);
+        failures += expect_result("pagination count", listed, 1);
+        failures += expect_true("pagination ID", listed == 1 &&
+            g_namespace_ids[0] == initial_ids[initial_count - 1]);
+    }
+    if (initial_count > 0) {
+        request.ns_id = initial_ids[initial_count - 1];
+        failures += expect_result("pagination end",
+            list_namespaces(&request, g_namespace_ids, 1, 0), -ENOENT);
+        failures += expect_result("zero capacity at end",
+            list_namespaces(&request, 0, 0, 0), -ENOENT);
+    }
     request.ns_id = 0;
     failures += expect_result(
         "zero capacity at root", list_namespaces(&request, 0, 0, 0), 0);
 
     request.user_ns_id = LISTNS_CURRENT_USER;
     listed = list_namespaces(&request, g_namespace_ids, 32, 0);
-    failures += expect_result("current owner count", listed, 7);
-    if (listed == 7) {
-        failures += expect_true(
-            "initial user namespace has no owner",
-            g_namespace_ids[0] == 1 && g_namespace_ids[1] == 2 &&
-            g_namespace_ids[2] == 4 && g_namespace_ids[6] == 8);
+    failures += expect_true("current owner namespaces present", listed > 0);
+    for (long index = 0; index < listed; ++index) {
+        failures += expect_true("current owner namespace is global",
+            contains_id(initial_ids, initial_count, g_namespace_ids[index]));
     }
     request.user_ns_id = UINT64_C(0x7fffffffffffffff);
     failures += expect_result(
@@ -285,6 +319,7 @@ static int test_dynamic_namespace(void) {
     uint64_t dynamic_id = 0;
     long old_fd;
     long current_fd;
+    long before_count;
     long listed;
     int failures = 0;
 
@@ -296,22 +331,26 @@ static int test_dynamic_namespace(void) {
             "initial NS_GET_ID",
             raw_syscall6(SYS_ioctl, old_fd, NS_GET_ID,
                          (long)&old_id, 0, 0, 0), 0);
-        failures += expect_true("initial ioctl namespace ID", old_id == 2);
+        failures += expect_true("initial ioctl namespace ID", old_id != 0);
     }
 
-    failures += expect_result(
-        "unshare UTS namespace",
-        raw_syscall6(SYS_unshare, CLONE_NEWUTS, 0, 0, 0, 0, 0), 0);
     memset(&request, 0, sizeof(request));
     request.size = sizeof(request);
     request.ns_type = CLONE_NEWUTS;
+    before_count = list_namespaces(&request, g_namespace_ids, 32, 0);
+    failures += expect_true("initial UTS namespace present",
+                            before_count > 0);
+    failures += expect_result(
+        "unshare UTS namespace",
+        raw_syscall6(SYS_unshare, CLONE_NEWUTS, 0, 0, 0, 0, 0), 0);
     listed = list_namespaces(&request, g_namespace_ids, 32, 0);
-    failures += expect_result("dynamic UTS count", listed, 2);
-    if (listed == 2) {
-        failures += expect_true(
-            "dynamic UTS ordering",
-            g_namespace_ids[0] == 2 && g_namespace_ids[1] > 8);
-        dynamic_id = g_namespace_ids[1];
+    failures += expect_result("dynamic UTS count", listed,
+                              before_count + 1);
+    if (listed > 0) {
+        dynamic_id = g_namespace_ids[listed - 1];
+        failures += expect_true("dynamic UTS ordering",
+            dynamic_id > old_id && contains_id(g_namespace_ids, listed,
+                                                old_id));
     }
 
     current_fd = raw_syscall6(SYS_openat, AT_FDCWD, (long)uts_path,
@@ -324,7 +363,7 @@ static int test_dynamic_namespace(void) {
                          (long)&current_id, 0, 0, 0), 0);
         failures += expect_true(
             "listns and ioctl use the same ID",
-            dynamic_id > 8 && current_id == dynamic_id);
+            dynamic_id != 0 && current_id == dynamic_id);
         (void)raw_syscall6(SYS_close, current_fd, 0, 0, 0, 0, 0);
     }
     failures += expect_result(

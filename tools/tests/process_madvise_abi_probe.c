@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #if defined(__x86_64__)
+#define ENTRY_ALIGNMENT __attribute__((force_align_arg_pointer))
 #define SYS_read 0
 #define SYS_write 1
 #define SYS_close 3
@@ -22,6 +23,7 @@
 #define SYS_getpid 39
 #define SYS_pipe2 293
 #elif defined(__aarch64__)
+#define ENTRY_ALIGNMENT
 #define SYS_close 57
 #define SYS_read 63
 #define SYS_write 64
@@ -198,17 +200,16 @@ static int test_self_advice(void) {
     vectors[1].length = 1;
     failures += expect_result("length_overflow",
         call_process_madvise(pidfd, vectors, 2, MADV_WILLNEED, 0),
-        -EINVAL);
+        -EFAULT);
 
     vectors[0].base = (uint64_t)mapping;
     vectors[0].length = PAGE_SIZE;
     vectors[1].base = 0x1000;
     vectors[1].length = PAGE_SIZE;
-    failures += expect_result("prevalidate_all_ranges",
+    failures += expect_result("completed_range_prefix",
         call_process_madvise(pidfd, vectors, 2, MADV_DONTNEED, 0),
-        -ENOMEM);
-    failures += expect_result("prevalidation_preserves_first_range",
-        page[0], 0xa5);
+        PAGE_SIZE);
+    failures += expect_result("completed_prefix_is_applied", page[0], 0);
 
     failures += expect_result("dontneed",
         call_process_madvise(pidfd, vectors, 1, MADV_DONTNEED, 0),
@@ -272,7 +273,7 @@ static int test_cross_process_permission(void) {
     return failures;
 }
 
-void _start(void) {
+ENTRY_ALIGNMENT void _start(void) {
     int failures = test_self_advice();
     failures += test_cross_process_permission();
     if (!failures) print_text("PROCESS_MADVISE_ABI_PROBE_PASS\n");

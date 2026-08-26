@@ -11,6 +11,7 @@
 #define SYS_mmap 9
 #define SYS_munmap 11
 #define SYS_getpid 39
+#define SYS_sched_yield 24
 #define SYS_fork 57
 #define SYS_exit 60
 #define SYS_wait4 61
@@ -25,6 +26,7 @@
 #define SYS_exit 93
 #define SYS_kill 129
 #define SYS_getpid 172
+#define SYS_sched_yield 124
 #define SYS_munmap 215
 #define SYS_clone 220
 #define SYS_mmap 222
@@ -103,6 +105,17 @@ static void print_unsigned(uint32_t value) {
                            0, 0, 0);
 }
 
+static void print_signed(long value) {
+    uint64_t magnitude;
+    if (value < 0) {
+        print_text("-");
+        magnitude = (uint64_t)(-(value + 1)) + 1u;
+    } else {
+        magnitude = (uint64_t)value;
+    }
+    print_unsigned((uint32_t)magnitude);
+}
+
 static long create_child(void) {
 #if defined(__x86_64__)
     return raw_syscall6(SYS_fork, 0, 0, 0, 0, 0, 0);
@@ -174,15 +187,20 @@ static int run_attempt(uint64_t allocation, int run_negative_tests) {
         return 37;
     result = raw_syscall6(
         SYS_process_mrelease, pidfd, 0, 0, 0, 0, 0);
-    for (uint32_t retry = 0; result == -EAGAIN && retry < 8u; ++retry)
+    for (uint32_t retry = 0; result == -EAGAIN && retry < 1024u; ++retry) {
+        (void)raw_syscall6(SYS_sched_yield, 0, 0, 0, 0, 0, 0);
         result = raw_syscall6(
             SYS_process_mrelease, pidfd, 0, 0, 0, 0, 0);
+    }
     if (raw_syscall6(
             SYS_wait4, child, (long)&status, 0, 0, 0, 0) != child)
         return 38;
     (void)raw_syscall6(SYS_close, pidfd, 0, 0, 0, 0, 0);
     if (result == 0) return 0;
     if (result == -ESRCH) return 1;
+    print_text("PROCESS_MRELEASE_RESULT ");
+    print_signed(result);
+    print_text("\n");
     return 39;
 }
 

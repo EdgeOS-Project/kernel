@@ -1212,7 +1212,9 @@ static int64_t edge_linux_sys_syslog(
     uint64_t destination = context->arguments[1];
     int32_t length = (int32_t)context->arguments[2];
 
-    if (!edge_linux_syslog_permitted()) return -EDGE_LINUX_EPERM;
+    if (action != EDGE_LINUX_SYSLOG_SIZE_BUFFER &&
+        !edge_linux_syslog_permitted())
+        return -EDGE_LINUX_EPERM;
     switch (action) {
     case EDGE_LINUX_SYSLOG_CLOSE:
     case EDGE_LINUX_SYSLOG_OPEN:
@@ -2887,21 +2889,14 @@ static int64_t edge_linux_sys_process_madvise(
         context, scratch.vectors, vector_address, vector_count);
     if (status < 0) return status;
 
-    /* Linux imports and validates the complete vector before changing memory. */
+    /* Linux rejects an iterator whose total cannot fit in ssize_t. */
     for (uint64_t index = 0; index < vector_count; ++index) {
         uint64_t length = scratch.vectors[index].iov_len;
         if (length > (uint64_t)INT64_MAX - total)
-            return -EDGE_LINUX_EINVAL;
+            return -EDGE_LINUX_EFAULT;
         total += length;
     }
-    for (uint64_t index = 0; index < vector_count; ++index) {
-        if (!scratch.vectors[index].iov_len) continue;
-        status = kernel_process_madvise(
-            target_pid, scratch.vectors[index].iov_base,
-            scratch.vectors[index].iov_len, advice,
-            KERNEL_PROCESS_MADVISE_VALIDATE_ONLY);
-        if (status < 0) return status;
-    }
+    /* vector_madvise applies each range and returns the completed prefix. */
     for (uint64_t index = 0; index < vector_count; ++index) {
         uint64_t length = scratch.vectors[index].iov_len;
         if (!length) continue;

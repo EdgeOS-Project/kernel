@@ -118,6 +118,7 @@ static long raw_syscall4(long number, long a0, long a1, long a2, long a3) {
     defined(UAPI_BATCH_PROCESS_EVENT_ONLY) || \
     defined(UAPI_BATCH_PROCESS_MISC_ORACLE_ONLY) || \
     defined(UAPI_BATCH_PROCESS_LIFECYCLE_ONLY) || \
+    defined(UAPI_BATCH_PROCESS_ADMIN_ONLY) || \
     defined(UAPI_BATCH_MEMORY_ONLY) || \
     defined(UAPI_BATCH_FILE_IO_ONLY)
 static long raw_syscall5(long number, long a0, long a1, long a2, long a3,
@@ -406,6 +407,17 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "modern_mount_abi_probe",
         "mount_context_abi_probe",
         "statmount_abi_probe",
+#elif defined(UAPI_BATCH_PROCESS_ADMIN_ONLY)
+        "kcmp_abi_probe",
+        "pidfd_getfd_abi_probe",
+        "process_madvise_abi_probe",
+        "process_mrelease_abi_probe",
+        "ptrace_abi_probe",
+        "perf_event_abi_probe",
+        "quota_abi_probe",
+        "seccomp_abi_probe",
+        "syslog_abi_probe",
+        "listns_abi_probe",
 #elif defined(UAPI_BATCH_NATIVE_OPTIONAL_ONLY)
         "native_optional_syscalls_abi_probe",
 #else
@@ -449,6 +461,18 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
                        (long)"proc", 0, 0);
 #endif
 #if defined(UAPI_BATCH_MOUNT_API_ONLY)
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/dev", 0755, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/proc", 0555, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/sys", 0555, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/tmp", 01777, 0);
+    (void)raw_syscall5(SYS_mount, (long)"devtmpfs", (long)"/dev",
+                       (long)"devtmpfs", 0, 0);
+    (void)raw_syscall5(SYS_mount, (long)"proc", (long)"/proc",
+                       (long)"proc", 0, 0);
+    (void)raw_syscall5(SYS_mount, (long)"sysfs", (long)"/sys",
+                       (long)"sysfs", 0, 0);
+#endif
+#if defined(UAPI_BATCH_PROCESS_ADMIN_ONLY)
     (void)raw_syscall4(SYS_mkdirat, -100, (long)"/dev", 0755, 0);
     (void)raw_syscall4(SYS_mkdirat, -100, (long)"/proc", 0555, 0);
     (void)raw_syscall4(SYS_mkdirat, -100, (long)"/sys", 0555, 0);

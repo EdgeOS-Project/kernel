@@ -496,7 +496,7 @@ int64_t kernel_perf_event_read(int event_id, uint64_t *values,
 
 too_small:
     perf_event_unlock();
-    return -EDGE_LINUX_EINVAL;
+    return -EDGE_LINUX_ENOSPC;
 }
 
 int kernel_perf_event_control(int event_id, uint32_t command,

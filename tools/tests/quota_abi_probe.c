@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #if defined(__x86_64__)
+#define ENTRY_ALIGNMENT __attribute__((force_align_arg_pointer))
 #define SYS_close 3
 #define SYS_write 1
 #define SYS_exit 60
@@ -11,6 +12,7 @@
 #define SYS_quotactl 179
 #define SYS_quotactl_fd 443
 #elif defined(__aarch64__)
+#define ENTRY_ALIGNMENT
 #define SYS_close 57
 #define SYS_write 64
 #define SYS_exit 93
@@ -44,6 +46,7 @@
 #define IIF_IGRACE (1u << 1)
 #define EBADF 9
 #define EINVAL 22
+#define ENOSYS 38
 #define ESRCH 3
 
 struct if_dqblk {
@@ -190,6 +193,7 @@ static int run_tests(void) {
     struct if_dqinfo information;
     uint32_t format = 0;
     long descriptor;
+    long enable_result;
     int failures = 0;
 
     descriptor = raw_syscall6(
@@ -207,12 +211,19 @@ static int run_tests(void) {
         raw_syscall5(SYS_quotactl_fd, descriptor,
                      QCMD(Q_GETFMT, 3), 0, (long)&format, 0),
         -EINVAL);
-    failures += expect(
-        "enable",
-        raw_syscall5(SYS_quotactl_fd, descriptor,
-                     QCMD(Q_QUOTAON, USRQUOTA), QFMT_SHMEM,
-                     (long)quota_path, 0),
-        0);
+    enable_result = raw_syscall5(
+        SYS_quotactl_fd, descriptor, QCMD(Q_QUOTAON, USRQUOTA),
+        QFMT_SHMEM, (long)quota_path, 0);
+    if (enable_result == -ENOSYS) {
+        failures += expect("unsupported root quota backend",
+            raw_syscall5(SYS_quotactl_fd, descriptor,
+                         QCMD(Q_GETFMT, USRQUOTA), 0,
+                         (long)&format, 0), -ENOSYS);
+        failures += expect("close", raw_syscall6(
+            SYS_close, descriptor, 0, 0, 0, 0, 0), 0);
+        return failures;
+    }
+    failures += expect("enable", enable_result, 0);
     failures += expect(
         "format",
         raw_syscall5(SYS_quotactl_fd, descriptor,
@@ -298,7 +309,7 @@ static int run_tests(void) {
     return failures;
 }
 
-void _start(void) {
+ENTRY_ALIGNMENT void _start(void) {
     int failures = run_tests();
     print_text(failures ? "QUOTA_ABI_PROBE_FAIL\n" :
                           "QUOTA_ABI_PROBE_PASS\n");

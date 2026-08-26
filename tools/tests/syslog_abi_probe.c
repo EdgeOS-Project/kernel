@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #if defined(__x86_64__)
+#define ENTRY_ALIGNMENT __attribute__((force_align_arg_pointer))
 #define SYS_write 1
 #define SYS_rt_sigaction 13
 #define SYS_rt_sigreturn 15
@@ -15,6 +16,7 @@
 #define SYS_syslog 103
 #define SYS_setuid 105
 #elif defined(__aarch64__)
+#define ENTRY_ALIGNMENT
 #define SYS_write 64
 #define SYS_exit 93
 #define SYS_setitimer 103
@@ -218,7 +220,8 @@ static int test_guest_ring_and_wait(void) {
                           (long)sizeof(log_buffer));
     failures += expect_true("boot log snapshot available", snapshot > 0);
     failures += expect_result("bad snapshot pointer",
-        syslog_raw(SYSLOG_READ_ALL, (void *)1, 1), -EFAULT);
+        syslog_raw(SYSLOG_READ_ALL, (void *)1,
+                   (long)sizeof(log_buffer)), -EFAULT);
     unread_before = syslog_raw(SYSLOG_SIZE_UNREAD, 0, 0);
     failures += expect_true("unread boot log available", unread_before > 0);
     failures += expect_true("read clear returns data",
@@ -270,8 +273,10 @@ static int test_unprivileged_denial(void) {
     int failures = 0;
     failures += expect_result("drop uid",
         raw_syscall6(SYS_setuid, 65534, 0, 0, 0, 0, 0), 0);
-    failures += expect_result("unprivileged syslog denied",
-        syslog_raw(SYSLOG_SIZE_BUFFER, 0, 0), -EPERM);
+    failures += expect_true("unprivileged buffer size visible",
+        syslog_raw(SYSLOG_SIZE_BUFFER, 0, 0) > 0);
+    failures += expect_result("unprivileged consuming read denied",
+        syslog_raw(SYSLOG_READ, log_buffer, 1), -EPERM);
     return failures;
 }
 
@@ -289,7 +294,7 @@ static int run_tests(void) {
     return failures ? 1 : 0;
 }
 
-__attribute__((noreturn)) void _start(void) {
+__attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
     raw_syscall6(SYS_exit, run_tests(), 0, 0, 0, 0, 0);
     __builtin_unreachable();
 }

@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #if defined(__x86_64__)
+#define ENTRY_ALIGNMENT __attribute__((force_align_arg_pointer))
 #define SYS_read 0
 #define SYS_write 1
 #define SYS_close 3
@@ -13,6 +14,7 @@
 #define SYS_wait4 61
 #define SYS_perf_event_open 298
 #elif defined(__aarch64__)
+#define ENTRY_ALIGNMENT
 #define SYS_close 57
 #define SYS_clone 220
 #define SYS_read 63
@@ -44,6 +46,7 @@
 #define E2BIG 7
 #define EACCES 13
 #define EINVAL 22
+#define ENOSPC 28
 #define EPERM 1
 #define SIGCHLD 17
 
@@ -226,7 +229,7 @@ static int run_tests(void) {
         SYS_ioctl, leader, PERF_IOC_ID, (long)&event_id, 0, 0, 0), 0);
     failures += expect_true("id value", event_id == values[3]);
     failures += expect("short read", raw_syscall6(
-        SYS_read, leader, (long)values, 8, 0, 0, 0), -EINVAL);
+        SYS_read, leader, (long)values, 8, 0, 0, 0), -ENOSPC);
     failures += expect("reset", raw_syscall6(
         SYS_ioctl, leader, PERF_IOC_RESET, 0, 0, 0, 0), 0);
     failures += expect("reset read", raw_syscall6(
@@ -317,7 +320,7 @@ static int run_tests(void) {
     return failures;
 }
 
-void _start(void) {
+ENTRY_ALIGNMENT void _start(void) {
     int result = run_tests();
     if (result == 77)
         raw_syscall6(SYS_exit, 77, 0, 0, 0, 0, 0);
