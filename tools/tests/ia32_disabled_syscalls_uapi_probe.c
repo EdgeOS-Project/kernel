@@ -46,8 +46,6 @@ static void print_text(const char *text) {
 __attribute__((noreturn)) void _start(void) {
     static const struct disabled_syscall syscalls[] = {
         { 86, "uselib" },
-        { 101, "ioperm" },
-        { 110, "iopl" },
         { 127, "create_module" },
         { 130, "get_kernel_syms" },
         { 137, "afs_syscall" },

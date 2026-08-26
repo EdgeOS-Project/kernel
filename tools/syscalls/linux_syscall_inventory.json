@@ -3336,12 +3336,13 @@
     {
       "id": "ioperm",
       "semantic_id": "ioperm",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_io_privilege",
       "architecture_exceptions": [
         "x86_64 I/O-port permission mechanism"
       ],
       "runtime_tests": [
-        "tools/tests/x86_arch_control_abi_probe.c"
+        "tools/tests/x86_arch_control_abi_probe.c",
+        "tools/tests/ia32_io_privilege_uapi_probe.c"
       ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
@@ -3349,7 +3350,7 @@
         "x86_64": {
           "number": 173,
           "status": "implemented",
-          "route": "do_sys_ioperm",
+          "route": "shared:edge_linux_sys_io_privilege",
           "evidence_status": "runtime-probe-listed"
         },
         "aarch64": null
@@ -3358,12 +3359,13 @@
     {
       "id": "iopl",
       "semantic_id": "iopl",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_io_privilege",
       "architecture_exceptions": [
         "x86_64 I/O privilege mechanism"
       ],
       "runtime_tests": [
-        "tools/tests/x86_arch_control_abi_probe.c"
+        "tools/tests/x86_arch_control_abi_probe.c",
+        "tools/tests/ia32_io_privilege_uapi_probe.c"
       ],
       "linux_oracle": "required",
       "oracle_status": "not-run",
@@ -3371,7 +3373,7 @@
         "x86_64": {
           "number": 172,
           "status": "implemented",
-          "route": "do_sys_iopl",
+          "route": "shared:edge_linux_sys_io_privilege",
           "evidence_status": "runtime-probe-listed"
         },
         "aarch64": null

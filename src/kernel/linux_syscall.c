@@ -3582,6 +3582,30 @@ static int64_t edge_linux_sys_map_shadow_stack(
     return -EDGE_LINUX_EOPNOTSUPP;
 }
 
+static int64_t edge_linux_sys_io_privilege(
+        edge_linux_syscall_context_t *context) {
+    kernel_linux_identity_t identity;
+
+    if (context->id == EDGE_LINUX_SYS_iopl) {
+        uint64_t level = context->arguments[0];
+        if (level > 3u) return -EDGE_LINUX_EINVAL;
+        if (!level) return 0;
+    } else if (context->id == EDGE_LINUX_SYS_ioperm) {
+        uint64_t first = context->arguments[0];
+        uint64_t count = context->arguments[1];
+        if (first > 65536u || count > 65536u - first)
+            return -EDGE_LINUX_EINVAL;
+    } else {
+        return -EDGE_LINUX_ENOSYS;
+    }
+    if (kernel_current_linux_identity(&identity) < 0)
+        return -EDGE_LINUX_ESRCH;
+    if (!(identity.effective_capabilities &
+          (1ull << EDGE_LINUX_CAP_SYS_RAWIO)))
+        return -EDGE_LINUX_EPERM;
+    return 0;
+}
+
 static int64_t edge_linux_sys_namespace(
     edge_linux_syscall_context_t *context) {
     kernel_linux_identity_t identity;

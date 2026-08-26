@@ -176,6 +176,10 @@ case EDGE_LINUX_SYS_write:
 case EDGE_LINUX_SYS_writev:
     context->result = edge_linux_sys_io(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_ioperm:
+case EDGE_LINUX_SYS_iopl:
+    context->result = edge_linux_sys_io_privilege(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_io_uring_enter:
 case EDGE_LINUX_SYS_io_uring_register:
 case EDGE_LINUX_SYS_io_uring_setup:

@@ -176,6 +176,8 @@ IA32_SHARED_SYSCALLS = {
     "io_uring_enter",
     "io_uring_register",
     "io_uring_setup",
+    "ioperm",
+    "iopl",
     "kill",
     "kcmp",
     "keyctl",
