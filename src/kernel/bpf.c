@@ -187,8 +187,37 @@ typedef struct kernel_btf_header {
     uint32_t string_length;
 } kernel_btf_header_t;
 
+typedef struct kernel_btf_type {
+    uint32_t name_offset;
+    uint32_t info;
+    uint32_t size_or_type;
+} kernel_btf_type_t;
+
 #define KERNEL_BTF_MAGIC 0xeb9fu
 #define KERNEL_BTF_VERSION 1u
+#define KERNEL_BTF_KIND_INT 1u
+#define KERNEL_BTF_KIND_PTR 2u
+#define KERNEL_BTF_KIND_ARRAY 3u
+#define KERNEL_BTF_KIND_STRUCT 4u
+#define KERNEL_BTF_KIND_UNION 5u
+#define KERNEL_BTF_KIND_ENUM 6u
+#define KERNEL_BTF_KIND_FWD 7u
+#define KERNEL_BTF_KIND_TYPEDEF 8u
+#define KERNEL_BTF_KIND_VOLATILE 9u
+#define KERNEL_BTF_KIND_CONST 10u
+#define KERNEL_BTF_KIND_RESTRICT 11u
+#define KERNEL_BTF_KIND_FUNC 12u
+#define KERNEL_BTF_KIND_FUNC_PROTO 13u
+#define KERNEL_BTF_KIND_VAR 14u
+#define KERNEL_BTF_KIND_DATASEC 15u
+#define KERNEL_BTF_KIND_FLOAT 16u
+#define KERNEL_BTF_KIND_DECL_TAG 17u
+#define KERNEL_BTF_KIND_TYPE_TAG 18u
+#define KERNEL_BTF_KIND_ENUM64 19u
+#define KERNEL_BTF_KIND_MAX KERNEL_BTF_KIND_ENUM64
+#define KERNEL_BTF_INFO_KIND(info) (((info) >> 24u) & 0x1fu)
+#define KERNEL_BTF_INFO_VLEN(info) ((info) & 0xffffu)
+#define KERNEL_BTF_INFO_KIND_FLAG(info) ((info) >> 31u)
 
 typedef struct kernel_bpf_attachment {
     uint8_t used;
@@ -243,6 +272,11 @@ static void bpf_legacy_cgroup_storage_unlink_map_locked(
 static int bpf_program_legacy_storage_link_locked(
     const kernel_bpf_program_t *program, uint32_t cgroup_id,
     uint32_t attach_type);
+static int bpf_btf_map_types_validate(int object_id,
+                                      uint32_t key_type_id,
+                                      uint32_t value_type_id,
+                                      uint32_t key_size,
+                                      uint32_t value_size);
 
 _Static_assert(sizeof(kernel_bpf_instruction_t) == 8u,
                "BPF instruction layout must match Linux UAPI");
@@ -618,6 +652,11 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
         status = kernel_bpf_object_retain(request->btf_object_id);
         if (status < 0) return status;
         btf_retained = 1;
+        status = bpf_btf_map_types_validate(
+            request->btf_object_id, request->btf_key_type_id,
+            request->btf_value_type_id, request->key_size,
+            request->value_size);
+        if (status < 0) goto fail_btf;
     }
     if (bpf_map_type_is_queue_stack(request->type) ||
         bpf_map_type_is_ringbuf(request->type) ||
@@ -1004,18 +1043,152 @@ fail_btf:
     return status;
 }
 
+static int bpf_btf_string_valid(const uint8_t *strings,
+                                uint32_t string_length,
+                                uint32_t offset) {
+    if (!strings || offset >= string_length) return 0;
+    while (offset < string_length) {
+        if (!strings[offset]) return 1;
+        ++offset;
+    }
+    return 0;
+}
+
+static int bpf_btf_kind_layout(uint32_t kind, uint32_t value_count,
+                               uint32_t kind_flag,
+                               uint64_t *extra_size) {
+    uint64_t element_size = 0u;
+
+    if (!extra_size || !kind || kind > KERNEL_BTF_KIND_MAX)
+        return -EDGE_LINUX_EINVAL;
+    switch (kind) {
+    case KERNEL_BTF_KIND_INT:
+        if (value_count || kind_flag) return -EDGE_LINUX_EINVAL;
+        *extra_size = sizeof(uint32_t);
+        return 0;
+    case KERNEL_BTF_KIND_PTR:
+    case KERNEL_BTF_KIND_TYPEDEF:
+    case KERNEL_BTF_KIND_VOLATILE:
+    case KERNEL_BTF_KIND_CONST:
+    case KERNEL_BTF_KIND_RESTRICT:
+    case KERNEL_BTF_KIND_TYPE_TAG:
+        if (value_count || kind_flag) return -EDGE_LINUX_EINVAL;
+        *extra_size = 0u;
+        return 0;
+    case KERNEL_BTF_KIND_ARRAY:
+        if (value_count || kind_flag) return -EDGE_LINUX_EINVAL;
+        *extra_size = 3u * sizeof(uint32_t);
+        return 0;
+    case KERNEL_BTF_KIND_STRUCT:
+    case KERNEL_BTF_KIND_UNION:
+        element_size = 3u * sizeof(uint32_t);
+        break;
+    case KERNEL_BTF_KIND_ENUM:
+        element_size = 2u * sizeof(uint32_t);
+        break;
+    case KERNEL_BTF_KIND_FWD:
+        if (value_count) return -EDGE_LINUX_EINVAL;
+        *extra_size = 0u;
+        return 0;
+    case KERNEL_BTF_KIND_FUNC:
+        if (kind_flag || value_count > 2u)
+            return -EDGE_LINUX_EINVAL;
+        *extra_size = 0u;
+        return 0;
+    case KERNEL_BTF_KIND_FUNC_PROTO:
+        if (kind_flag) return -EDGE_LINUX_EINVAL;
+        element_size = 2u * sizeof(uint32_t);
+        break;
+    case KERNEL_BTF_KIND_VAR:
+        if (kind_flag || value_count)
+            return -EDGE_LINUX_EINVAL;
+        *extra_size = sizeof(uint32_t);
+        return 0;
+    case KERNEL_BTF_KIND_DATASEC:
+        if (kind_flag) return -EDGE_LINUX_EINVAL;
+        element_size = 3u * sizeof(uint32_t);
+        break;
+    case KERNEL_BTF_KIND_FLOAT:
+        if (kind_flag || value_count)
+            return -EDGE_LINUX_EINVAL;
+        *extra_size = 0u;
+        return 0;
+    case KERNEL_BTF_KIND_DECL_TAG:
+        if (kind_flag || value_count)
+            return -EDGE_LINUX_EINVAL;
+        *extra_size = sizeof(uint32_t);
+        return 0;
+    case KERNEL_BTF_KIND_ENUM64:
+        if (kind_flag > 1u) return -EDGE_LINUX_EINVAL;
+        element_size = 3u * sizeof(uint32_t);
+        break;
+    default:
+        return -EDGE_LINUX_EINVAL;
+    }
+    if ((uint64_t)value_count > UINT64_MAX / element_size)
+        return -EDGE_LINUX_EINVAL;
+    *extra_size = (uint64_t)value_count * element_size;
+    return 0;
+}
+
+static int bpf_btf_type_at(const uint8_t *types, uint32_t type_length,
+                           uint32_t requested_id,
+                           kernel_btf_type_t *type_out,
+                           const uint8_t **extra_out) {
+    uint64_t cursor = 0u;
+    uint32_t type_id = 1u;
+
+    if (!types || !requested_id || !type_out) return -EDGE_LINUX_EINVAL;
+    while (cursor < type_length) {
+        kernel_btf_type_t type;
+        uint64_t extra_size;
+        uint32_t kind;
+
+        if ((uint64_t)type_length - cursor < sizeof(type))
+            return -EDGE_LINUX_EINVAL;
+        memcpy(&type, types + cursor, sizeof(type));
+        kind = KERNEL_BTF_INFO_KIND(type.info);
+        if (bpf_btf_kind_layout(
+                kind, KERNEL_BTF_INFO_VLEN(type.info),
+                KERNEL_BTF_INFO_KIND_FLAG(type.info),
+                &extra_size) < 0 ||
+            extra_size > (uint64_t)type_length - cursor - sizeof(type))
+            return -EDGE_LINUX_EINVAL;
+        if (type_id == requested_id) {
+            *type_out = type;
+            if (extra_out) *extra_out = types + cursor + sizeof(type);
+            return 0;
+        }
+        cursor += sizeof(type) + extra_size;
+        ++type_id;
+    }
+    return -EDGE_LINUX_EINVAL;
+}
+
+static int bpf_btf_reference_valid(uint32_t type_id,
+                                   uint32_t type_count,
+                                   int allow_void) {
+    if (!type_id) return allow_void;
+    return type_id <= type_count;
+}
+
 static int bpf_btf_validate(const uint8_t *data, uint32_t size) {
     kernel_btf_header_t header;
+    const uint8_t *types;
+    const uint8_t *strings;
     uint64_t payload_size;
     uint64_t type_end;
     uint64_t string_end;
+    uint64_t cursor;
+    uint32_t type_count = 0u;
 
     if (!data || size < sizeof(header)) return -EDGE_LINUX_EINVAL;
     memcpy(&header, data, sizeof(header));
     if (header.magic != KERNEL_BTF_MAGIC ||
         header.version != KERNEL_BTF_VERSION || header.flags ||
         header.header_length < sizeof(header) ||
-        header.header_length > size)
+        header.header_length > size ||
+        (header.type_offset & 3u) || (header.type_length & 3u))
         return -EDGE_LINUX_EINVAL;
     payload_size = size - header.header_length;
     type_end = (uint64_t)header.type_offset + header.type_length;
@@ -1023,9 +1196,389 @@ static int bpf_btf_validate(const uint8_t *data, uint32_t size) {
     if (type_end > payload_size || string_end > payload_size ||
         header.string_offset < type_end || !header.string_length)
         return -EDGE_LINUX_EINVAL;
-    if (data[header.header_length + header.string_offset] != 0)
+    types = data + header.header_length + header.type_offset;
+    strings = data + header.header_length + header.string_offset;
+    if (strings[0] || strings[header.string_length - 1u])
         return -EDGE_LINUX_EINVAL;
+
+    for (cursor = 0u; cursor < header.type_length;) {
+        kernel_btf_type_t type;
+        const uint8_t *extra;
+        uint64_t extra_size;
+        uint32_t kind;
+        uint32_t value_count;
+        uint32_t name_index;
+
+        if ((uint64_t)header.type_length - cursor < sizeof(type))
+            return -EDGE_LINUX_EINVAL;
+        memcpy(&type, types + cursor, sizeof(type));
+        kind = KERNEL_BTF_INFO_KIND(type.info);
+        value_count = KERNEL_BTF_INFO_VLEN(type.info);
+        if (bpf_btf_kind_layout(
+                kind, value_count,
+                KERNEL_BTF_INFO_KIND_FLAG(type.info),
+                &extra_size) < 0 ||
+            extra_size > (uint64_t)header.type_length - cursor -
+                             sizeof(type) ||
+            !bpf_btf_string_valid(strings, header.string_length,
+                                  type.name_offset))
+            return -EDGE_LINUX_EINVAL;
+        extra = types + cursor + sizeof(type);
+        if (kind == KERNEL_BTF_KIND_PTR ||
+            kind == KERNEL_BTF_KIND_ARRAY ||
+            kind == KERNEL_BTF_KIND_VOLATILE ||
+            kind == KERNEL_BTF_KIND_CONST ||
+            kind == KERNEL_BTF_KIND_RESTRICT ||
+            kind == KERNEL_BTF_KIND_FUNC_PROTO ||
+            kind == KERNEL_BTF_KIND_TYPE_TAG) {
+            if (type.name_offset) return -EDGE_LINUX_EINVAL;
+        }
+        if ((kind == KERNEL_BTF_KIND_STRUCT ||
+             kind == KERNEL_BTF_KIND_UNION) && !type.size_or_type &&
+            value_count)
+            return -EDGE_LINUX_EINVAL;
+        if (kind == KERNEL_BTF_KIND_INT) {
+            uint32_t integer;
+            uint32_t bits;
+            uint32_t bit_offset;
+
+            memcpy(&integer, extra, sizeof(integer));
+            bits = integer & 0xffu;
+            bit_offset = (integer >> 16u) & 0xffu;
+            if (!type.size_or_type || type.size_or_type > 16u ||
+                !bits || bits > 128u ||
+                bit_offset + bits > type.size_or_type * 8u ||
+                ((integer >> 24u) & ~7u))
+                return -EDGE_LINUX_EINVAL;
+        } else if (kind == KERNEL_BTF_KIND_FLOAT) {
+            if (type.size_or_type != 2u && type.size_or_type != 4u &&
+                type.size_or_type != 8u && type.size_or_type != 12u &&
+                type.size_or_type != 16u)
+                return -EDGE_LINUX_EINVAL;
+        } else if (kind == KERNEL_BTF_KIND_ENUM ||
+                   kind == KERNEL_BTF_KIND_ENUM64) {
+            if (type.size_or_type != 1u && type.size_or_type != 2u &&
+                type.size_or_type != 4u && type.size_or_type != 8u)
+                return -EDGE_LINUX_EINVAL;
+        } else if (kind == KERNEL_BTF_KIND_FWD &&
+                   type.size_or_type) {
+            return -EDGE_LINUX_EINVAL;
+        } else if (kind == KERNEL_BTF_KIND_VAR) {
+            uint32_t linkage;
+            memcpy(&linkage, extra, sizeof(linkage));
+            if (linkage > 2u) return -EDGE_LINUX_EINVAL;
+        }
+        if (kind == KERNEL_BTF_KIND_STRUCT ||
+            kind == KERNEL_BTF_KIND_UNION ||
+            kind == KERNEL_BTF_KIND_ENUM ||
+            kind == KERNEL_BTF_KIND_ENUM64 ||
+            kind == KERNEL_BTF_KIND_FUNC_PROTO) {
+            uint32_t stride =
+                (kind == KERNEL_BTF_KIND_ENUM) ? 8u :
+                (kind == KERNEL_BTF_KIND_ENUM64) ? 12u :
+                (kind == KERNEL_BTF_KIND_FUNC_PROTO) ? 8u : 12u;
+            for (name_index = 0u; name_index < value_count;
+                 ++name_index) {
+                uint32_t name_offset;
+                memcpy(&name_offset, extra +
+                       (uint64_t)name_index * stride,
+                       sizeof(name_offset));
+                if (!bpf_btf_string_valid(
+                        strings, header.string_length, name_offset))
+                    return -EDGE_LINUX_EINVAL;
+            }
+        }
+        cursor += sizeof(type) + extra_size;
+        if (++type_count == UINT32_MAX)
+            return -EDGE_LINUX_E2BIG;
+    }
+    if (cursor != header.type_length) return -EDGE_LINUX_EINVAL;
+
+    for (cursor = 0u; cursor < header.type_length;) {
+        kernel_btf_type_t type;
+        const uint8_t *extra;
+        uint64_t extra_size;
+        uint32_t kind;
+        uint32_t value_count;
+
+        memcpy(&type, types + cursor, sizeof(type));
+        kind = KERNEL_BTF_INFO_KIND(type.info);
+        value_count = KERNEL_BTF_INFO_VLEN(type.info);
+        if (bpf_btf_kind_layout(
+                kind, value_count,
+                KERNEL_BTF_INFO_KIND_FLAG(type.info),
+                &extra_size) < 0)
+            return -EDGE_LINUX_EINVAL;
+        extra = types + cursor + sizeof(type);
+        if (kind == KERNEL_BTF_KIND_PTR) {
+            if (!bpf_btf_reference_valid(
+                    type.size_or_type, type_count, 1))
+                return -EDGE_LINUX_EINVAL;
+        } else if (kind == KERNEL_BTF_KIND_ARRAY) {
+            uint32_t element_type;
+            uint32_t index_type;
+            kernel_btf_type_t index;
+
+            memcpy(&element_type, extra, sizeof(element_type));
+            memcpy(&index_type, extra + sizeof(uint32_t),
+                   sizeof(index_type));
+            if (!bpf_btf_reference_valid(element_type, type_count, 0) ||
+                !bpf_btf_reference_valid(index_type, type_count, 0) ||
+                bpf_btf_type_at(types, header.type_length,
+                                index_type, &index, 0) < 0 ||
+                KERNEL_BTF_INFO_KIND(index.info) != KERNEL_BTF_KIND_INT)
+                return -EDGE_LINUX_EINVAL;
+        } else if (kind == KERNEL_BTF_KIND_STRUCT ||
+                   kind == KERNEL_BTF_KIND_UNION) {
+            for (uint32_t index = 0u; index < value_count; ++index) {
+                uint32_t member_type;
+                memcpy(&member_type, extra +
+                       (uint64_t)index * 12u + sizeof(uint32_t),
+                       sizeof(member_type));
+                if (!bpf_btf_reference_valid(
+                        member_type, type_count, 0))
+                    return -EDGE_LINUX_EINVAL;
+            }
+        } else if (kind == KERNEL_BTF_KIND_TYPEDEF ||
+                   kind == KERNEL_BTF_KIND_VOLATILE ||
+                   kind == KERNEL_BTF_KIND_CONST ||
+                   kind == KERNEL_BTF_KIND_RESTRICT ||
+                   kind == KERNEL_BTF_KIND_FUNC ||
+                   kind == KERNEL_BTF_KIND_VAR ||
+                   kind == KERNEL_BTF_KIND_DECL_TAG ||
+                   kind == KERNEL_BTF_KIND_TYPE_TAG) {
+            kernel_btf_type_t target;
+            if (!bpf_btf_reference_valid(
+                    type.size_or_type, type_count, 0) ||
+                (kind == KERNEL_BTF_KIND_FUNC &&
+                 bpf_btf_type_at(types, header.type_length,
+                                 type.size_or_type,
+                                 &target, 0) < 0))
+                return -EDGE_LINUX_EINVAL;
+            if (kind == KERNEL_BTF_KIND_FUNC &&
+                KERNEL_BTF_INFO_KIND(target.info) !=
+                    KERNEL_BTF_KIND_FUNC_PROTO)
+                return -EDGE_LINUX_EINVAL;
+        } else if (kind == KERNEL_BTF_KIND_FUNC_PROTO) {
+            if (!bpf_btf_reference_valid(
+                    type.size_or_type, type_count, 1))
+                return -EDGE_LINUX_EINVAL;
+            for (uint32_t index = 0u; index < value_count; ++index) {
+                uint32_t name_offset;
+                uint32_t parameter_type;
+                memcpy(&name_offset, extra + (uint64_t)index * 8u,
+                       sizeof(name_offset));
+                memcpy(&parameter_type,
+                       extra + (uint64_t)index * 8u + 4u,
+                       sizeof(parameter_type));
+                if (!parameter_type) {
+                    if (name_offset || index + 1u != value_count)
+                        return -EDGE_LINUX_EINVAL;
+                } else if (!bpf_btf_reference_valid(
+                               parameter_type, type_count, 0)) {
+                    return -EDGE_LINUX_EINVAL;
+                }
+            }
+        } else if (kind == KERNEL_BTF_KIND_DATASEC) {
+            for (uint32_t index = 0u; index < value_count; ++index) {
+                uint32_t variable_type;
+                uint32_t offset;
+                uint32_t length;
+                kernel_btf_type_t variable;
+                memcpy(&variable_type, extra + (uint64_t)index * 12u,
+                       sizeof(variable_type));
+                memcpy(&offset, extra + (uint64_t)index * 12u + 4u,
+                       sizeof(offset));
+                memcpy(&length, extra + (uint64_t)index * 12u + 8u,
+                       sizeof(length));
+                if (!bpf_btf_reference_valid(
+                        variable_type, type_count, 0) ||
+                    bpf_btf_type_at(types, header.type_length,
+                                    variable_type, &variable, 0) < 0 ||
+                    KERNEL_BTF_INFO_KIND(variable.info) !=
+                        KERNEL_BTF_KIND_VAR ||
+                    offset > type.size_or_type ||
+                    length > type.size_or_type - offset)
+                    return -EDGE_LINUX_EINVAL;
+            }
+        }
+        cursor += sizeof(type) + extra_size;
+    }
     return 0;
+}
+
+static int bpf_btf_type_size_data(const uint8_t *data, uint32_t size,
+                                  uint32_t type_id, uint32_t depth,
+                                  uint64_t *resolved_size) {
+    kernel_btf_header_t header;
+    kernel_btf_type_t type;
+    const uint8_t *types;
+    const uint8_t *extra;
+    uint32_t kind;
+
+    if (!data || !resolved_size || !type_id || depth > 64u ||
+        size < sizeof(header))
+        return -EDGE_LINUX_EINVAL;
+    memcpy(&header, data, sizeof(header));
+    types = data + header.header_length + header.type_offset;
+    if (bpf_btf_type_at(types, header.type_length, type_id,
+                        &type, &extra) < 0)
+        return -EDGE_LINUX_EINVAL;
+    kind = KERNEL_BTF_INFO_KIND(type.info);
+    if (kind == KERNEL_BTF_KIND_INT ||
+        kind == KERNEL_BTF_KIND_ENUM ||
+        kind == KERNEL_BTF_KIND_FLOAT ||
+        kind == KERNEL_BTF_KIND_ENUM64) {
+        *resolved_size = type.size_or_type;
+        return 0;
+    }
+    if (kind == KERNEL_BTF_KIND_PTR) {
+        *resolved_size = sizeof(uint64_t);
+        return 0;
+    }
+    if (kind == KERNEL_BTF_KIND_ARRAY) {
+        uint32_t element_type;
+        uint32_t element_count;
+        uint64_t element_size;
+
+        memcpy(&element_type, extra, sizeof(element_type));
+        memcpy(&element_count, extra + 2u * sizeof(uint32_t),
+               sizeof(element_count));
+        if (bpf_btf_type_size_data(
+                data, size, element_type, depth + 1u,
+                &element_size) < 0 ||
+            (element_count && element_size > UINT64_MAX / element_count))
+            return -EDGE_LINUX_EINVAL;
+        *resolved_size = element_size * element_count;
+        return 0;
+    }
+    if (kind == KERNEL_BTF_KIND_STRUCT ||
+        kind == KERNEL_BTF_KIND_UNION) {
+        uint32_t value_count = KERNEL_BTF_INFO_VLEN(type.info);
+        uint64_t aggregate_bits = (uint64_t)type.size_or_type * 8u;
+
+        for (uint32_t index = 0u; index < value_count; ++index) {
+            uint32_t member_type;
+            uint32_t member_offset;
+            uint32_t bitfield_size = 0u;
+            uint64_t member_size;
+            uint64_t member_bits;
+
+            memcpy(&member_type, extra + (uint64_t)index * 12u + 4u,
+                   sizeof(member_type));
+            memcpy(&member_offset, extra + (uint64_t)index * 12u + 8u,
+                   sizeof(member_offset));
+            if (KERNEL_BTF_INFO_KIND_FLAG(type.info)) {
+                bitfield_size = member_offset >> 24u;
+                member_offset &= 0x00ffffffu;
+            }
+            if (bpf_btf_type_size_data(
+                    data, size, member_type, depth + 1u,
+                    &member_size) < 0)
+                return -EDGE_LINUX_EINVAL;
+            if (bitfield_size > member_size * 8u)
+                return -EDGE_LINUX_EINVAL;
+            member_bits = bitfield_size ? bitfield_size : member_size * 8u;
+            if (kind == KERNEL_BTF_KIND_UNION && member_offset)
+                return -EDGE_LINUX_EINVAL;
+            if (member_offset > aggregate_bits ||
+                member_bits > aggregate_bits - member_offset)
+                return -EDGE_LINUX_EINVAL;
+        }
+        *resolved_size = type.size_or_type;
+        return 0;
+    }
+    if (kind == KERNEL_BTF_KIND_TYPEDEF ||
+        kind == KERNEL_BTF_KIND_VOLATILE ||
+        kind == KERNEL_BTF_KIND_CONST ||
+        kind == KERNEL_BTF_KIND_RESTRICT ||
+        kind == KERNEL_BTF_KIND_TYPE_TAG)
+        return bpf_btf_type_size_data(
+            data, size, type.size_or_type, depth + 1u,
+            resolved_size);
+    return -EDGE_LINUX_EINVAL;
+}
+
+static int bpf_btf_graph_validate(const uint8_t *data, uint32_t size) {
+    kernel_btf_header_t header;
+    const uint8_t *types;
+    uint64_t cursor = 0u;
+    uint32_t type_id = 1u;
+
+    if (!data || size < sizeof(header)) return -EDGE_LINUX_EINVAL;
+    memcpy(&header, data, sizeof(header));
+    types = data + header.header_length + header.type_offset;
+    while (cursor < header.type_length) {
+        kernel_btf_type_t type;
+        uint64_t extra_size;
+        uint64_t resolved_size;
+        uint32_t kind;
+
+        memcpy(&type, types + cursor, sizeof(type));
+        kind = KERNEL_BTF_INFO_KIND(type.info);
+        if (bpf_btf_kind_layout(
+                kind, KERNEL_BTF_INFO_VLEN(type.info),
+                KERNEL_BTF_INFO_KIND_FLAG(type.info),
+                &extra_size) < 0)
+            return -EDGE_LINUX_EINVAL;
+        if (kind == KERNEL_BTF_KIND_INT ||
+            kind == KERNEL_BTF_KIND_PTR ||
+            kind == KERNEL_BTF_KIND_ARRAY ||
+            kind == KERNEL_BTF_KIND_STRUCT ||
+            kind == KERNEL_BTF_KIND_UNION ||
+            kind == KERNEL_BTF_KIND_ENUM ||
+            kind == KERNEL_BTF_KIND_TYPEDEF ||
+            kind == KERNEL_BTF_KIND_VOLATILE ||
+            kind == KERNEL_BTF_KIND_CONST ||
+            kind == KERNEL_BTF_KIND_RESTRICT ||
+            kind == KERNEL_BTF_KIND_FLOAT ||
+            kind == KERNEL_BTF_KIND_TYPE_TAG ||
+            kind == KERNEL_BTF_KIND_ENUM64) {
+            if (bpf_btf_type_size_data(
+                    data, size, type_id, 0u, &resolved_size) < 0)
+                return -EDGE_LINUX_EINVAL;
+        }
+        cursor += sizeof(type) + extra_size;
+        ++type_id;
+    }
+    return 0;
+}
+
+static int bpf_btf_map_types_validate(int object_id,
+                                      uint32_t key_type_id,
+                                      uint32_t value_type_id,
+                                      uint32_t key_size,
+                                      uint32_t value_size) {
+    kernel_bpf_object_t *object;
+    uint64_t key_type_size = 0u;
+    uint64_t value_type_size;
+    int status;
+
+    bpf_lock();
+    object = bpf_object_locked(object_id);
+    if (!object || object->kind != KERNEL_BPF_OBJECT_BTF) {
+        status = -EDGE_LINUX_EBADF;
+        goto out;
+    }
+    if (key_size) {
+        status = bpf_btf_type_size_data(
+            object->value.btf.data, object->value.btf.size,
+            key_type_id, 0u, &key_type_size);
+        if (status < 0 || key_type_size != key_size) {
+            status = -EDGE_LINUX_EINVAL;
+            goto out;
+        }
+    }
+    status = bpf_btf_type_size_data(
+        object->value.btf.data, object->value.btf.size,
+        value_type_id, 0u, &value_type_size);
+    if (status < 0 || value_type_size != value_size)
+        status = -EDGE_LINUX_EINVAL;
+    else
+        status = 0;
+out:
+    bpf_unlock();
+    return status;
 }
 
 int kernel_bpf_btf_create(const void *data, uint32_t size) {
@@ -1036,6 +1589,8 @@ int kernel_bpf_btf_create(const void *data, uint32_t size) {
     int status;
 
     status = bpf_btf_validate((const uint8_t *)data, size);
+    if (status < 0) return status;
+    status = bpf_btf_graph_validate((const uint8_t *)data, size);
     if (status < 0) return status;
     status = bpf_allocation_size(size, &pages);
     if (status < 0) return status;

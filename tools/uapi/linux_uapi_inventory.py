@@ -359,6 +359,7 @@ EDGEOS_ASSESSMENTS = [
             "Bloom filter maps with Linux hash selection and peek semantics",
             "BTF object loading, information queries, ID enumeration and descriptor reopening",
             "BTF-backed map creation with retained BTF object lifetime",
+            "BTF type-stream, reference graph, modifier-cycle, aggregate-member-boundary and typed-map size validation",
             "cgroup link objects with descriptor lifetime, ID enumeration, information queries, program replacement, explicit detach and close-time detach",
             "cgroup link and legacy program multi-position attachment with link or program FD and ID anchors, prepend and append placement, preorder matching and expected-revision guards",
             "hierarchical cgroup attachment policy with non-overridable parent rejection, overridable parent replacement, multi-program inheritance and preorder-effective execution",
@@ -389,7 +390,7 @@ EDGEOS_ASSESSMENTS = [
             "resizable-hash concurrent dynamic resizing and full Linux key and value size range",
             "remaining specialized map-family concurrency semantics, plus instruction-array verifier and jump-table integration",
             "additional attachment families and program types",
-            "complete BTF type-graph validation and program integration",
+            "BTF program line and function metadata integration, CO-RE relocation and split or module BTF",
         ],
         "runtime_tests": [
             "tools/tests/bpf_abi_probe.c",
@@ -407,6 +408,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/bpf_insn_array_abi_probe.c",
             "tools/tests/bpf_rhash_abi_probe.c",
             "tools/tests/bpf_stack_trace_abi_probe.c",
+            "tools/tests/bpf_btf_graph_abi_probe.c",
             "tools/tests/bpf_runtime_unit.c",
         ],
         "linux_oracle": {
@@ -424,6 +426,7 @@ EDGEOS_ASSESSMENTS = [
                 "ID enumeration and lifetime, kernel and user ring buffers, "
                 "cgroup array descriptors and retained cgroup lifetime, "
                 "BPF filesystem object pinning, explicit program-map binding, "
+                "BTF graph and typed-map size validation, "
                 "runtime statistics descriptors and supported program-test "
                 "error behavior, stack-trace map creation, value-depth limits, "
                 "rounded bucket addressing, raw sys_enter tracepoint attachment "

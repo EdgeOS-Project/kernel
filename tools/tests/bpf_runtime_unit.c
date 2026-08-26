@@ -2310,12 +2310,35 @@ static void test_btf_objects(void) {
         uint32_t type_length;
         uint32_t string_offset;
         uint32_t string_length;
-        uint8_t strings[1];
+        struct {
+            uint32_t name_offset;
+            uint32_t info;
+            uint32_t size;
+            uint32_t integer;
+        } types[2];
+        uint8_t strings[5];
     } __attribute__((packed)) blob = {
         .magic = 0xeb9fu,
         .version = 1u,
         .header_length = 24u,
-        .string_length = 1u,
+        .type_length = 32u,
+        .string_offset = 32u,
+        .string_length = 5u,
+        .types = {
+            {
+                .name_offset = 1u,
+                .info = 1u << 24u,
+                .size = 4u,
+                .integer = (1u << 24u) | 32u,
+            },
+            {
+                .name_offset = 1u,
+                .info = 1u << 24u,
+                .size = 8u,
+                .integer = 64u,
+            },
+        },
+        .strings = {0, 'i', 'n', 't', 0},
     };
     kernel_bpf_btf_info_t btf_info;
     kernel_bpf_map_info_t map_info;
@@ -2360,6 +2383,11 @@ static void test_btf_objects(void) {
     assert(map_info.btf_id == btf_info.id);
     assert(map_info.btf_key_type_id == 1u);
     assert(map_info.btf_value_type_id == 2u);
+    request.btf_value_type_id = 1u;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+    request.btf_value_type_id = 3u;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+    request.btf_value_type_id = 2u;
     kernel_bpf_object_release(btf);
     assert(kernel_bpf_btf_info(request.btf_object_id, &btf_info) == 0);
     kernel_bpf_object_release(map);
@@ -2372,6 +2400,34 @@ static void test_btf_objects(void) {
     blob.string_length = 0u;
     assert(kernel_bpf_btf_create(&blob, sizeof(blob)) ==
            -EDGE_LINUX_EINVAL);
+    {
+        struct test_cycle_btf_blob {
+            uint16_t magic;
+            uint8_t version;
+            uint8_t flags;
+            uint32_t header_length;
+            uint32_t type_offset;
+            uint32_t type_length;
+            uint32_t string_offset;
+            uint32_t string_length;
+            uint32_t name_offset;
+            uint32_t info;
+            uint32_t target_type;
+            uint8_t strings[1];
+        } __attribute__((packed)) cycle = {
+            .magic = 0xeb9fu,
+            .version = 1u,
+            .header_length = 24u,
+            .type_length = 12u,
+            .string_offset = 12u,
+            .string_length = 1u,
+            .info = 8u << 24u,
+            .target_type = 1u,
+        };
+
+        assert(kernel_bpf_btf_create(&cycle, sizeof(cycle)) ==
+               -EDGE_LINUX_EINVAL);
+    }
 }
 
 static void test_ids(void) {
@@ -2609,11 +2665,39 @@ static void test_reuseport_socket_array(void) {
     assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
 }
 
-static void test_cgroup_local_storage(void) {
-    uint8_t btf_blob[25] = {
-        0x9f, 0xeb, 1u, 0u,
-        24u, 0u, 0u, 0u,
+static int create_u32_btf(void) {
+    struct test_u32_btf_blob {
+        uint16_t magic;
+        uint8_t version;
+        uint8_t flags;
+        uint32_t header_length;
+        uint32_t type_offset;
+        uint32_t type_length;
+        uint32_t string_offset;
+        uint32_t string_length;
+        uint32_t name_offset;
+        uint32_t info;
+        uint32_t size;
+        uint32_t integer;
+        uint8_t strings[5];
+    } __attribute__((packed)) blob = {
+        .magic = 0xeb9fu,
+        .version = 1u,
+        .header_length = 24u,
+        .type_length = 16u,
+        .string_offset = 16u,
+        .string_length = 5u,
+        .name_offset = 1u,
+        .info = 1u << 24u,
+        .size = 4u,
+        .integer = 32u,
+        .strings = {0, 'u', '3', '2', 0},
     };
+
+    return kernel_bpf_btf_create(&blob, sizeof(blob));
+}
+
+static void test_cgroup_local_storage(void) {
     kernel_bpf_map_create_request_t request = {
         .type = KERNEL_BPF_MAP_TYPE_CGRP_STORAGE,
         .key_size = sizeof(int32_t),
@@ -2633,9 +2717,7 @@ static void test_cgroup_local_storage(void) {
     int btf;
     int map;
 
-    btf_blob[16] = 0u;
-    btf_blob[20] = 1u;
-    btf = kernel_bpf_btf_create(btf_blob, sizeof(btf_blob));
+    btf = create_u32_btf();
     assert(btf >= 0);
     request.btf_object_id = btf;
     map = kernel_bpf_map_create(&request);
@@ -2835,10 +2917,6 @@ static void test_legacy_cgroup_storage(void) {
 }
 
 static void test_socket_local_storage(void) {
-    uint8_t btf_blob[25] = {
-        0x9f, 0xeb, 1u, 0u,
-        24u, 0u, 0u, 0u,
-    };
     kernel_bpf_map_create_request_t request = {
         .type = KERNEL_BPF_MAP_TYPE_SK_STORAGE,
         .key_size = sizeof(int32_t),
@@ -2857,9 +2935,7 @@ static void test_socket_local_storage(void) {
     int btf;
     int map;
 
-    btf_blob[16] = 0u;
-    btf_blob[20] = 1u;
-    btf = kernel_bpf_btf_create(btf_blob, sizeof(btf_blob));
+    btf = create_u32_btf();
     assert(btf >= 0);
     request.btf_object_id = btf;
     map = kernel_bpf_map_create(&request);
@@ -2910,10 +2986,6 @@ static void test_socket_local_storage(void) {
 }
 
 static void test_inode_local_storage(void) {
-    uint8_t btf_blob[25] = {
-        0x9f, 0xeb, 1u, 0u,
-        24u, 0u, 0u, 0u,
-    };
     kernel_bpf_map_create_request_t request = {
         .type = KERNEL_BPF_MAP_TYPE_INODE_STORAGE,
         .key_size = sizeof(int32_t),
@@ -2933,9 +3005,7 @@ static void test_inode_local_storage(void) {
     int btf;
     int map;
 
-    btf_blob[16] = 0u;
-    btf_blob[20] = 1u;
-    btf = kernel_bpf_btf_create(btf_blob, sizeof(btf_blob));
+    btf = create_u32_btf();
     assert(btf >= 0);
     request.btf_object_id = btf;
     map = kernel_bpf_map_create(&request);
@@ -2982,10 +3052,6 @@ static void test_inode_local_storage(void) {
 }
 
 static void test_task_local_storage(void) {
-    uint8_t btf_blob[25] = {
-        0x9f, 0xeb, 1u, 0u,
-        24u, 0u, 0u, 0u,
-    };
     kernel_bpf_map_create_request_t request = {
         .type = KERNEL_BPF_MAP_TYPE_TASK_STORAGE,
         .key_size = sizeof(int32_t),
@@ -3002,9 +3068,7 @@ static void test_task_local_storage(void) {
     int btf;
     int map;
 
-    btf_blob[16] = 0u;
-    btf_blob[20] = 1u;
-    btf = kernel_bpf_btf_create(btf_blob, sizeof(btf_blob));
+    btf = create_u32_btf();
     assert(btf >= 0);
     request.btf_object_id = btf;
     map = kernel_bpf_map_create(&request);
