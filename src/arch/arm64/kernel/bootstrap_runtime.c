@@ -17017,6 +17017,7 @@ static int socket_accept_peer_address(
 
 static int socket_accept_complete_prepare(
     kernel_task_t *task, kernel_socket_t *listener, uint32_t flags,
+    uint64_t listener_description_identity,
     kernel_socket_address_t *address, int32_t *accepted_descriptor,
     kernel_fd_publication_t *publication) {
     int child_index;
@@ -17041,6 +17042,14 @@ static int socket_accept_complete_prepare(
     if (accepted_fd < 0) {
         socket_release(&g_sockets[child_index]);
         return accepted_fd;
+    }
+    result = kernel_bpf_sk_storage_clone(
+        listener_description_identity,
+        task->fds[accepted_fd].open_description_id);
+    if (result < 0) {
+        fd_cancel_constructed_descriptor(
+            task, (uint32_t)accepted_fd);
+        return result;
     }
     if (listener->tcp && g_sockets[child_index].tcp)
         tcp_backlog_accepted(listener->tcp);
@@ -17088,6 +17097,7 @@ static void socket_wake_acceptors(uint16_t listener_index) {
             result = socket_accept_complete_prepare(
                 waiter, listener,
                 waiter->socket_accept_flags,
+                listener_fd->open_description_id,
                 &address, &descriptors[0], &publication);
         }
         if (result == 0) {
@@ -18577,7 +18587,7 @@ int arch_socket_accept_prepare(
         task_resume_next();
     }
     result = socket_accept_complete_prepare(
-        task, listener, flags, address,
+        task, listener, flags, fd->open_description_id, address,
         accepted_descriptor, publication);
     task_fd_operation_lease_release(task, 0);
     return result;

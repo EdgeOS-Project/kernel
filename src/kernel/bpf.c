@@ -4501,6 +4501,55 @@ int kernel_bpf_sk_storage_delete(int object_id,
         object_id, KERNEL_BPF_MAP_TYPE_SK_STORAGE, owner);
 }
 
+int kernel_bpf_sk_storage_clone(uint64_t source_socket_identity,
+                                uint64_t target_socket_identity) {
+    bpf_local_storage_owner_t source = {source_socket_identity, 0u};
+    bpf_local_storage_owner_t target = {target_socket_identity, 0u};
+    int status = 0;
+
+    if (!source.primary || !target.primary)
+        return -EDGE_LINUX_EBADF;
+    bpf_lock();
+    for (uint32_t object_index = 0;
+         object_index < BPF_OBJECT_CAPACITY; ++object_index) {
+        kernel_bpf_object_t *object = &g_bpf_objects[object_index];
+        kernel_bpf_map_t *map;
+        uint32_t source_index;
+        uint32_t target_index;
+        uint32_t free_slot;
+        uint8_t *entry;
+
+        if (!object->used ||
+            object->kind != KERNEL_BPF_OBJECT_MAP)
+            continue;
+        map = &object->value.map;
+        if (!bpf_map_is_sk_storage(map) ||
+            !(map->flags & KERNEL_BPF_MAP_CLONE))
+            continue;
+        bpf_local_storage_find_locked(
+            map, source, &source_index, 0);
+        if (source_index == UINT32_MAX) continue;
+        bpf_local_storage_find_locked(
+            map, target, &target_index, &free_slot);
+        if (target_index != UINT32_MAX) continue;
+        if (free_slot == UINT32_MAX) {
+            status = -EDGE_LINUX_ENOMEM;
+            break;
+        }
+        entry = bpf_map_entry(map, free_slot);
+        memset(entry, 0, map->entry_stride);
+        entry[0] = 1u;
+        memcpy(entry + 1u, &target,
+               bpf_local_storage_owner_size(map));
+        memcpy(bpf_local_storage_value(map, free_slot),
+               bpf_local_storage_value(map, source_index),
+               map->value_size);
+        ++map->entry_count;
+    }
+    bpf_unlock();
+    return status;
+}
+
 static bpf_local_storage_owner_t bpf_inode_storage_owner(
         uint64_t filesystem_identity, uint32_t inode_number,
         uint32_t inode_generation) {

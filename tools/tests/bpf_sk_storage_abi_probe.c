@@ -9,6 +9,10 @@
 #define SYS_close 3
 #define SYS_dup 32
 #define SYS_socket 41
+#define SYS_connect 42
+#define SYS_accept 43
+#define SYS_bind 49
+#define SYS_listen 50
 #define SYS_exit 60
 #define SYS_openat 257
 #define SYS_bpf 321
@@ -20,6 +24,10 @@
 #define SYS_write 64
 #define SYS_exit 93
 #define SYS_socket 198
+#define SYS_bind 200
+#define SYS_listen 201
+#define SYS_accept 202
+#define SYS_connect 203
 #define SYS_bpf 280
 #else
 #error "bpf_sk_storage_abi_probe requires a Linux 64-bit architecture"
@@ -29,6 +37,13 @@
 #define O_RDONLY 0
 #define AF_INET 2
 #define SOCK_STREAM 1
+
+struct socket_address_v4 {
+    uint16_t family;
+    uint16_t port;
+    uint32_t address;
+    uint8_t padding[8];
+};
 
 #define BPF_MAP_CREATE 0
 #define BPF_MAP_LOOKUP_ELEM 1
@@ -246,6 +261,106 @@ static long map_element(long command, int map_fd, const void *key,
         sizeof(attribute), 0, 0, 0);
 }
 
+static int test_socket_storage_clone(int btf_fd) {
+    struct socket_address_v4 listener_address = {
+        .family = AF_INET,
+        .port = 0x5998u,
+        .address = 0u,
+    };
+    struct socket_address_v4 peer_address = {
+        .family = AF_INET,
+        .port = 0x5998u,
+        .address = 0x0f02000au,
+    };
+    uint32_t clone_value = 0x1234abcdu;
+    uint32_t accepted_value = 0x88776655u;
+    uint32_t plain_value = 0x55aa55aau;
+    uint32_t output = 0u;
+    long clone_map = -1;
+    long plain_map = -1;
+    int listener = -1;
+    int client = -1;
+    int accepted = -1;
+    int failures = 0;
+
+    clone_map = create_map(
+        btf_fd, BPF_F_NO_PREALLOC | BPF_F_CLONE, 0u);
+    plain_map = create_map(btf_fd, BPF_F_NO_PREALLOC, 0u);
+    if (clone_map < 0 || plain_map < 0) {
+        failures += expect_result("sk-clone-map", clone_map < 0, 0);
+        failures += expect_result("sk-plain-map", plain_map < 0, 0);
+        goto out;
+    }
+    listener = (int)raw_syscall6(
+        SYS_socket, AF_INET, SOCK_STREAM, 0, 0, 0, 0);
+    client = (int)raw_syscall6(
+        SYS_socket, AF_INET, SOCK_STREAM, 0, 0, 0, 0);
+    if (listener < 0 || client < 0) {
+        failures += expect_result("sk-listener", listener < 0, 0);
+        failures += expect_result("sk-client", client < 0, 0);
+        goto out;
+    }
+    failures += expect_result(
+        "sk-bind", raw_syscall6(
+            SYS_bind, listener, (long)&listener_address,
+            sizeof(listener_address), 0, 0, 0), 0);
+    failures += expect_result(
+        "sk-listen", raw_syscall6(
+            SYS_listen, listener, 4, 0, 0, 0, 0), 0);
+    failures += expect_result(
+        "sk-clone-source", map_element(
+            BPF_MAP_UPDATE_ELEM, (int)clone_map, &listener,
+            &clone_value, BPF_NOEXIST), 0);
+    failures += expect_result(
+        "sk-plain-source", map_element(
+            BPF_MAP_UPDATE_ELEM, (int)plain_map, &listener,
+            &plain_value, BPF_NOEXIST), 0);
+    failures += expect_result(
+        "sk-connect", raw_syscall6(
+            SYS_connect, client, (long)&peer_address,
+            sizeof(peer_address), 0, 0, 0), 0);
+    accepted = (int)raw_syscall6(
+        SYS_accept, listener, 0, 0, 0, 0, 0);
+    if (accepted < 0) {
+        failures += expect_result("sk-accept", accepted, 0);
+        goto out;
+    }
+    failures += expect_result(
+        "sk-clone-lookup", map_element(
+            BPF_MAP_LOOKUP_ELEM, (int)clone_map, &accepted,
+            &output, 0), 0);
+    failures += expect_result(
+        "sk-clone-value", (long)output, (long)clone_value);
+    failures += expect_result(
+        "sk-plain-not-cloned", map_element(
+            BPF_MAP_LOOKUP_ELEM, (int)plain_map, &accepted,
+            &output, 0), -ENOENT);
+    failures += expect_result(
+        "sk-clone-replace", map_element(
+            BPF_MAP_UPDATE_ELEM, (int)clone_map, &accepted,
+            &accepted_value, BPF_EXIST), 0);
+    output = 0u;
+    failures += expect_result(
+        "sk-source-lookup", map_element(
+            BPF_MAP_LOOKUP_ELEM, (int)clone_map, &listener,
+            &output, 0), 0);
+    failures += expect_result(
+        "sk-source-unchanged", (long)output, (long)clone_value);
+
+out:
+    if (accepted >= 0)
+        (void)raw_syscall6(SYS_close, accepted, 0, 0, 0, 0, 0);
+    if (client >= 0)
+        (void)raw_syscall6(SYS_close, client, 0, 0, 0, 0, 0);
+    if (listener >= 0)
+        (void)raw_syscall6(SYS_close, listener, 0, 0, 0, 0, 0);
+    if (plain_map >= 0)
+        (void)raw_syscall6(SYS_close, plain_map, 0, 0, 0, 0, 0);
+    if (clone_map >= 0)
+        (void)raw_syscall6(SYS_close, clone_map, 0, 0, 0, 0, 0);
+    return failures;
+}
+
 static int test_socket_storage(void) {
     uint32_t value = 0x11223344u;
     uint32_t replacement = 0x88776655u;
@@ -262,6 +377,7 @@ static int test_socket_storage(void) {
     btf_fd = load_integer_btf();
     if (btf_fd < 0)
         return expect_result("sk-btf-load", btf_fd, 0) + 1;
+    failures += test_socket_storage_clone((int)btf_fd);
     failures += expect_result(
         "sk-no-prealloc-required", create_map(
             (int)btf_fd, BPF_F_CLONE, 0u), -EINVAL);

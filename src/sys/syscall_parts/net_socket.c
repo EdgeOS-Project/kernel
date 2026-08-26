@@ -2409,6 +2409,19 @@ static int x86_socket_accept_prepare_entry(
         if (sid >= 0 && sid < EDGE_MAX_SOCKETS && g_sockets[sid].used) socket_drop_ref(sid);
         return -ENFILE;
     }
+    status = kernel_bpf_sk_storage_clone(
+        file_ref_identity(e->file_ref),
+        file_ref_identity(p->fds[nfd].file_ref));
+    if (status < 0) {
+        (void)file_ref_put(p->fds[nfd].file_ref);
+        memset(&p->fds[nfd], 0, sizeof(p->fds[nfd]));
+        fd_abort_reserved(p, nfd);
+        socket_acceptq_release(sid);
+        if (sid >= 0 && sid < EDGE_MAX_SOCKETS &&
+            g_sockets[sid].used)
+            socket_drop_ref(sid);
+        return status;
+    }
     if (child->refs <= child->acceptq_refs) socket_add_ref(sid);
     p->fds[nfd].pipe_id = sid;
     p->fds[nfd].flags = LINUX_O_RDWR | ((flags & LINUX_SOCK_NONBLOCK) ? LINUX_O_NONBLOCK : 0);

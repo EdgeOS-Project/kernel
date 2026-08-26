@@ -2662,6 +2662,7 @@ static void test_socket_local_storage(void) {
         .btf_present = 1u,
     };
     uint64_t identity = 0x1122334455667788ull;
+    uint64_t cloned_identity = 0x8877665544332211ull;
     uint32_t value = 0x12345678u;
     uint32_t replacement = 0x87654321u;
     uint32_t output = 0u;
@@ -2692,6 +2693,15 @@ static void test_socket_local_storage(void) {
            -EDGE_LINUX_EEXIST);
     assert(kernel_bpf_sk_storage_update(
                map, identity, &replacement, KERNEL_BPF_EXIST) == 0);
+    assert(kernel_bpf_sk_storage_clone(
+               identity, cloned_identity) == 0);
+    assert(kernel_bpf_sk_storage_lookup(
+               map, cloned_identity, &output, 0u) == 0);
+    assert(output == replacement);
+    g_close_observer(cloned_identity);
+    assert(kernel_bpf_sk_storage_lookup(
+               map, cloned_identity, &output, 0u) ==
+           -EDGE_LINUX_ENOENT);
     assert(kernel_bpf_map_next_key(map, 0, &next_key) ==
            -EDGE_LINUX_ENOTSUPP);
     assert(kernel_bpf_sk_storage_delete(map, identity) == 0);

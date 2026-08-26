@@ -259,6 +259,8 @@ int kernel_bpf_sk_storage_update(int object_id,
                                  const void *value, uint64_t flags);
 int kernel_bpf_sk_storage_delete(int object_id,
                                  uint64_t socket_identity);
+int kernel_bpf_sk_storage_clone(uint64_t source_socket_identity,
+                                uint64_t target_socket_identity);
 int kernel_bpf_inode_storage_lookup(int object_id,
                                     uint64_t filesystem_identity,
                                     uint32_t inode_number,
