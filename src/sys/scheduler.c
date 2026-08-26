@@ -839,6 +839,17 @@ static void scheduler_idle_loop(void) {
             scheduler_cpu_t *cpu = scheduler_cpu_local();
 
             /*
+             * A task migrated from this CPU cannot run on its destination
+             * until a later scheduler entry proves that its source stack is
+             * no longer active.  Complete that handoff before parking an
+             * otherwise empty secondary CPU.
+             */
+            if (cpu && cpu->retired) {
+                scheduler_yield();
+                continue;
+            }
+
+            /*
              * Secondary CPUs have no global timer duties.  Stop their local
              * periodic APIC tick while the runqueue is empty and use the
              * reschedule IPI as the wake source.  Interrupts stay disabled

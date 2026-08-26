@@ -11184,8 +11184,11 @@ void arch_process_task_apply_locked(
         edge_linux_scheduler_state_apply_updates(
             &task->scheduler, &update->scheduler,
             update->scheduler_update_mask);
-        if (update->scheduler_update_mask & EDGE_SCHEDULER_UPDATE_AFFINITY)
-            task->need_resched = 1;
+        /*
+         * Do not migrate the live syscall stack synchronously from the
+         * return path.  The timer scheduler observes the updated affinity
+         * before its next pick and performs the regular cross-CPU handoff.
+         */
         if (update->scheduler_update_mask & EDGE_SCHEDULER_UPDATE_POLICY) {
             edge_linux_scheduler_entity_init(
                 &task->scheduler_entity, &task->scheduler,

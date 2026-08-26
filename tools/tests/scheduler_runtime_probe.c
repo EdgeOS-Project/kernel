@@ -180,18 +180,22 @@ static int run_probe(void) {
     uint64_t selected;
     int failures = 0;
 
+    putstr("scheduler_probe: affinity\n");
     failures += expect_result("sched_getaffinity",
         raw_syscall3(SYS_sched_getaffinity, 0, sizeof(affinity),
                      (long)&affinity), sizeof(affinity));
+    putstr("scheduler_probe: affinity-read\n");
     failures += expect_true("sched_getaffinity_nonzero", affinity != 0);
     selected = affinity & (~affinity + 1u);
     failures += expect_result("sched_setaffinity",
         raw_syscall3(SYS_sched_setaffinity, 0, sizeof(selected),
                      (long)&selected), 0);
+    putstr("scheduler_probe: affinity-set\n");
     affinity = 0;
     failures += expect_result("sched_getaffinity_after_set",
         raw_syscall3(SYS_sched_getaffinity, 0, sizeof(affinity),
                      (long)&affinity), sizeof(affinity));
+    putstr("scheduler_probe: affinity-reread\n");
     failures += expect_true("sched_affinity_persists",
                             affinity == selected);
     affinity = 0;
@@ -202,6 +206,7 @@ static int run_probe(void) {
         raw_syscall3(SYS_sched_getaffinity, 0, sizeof(affinity), 0),
         -EFAULT);
 
+    putstr("scheduler_probe: parameters\n");
     failures += expect_result("sched_getparam",
         raw_syscall2(SYS_sched_getparam, 0, (long)&parameter), 0);
     failures += expect_true("sched_getparam_priority",
@@ -221,6 +226,7 @@ static int run_probe(void) {
     failures += expect_result("sched_getparam_null",
         raw_syscall2(SYS_sched_getparam, 0, 0), -EINVAL);
 
+    putstr("scheduler_probe: attributes\n");
     attribute.size = sizeof(attribute);
     failures += expect_result("sched_getattr",
         raw_syscall5(SYS_sched_getattr, 0, (long)&attribute,
@@ -240,6 +246,7 @@ static int run_probe(void) {
         failures += expect_true("sched_setattr_nice_persists",
                                 observed.nice == attribute.nice);
     }
+    putstr("scheduler_probe: yield\n");
     failures += expect_result("sched_yield",
                               raw_syscall1(SYS_sched_yield, 0), 0);
 

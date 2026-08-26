@@ -3499,9 +3499,7 @@
       "shared_handler": "edge_linux_sys_kexec",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/native_optional_syscalls_abi_probe.c",
-        "tools/tests/ia32_kexec_load_uapi_probe.c",
-        "tools/tests/x32_kexec_load_uapi_probe.c"
+        "tools/tests/native_optional_syscalls_abi_probe.c"
       ],
       "linux_oracle": "required",
       "oracle_status": "partial",
@@ -6791,23 +6789,22 @@
       "shared_handler": "edge_linux_sys_scheduler",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/sched_affinity_abi_probe.c",
         "tools/tests/scheduler_runtime_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 204,
           "status": "implemented",
           "route": "shared:edge_linux_sys_scheduler",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 123,
           "status": "implemented",
           "route": "shared:edge_linux_sys_scheduler",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -6817,23 +6814,22 @@
       "shared_handler": "edge_linux_sys_scheduler",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/sched_param_abi_probe.c",
         "tools/tests/scheduler_runtime_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 315,
           "status": "implemented",
           "route": "shared:edge_linux_sys_scheduler",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 275,
           "status": "implemented",
           "route": "shared:edge_linux_sys_scheduler",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -6843,23 +6839,22 @@
       "shared_handler": "edge_linux_sys_scheduler",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/sched_param_abi_probe.c",
         "tools/tests/scheduler_runtime_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 143,
           "status": "implemented",
           "route": "shared:edge_linux_sys_scheduler",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 121,
           "status": "implemented",
           "route": "shared:edge_linux_sys_scheduler",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -6869,23 +6864,22 @@
       "shared_handler": "edge_linux_sys_scheduler",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/sched_param_abi_probe.c",
         "tools/tests/scheduler_runtime_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 145,
           "status": "implemented",
           "route": "shared:edge_linux_sys_scheduler",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 120,
           "status": "implemented",
           "route": "shared:edge_linux_sys_scheduler",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -6920,23 +6914,22 @@
       "shared_handler": "edge_linux_sys_scheduler",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/sched_affinity_abi_probe.c",
         "tools/tests/scheduler_runtime_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 203,
           "status": "implemented",
           "route": "shared:edge_linux_sys_scheduler",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 122,
           "status": "implemented",
           "route": "shared:edge_linux_sys_scheduler",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -6946,23 +6939,22 @@
       "shared_handler": "edge_linux_sys_scheduler",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/sched_param_abi_probe.c",
         "tools/tests/scheduler_runtime_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 314,
           "status": "implemented",
           "route": "shared:edge_linux_sys_scheduler",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 274,
           "status": "implemented",
           "route": "shared:edge_linux_sys_scheduler",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -6972,23 +6964,22 @@
       "shared_handler": "edge_linux_sys_scheduler",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/sched_param_abi_probe.c",
         "tools/tests/scheduler_runtime_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 142,
           "status": "implemented",
           "route": "shared:edge_linux_sys_scheduler",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 118,
           "status": "implemented",
           "route": "shared:edge_linux_sys_scheduler",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -6998,23 +6989,22 @@
       "shared_handler": "edge_linux_sys_scheduler",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/sched_param_abi_probe.c",
         "tools/tests/scheduler_runtime_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 144,
           "status": "implemented",
           "route": "shared:edge_linux_sys_scheduler",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 119,
           "status": "implemented",
           "route": "shared:edge_linux_sys_scheduler",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -7024,23 +7014,22 @@
       "shared_handler": "edge_linux_sys_scheduler",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/process_session_abi_probe.c",
         "tools/tests/scheduler_runtime_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 24,
           "status": "implemented",
           "route": "shared:edge_linux_sys_scheduler",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 124,
           "status": "implemented",
           "route": "shared:edge_linux_sys_scheduler",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
