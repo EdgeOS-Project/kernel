@@ -46,6 +46,10 @@
 #define IORING_OFF_SQ_RING UINT32_C(0)
 #define IORING_OFF_CQ_RING UINT32_C(0x08000000)
 #define IORING_OFF_SQES UINT32_C(0x10000000)
+#define AT_FDCWD (-100)
+#define O_RDWR 2
+#define O_CREAT 64
+#define STATX_SIZE UINT32_C(0x00000200)
 
 struct compat_iovec {
     uint32_t base;
@@ -146,6 +150,8 @@ static int32_t socket_descriptors[2];
 static struct compat_iovec message_vector;
 static struct compat_msghdr message_header;
 static struct kernel_timespec timeout = {0, 1};
+static const char path[] = "/compat-io-uring-file";
+static unsigned char statx_buffer[256];
 
 #if defined(__i386__)
 __attribute__((naked)) static long raw_call6(
@@ -479,6 +485,90 @@ __attribute__((noreturn)) void _start(void) {
         fail_result(
             "timeout-result",
             cqes[*cq_head & (ring_parameters.cq_entries - 1u)].result);
+    *cq_head += 1u;
+
+    clear_bytes(&sqes[0], sizeof(sqes[0]));
+    sqes[0].opcode = 18;
+    sqes[0].descriptor = AT_FDCWD;
+    sqes[0].address = (uint32_t)(uintptr_t)path;
+    sqes[0].length = 0600;
+    sqes[0].operation_flags = O_CREAT | O_RDWR;
+    sqes[0].user_data = UINT64_C(0x0102030405060708);
+    sq_array[0] = 0;
+    *sq_tail = 7;
+    require_result(call6(SYS_io_uring_enter, ring, 1, 1,
+                         IORING_ENTER_GETEVENTS, 0, 0),
+                   1, "enter-openat");
+    if (*cq_tail - *cq_head != 1u ||
+        cqes[*cq_head & (ring_parameters.cq_entries - 1u)].result < 0 ||
+        cqes[*cq_head & (ring_parameters.cq_entries - 1u)].user_data !=
+            UINT64_C(0x0102030405060708))
+        fail("openat-layout");
+    {
+        int32_t file_descriptor =
+            cqes[*cq_head & (ring_parameters.cq_entries - 1u)].result;
+
+        *cq_head += 1u;
+        require_result(call6(SYS_write, file_descriptor,
+                             &source_buffer, 1, 0, 0, 0),
+                       1, "write-openat-file");
+
+        clear_bytes(statx_buffer, sizeof(statx_buffer));
+        clear_bytes(&sqes[1], sizeof(sqes[1]));
+        sqes[1].opcode = 21;
+        sqes[1].descriptor = AT_FDCWD;
+        sqes[1].offset = (uint32_t)(uintptr_t)statx_buffer;
+        sqes[1].address = (uint32_t)(uintptr_t)path;
+        sqes[1].length = STATX_SIZE;
+        sqes[1].user_data = UINT64_C(0x1112131415161718);
+        sq_array[1] = 1;
+        *sq_tail = 8;
+        require_result(call6(SYS_io_uring_enter, ring, 1, 1,
+                             IORING_ENTER_GETEVENTS, 0, 0),
+                       1, "enter-statx");
+        if (*cq_tail - *cq_head != 1u ||
+            cqes[*cq_head & (ring_parameters.cq_entries - 1u)].result != 0 ||
+            cqes[*cq_head & (ring_parameters.cq_entries - 1u)].user_data !=
+                UINT64_C(0x1112131415161718) ||
+            *(uint64_t *)(void *)(statx_buffer + 40u) != 1u)
+            fail("statx-layout");
+        *cq_head += 1u;
+
+        clear_bytes(&sqes[0], sizeof(sqes[0]));
+        sqes[0].opcode = 55;
+        sqes[0].descriptor = file_descriptor;
+        sqes[0].offset = 0;
+        sqes[0].user_data = UINT64_C(0x2122232425262728);
+        sq_array[0] = 0;
+        *sq_tail = 9;
+        require_result(call6(SYS_io_uring_enter, ring, 1, 1,
+                             IORING_ENTER_GETEVENTS, 0, 0),
+                       1, "enter-ftruncate");
+        if (*cq_tail - *cq_head != 1u ||
+            cqes[*cq_head & (ring_parameters.cq_entries - 1u)].result != 0 ||
+            cqes[*cq_head & (ring_parameters.cq_entries - 1u)].user_data !=
+                UINT64_C(0x2122232425262728))
+            fail("ftruncate-layout");
+        *cq_head += 1u;
+        require_result(call6(SYS_close, file_descriptor, 0, 0, 0, 0, 0),
+                       0, "close-openat-file");
+    }
+
+    clear_bytes(&sqes[1], sizeof(sqes[1]));
+    sqes[1].opcode = 36;
+    sqes[1].descriptor = AT_FDCWD;
+    sqes[1].address = (uint32_t)(uintptr_t)path;
+    sqes[1].user_data = UINT64_C(0x3132333435363738);
+    sq_array[1] = 1;
+    *sq_tail = 10;
+    require_result(call6(SYS_io_uring_enter, ring, 1, 1,
+                         IORING_ENTER_GETEVENTS, 0, 0),
+                   1, "enter-unlinkat");
+    if (*cq_tail - *cq_head != 1u ||
+        cqes[*cq_head & (ring_parameters.cq_entries - 1u)].result != 0 ||
+        cqes[*cq_head & (ring_parameters.cq_entries - 1u)].user_data !=
+            UINT64_C(0x3132333435363738))
+        fail("unlinkat-layout");
     *cq_head += 1u;
     require_result(call6(SYS_close, pipe_descriptors[0], 0, 0, 0, 0, 0),
                    0, "close-pipe-read");
