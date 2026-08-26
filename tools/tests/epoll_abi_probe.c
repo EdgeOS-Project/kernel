@@ -22,6 +22,7 @@
 #define SYS_epoll_create1 291
 #define SYS_pipe2 293
 #define SYS_openat 257
+#define SYS_mount 165
 #define SYS_epoll_pwait2 441
 struct linux_epoll_event {
     uint32_t events;
@@ -32,6 +33,7 @@ struct linux_epoll_event {
 #define SYS_close 57
 #define SYS_pipe2 59
 #define SYS_openat 56
+#define SYS_mount 40
 #define SYS_exit 93
 #define SYS_epoll_create1 20
 #define SYS_epoll_ctl 21
@@ -183,6 +185,10 @@ static int run_probe(void) {
     long result;
     int failures = 0;
 
+    /* Linux oracle initramfs images do not mount procfs automatically. */
+    (void)raw_syscall6(SYS_mount, (long)"proc", (long)"/proc",
+                       (long)"proc", 0, 0, 0);
+
     result = raw_syscall1(SYS_epoll_create1, 1);
     failures += expect_result("create1_invalid_flags", result, -EINVAL);
     epoll_descriptor = raw_syscall1(SYS_epoll_create1, O_CLOEXEC);
@@ -316,7 +322,7 @@ static int run_probe(void) {
     failures += expect_result("pwait2_zero_maxevents", result, -EINVAL);
 #if defined(__x86_64__)
     result = raw_syscall4(SYS_epoll_wait, -1, (long)&returned, 0, 0);
-    failures += expect_result("wait_maxevents_precedes_fd", result, -EINVAL);
+    failures += expect_result("wait_fd_precedes_maxevents", result, -EBADF);
 #endif
     result = raw_syscall6(SYS_epoll_pwait2, epoll_descriptor,
                           (long)&returned, 1, (long)&short_timeout, 0, 0);

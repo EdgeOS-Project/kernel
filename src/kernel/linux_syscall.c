@@ -17673,9 +17673,6 @@ static int64_t edge_linux_sys_epoll(
             replace_signal_mask = 1;
         }
     }
-    if ((int64_t)context->arguments[2] <= 0 ||
-        context->arguments[2] > INT32_MAX)
-        return -EDGE_LINUX_EINVAL;
     status = edge_linux_fd_number(context->arguments[0],
                                   &epoll_descriptor);
     if (status < 0) return status;

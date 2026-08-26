@@ -12772,7 +12772,10 @@ static uint64_t do_sys_epoll_wait(uint64_t epfd_u, uint64_t events_u,
     int maxevents = (int)maxevents_u;
     uint64_t start_us;
     if (!e || e->kind != FD_EPOLL) return (uint64_t)-EBADF;
-    if (maxevents <= 0) return (uint64_t)-EINVAL;
+    if (kernel_epoll_maximum_events_validate(
+            (uint32_t)maxevents_u,
+            sizeof(struct edge_linux_epoll_event)) < 0)
+        return (uint64_t)-EINVAL;
     if (maxevents > EDGE_EPOLL_MAX_WATCH)
         maxevents = EDGE_EPOLL_MAX_WATCH;
     if (e->pipe_id < 0 || e->pipe_id >= EDGE_MAX_EPOLLS) return (uint64_t)-EBADF;

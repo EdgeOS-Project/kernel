@@ -63,6 +63,12 @@ LINUX_RESERVED_SYSCALL_PROBE = (
     "tools/tests/linux_reserved_syscalls_abi_probe.c"
 )
 VERIFIED_SYSCALL_PROBES = {
+    "epoll_create": "tools/tests/epoll_abi_probe.c",
+    "epoll_create1": "tools/tests/epoll_abi_probe.c",
+    "epoll_ctl": "tools/tests/epoll_abi_probe.c",
+    "epoll_pwait": "tools/tests/epoll_abi_probe.c",
+    "epoll_pwait2": "tools/tests/epoll_abi_probe.c",
+    "epoll_wait": "tools/tests/epoll_abi_probe.c",
     "get_mempolicy": "tools/tests/numa_policy_abi_probe.c",
     "mbind": "tools/tests/numa_policy_abi_probe.c",
     "memfd_secret": "tools/tests/memfd_secret_abi_probe.c",

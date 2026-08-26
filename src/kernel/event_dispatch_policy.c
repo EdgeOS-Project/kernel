@@ -13,6 +13,14 @@
 #include "kernel/runtime_limits.h"
 #include "kernel/userfaultfd_runtime.h"
 
+int kernel_epoll_maximum_events_validate(uint32_t maximum_events,
+                                         uint32_t event_size) {
+    if (!event_size || (int32_t)maximum_events <= 0 ||
+        maximum_events > (uint32_t)INT32_MAX / event_size)
+        return -EDGE_LINUX_EINVAL;
+    return 0;
+}
+
 int64_t kernel_epoll_wait_descriptor(int32_t epoll_descriptor,
                                      uint64_t user_events,
                                      uint32_t maximum_events,

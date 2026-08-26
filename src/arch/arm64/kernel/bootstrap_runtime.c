@@ -20545,7 +20545,8 @@ int64_t arch_epoll_wait_descriptor(int32_t epoll_descriptor,
         !fd_slot_is_open(task, (uint32_t)epoll_descriptor) ||
         task->fds[epoll_descriptor].kind != KERNEL_FD_EPOLL)
         return -LINUX_EBADF;
-    if (!maximum_events) return -LINUX_EINVAL;
+    if (kernel_epoll_maximum_events_validate(maximum_events, 16u) < 0)
+        return -LINUX_EINVAL;
 
     epoll_fd = &task->fds[epoll_descriptor];
     epoll_index = epoll_fd->epoll_index;

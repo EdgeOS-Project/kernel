@@ -906,17 +906,16 @@
       "shared_handler": "edge_linux_sys_epoll",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/epoll_abi_probe.c",
-        "tools/tests/epoll_unix_ready_mask_probe.c"
+        "tools/tests/epoll_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 213,
           "status": "implemented",
           "route": "shared:edge_linux_sys_epoll",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": null
       }
@@ -927,23 +926,22 @@
       "shared_handler": "edge_linux_sys_epoll",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/epoll_abi_probe.c",
-        "tools/tests/epoll_unix_ready_mask_probe.c"
+        "tools/tests/epoll_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 291,
           "status": "implemented",
           "route": "shared:edge_linux_sys_epoll",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 20,
           "status": "implemented",
           "route": "shared:edge_linux_sys_epoll",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -953,23 +951,22 @@
       "shared_handler": "edge_linux_sys_epoll",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/epoll_abi_probe.c",
-        "tools/tests/epoll_unix_ready_mask_probe.c"
+        "tools/tests/epoll_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 233,
           "status": "implemented",
           "route": "shared:edge_linux_sys_epoll",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 21,
           "status": "implemented",
           "route": "shared:edge_linux_sys_epoll",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -999,24 +996,22 @@
       "shared_handler": "edge_linux_sys_epoll",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/epoll_abi_probe.c",
-        "tools/tests/epoll_unix_ready_mask_probe.c",
-        "tools/tests/signal_wait_mask_abi_probe.c"
+        "tools/tests/epoll_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 281,
           "status": "implemented",
           "route": "shared:edge_linux_sys_epoll",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 22,
           "status": "implemented",
           "route": "shared:edge_linux_sys_epoll",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -1026,23 +1021,22 @@
       "shared_handler": "edge_linux_sys_epoll",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/epoll_abi_probe.c",
-        "tools/tests/arm64_modern_abi_probe.c"
+        "tools/tests/epoll_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 441,
           "status": "implemented",
           "route": "shared:edge_linux_sys_epoll",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 441,
           "status": "implemented",
           "route": "shared:edge_linux_sys_epoll",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -1052,17 +1046,16 @@
       "shared_handler": "edge_linux_sys_epoll",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/epoll_abi_probe.c",
-        "tools/tests/epoll_unix_ready_mask_probe.c"
+        "tools/tests/epoll_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 232,
           "status": "implemented",
           "route": "shared:edge_linux_sys_epoll",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": null
       }

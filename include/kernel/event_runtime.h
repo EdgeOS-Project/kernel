@@ -231,6 +231,8 @@ int kernel_epoll_control_descriptor(int32_t epoll_descriptor,
                                     uint32_t operation,
                                     int32_t target_descriptor,
                                     const kernel_epoll_event_t *event);
+int kernel_epoll_maximum_events_validate(uint32_t maximum_events,
+                                         uint32_t event_size);
 int64_t kernel_epoll_wait_descriptor(int32_t epoll_descriptor,
                                      uint64_t user_events,
                                      uint32_t maximum_events,
