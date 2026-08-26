@@ -216,10 +216,10 @@ EDGEOS_ASSESSMENTS = [
             "independent READ and WRITE worker progression with pinned ordinary buffers while the owner executes no syscall",
             "independent READV and WRITEV worker progression with captured vector metadata and pinned ordinary buffers while the owner executes no syscall",
             "RECV_ZC for TCP sockets with nodev ZCRX areas, retained descriptions, CQE32 offsets, refill control, copy fallback, exported descriptor lifetime and shared import mappings",
+            "device-backed ZCRX registration for physical queue zero with interface validation, exclusive queue ownership and shared lifetime; receive delivery currently retains the socket-copy fallback",
             "SQPOLL setup, affinity validation, non-fixed descriptor feature reporting and SQ_WAKEUP or SQ_WAIT enter control",
         ],
         "missing": [
-            "device-backed ZCRX registration",
             "remaining URING_CMD socket and device command consumers",
             "remaining ia32 and x32 semantic coverage across supported operations",
         ],
@@ -337,7 +337,9 @@ EDGEOS_ASSESSMENTS = [
                 "plus TCP RECV_ZC with nodev ZCRX registration, CQE32 data "
                 "offsets, finite multishot completion, refill mmap, flush "
                 "control, exported descriptor lifetime and shared import "
-                "mappings, "
+                "mappings, plus physical queue-zero device registration, "
+                "exclusive ownership and retained provider lifetime with a "
+                "socket-copy fallback, "
                 "plus SQPOLL setup combinations, CPU affinity validation, "
                 "non-fixed descriptor feature reporting, SQ_WAKEUP and "
                 "SQ_WAIT completion control, "

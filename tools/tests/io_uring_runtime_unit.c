@@ -15,6 +15,7 @@
 #include "kernel/io_runtime.h"
 #include "kernel/linux_errno.h"
 #include "kernel/mm_runtime.h"
+#include "net/network_core.h"
 
 #define TEST_PAGE_COUNT 16u
 
@@ -53,6 +54,16 @@ static uint32_t g_file_sync_data_calls;
 static uint8_t g_io_bounce[KERNEL_IO_BUFFER_SIZE];
 static uint32_t g_deferred_work_requests;
 static int32_t g_zcrx_export_object_id = -1;
+
+int edge_net_device_snapshot(
+        int32_t ifindex, edge_net_device_snapshot_t *snapshot) {
+    if (ifindex != 2 || !snapshot)
+        return EDGE_NET_NOT_FOUND;
+    memset(snapshot, 0, sizeof(*snapshot));
+    snapshot->configuration.ifindex = ifindex;
+    snapshot->configuration.kind = EDGE_NET_DEVICE_PHYSICAL;
+    return EDGE_NET_OK;
+}
 
 void kernel_deferred_work_request(void) {
     ++g_deferred_work_requests;
@@ -1965,7 +1976,7 @@ int main(void) {
 
         assert(kernel_io_uring_create(
                    4u, &zcrx_parameters, &second_ring_id) == 0);
-        assert(kernel_io_uring_zcrx_register_nodev(
+        assert(kernel_io_uring_zcrx_register(
                    second_ring_id, 0xabc000u, &registration,
                    &area, &region, 0) == 0);
         assert(registration.rq_entries == 8u);
@@ -2041,6 +2052,77 @@ int main(void) {
             g_zcrx_export_object_id);
         kernel_io_uring_release(imported_ring_id);
         assert(g_fixed_file_references == references);
+    }
+    {
+        struct edge_linux_io_uring_params first_parameters = {
+            .flags = (1u << 11) | (1u << 12) | (1u << 13),
+        };
+        struct edge_linux_io_uring_params second_parameters = {
+            .flags = (1u << 11) | (1u << 12) | (1u << 13),
+        };
+        struct edge_linux_io_uring_params imported_parameters = {
+            .flags = (1u << 11) | (1u << 12) | (1u << 13),
+        };
+        struct edge_linux_io_uring_zcrx_ifq_reg first_registration = {
+            .interface_index = 2u,
+            .rq_entries = 8u,
+        };
+        struct edge_linux_io_uring_zcrx_ifq_reg second_registration = {
+            .interface_index = 2u,
+            .rq_entries = 8u,
+        };
+        struct edge_linux_io_uring_zcrx_area_reg first_area = {
+            .address = 0x700000u,
+            .length = KERNEL_IO_URING_PAGE_SIZE,
+        };
+        struct edge_linux_io_uring_zcrx_area_reg second_area = {
+            .address = 0x701000u,
+            .length = KERNEL_IO_URING_PAGE_SIZE,
+        };
+        struct edge_linux_io_uring_region_desc first_region = {
+            .size = KERNEL_IO_URING_PAGE_SIZE,
+        };
+        struct edge_linux_io_uring_region_desc second_region = {
+            .size = KERNEL_IO_URING_PAGE_SIZE,
+        };
+        struct edge_linux_io_uring_zcrx_ifq_reg imported = {
+            .flags = 1u,
+        };
+        int32_t first_ring_id;
+        int32_t imported_ring_id;
+        int32_t second_device_ring_id;
+        int device_result;
+
+        assert(kernel_io_uring_create(
+                   4u, &first_parameters, &first_ring_id) == 0);
+        device_result = kernel_io_uring_zcrx_register(
+            first_ring_id, 0xabc000u, &first_registration,
+            &first_area, &first_region, 0);
+        assert(device_result == 0);
+        g_zcrx_export_object_id = -1;
+        assert(kernel_io_uring_zcrx_export_descriptor(
+                   first_ring_id, first_registration.zcrx_id) == 97);
+        assert(kernel_io_uring_create(
+                   4u, &imported_parameters, &imported_ring_id) == 0);
+        assert(kernel_io_uring_zcrx_import(
+                   imported_ring_id, g_zcrx_export_object_id,
+                   &imported) == 0);
+        kernel_io_uring_release(first_ring_id);
+        kernel_io_uring_zcrx_export_release(
+            g_zcrx_export_object_id);
+        assert(kernel_io_uring_zcrx_register(
+                   imported_ring_id, 0xabc000u,
+                   &second_registration, &second_area,
+                   &second_region, 0) == -EDGE_LINUX_EBUSY);
+
+        kernel_io_uring_release(imported_ring_id);
+        assert(kernel_io_uring_create(
+                   4u, &second_parameters, &second_device_ring_id) == 0);
+        assert(kernel_io_uring_zcrx_register(
+                   second_device_ring_id, 0xabc000u,
+                   &second_registration, &second_area,
+                   &second_region, 0) == 0);
+        kernel_io_uring_release(second_device_ring_id);
     }
     {
         struct edge_linux_io_uring_params read_parameters = {0};

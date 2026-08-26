@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MPL-2.0 */
-/* Linux io_uring RECV_ZC and nodev ZCRX ABI probe. */
+/* Linux io_uring RECV_ZC, nodev and device-backed ZCRX ABI probe. */
 
 #include <stdint.h>
 
@@ -51,6 +51,8 @@
 #define SIOCSIFFLAGS 0x8914u
 #define IFF_UP 1u
 #define EINVAL 22
+#define ENODEV 19
+#define EOPNOTSUPP 95
 
 #define IORING_ENTER_GETEVENTS 1u
 #define IORING_SETUP_SINGLE_ISSUER (1u << 12)
@@ -489,7 +491,9 @@ static int test_required_setup_flags(void) {
     return result != -EINVAL;
 }
 
-static int test_receive(void) {
+static int test_receive(uint32_t registration_flags,
+                        uint32_t interface_index,
+                        int allow_unsupported_device) {
     static const uint8_t payload[] = {
         'z', 'c', 'r', 'x', '-', 'o', 'r', 'a', 'c', 'l', 'e'
     };
@@ -507,6 +511,7 @@ static int test_receive(void) {
     uint32_t *refill_head;
     uint32_t *refill_tail;
     uint64_t data_offset;
+    long registration_result;
     int failures = 0;
 
     memset(g_receive_area, 0, sizeof(g_receive_area));
@@ -523,13 +528,21 @@ static int test_receive(void) {
     area.length = PAGE_SIZE;
     region.size = PAGE_SIZE;
     registration.rq_entries = 8u;
-    registration.flags = ZCRX_REG_NODEV;
+    registration.flags = registration_flags;
+    registration.interface_index = interface_index;
     registration.area = (uint64_t)(uintptr_t)&area;
     registration.region = (uint64_t)(uintptr_t)&region;
-    failures += record_failure(raw_syscall6(
+    registration_result = raw_syscall6(
         SYS_io_uring_register, ring.descriptor,
-        IORING_REGISTER_ZCRX_IFQ, (long)&registration, 1, 0, 0) != 0,
-        "ZCRX_REGISTER_FAIL\n");
+        IORING_REGISTER_ZCRX_IFQ, (long)&registration, 1, 0, 0);
+    if (allow_unsupported_device &&
+        registration_result == -EOPNOTSUPP) {
+        print_text("ZCRX_DEVICE_BACKEND_UNAVAILABLE\n");
+        ring_close(&ring);
+        return 0;
+    }
+    failures += record_failure(
+        registration_result != 0, "ZCRX_REGISTER_FAIL\n");
     failures += record_failure(
         registration.rq_entries != 8u ||
         registration.receive_buffer_length != PAGE_SIZE ||
@@ -634,6 +647,43 @@ done:
         (void)raw_syscall6(SYS_close, sockets[1], 0, 0, 0, 0, 0);
     if (sockets[0] >= 0)
         (void)raw_syscall6(SYS_close, sockets[0], 0, 0, 0, 0, 0);
+    ring_close(&ring);
+    if (!failures && allow_unsupported_device)
+        print_text("ZCRX_DEVICE_BACKEND_ACTIVE\n");
+    return failures;
+}
+
+static int test_device_validation(void) {
+    struct io_uring_zcrx_ifq_reg registration;
+    struct io_uring_zcrx_area_reg area;
+    struct io_uring_region_desc region;
+    probe_ring_t ring;
+    uint32_t flags = IORING_SETUP_SINGLE_ISSUER |
+        IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_CQE32;
+    int failures = 0;
+
+    if (ring_open(&ring, flags)) return 1;
+    memset(&registration, 0, sizeof(registration));
+    memset(&area, 0, sizeof(area));
+    memset(&region, 0, sizeof(region));
+    area.address = (uint64_t)(uintptr_t)g_receive_area;
+    area.length = PAGE_SIZE;
+    region.size = PAGE_SIZE;
+    registration.interface_index = UINT32_MAX;
+    registration.rq_entries = 8u;
+    registration.area = (uint64_t)(uintptr_t)&area;
+    registration.region = (uint64_t)(uintptr_t)&region;
+    failures += record_failure(raw_syscall6(
+        SYS_io_uring_register, ring.descriptor,
+        IORING_REGISTER_ZCRX_IFQ, (long)&registration, 1, 0, 0) != -ENODEV,
+        "ZCRX_DEVICE_IFINDEX_VALIDATION_FAIL\n");
+
+    registration.interface_index = 2u;
+    registration.receive_queue = UINT32_MAX;
+    failures += record_failure(raw_syscall6(
+        SYS_io_uring_register, ring.descriptor,
+        IORING_REGISTER_ZCRX_IFQ, (long)&registration, 1, 0, 0) != -EINVAL,
+        "ZCRX_DEVICE_QUEUE_VALIDATION_FAIL\n");
     ring_close(&ring);
     return failures;
 }
@@ -786,7 +836,9 @@ ENTRY_ALIGNMENT void _start(void) {
 
     failures += record_failure(
         test_required_setup_flags(), "ZCRX_SETUP_VALIDATION_FAIL\n");
-    failures += test_receive();
+    failures += test_receive(ZCRX_REG_NODEV, 0u, 0);
+    failures += test_device_validation();
+    failures += test_receive(0u, 2u, 1);
     failures += test_export_import();
     print_text(failures ? "io-uring-zcrx: FAIL\n" :
                           "io-uring-zcrx: PASS\n");

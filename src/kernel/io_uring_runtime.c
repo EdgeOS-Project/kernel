@@ -17,6 +17,7 @@
 #include "kernel/linux_time.h"
 #include "kernel/mm_runtime.h"
 #include "kernel/runtime_limits.h"
+#include "net/network_core.h"
 #include "string.h"
 #include "sys/spinlock.h"
 #include "vfs/vfs.h"
@@ -217,6 +218,9 @@ typedef struct kernel_io_uring_zcrx {
     uint32_t notification_type_mask;
     uint32_t references;
     uint32_t metadata_page_count;
+    uint32_t interface_index;
+    uint32_t receive_queue;
+    uint32_t provider_slot_plus_one;
     kernel_io_uring_fixed_buffer_t area;
     kernel_io_uring_page_t
         region_pages[KERNEL_IO_URING_MAX_ZCRX_RQ_PAGES];
@@ -227,6 +231,12 @@ typedef struct kernel_io_uring_zcrx_export {
     kernel_io_uring_zcrx_t *zcrx;
     uint32_t descriptor_references;
 } kernel_io_uring_zcrx_export_t;
+
+typedef struct kernel_io_uring_zcrx_provider {
+    kernel_io_uring_zcrx_t *owner;
+    uint32_t interface_index;
+    uint32_t receive_queue;
+} kernel_io_uring_zcrx_provider_t;
 
 typedef struct kernel_io_uring_provided_buffer {
     uint64_t address;
@@ -414,6 +424,9 @@ static kernel_io_uring_napi_id_t
     g_io_uring_napi_ids[KERNEL_IO_URING_MAX_NAPI_IDS];
 static kernel_io_uring_zcrx_export_t
     g_io_uring_zcrx_exports[16];
+static kernel_io_uring_zcrx_provider_t
+    g_io_uring_zcrx_providers[16];
+static spinlock_t g_io_uring_zcrx_provider_lock;
 
 #define IO_URING_NAPI_TRACKING_DYNAMIC 0u
 #define IO_URING_NAPI_TRACKING_STATIC 1u
@@ -1126,11 +1139,70 @@ static int io_uring_fixed_buffer_copy_in(
     return 0;
 }
 
+static int io_uring_zcrx_provider_reserve(
+        kernel_io_uring_zcrx_t *zcrx) {
+    kernel_io_uring_zcrx_provider_t *free_slot = 0;
+    uint32_t free_index = 0u;
+    uint64_t flags;
+    int result = 0;
+
+    if (!zcrx || !zcrx->interface_index)
+        return -EDGE_LINUX_EINVAL;
+    flags = spin_lock_irqsave(&g_io_uring_zcrx_provider_lock);
+    for (uint32_t index = 0;
+         index < sizeof(g_io_uring_zcrx_providers) /
+             sizeof(g_io_uring_zcrx_providers[0]); ++index) {
+        kernel_io_uring_zcrx_provider_t *provider =
+            &g_io_uring_zcrx_providers[index];
+
+        if (provider->owner &&
+            provider->interface_index == zcrx->interface_index &&
+            provider->receive_queue == zcrx->receive_queue) {
+            result = -EDGE_LINUX_EBUSY;
+            break;
+        }
+        if (!provider->owner && !free_slot) {
+            free_slot = provider;
+            free_index = index;
+        }
+    }
+    if (result == 0 && !free_slot) {
+        result = -EDGE_LINUX_ENOSPC;
+    } else if (result == 0) {
+        free_slot->owner = zcrx;
+        free_slot->interface_index = zcrx->interface_index;
+        free_slot->receive_queue = zcrx->receive_queue;
+        zcrx->provider_slot_plus_one = free_index + 1u;
+    }
+    spin_unlock_irqrestore(&g_io_uring_zcrx_provider_lock, flags);
+    return result;
+}
+
+static void io_uring_zcrx_provider_release(
+        kernel_io_uring_zcrx_t *zcrx) {
+    uint32_t slot;
+    uint64_t flags;
+
+    if (!zcrx || !zcrx->provider_slot_plus_one)
+        return;
+    slot = zcrx->provider_slot_plus_one - 1u;
+    if (slot >= sizeof(g_io_uring_zcrx_providers) /
+            sizeof(g_io_uring_zcrx_providers[0]))
+        return;
+    flags = spin_lock_irqsave(&g_io_uring_zcrx_provider_lock);
+    if (g_io_uring_zcrx_providers[slot].owner == zcrx)
+        memset(&g_io_uring_zcrx_providers[slot], 0,
+               sizeof(g_io_uring_zcrx_providers[slot]));
+    zcrx->provider_slot_plus_one = 0u;
+    spin_unlock_irqrestore(&g_io_uring_zcrx_provider_lock, flags);
+}
+
 static void io_uring_zcrx_release(kernel_io_uring_zcrx_t *zcrx) {
     if (!zcrx) return;
     if (__atomic_sub_fetch(
             &zcrx->references, 1u, __ATOMIC_ACQ_REL) != 0u)
         return;
+    io_uring_zcrx_provider_release(zcrx);
     io_uring_fixed_buffer_release(&zcrx->area);
     io_uring_release_pages(
         zcrx->region_pages, zcrx->region_page_count);
@@ -3688,7 +3760,7 @@ static void io_uring_zcrx_reservation_clear(
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
 }
 
-int kernel_io_uring_zcrx_register_nodev(
+int kernel_io_uring_zcrx_register(
         int32_t ring_id, uint64_t address_space,
         struct edge_linux_io_uring_zcrx_ifq_reg *registration,
         struct edge_linux_io_uring_zcrx_area_reg *area,
@@ -3698,19 +3770,26 @@ int kernel_io_uring_zcrx_register_nodev(
     kernel_io_uring_t *ring;
     struct edge_linux_iovec area_vector;
     struct edge_linux_io_uring_zcrx_notification_stats zero_stats;
+    edge_net_device_snapshot_t device;
     uint64_t flags;
     uint64_t required_region;
     uint32_t candidate_pages;
     uint32_t zcrx_id;
     uint32_t entries;
+    int nodev;
     int result = 0;
 
     if (!address_space || !registration || !area || !region)
         return -EDGE_LINUX_EINVAL;
-    if (registration->interface_index || registration->receive_queue ||
-        registration->flags != 2u || registration->zcrx_id ||
+    if ((registration->flags != 0u && registration->flags != 2u) ||
+        registration->zcrx_id ||
         registration->reserved[0] || registration->reserved[1] ||
         !registration->rq_entries)
+        return -EDGE_LINUX_EINVAL;
+    nodev = registration->flags == 2u;
+    if ((nodev && (registration->interface_index ||
+                   registration->receive_queue)) ||
+        (!nodev && registration->receive_queue == UINT32_MAX))
         return -EDGE_LINUX_EINVAL;
     if (registration->rq_entries > 32768u)
         return -EDGE_LINUX_EINVAL;
@@ -3768,6 +3847,15 @@ int kernel_io_uring_zcrx_register_nodev(
         !g_io_uring_allocator.release_metadata_pages ||
         !g_io_uring_allocator.pin_user)
         return -EDGE_LINUX_ENODEV;
+    if (!nodev) {
+        if (edge_net_device_snapshot(
+                (int32_t)registration->interface_index,
+                &device) != EDGE_NET_OK)
+            return -EDGE_LINUX_ENODEV;
+        if (device.configuration.kind != EDGE_NET_DEVICE_PHYSICAL ||
+            registration->receive_queue != 0u)
+            return -EDGE_LINUX_EOPNOTSUPP;
+    }
 
     flags = spin_lock_irqsave(&g_io_uring_lock);
     ring = io_uring_lookup_locked(ring_id);
@@ -3805,6 +3893,8 @@ int kernel_io_uring_zcrx_register_nodev(
     candidate->references = 1u;
     candidate->metadata_page_count = candidate_pages;
     candidate->id = zcrx_id;
+    candidate->interface_index = registration->interface_index;
+    candidate->receive_queue = registration->receive_queue;
     candidate->rq_entries = entries;
     candidate->receive_buffer_length = KERNEL_IO_URING_PAGE_SIZE;
     candidate->chunk_count =
@@ -3851,6 +3941,10 @@ int kernel_io_uring_zcrx_register_nodev(
         result = io_uring_zcrx_region_copy(
             candidate, candidate->stats_offset,
             &zero_stats, sizeof(zero_stats), 1);
+        if (result < 0) goto fail_candidate;
+    }
+    if (!nodev) {
+        result = io_uring_zcrx_provider_reserve(candidate);
         if (result < 0) goto fail_candidate;
     }
 

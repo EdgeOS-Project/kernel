@@ -343,7 +343,7 @@ int kernel_io_uring_waitid_add(
 int kernel_io_uring_read_multishot_add(
     int32_t ring_id, uint64_t user_data, int32_t descriptor,
     uint16_t buffer_group, uint64_t address_space);
-int kernel_io_uring_zcrx_register_nodev(
+int kernel_io_uring_zcrx_register(
     int32_t ring_id, uint64_t address_space,
     struct edge_linux_io_uring_zcrx_ifq_reg *registration,
     struct edge_linux_io_uring_zcrx_area_reg *area,

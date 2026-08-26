@@ -117,7 +117,7 @@ class LinuxUapiInventoryTests(unittest.TestCase):
             "independent worker progression for ordinary vectors while the owner executes no syscall",
             assessment["missing"],
         )
-        self.assertIn(
+        self.assertNotIn(
             "device-backed ZCRX registration",
             assessment["missing"],
         )

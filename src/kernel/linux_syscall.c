@@ -14869,10 +14869,6 @@ static int64_t edge_linux_io_uring_zcrx_register(
         }
         return 0;
     }
-    if (!(registration.flags & EDGE_LINUX_IORING_ZCRX_REG_NODEV))
-        return -EDGE_LINUX_EOPNOTSUPP;
-    if (registration.flags != EDGE_LINUX_IORING_ZCRX_REG_NODEV)
-        return -EDGE_LINUX_EINVAL;
     if (registration.rq_entries > 32768u) {
         if (!(setup_flags & EDGE_LINUX_IORING_SETUP_CLAMP))
             return -EDGE_LINUX_EINVAL;
@@ -14892,7 +14888,7 @@ static int64_t edge_linux_io_uring_zcrx_register(
             context, &notification, registration.notification,
             sizeof(notification)) < 0)
         return -EDGE_LINUX_EFAULT;
-    result = kernel_io_uring_zcrx_register_nodev(
+    result = kernel_io_uring_zcrx_register(
         ring_id, arch_mm_current_address_space(),
         &registration, &area, &region,
         notification_present ? &notification : 0);
