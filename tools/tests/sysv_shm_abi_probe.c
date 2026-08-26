@@ -194,8 +194,8 @@ static int run_tests(void) {
 
     identifier = raw_syscall6(
         SYS_shmget, key, 8193, IPC_CREAT | IPC_EXCL | 0600, 0, 0, 0);
-    failures += expect_true("create named segment", identifier > 0);
-    if (identifier <= 0) return failures;
+    failures += expect_true("create named segment", identifier >= 0);
+    if (identifier < 0) return failures;
     failures += expect_result("exclusive existing segment",
         raw_syscall6(SYS_shmget, key, 8193,
                      IPC_CREAT | IPC_EXCL | 0600, 0, 0, 0), -EEXIST);
@@ -257,8 +257,8 @@ static int run_tests(void) {
         owned_identifier = raw_syscall6(
             SYS_shmget, 0, 4096, IPC_CREAT | 0600, 0, 0, 0);
         child_failures += expect_true("unprivileged owner create",
-                                      owned_identifier > 0);
-        if (owned_identifier > 0) {
+                                      owned_identifier >= 0);
+        if (owned_identifier >= 0) {
             bytes_zero(&information, sizeof(information));
             child_failures += expect_result("unprivileged owner stat",
                 raw_syscall6(SYS_shmctl, owned_identifier, IPC_STAT,
@@ -297,8 +297,8 @@ static int run_tests(void) {
     replacement_identifier = raw_syscall6(
         SYS_shmget, 0, 8193, IPC_CREAT | 0600, 0, 0, 0);
     failures += expect_true("create replacement segment",
-                            replacement_identifier > 0);
-    if (replacement_identifier > 0) {
+                            replacement_identifier >= 0);
+    if (replacement_identifier >= 0) {
         second = (volatile uint64_t *)raw_syscall6(
             SYS_shmat, replacement_identifier, (long)shared, SHM_REMAP,
             0, 0, 0);
@@ -336,8 +336,8 @@ static int run_tests(void) {
     partial_identifier = raw_syscall6(
         SYS_shmget, 0, 4096, IPC_CREAT | 0600, 0, 0, 0);
     failures += expect_true("create partial replacement segment",
-                            partial_identifier > 0);
-    if (partial_identifier > 0) {
+                            partial_identifier >= 0);
+    if (partial_identifier >= 0) {
         middle = (volatile uint64_t *)raw_syscall6(
             SYS_shmat, partial_identifier, (long)shared + 4096,
             SHM_REMAP, 0, 0, 0);

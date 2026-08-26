@@ -109,6 +109,10 @@ VERIFIED_SYSCALL_PROBES = {
     "setresuid": "tools/tests/credential_transition_abi_probe.c",
     "setreuid": "tools/tests/credential_transition_abi_probe.c",
     "setuid": "tools/tests/credential_transition_abi_probe.c",
+    "shmat": "tools/tests/sysv_shm_abi_probe.c",
+    "shmctl": "tools/tests/sysv_shm_abi_probe.c",
+    "shmdt": "tools/tests/sysv_shm_abi_probe.c",
+    "shmget": "tools/tests/sysv_shm_abi_probe.c",
     "sysfs": "tools/tests/sysfs_syscall_abi_probe.c",
 }
 PARTIAL_SYSCALL_PROBES = {
