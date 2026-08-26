@@ -127,6 +127,20 @@ int main(void) {
     assert(kernel_kexec_snapshot(1, &snapshot) == 0 && snapshot.loaded);
     assert(context.freed_pages == 4);
 
+    assert(kernel_kexec_stage_file(
+               first_payload, sizeof(first_payload), second_payload,
+               sizeof(second_payload), "root=/dev/vda", 14, 0,
+               &access) == 0);
+    assert(kernel_kexec_snapshot(0, &snapshot) == 0);
+    assert(snapshot.loaded && snapshot.file_mode);
+    assert(snapshot.kernel_bytes == sizeof(first_payload));
+    assert(snapshot.initrd_bytes == sizeof(second_payload));
+    assert(snapshot.command_line_bytes == 14);
+    assert(snapshot.source_bytes == sizeof(first_payload) +
+                                    sizeof(second_payload) + 14);
+    assert(kernel_kexec_stage(0, 0, 0, 0, &access) == 0);
+    assert(kernel_kexec_snapshot(0, &snapshot) == 0 && !snapshot.loaded);
+
     puts("kexec_runtime_unit: PASS");
     return 0;
 }

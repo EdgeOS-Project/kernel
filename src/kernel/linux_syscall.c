@@ -3364,6 +3364,11 @@ static int64_t edge_linux_sys_reboot(
 #define EDGE_LINUX_KEXEC_ARCH_X86_64 (62u << 16)
 #define EDGE_LINUX_KEXEC_ARCH_AARCH64 (183u << 16)
 #define EDGE_LINUX_KEXEC_FILE_FLAGS 0x0000003fu
+#define EDGE_LINUX_KEXEC_FILE_UNLOAD 0x00000001u
+#define EDGE_LINUX_KEXEC_FILE_ON_CRASH 0x00000002u
+#define EDGE_LINUX_KEXEC_FILE_NO_INITRAMFS 0x00000004u
+#define EDGE_LINUX_KEXEC_COMMAND_LINE_MAX 2048u
+#define EDGE_LINUX_KEXEC_FILE_MAX_BYTES (256u * 1024u * 1024u)
 
 static int edge_linux_kexec_copy_from_user(void *opaque, void *destination,
                                            uint64_t source,
@@ -3386,6 +3391,56 @@ static void edge_linux_kexec_free_page(void *opaque, void *page) {
 static uint64_t edge_linux_kexec_memory_total(void *opaque) {
     (void)opaque;
     return arch_vm_memory_total_bytes();
+}
+
+static int edge_linux_kexec_copy_kernel(void *opaque, void *destination,
+                                        uint64_t source, uint64_t length) {
+    (void)opaque;
+    if ((!destination || !source) && length) return -1;
+    memcpy(destination, (const void *)(uintptr_t)source, (size_t)length);
+    return 0;
+}
+
+static int edge_linux_kexec_read_file(int32_t descriptor, void **image_out,
+                                      uint32_t *image_size_out,
+                                      uint32_t *page_count_out) {
+    kernel_file_metadata_t metadata;
+    kernel_io_file_range_info_t information;
+    uint8_t *image;
+    uint32_t image_size;
+    uint32_t pages;
+    int64_t bytes;
+    int status;
+
+    if (!image_out || !image_size_out || !page_count_out)
+        return -EDGE_LINUX_EINVAL;
+    *image_out = 0;
+    *image_size_out = 0;
+    *page_count_out = 0;
+    status = kernel_io_file_range_query(descriptor, &information);
+    if (status < 0) return status;
+    if (!information.readable) return -EDGE_LINUX_EBADF;
+    if (information.kind != KERNEL_IO_FILE_REGULAR)
+        return -EDGE_LINUX_EINVAL;
+    status = kernel_vfs_metadata_fd(descriptor, &metadata);
+    if (status < 0) return status;
+    if (!metadata.size) return -EDGE_LINUX_ENOEXEC;
+    if (metadata.size > EDGE_LINUX_KEXEC_FILE_MAX_BYTES)
+        return -EDGE_LINUX_EFBIG;
+    image_size = (uint32_t)metadata.size;
+    pages = (image_size + EDGE_LINUX_MODULE_PAGE_SIZE - 1u) /
+            EDGE_LINUX_MODULE_PAGE_SIZE;
+    image = arch_vm_alloc_pages(pages);
+    if (!image) return -EDGE_LINUX_ENOMEM;
+    bytes = kernel_io_file_range_read(descriptor, 0, image, image_size);
+    if (bytes < 0 || (uint64_t)bytes != image_size) {
+        edge_linux_module_free_pages(image, pages);
+        return bytes < 0 ? (int)bytes : -EDGE_LINUX_EIO;
+    }
+    *image_out = image;
+    *image_size_out = image_size;
+    *page_count_out = pages;
+    return 0;
 }
 
 static int64_t edge_linux_sys_kexec(
@@ -3438,7 +3493,70 @@ static int64_t edge_linux_sys_kexec(
 
     if (context->arguments[4] & ~EDGE_LINUX_KEXEC_FILE_FLAGS)
         return -EDGE_LINUX_EINVAL;
-    return -EDGE_LINUX_EOPNOTSUPP;
+    {
+        kernel_kexec_access_t access = {
+            .context = context,
+            .copy_from_user = edge_linux_kexec_copy_kernel,
+            .allocate_pages = edge_linux_kexec_allocate_pages,
+            .free_page = edge_linux_kexec_free_page,
+            .memory_total_bytes = edge_linux_kexec_memory_total,
+        };
+        uint64_t file_flags = context->arguments[4];
+        uint64_t runtime_flags =
+            (file_flags & EDGE_LINUX_KEXEC_FILE_ON_CRASH) ?
+                KERNEL_KEXEC_ON_CRASH : 0;
+        uint8_t *command_line = 0;
+        void *kernel = 0;
+        void *initrd = 0;
+        uint32_t kernel_size = 0;
+        uint32_t initrd_size = 0;
+        uint32_t kernel_pages = 0;
+        uint32_t initrd_pages = 0;
+        uint32_t command_line_pages = 0;
+        uint64_t command_line_size = context->arguments[2];
+        int status;
+
+        if (file_flags & EDGE_LINUX_KEXEC_FILE_UNLOAD)
+            return kernel_kexec_stage(0, 0, 0, runtime_flags, &access);
+        if (file_flags & EDGE_LINUX_KEXEC_FILE_ON_CRASH)
+            return -EDGE_LINUX_EADDRNOTAVAIL;
+        if (command_line_size > EDGE_LINUX_KEXEC_COMMAND_LINE_MAX)
+            return -EDGE_LINUX_EINVAL;
+        if (command_line_size) {
+            command_line_pages = 1;
+            command_line = arch_vm_alloc_pages(command_line_pages);
+            if (!command_line) return -EDGE_LINUX_ENOMEM;
+            if (edge_linux_copy_from_user(
+                    context, command_line, context->arguments[3],
+                    command_line_size) < 0) {
+                status = -EDGE_LINUX_EFAULT;
+                goto file_out;
+            }
+            if (command_line[command_line_size - 1u] != 0) {
+                status = -EDGE_LINUX_EINVAL;
+                goto file_out;
+            }
+        }
+        status = edge_linux_kexec_read_file(
+            (int32_t)context->arguments[0], &kernel, &kernel_size,
+            &kernel_pages);
+        if (status < 0) goto file_out;
+        if (!(file_flags & EDGE_LINUX_KEXEC_FILE_NO_INITRAMFS)) {
+            status = edge_linux_kexec_read_file(
+                (int32_t)context->arguments[1], &initrd, &initrd_size,
+                &initrd_pages);
+            if (status < 0) goto file_out;
+        }
+        status = kernel_kexec_stage_file(
+            kernel, kernel_size, initrd, initrd_size, command_line,
+            command_line_size, runtime_flags, &access);
+
+file_out:
+        edge_linux_module_free_pages(command_line, command_line_pages);
+        edge_linux_module_free_pages(kernel, kernel_pages);
+        edge_linux_module_free_pages(initrd, initrd_pages);
+        return status;
+    }
 }
 
 static int64_t edge_linux_sys_uprobe_entry(

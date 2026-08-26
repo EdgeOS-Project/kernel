@@ -8,18 +8,22 @@
 #if defined(__x86_64__)
 #define ENTRY_ALIGNMENT __attribute__((force_align_arg_pointer))
 #define SYS_write 1
+#define SYS_close 3
 #define SYS_clone 56
 #define SYS_exit 60
 #define SYS_wait4 61
 #define SYS_setuid 105
 #define SYS_kexec_load 246
 #define SYS_kexec_file_load 320
+#define SYS_openat 257
 #define SYS_uretprobe 335
 #define SYS_uprobe 336
 #define SYS_map_shadow_stack 453
 #else
 #define ENTRY_ALIGNMENT
 #define SYS_write 64
+#define SYS_openat 56
+#define SYS_close 57
 #define SYS_exit 93
 #define SYS_setuid 146
 #define SYS_wait4 260
@@ -31,6 +35,7 @@
 
 #define EPERM 1
 #define ENXIO 6
+#define EBADF 9
 #define EFAULT 14
 #define EINVAL 22
 #define ENOSYS 38
@@ -39,6 +44,7 @@
 
 #define KEXEC_ARCH_X86_64 (62UL << 16)
 #define KEXEC_ARCH_AARCH64 (183UL << 16)
+#define AT_FDCWD -100
 
 struct kexec_segment {
     unsigned long buffer;
@@ -156,10 +162,17 @@ static int test_kexec_permissions(void) {
             "kexec_load permission",
             raw_syscall6(SYS_kexec_load, 0, 0, 0, architecture, 0, 0),
             -EPERM);
-        failures += expect_one_of(
+#if defined(EXPECT_KEXEC_FILE_LOAD_ENOSYS)
+        failures += expect_result(
+            "kexec_file_load configured out",
+            raw_syscall6(SYS_kexec_file_load, -1, -1, 0, 0, 0, 0),
+            -ENOSYS);
+#else
+        failures += expect_result(
             "kexec_file_load permission",
             raw_syscall6(SYS_kexec_file_load, -1, -1, 0, 0, 0, 0),
-            -EPERM, -ENOSYS);
+            -EPERM);
+#endif
         (void)raw_syscall6(
             SYS_exit, failures ? 1 : 0, 0, 0, 0, 0, 0);
         __builtin_unreachable();
@@ -242,10 +255,58 @@ static int test_optional_calls(void) {
         raw_syscall6(SYS_kexec_load, segment.memory, 1,
                      (long)&segment, architecture | 1, 0, 0),
         -EADDRNOTAVAIL);
-    failures += expect_one_of(
+#if defined(EXPECT_KEXEC_FILE_LOAD_ENOSYS)
+    failures += expect_result(
+        "kexec_file_load configured out",
+        raw_syscall6(SYS_kexec_file_load, -1, -1, 0, 0, 0x40, 0),
+        -ENOSYS);
+#else
+    failures += expect_result(
         "kexec_file_load invalid flags",
         raw_syscall6(SYS_kexec_file_load, -1, -1, 0, 0, 0x40, 0),
-        -EINVAL, -ENOSYS);
+        -EINVAL);
+    failures += expect_result(
+        "kexec_file_load invalid kernel fd",
+        raw_syscall6(SYS_kexec_file_load, -1, -1, 0, 0, 0, 0),
+        -EBADF);
+    failures += expect_result(
+        "kexec_file_load unload",
+        raw_syscall6(SYS_kexec_file_load, -1, -1, 0, 0, 1, 0),
+        0);
+    failures += expect_result(
+        "kexec_file_load crash reservation",
+        raw_syscall6(SYS_kexec_file_load, -1, -1, 0, 0, 2, 0),
+        -EADDRNOTAVAIL);
+    {
+        static const char kernel_path[] = "/fixtures/kexec-kernel";
+        static const char initrd_path[] = "/fixtures/kexec-initrd";
+        static const char command_line[] = "console=ttyS0";
+        long kernel_fd = raw_syscall6(
+            SYS_openat, AT_FDCWD, (long)kernel_path, 0, 0, 0, 0);
+        long initrd_fd = raw_syscall6(
+            SYS_openat, AT_FDCWD, (long)initrd_path, 0, 0, 0, 0);
+
+        if (kernel_fd < 0 || initrd_fd < 0) {
+            failures += expect_result("kexec fixture open", -1, 0);
+        } else {
+            failures += expect_result(
+                "kexec_file_load stage files",
+                raw_syscall6(
+                    SYS_kexec_file_load, kernel_fd, initrd_fd,
+                    sizeof(command_line), (long)command_line, 0, 0),
+                0);
+            failures += expect_result(
+                "kexec_file_load staged unload",
+                raw_syscall6(
+                    SYS_kexec_file_load, -1, -1, 0, 0, 1, 0),
+                0);
+        }
+        if (kernel_fd >= 0)
+            (void)raw_syscall6(SYS_close, kernel_fd, 0, 0, 0, 0, 0);
+        if (initrd_fd >= 0)
+            (void)raw_syscall6(SYS_close, initrd_fd, 0, 0, 0, 0, 0);
+    }
+#endif
 
 #if defined(EXPECT_MAP_SHADOW_STACK_ENOSYS)
     failures += expect_result(
