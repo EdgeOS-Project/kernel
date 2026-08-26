@@ -7,6 +7,8 @@
 #define SYS_read 0
 #define SYS_write 1
 #define SYS_close 3
+#define SYS_pread64 17
+#define SYS_pwrite64 18
 #define SYS_mmap 9
 #define SYS_munmap 11
 #define SYS_ioctl 16
@@ -21,6 +23,8 @@
 #define SYS_close 57
 #define SYS_read 63
 #define SYS_write 64
+#define SYS_pread64 67
+#define SYS_pwrite64 68
 #define SYS_exit 93
 #define SYS_socket 198
 #define SYS_socketpair 199
@@ -52,6 +56,7 @@
 #define SO_REUSEADDR 2u
 #define SO_TIMESTAMPING 37u
 #define EINVAL 22
+#define EBADF 9
 #define EOPNOTSUPP 95
 #define SIOCGIFFLAGS 0x8913u
 #define SIOCSIFFLAGS 0x8914u
@@ -76,6 +81,8 @@
 #define SOF_TIMESTAMPING_SOFTWARE (1u << 4)
 #define SOF_TIMESTAMPING_OPT_ID (1u << 7)
 #define SOF_TIMESTAMPING_OPT_TSONLY (1u << 11)
+#define BLKGETSIZE64 0x80081272u
+#define BLOCK_URING_CMD_DISCARD 0x1200u
 
 struct user_sockaddr {
     uint16_t family;
@@ -464,6 +471,175 @@ static int run_null_ring(uint32_t setup_flags, uint8_t opcode) {
     return failures;
 }
 
+static int run_block_discard_ring(uint32_t setup_flags, uint8_t opcode) {
+    static const char *const paths[] = {
+        "/dev/sda", "/dev/vda", "/dev/ram0", "/dev/b252",
+        "/dev/b253", "/dev/b254", "/dev/b255", "/dev/b256",
+        "/dev/b257", "/dev/b258", "/dev/b259"
+    };
+    struct io_uring_params parameters;
+    struct io_uring_sqe request;
+    uint8_t original[512];
+    uint8_t pattern[512];
+    uint8_t result[512];
+    void *sq_ring = 0;
+    void *cq_ring = 0;
+    void *sqes = 0;
+    uint64_t device_size = 0u;
+    uint64_t offset;
+    const char *block_path = 0;
+    uint32_t stride = setup_flags & IORING_SETUP_SQE128 ? 128u : 64u;
+    long block_descriptor = -1;
+    long ring_descriptor;
+    int failures = 0;
+
+    for (uint32_t index = 0;
+         index < sizeof(paths) / sizeof(paths[0]); ++index) {
+        block_descriptor = raw_syscall6(
+            SYS_openat, AT_FDCWD, (long)paths[index], O_RDWR,
+            0, 0, 0);
+        if (block_descriptor >= 0) {
+            block_path = paths[index];
+            break;
+        }
+    }
+    if (block_descriptor < 0) {
+        print_text("BLOCK_DISCARD_OPEN_FAIL\n");
+        return 1;
+    }
+    if (raw_syscall6(
+            SYS_ioctl, block_descriptor, BLKGETSIZE64,
+            (long)&device_size, 0, 0, 0) != 0 || device_size < 4096u) {
+        print_text("BLOCK_DISCARD_SIZE_FAIL\n");
+        (void)raw_syscall6(
+            SYS_close, block_descriptor, 0, 0, 0, 0, 0);
+        return 1;
+    }
+    offset = (device_size - 4096u) & ~511ull;
+    memset(pattern, 0x5a, sizeof(pattern));
+    if (raw_syscall6(
+            SYS_pread64, block_descriptor, (long)original,
+            sizeof(original), (long)offset, 0, 0) !=
+        (long)sizeof(original)) {
+        print_text("BLOCK_DISCARD_BACKUP_FAIL\n");
+        (void)raw_syscall6(
+            SYS_close, block_descriptor, 0, 0, 0, 0, 0);
+        return 1;
+    }
+    failures += record_failure(raw_syscall6(
+        SYS_pwrite64, block_descriptor, (long)pattern,
+        sizeof(pattern), (long)offset, 0, 0) != (long)sizeof(pattern),
+        "BLOCK_DISCARD_PREPARE_FAIL\n");
+    if (failures) goto block_discard_restore;
+
+    memset(&parameters, 0, sizeof(parameters));
+    parameters.flags = setup_flags;
+    ring_descriptor = raw_syscall6(
+        SYS_io_uring_setup, 8, (long)&parameters, 0, 0, 0, 0);
+    if (ring_descriptor < 0) {
+        print_text("BLOCK_DISCARD_SETUP_FAIL\n");
+        failures = 1;
+        goto block_discard_restore;
+    }
+    sq_ring = map_ring(ring_descriptor, IORING_OFF_SQ_RING);
+    cq_ring = map_ring(ring_descriptor, IORING_OFF_CQ_RING);
+    sqes = map_ring(ring_descriptor, IORING_OFF_SQES);
+    if (!sq_ring || !cq_ring || !sqes) {
+        print_text("BLOCK_DISCARD_MMAP_FAIL\n");
+        failures = 1;
+    } else {
+        memset(&request, 0, sizeof(request));
+        request.opcode = opcode;
+        request.descriptor = (int32_t)block_descriptor;
+        request.offset = BLOCK_URING_CMD_DISCARD;
+        request.address = offset;
+        request.address3 = sizeof(pattern);
+        request.user_data = 0x424c4b44495343ull;
+        failures += record_failure(submit_one(
+            ring_descriptor, &parameters, sq_ring, cq_ring, sqes,
+            stride, &request, 0), "BLOCK_DISCARD_CMD_FAIL\n");
+        request.address = offset + 1u;
+        request.user_data++;
+        failures += record_failure(submit_one(
+            ring_descriptor, &parameters, sq_ring, cq_ring, sqes,
+            stride, &request, -EINVAL),
+            "BLOCK_DISCARD_ALIGNMENT_FAIL\n");
+        request.address = offset;
+        request.address3 = 0u;
+        request.user_data++;
+        failures += record_failure(submit_one(
+            ring_descriptor, &parameters, sq_ring, cq_ring, sqes,
+            stride, &request, -EINVAL),
+            "BLOCK_DISCARD_ZERO_LENGTH_FAIL\n");
+        request.address3 = sizeof(pattern);
+        request.offset = BLOCK_URING_CMD_DISCARD + 1u;
+        request.user_data++;
+        failures += record_failure(submit_one(
+            ring_descriptor, &parameters, sq_ring, cq_ring, sqes,
+            stride, &request, -EINVAL),
+            "BLOCK_DISCARD_UNKNOWN_COMMAND_FAIL\n");
+        request.offset = BLOCK_URING_CMD_DISCARD;
+        request.length = 1u;
+        request.user_data++;
+        failures += record_failure(submit_one(
+            ring_descriptor, &parameters, sq_ring, cq_ring, sqes,
+            stride, &request, -EINVAL),
+            "BLOCK_DISCARD_RESERVED_FAIL\n");
+        request.length = 0u;
+        {
+            long read_only_descriptor = raw_syscall6(
+                SYS_openat, AT_FDCWD, (long)block_path, 0u,
+                0, 0, 0);
+            failures += record_failure(
+                read_only_descriptor < 0,
+                "BLOCK_DISCARD_READ_ONLY_OPEN_FAIL\n");
+            if (read_only_descriptor >= 0) {
+                request.descriptor = (int32_t)read_only_descriptor;
+                request.user_data++;
+                failures += record_failure(submit_one(
+                    ring_descriptor, &parameters, sq_ring, cq_ring,
+                    sqes, stride, &request, -EBADF),
+                    "BLOCK_DISCARD_READ_ONLY_FAIL\n");
+                (void)raw_syscall6(
+                    SYS_close, read_only_descriptor, 0, 0, 0, 0, 0);
+                request.descriptor = (int32_t)block_descriptor;
+            }
+        }
+        memset(result, 0xa5, sizeof(result));
+        failures += record_failure(raw_syscall6(
+            SYS_pread64, block_descriptor, (long)result,
+            sizeof(result), (long)offset, 0, 0) != (long)sizeof(result),
+            "BLOCK_DISCARD_READBACK_FAIL\n");
+        for (uint32_t index = 0; index < sizeof(result); ++index) {
+            if (result[index] != 0u) {
+                failures += record_failure(
+                    1, "BLOCK_DISCARD_CONTENT_FAIL\n");
+                break;
+            }
+        }
+    }
+    if (sqes)
+        (void)raw_syscall6(
+            SYS_munmap, (long)sqes, PAGE_SIZE, 0, 0, 0, 0);
+    if (cq_ring)
+        (void)raw_syscall6(
+            SYS_munmap, (long)cq_ring, PAGE_SIZE, 0, 0, 0, 0);
+    if (sq_ring)
+        (void)raw_syscall6(
+            SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
+    (void)raw_syscall6(
+        SYS_close, ring_descriptor, 0, 0, 0, 0, 0);
+
+block_discard_restore:
+    if (raw_syscall6(
+            SYS_pwrite64, block_descriptor, (long)original,
+            sizeof(original), (long)offset, 0, 0) != (long)sizeof(original))
+        failures += record_failure(1, "BLOCK_DISCARD_RESTORE_FAIL\n");
+    (void)raw_syscall6(
+        SYS_close, block_descriptor, 0, 0, 0, 0, 0);
+    return failures;
+}
+
 static int run_timestamp_ring(
         long sender, long receiver,
         const struct user_sockaddr_in *receiver_address,
@@ -633,6 +809,12 @@ void _start(void) {
         failures += run_null_ring(0u, IORING_OP_URING_CMD);
     if (!failures)
         failures += run_null_ring(
+            IORING_SETUP_SQE128, IORING_OP_URING_CMD128);
+    if (!failures)
+        failures += run_block_discard_ring(
+            0u, IORING_OP_URING_CMD);
+    if (!failures)
+        failures += run_block_discard_ring(
             IORING_SETUP_SQE128, IORING_OP_URING_CMD128);
     if (socket_descriptor >= 0)
         (void)raw_syscall6(SYS_close, socket_descriptor, 0, 0, 0, 0, 0);

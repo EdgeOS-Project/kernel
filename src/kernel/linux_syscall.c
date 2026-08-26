@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "block/block.h"
 #include "console.h"
 #include "fs/cgroupfs.h"
 #include "fs/swap.h"
@@ -11318,6 +11319,7 @@ static int64_t edge_linux_sys_aio(
 #define EDGE_LINUX_SOCKET_URING_OP_SETSOCKOPT  3u
 #define EDGE_LINUX_SOCKET_URING_OP_TX_TIMESTAMP 4u
 #define EDGE_LINUX_SOCKET_URING_OP_GETSOCKNAME 5u
+#define EDGE_LINUX_BLOCK_URING_CMD_DISCARD 0x1200u
 
 #define EDGE_LINUX_IORING_ASYNC_CANCEL_ALL      (1u << 0)
 #define EDGE_LINUX_IORING_ASYNC_CANCEL_FD       (1u << 1)
@@ -12510,6 +12512,8 @@ static int64_t edge_linux_io_uring_execute_uring_cmd(
         submission->descriptor, &descriptor_info);
     if (result == -EDGE_LINUX_ENOTSOCK) {
         kernel_vfs_target_t target;
+        kernel_vfs_descriptor_t description;
+        block_device_t *block_device;
 
         memset(&target, 0, sizeof(target));
         result = kernel_vfs_resolve_fd(
@@ -12518,7 +12522,28 @@ static int64_t edge_linux_io_uring_execute_uring_cmd(
         if (target.resolved_path &&
             strcmp(target.resolved_path, "/dev/null") == 0)
             return 0;
-        return -EDGE_LINUX_EOPNOTSUPP;
+        if (!target.inode ||
+            (target.inode->mode & 0xf000u) != VFS_INODE_BLK)
+            return -EDGE_LINUX_EOPNOTSUPP;
+        if (command != EDGE_LINUX_BLOCK_URING_CMD_DISCARD)
+            return -EDGE_LINUX_EINVAL;
+        if (submission->ioprio || submission->length ||
+            submission->splice_descriptor)
+            return -EDGE_LINUX_EINVAL;
+        memset(&description, 0, sizeof(description));
+        result = kernel_vfs_describe_descriptor(
+            submission->descriptor, &description);
+        if (result < 0) return result;
+        if (!description.writable) return -EDGE_LINUX_EBADF;
+        block_device = block_find_linux_device(target.inode->rdev);
+        if (!block_device) return -EDGE_LINUX_EOPNOTSUPP;
+        result = block_discard_bytes(
+            block_device, submission->address,
+            submission->address3);
+        if (result == -1) return -EDGE_LINUX_EOPNOTSUPP;
+        if (result == -2) return -EDGE_LINUX_EINVAL;
+        if (result < 0) return -EDGE_LINUX_EIO;
+        return 0;
     }
     if (result < 0) return result;
 

@@ -192,6 +192,7 @@ EDGEOS_ASSESSMENTS = [
             "URING_CMD and URING_CMD128 dispatch for socket SIOCINQ, SIOCOUTQ, GETSOCKOPT, SETSOCKOPT, GETSOCKNAME and GETPEERNAME commands",
             "URING_CMD and URING_CMD128 transmit timestamp subscriptions with Linux CQE32 timestamp payloads, per-socket identifiers, cancellation and retained open-file-description lifetime",
             "URING_CMD and URING_CMD128 dispatch through the Linux null character device handler",
+            "BLOCK_URING_CMD_DISCARD with writable-descriptor checks, logical-block alignment, range validation and shared software discard for writable block devices",
             "pending poll requests retain their open file descriptions across descriptor close and reuse",
             "EPOLL_WAIT with retained epoll objects, asynchronous completion and native x86_64 and AArch64 event layouts",
             "LINK_TIMEOUT cancellation races, target lifetime and paired completion results",
@@ -222,7 +223,7 @@ EDGEOS_ASSESSMENTS = [
             "SQPOLL setup, affinity validation, non-fixed descriptor feature reporting and SQ_WAKEUP or SQ_WAIT enter control",
         ],
         "missing": [
-            "remaining supported block, BSG, FUSE, btrfs, ublk and NVMe URING_CMD device consumers",
+            "remaining supported BSG, FUSE, btrfs, ublk and NVMe URING_CMD device consumers",
             "remaining ia32 and x32 semantic coverage across supported operations",
         ],
         "runtime_tests": [
@@ -339,6 +340,8 @@ EDGEOS_ASSESSMENTS = [
                 "plus socket transmit timestamp subscriptions with CQE32 payloads, "
                 "per-socket identifiers, cancellation and retained lifetime, "
                 "plus Linux null character-device URING_CMD dispatch, "
+                "plus block-device discard commands with write access, "
+                "alignment, range and reserved-field validation, "
                 "plus TCP RECV_ZC with nodev ZCRX registration, CQE32 data "
                 "offsets, finite multishot completion, refill mmap, flush "
                 "control, exported descriptor lifetime and shared import "

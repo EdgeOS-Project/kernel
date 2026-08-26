@@ -930,6 +930,51 @@ int block_flush(block_device_t *dev) {
     return result;
 }
 
+int block_discard_bytes(block_device_t *dev, uint64_t offset,
+                        uint64_t length) {
+    static uint8_t zero_buffer[BLOCK_MAX_SECTOR_SIZE];
+    static volatile uint32_t discard_lock;
+    uint64_t end;
+    uint64_t lba;
+    uint64_t sectors;
+    uint32_t maximum_batch;
+    int result = 0;
+
+    if (!dev || !dev->present || !dev->sector_size ||
+        !dev->ops.write_sectors)
+        return -1;
+    if (!length || (offset % dev->sector_size) != 0u ||
+        (length % dev->sector_size) != 0u ||
+        offset > UINT64_MAX - length)
+        return -2;
+    end = offset + length;
+    if (end > block_device_size_bytes(dev)) return -2;
+    lba = offset / dev->sector_size;
+    sectors = length / dev->sector_size;
+    while (__atomic_exchange_n(&discard_lock, 1u, __ATOMIC_ACQUIRE)) {
+        while (__atomic_load_n(&discard_lock, __ATOMIC_RELAXED))
+            __asm__ __volatile__("" ::: "memory");
+    }
+    memset(zero_buffer, 0, sizeof(zero_buffer));
+    maximum_batch = BLOCK_MAX_SECTOR_SIZE / dev->sector_size;
+    if (!maximum_batch) maximum_batch = 1u;
+    while (sectors) {
+        uint32_t batch = sectors > maximum_batch ?
+            maximum_batch : (uint32_t)sectors;
+        if (lba > UINT32_MAX ||
+            (uint64_t)batch > (uint64_t)UINT32_MAX - lba + 1u ||
+            block_write_sectors(
+                dev, (uint32_t)lba, batch, zero_buffer) < 0) {
+            result = -3;
+            break;
+        }
+        lba += batch;
+        sectors -= batch;
+    }
+    __atomic_store_n(&discard_lock, 0u, __ATOMIC_RELEASE);
+    return result;
+}
+
 uint64_t block_device_size_bytes(const block_device_t *dev) {
     if (!dev || !dev->present || !dev->sector_size) return 0;
     return (uint64_t)dev->sector_count * (uint64_t)dev->sector_size;

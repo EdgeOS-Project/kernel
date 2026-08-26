@@ -79,6 +79,8 @@ int64_t block_read_bytes(block_device_t *dev, uint64_t offset, void *out,
                          uint32_t length);
 int64_t block_write_bytes(block_device_t *dev, uint64_t offset,
                           const void *input, uint32_t length);
+int block_discard_bytes(block_device_t *dev, uint64_t offset,
+                        uint64_t length);
 int block_linux_ioctl_query(const block_device_t *dev, uint32_t command,
                             uint64_t *value, uint32_t *value_size);
 int block_is_partition(const block_device_t *dev);
