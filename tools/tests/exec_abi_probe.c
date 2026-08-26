@@ -425,9 +425,7 @@ static int run_cloexec_probe(void) {
 static int test_shebang_symlink_path(void) {
     static const char target[] = "/tmp/edgeos-exec-script";
     static const char alias[] = "/tmp/edgeos-exec-script-alias";
-    static const char script[] =
-        "#!/bin/sh\n"
-        "test \"$0\" = /tmp/edgeos-exec-script-alias\n";
+    static const char script[] = "#!/probes/exec_script_helper\n";
     char *arguments[] = {(char *)"ignored-argv0", 0};
     char *environment[] = {(char *)"PATH=/bin:/usr/bin", 0};
     long descriptor;
@@ -511,7 +509,7 @@ static int run_probe(uintptr_t *initial_stack) {
         raw_syscall5(SYS_execveat, AT_FDCWD, 0, 0, 0, 0), -EFAULT);
     failures += expect_result("execveat_null_bad_flags",
         raw_syscall5(SYS_execveat, AT_FDCWD, 0, 0, 0,
-                     0x80000000u), -EFAULT);
+                     0x80000000u), -EINVAL);
     failures += expect_result("execveat_empty_without_flag",
         raw_syscall5(SYS_execveat, -1, (long)"", 0, 0, 0), -ENOENT);
     failures += expect_result("execveat_empty_bad_descriptor",

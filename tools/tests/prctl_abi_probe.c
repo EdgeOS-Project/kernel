@@ -24,7 +24,7 @@
 #define PR_GET_THP_DISABLE 42
 #endif
 #ifndef PR_THP_DISABLE_EXCEPT_ADVISED
-#define PR_THP_DISABLE_EXCEPT_ADVISED 1
+#define PR_THP_DISABLE_EXCEPT_ADVISED (1 << 1)
 #endif
 #ifndef PR_SET_VMA
 #define PR_SET_VMA 0x53564d41
@@ -152,7 +152,7 @@ static void test_thp_disable(void) {
     }
     errno = 0;
     expect_errno("reject THP flags",
-                 prctl(PR_SET_THP_DISABLE, 1, 2, 0, 0), EINVAL);
+                 prctl(PR_SET_THP_DISABLE, 1, 1, 0, 0), EINVAL);
     errno = 0;
     expect_errno("reject THP extra arg",
                  prctl(PR_GET_THP_DISABLE, 1, 0, 0, 0), EINVAL);

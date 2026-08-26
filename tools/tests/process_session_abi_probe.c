@@ -280,11 +280,10 @@ static int test_parent_rejects_other_session(void) {
 }
 
 static int test_execed_child(void) {
-    static char path[] = "/bin/sleep";
-    static char argument0[] = "sleep";
-    static char argument1[] = "1";
+    static char path[] = "/probes/process_session_exec_helper";
+    static char argument0[] = "process_session_exec_helper";
     static char environment0[] = "PATH=/usr/bin:/bin";
-    static char *arguments[] = {argument0, argument1, 0};
+    static char *arguments[] = {argument0, 0};
     static char *environment[] = {environment0, 0};
     int descriptors[2];
     long child;
@@ -318,6 +317,8 @@ static int test_execed_child(void) {
 static int run_probe(void) {
     int failures = 0;
 
+    failures += expect_ret("setpgid_self",
+                           raw_syscall2(SYS_setpgid, 0, 0), 0);
     failures += expect_ret("setpgid_negative_pid",
                            raw_syscall2(SYS_setpgid, -1, 0), -EINVAL);
     failures += expect_ret("setpgid_negative_group",

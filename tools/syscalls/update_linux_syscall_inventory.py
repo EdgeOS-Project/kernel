@@ -66,6 +66,14 @@ VERIFIED_SYSCALL_PROBES = {
     "accept": "tools/tests/socket_accept_abi_probe.c",
     "accept4": "tools/tests/socket_accept_abi_probe.c",
     "access": "tools/tests/metadata_mutation_abi_probe.c",
+    "clone": (
+        "tools/tests/fork_clone_tid_probe.c",
+        "tools/tests/clone_abi_probe.c",
+    ),
+    "clone3": (
+        "tools/tests/fork_clone_tid_probe.c",
+        "tools/tests/clone_abi_probe.c",
+    ),
     "chdir": "tools/tests/fs_context_abi_probe.c",
     "chmod": "tools/tests/metadata_mutation_abi_probe.c",
     "chown": "tools/tests/metadata_mutation_abi_probe.c",
@@ -86,6 +94,10 @@ VERIFIED_SYSCALL_PROBES = {
     "epoll_wait": "tools/tests/epoll_abi_probe.c",
     "eventfd": "tools/tests/eventfd_abi_probe.c",
     "eventfd2": "tools/tests/eventfd_abi_probe.c",
+    "execve": "tools/tests/exec_abi_probe.c",
+    "execveat": "tools/tests/exec_abi_probe.c",
+    "exit": "tools/tests/exit_abi_probe.c",
+    "exit_group": "tools/tests/exit_abi_probe.c",
     "faccessat": "tools/tests/metadata_mutation_abi_probe.c",
     "faccessat2": "tools/tests/metadata_mutation_abi_probe.c",
     "fchdir": "tools/tests/fs_context_abi_probe.c",
@@ -177,6 +189,11 @@ VERIFIED_SYSCALL_PROBES = {
     "pwrite64": "tools/tests/vector_io_abi_probe.c",
     "pwritev": "tools/tests/vector_io_abi_probe.c",
     "pwritev2": "tools/tests/vector_io_abi_probe.c",
+    "prctl": (
+        "tools/tests/prctl_abi_probe.c",
+        "tools/tests/prctl_state_abi_probe.c",
+        "tools/tests/prctl_pdeathsig_probe.c",
+    ),
     "prlimit64": "tools/tests/resource_accounting_abi_probe.c",
     "read": "tools/tests/vector_io_abi_probe.c",
     "readlink": "tools/tests/path_mutation_abi_probe.c",
@@ -189,11 +206,13 @@ VERIFIED_SYSCALL_PROBES = {
     "rename": "tools/tests/path_mutation_abi_probe.c",
     "renameat": "tools/tests/path_mutation_abi_probe.c",
     "renameat2": "tools/tests/path_mutation_abi_probe.c",
+    "restart_syscall": "tools/tests/restart_syscall_abi_probe.c",
     "rmdir": "tools/tests/path_mutation_abi_probe.c",
     "rseq": "tools/tests/synchronization_registration_abi_probe.c",
     "rt_sigaction": "tools/tests/signal_state_abi_probe.c",
     "rt_sigpending": "tools/tests/signal_state_abi_probe.c",
     "rt_sigprocmask": "tools/tests/signal_state_abi_probe.c",
+    "rt_sigsuspend": "tools/tests/signal_wait_abi_probe.c",
     "rt_sigtimedwait": "tools/tests/signal_state_abi_probe.c",
     "msgctl": "tools/tests/sysv_msg_abi_probe.c",
     "msgget": "tools/tests/sysv_msg_abi_probe.c",
@@ -212,6 +231,7 @@ VERIFIED_SYSCALL_PROBES = {
     "sched_getattr": "tools/tests/scheduler_runtime_probe.c",
     "sched_getparam": "tools/tests/scheduler_runtime_probe.c",
     "sched_getscheduler": "tools/tests/scheduler_runtime_probe.c",
+    "sched_rr_get_interval": "tools/tests/sched_param_abi_probe.c",
     "sched_setaffinity": "tools/tests/scheduler_runtime_probe.c",
     "sched_setattr": "tools/tests/scheduler_runtime_probe.c",
     "sched_setparam": "tools/tests/scheduler_runtime_probe.c",
@@ -234,12 +254,14 @@ VERIFIED_SYSCALL_PROBES = {
     "sethostname": "tools/tests/shared_syscall_smoke.c",
     "setitimer": "tools/tests/itimer_abi_probe.c",
     "setpriority": "tools/tests/process_control_abi_probe.c",
+    "setpgid": "tools/tests/process_session_abi_probe.c",
     "setrlimit": "tools/tests/resource_accounting_abi_probe.c",
     "set_tid_address": "tools/tests/process_control_abi_probe.c",
     "setregid": "tools/tests/credential_transition_abi_probe.c",
     "setresgid": "tools/tests/credential_transition_abi_probe.c",
     "setresuid": "tools/tests/credential_transition_abi_probe.c",
     "setreuid": "tools/tests/credential_transition_abi_probe.c",
+    "setsid": "tools/tests/process_session_abi_probe.c",
     "setuid": "tools/tests/credential_transition_abi_probe.c",
     "setxattr": "tools/tests/xattr_abi_probe.c",
     "shmat": "tools/tests/sysv_shm_abi_probe.c",
@@ -351,7 +373,8 @@ def build_document() -> dict[str, Any]:
             runtime_tests = [LINUX_RESERVED_SYSCALL_PROBE]
             oracle_status = "verified"
         if name in VERIFIED_SYSCALL_PROBES:
-            runtime_tests = [VERIFIED_SYSCALL_PROBES[name]]
+            probe = VERIFIED_SYSCALL_PROBES[name]
+            runtime_tests = list(probe) if isinstance(probe, tuple) else [probe]
             oracle_status = "verified"
         if name in PARTIAL_SYSCALL_PROBES:
             runtime_tests = [PARTIAL_SYSCALL_PROBES[name]]

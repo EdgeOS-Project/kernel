@@ -21122,17 +21122,13 @@ static int64_t edge_linux_sys_exec(
     status = edge_linux_path_workspace_initialize(&scratch, &workspace);
     if (status < 0) return status;
 
-    /*
-     * Linux acquires the pathname before validating execveat flags.  This
-     * makes an inaccessible pathname report EFAULT even when flags also
-     * contains unknown bits.
-     */
+    if (flags & ~valid_execveat_flags)
+        return -EDGE_LINUX_EINVAL;
+
     status = edge_linux_copy_user_string(
         context, user_path, scratch.path, scratch.path_capacity,
         EDGE_LINUX_ENAMETOOLONG);
     if (status < 0) return status;
-    if (flags & ~valid_execveat_flags)
-        return -EDGE_LINUX_EINVAL;
 
     if (!scratch.path[0]) {
         kernel_vfs_descriptor_t descriptor;

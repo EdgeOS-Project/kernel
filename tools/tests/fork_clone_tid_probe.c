@@ -76,9 +76,16 @@ static int test_libc_fork(void) {
 
 static int test_clone_child_tid(void) {
     volatile int child_tid = -1;
+#if defined(__aarch64__)
+    long rc = syscall(SYS_clone,
+                      (long)(SIGCHLD | CLONE_CHILD_SETTID |
+                             CLONE_CHILD_CLEARTID),
+                      0, 0, 0, &child_tid);
+#else
     long rc = syscall(SYS_clone,
                       (long)(SIGCHLD | CLONE_CHILD_SETTID | CLONE_CHILD_CLEARTID),
                       0, 0, &child_tid, 0);
+#endif
     if (rc < 0) {
         printf("clone_child_tid_rc:%ld errno:%d\n", rc, errno);
         return 1;

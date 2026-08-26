@@ -376,6 +376,7 @@ extern int vfs_chown_nofollow(const char *path, uint32_t uid, uint32_t gid);
 #define LINUX_EINTR 4
 #define LINUX_EDEADLK 35
 #define LINUX_ERESTARTNOHAND_INTERNAL 514
+#define ARM64_RESTART_SYSCALL_NUMBER 128u
 #define LINUX_ESRCH 3
 #define LINUX_ENAMETOOLONG 36
 #define LINUX_ELOOP 40
@@ -5101,6 +5102,17 @@ static void task_interrupt_wait_for_signal(kernel_task_t *task,
             break;
         }
         case KERNEL_TASK_WAITING_SLEEP:
+        {
+            const edge_linux_signal_action_t *action =
+                &task->signal_actions[signal - 1u];
+            edge_linux_signal_default_disposition_t disposition =
+                edge_linux_signal_default_disposition(signal);
+            int restart_after_signal =
+                action->handler == EDGE_LINUX_SIG_IGN ||
+                (action->handler == EDGE_LINUX_SIG_DFL &&
+                 (disposition == EDGE_LINUX_SIGNAL_DEFAULT_IGNORE ||
+                  disposition == EDGE_LINUX_SIGNAL_DEFAULT_STOP ||
+                  disposition == EDGE_LINUX_SIGNAL_DEFAULT_CONTINUE));
             if (task->sleep_remaining_user) {
                 arm64_linux_timespec_t remaining;
                 uint64_t now = boottime_monotonic_us();
@@ -5121,7 +5133,15 @@ static void task_interrupt_wait_for_signal(kernel_task_t *task,
             }
             task->sleep_deadline_us = 0;
             task->sleep_remaining_user = 0;
+            if (restart_after_signal) {
+                task->frame.x[8] = ARM64_RESTART_SYSCALL_NUMBER;
+                if (task->frame.elr >= 4u) task->frame.elr -= 4u;
+            } else if (action->handler != EDGE_LINUX_SIG_DFL) {
+                kernel_restart_block_reset(
+                    &task->linux_thread.restart_block);
+            }
             break;
+        }
         case KERNEL_TASK_WAITING_FUTEX:
         {
             uint64_t irq_flags = spin_lock_irqsave(&g_futex_lock);

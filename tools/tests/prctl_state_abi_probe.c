@@ -36,7 +36,7 @@
 #define PR_GET_NO_NEW_PRIVS 39
 #define PR_SET_THP_DISABLE 41
 #define PR_GET_THP_DISABLE 42
-#define PR_THP_DISABLE_EXCEPT_ADVISED 1
+#define PR_THP_DISABLE_EXCEPT_ADVISED (1 << 1)
 #define PR_SET_VMA 0x53564d41
 #define PR_SET_VMA_ANON_NAME 0
 
@@ -200,7 +200,7 @@ static int run_probe(void) {
     failures += expect_result("thp_get_except_advised",
         prctl(PR_GET_THP_DISABLE, 0, 0, 0, 0), 3);
     failures += expect_result("thp_invalid_flags",
-        prctl(PR_SET_THP_DISABLE, 1, 2, 0, 0), -EINVAL);
+        prctl(PR_SET_THP_DISABLE, 1, 1, 0, 0), -EINVAL);
     failures += expect_result("thp_extra_argument",
         prctl(PR_GET_THP_DISABLE, 1, 0, 0, 0), -EINVAL);
     failures += expect_result("thp_restore",
@@ -230,8 +230,20 @@ static int run_probe(void) {
     return failures ? 1 : 0;
 }
 
-void _start(void) {
+static __attribute__((noreturn, noinline, used)) void probe_entry(void) {
     int result = run_probe();
     (void)raw_syscall6(SYS_exit, result, 0, 0, 0, 0, 0);
     for (;;) {}
 }
+
+#if defined(__x86_64__)
+__attribute__((naked, noreturn)) void _start(void) {
+    __asm__ __volatile__(
+        "andq $-16, %rsp\n"
+        "call probe_entry\n");
+}
+#else
+void _start(void) {
+    probe_entry();
+}
+#endif

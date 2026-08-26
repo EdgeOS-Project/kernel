@@ -115,7 +115,8 @@ static long raw_syscall4(long number, long a0, long a1, long a2, long a3) {
     defined(UAPI_BATCH_FILESYSTEM_FD_ONLY) || \
     defined(UAPI_BATCH_PROCESS_RESOURCE_ONLY) || \
     defined(UAPI_BATCH_PROCESS_EVENT_ONLY) || \
-    defined(UAPI_BATCH_PROCESS_MISC_ORACLE_ONLY)
+    defined(UAPI_BATCH_PROCESS_MISC_ORACLE_ONLY) || \
+    defined(UAPI_BATCH_PROCESS_LIFECYCLE_ONLY)
 static long raw_syscall5(long number, long a0, long a1, long a2, long a3,
                          long a4) {
 #if defined(__x86_64__)
@@ -343,6 +344,18 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "supplementary_groups_abi_probe",
         "pidfd_signal_abi_probe",
         "process_vm_abi_probe",
+#elif defined(UAPI_BATCH_PROCESS_LIFECYCLE_ONLY)
+        "clone_abi_probe",
+        "fork_clone_tid_probe",
+        "exec_abi_probe",
+        "exit_abi_probe",
+        "process_session_abi_probe",
+        "prctl_abi_probe",
+        "prctl_state_abi_probe",
+        "prctl_pdeathsig_probe",
+        "restart_syscall_abi_probe",
+        "sched_param_abi_probe",
+        "signal_wait_abi_probe",
 #elif defined(UAPI_BATCH_NATIVE_OPTIONAL_ONLY)
         "native_optional_syscalls_abi_probe",
 #else
@@ -399,6 +412,15 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
 #endif
 #if defined(UAPI_BATCH_PROCESS_MISC_ORACLE_ONLY)
     (void)raw_syscall4(SYS_mkdirat, -100, (long)"/proc", 0555, 0);
+    (void)raw_syscall5(SYS_mount, (long)"proc", (long)"/proc",
+                       (long)"proc", 0, 0);
+#endif
+#if defined(UAPI_BATCH_PROCESS_LIFECYCLE_ONLY)
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/dev", 0755, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/proc", 0555, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/tmp", 01777, 0);
+    (void)raw_syscall5(SYS_mount, (long)"devtmpfs", (long)"/dev",
+                       (long)"devtmpfs", 0, 0);
     (void)raw_syscall5(SYS_mount, (long)"proc", (long)"/proc",
                        (long)"proc", 0, 0);
 #endif
