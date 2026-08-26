@@ -1,13 +1,25 @@
 /* SPDX-License-Identifier: MPL-2.0 */
-/* X.509 RSA public-key keyctl ABI probe for x86_64 and AArch64. */
+/* X.509 RSA public-key keyctl ABI probe for native and x86 compat ABIs. */
 
 typedef unsigned char uint8_t;
 typedef unsigned short uint16_t;
 typedef unsigned int uint32_t;
 typedef int int32_t;
+#if defined(__i386__)
+typedef unsigned int uintptr_t;
+#else
 typedef unsigned long uintptr_t;
+#endif
 
-#if defined(__x86_64__)
+#if defined(__i386__)
+#define SYS_read 3
+#define SYS_write 4
+#define SYS_close 6
+#define SYS_exit 1
+#define SYS_add_key 286
+#define SYS_keyctl 288
+#define SYS_openat 295
+#elif defined(__x86_64__)
 #define SYS_read 0
 #define SYS_write 1
 #define SYS_close 3
@@ -24,7 +36,7 @@ typedef unsigned long uintptr_t;
 #define SYS_keyctl 219
 #define SYS_openat 56
 #else
-#error "keyring_asymmetric_abi_probe requires a Linux 64-bit architecture"
+#error "keyring_asymmetric_abi_probe requires i386, x86_64 or AArch64"
 #endif
 
 #define AT_FDCWD (-100)
@@ -57,9 +69,36 @@ typedef struct keyctl_pkey_parameters {
     uint32_t spare[7];
 } keyctl_pkey_parameters_t;
 
+#if defined(__i386__)
+__attribute__((naked)) static long raw_syscall6(
+        long number, long a0, long a1, long a2,
+        long a3, long a4, long a5) {
+    __asm__ volatile(
+        "pushl %ebp\n"
+        "pushl %edi\n"
+        "pushl %esi\n"
+        "pushl %ebx\n"
+        "movl 20(%esp), %eax\n"
+        "movl 24(%esp), %ebx\n"
+        "movl 28(%esp), %ecx\n"
+        "movl 32(%esp), %edx\n"
+        "movl 36(%esp), %esi\n"
+        "movl 40(%esp), %edi\n"
+        "movl 44(%esp), %ebp\n"
+        "int $0x80\n"
+        "popl %ebx\n"
+        "popl %esi\n"
+        "popl %edi\n"
+        "popl %ebp\n"
+        "ret\n");
+}
+#else
 static long raw_syscall6(long number, long a0, long a1, long a2,
                          long a3, long a4, long a5) {
 #if defined(__x86_64__)
+#ifdef EDGE_PROBE_X32
+    number |= 0x40000000L;
+#endif
     register long r10 __asm__("r10") = a3;
     register long r8 __asm__("r8") = a4;
     register long r9 __asm__("r9") = a5;
@@ -86,6 +125,7 @@ static long raw_syscall6(long number, long a0, long a1, long a2,
     return x0;
 #endif
 }
+#endif
 
 static unsigned long text_length(const char *text) {
     unsigned long length = 0;
@@ -282,7 +322,15 @@ void probe_entry(uintptr_t *initial_stack) {
     exit_now(result);
 }
 
-#if defined(__x86_64__)
+#if defined(__i386__)
+__asm__(
+    ".global _start\n"
+    ".type _start, @function\n"
+    "_start:\n"
+    "xorl %ebp, %ebp\n"
+    "pushl %esp\n"
+    "call probe_entry\n");
+#elif defined(__x86_64__)
 __asm__(
     ".global _start\n"
     ".type _start, @function\n"

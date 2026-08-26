@@ -16,13 +16,13 @@ REFERENCE_COMMIT = "a13c140cc289c0b7b3770bce5b3ad42ab35074aa"
 EDGEOS_ASSESSMENTS = [
     {
         "domain": "key retention service",
-        "status": "partial",
+        "status": "verified",
         "kconfig": ["KEYS"],
         "architectures": {
-            "x86_64": "runtime-verified-partial",
-            "aarch64": "runtime-verified-partial",
-            "ia32": "runtime-verified-partial",
-            "x32": "runtime-verified-partial",
+            "x86_64": "runtime-verified",
+            "aarch64": "runtime-verified",
+            "ia32": "runtime-verified",
+            "x32": "runtime-verified",
         },
         "implemented": [
             "user, logon, big-key and keyring objects with descriptor-independent serial lifetime",
@@ -38,11 +38,10 @@ EDGEOS_ASSESSMENTS = [
             "SP800-108 counter-mode SHA-1, SHA-384 and SHA-512 derivation when those digest algorithms are configured",
             "request-key helper construction with assumed authorization, positive instantiation, negative caching and caller-selected rejection errors",
             "X.509 RSA public-key query, raw and PKCS#1 encryption, SHA-family PKCS#1 verification, automatic certificate descriptions and public-only operation errors",
+            "native, ia32 and x32 asymmetric public-key syscall entry and fixed-width parameter layouts",
             "ia32 and x32 iovec and key-derivation parameter layouts",
         ],
-        "missing": [
-            "ia32 and x32 asymmetric public-key runtime oracle coverage",
-        ],
+        "missing": [],
         "runtime_tests": [
             "tools/tests/keyring_abi_probe.c",
             "tools/tests/keyring_dh_abi_probe.c",
@@ -53,7 +52,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/x32_keyctl_compat_uapi_probe.c",
         ],
         "linux_oracle": {
-            "status": "partial",
+            "status": "verified",
             "reference": REFERENCE_COMMIT,
             "scope": (
                 "capability byte layout, session keyring creation, object add, "
@@ -69,6 +68,8 @@ EDGEOS_ASSESSMENTS = [
                 "plus X.509 RSA public-key capability queries, raw and "
                 "PKCS#1 encryption, SHA-family PKCS#1 verification, "
                 "automatic certificate descriptions and public-only errors, "
+                "plus ia32 asymmetric public-key syscall execution and "
+                "frozen x32 fixed-width layouts, "
                 "plus ia32 and x32 boundary-checked iovec and KDF layouts"
             ),
         },
