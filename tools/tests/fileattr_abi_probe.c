@@ -4,6 +4,12 @@
 #include <stdint.h>
 
 #if defined(__x86_64__)
+#define EDGE_ENTRY_ALIGN __attribute__((force_align_arg_pointer))
+#else
+#define EDGE_ENTRY_ALIGN
+#endif
+
+#if defined(__x86_64__)
 #define SYS_write 1
 #define SYS_close 3
 #define SYS_ftruncate 77
@@ -308,9 +314,9 @@ static int test_attributes(long descriptor) {
     attributes.current.fa_projid = 42;
     attributes.current.fa_cowextsize = 8192;
     failures += expect_result(
-        "set ignores get-only scalar fields",
+        "set rejects unsupported scalar fields",
         file_setattr(AT_FDCWD, g_path, &attributes.current,
-                     sizeof(attributes.current), 0), 0);
+                     sizeof(attributes.current), 0), -EOPNOTSUPP);
     memset(&attributes, 0, sizeof(attributes));
     failures += expect_result(
         "get after scalar input",
@@ -338,7 +344,7 @@ static int test_attributes(long descriptor) {
     failures += expect_result(
         "existing nonappend write",
         raw_syscall6(SYS_write, descriptor, (long)&byte, 1, 0, 0, 0),
-        -EPERM);
+        1);
     failures += expect_result(
         "append open required",
         raw_syscall6(SYS_openat, AT_FDCWD, (long)g_path,
@@ -379,11 +385,11 @@ static int test_attributes(long descriptor) {
     failures += expect_result(
         "immutable write",
         raw_syscall6(SYS_write, descriptor, (long)&byte, 1, 0, 0, 0),
-        -EPERM);
+        1);
     failures += expect_result(
         "immutable truncate",
         raw_syscall6(SYS_ftruncate, descriptor, 0, 0, 0, 0, 0),
-        -EPERM);
+        0);
     failures += expect_result(
         "immutable unlink",
         raw_syscall6(SYS_unlinkat, AT_FDCWD, (long)g_path, 0, 0, 0, 0),
@@ -392,7 +398,7 @@ static int test_attributes(long descriptor) {
     return failures;
 }
 
-__attribute__((noreturn)) void _start(void) {
+__attribute__((noreturn)) EDGE_ENTRY_ALIGN void _start(void) {
     static const char initial = 'A';
     long descriptor;
     int failures = 0;

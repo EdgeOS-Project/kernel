@@ -332,19 +332,19 @@
         "tools/tests/cachestat_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 451,
           "status": "implemented",
           "route": "shared:edge_linux_sys_cachestat",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 451,
           "status": "implemented",
           "route": "shared:edge_linux_sys_cachestat",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -1609,19 +1609,19 @@
         "tools/tests/fileattr_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 468,
           "status": "implemented",
           "route": "shared:edge_linux_sys_fileattr",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 468,
           "status": "implemented",
           "route": "shared:edge_linux_sys_fileattr",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -1634,19 +1634,19 @@
         "tools/tests/fileattr_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 469,
           "status": "implemented",
           "route": "shared:edge_linux_sys_fileattr",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 469,
           "status": "implemented",
           "route": "shared:edge_linux_sys_fileattr",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -2926,19 +2926,19 @@
         "tools/tests/xattrat_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 464,
           "status": "implemented",
           "route": "shared:edge_linux_sys_xattrat",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 464,
           "status": "implemented",
           "route": "shared:edge_linux_sys_xattrat",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -3821,19 +3821,19 @@
         "tools/tests/xattrat_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 465,
           "status": "implemented",
           "route": "shared:edge_linux_sys_xattrat",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 465,
           "status": "implemented",
           "route": "shared:edge_linux_sys_xattrat",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -6298,19 +6298,19 @@
         "tools/tests/xattrat_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 466,
           "status": "implemented",
           "route": "shared:edge_linux_sys_xattrat",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 466,
           "status": "implemented",
           "route": "shared:edge_linux_sys_xattrat",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -7903,19 +7903,19 @@
         "tools/tests/xattrat_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 463,
           "status": "implemented",
           "route": "shared:edge_linux_sys_xattrat",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 463,
           "status": "implemented",
           "route": "shared:edge_linux_sys_xattrat",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },

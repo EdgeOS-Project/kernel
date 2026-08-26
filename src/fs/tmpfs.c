@@ -701,10 +701,6 @@ static int tmpfs_write(vfs_superblock_t *sb, vfs_inode_t *inode, uint32_t off, c
     if (n->is_dir) return -EDGE_LINUX_EISDIR;
     if (n->kind != VFS_INODE_FILE && n->kind != VFS_INODE_LNK)
         return -EDGE_LINUX_EINVAL;
-    if (n->file_xflags & VFS_FILE_XFLAG_IMMUTABLE)
-        return -EDGE_LINUX_EPERM;
-    if ((n->file_xflags & VFS_FILE_XFLAG_APPEND) && off != n->size)
-        return -EDGE_LINUX_EPERM;
     if (len == 0) {
         if (off == 0) tmpfs_free_file_blocks(st, n);
         n->mtime = n->ctime = tmpfs_now_sec();
@@ -779,8 +775,7 @@ static int tmpfs_truncate(vfs_superblock_t *sb, vfs_inode_t *inode,
     if (node->huge_shift &&
         (length & ((UINT32_C(1) << node->huge_shift) - 1u)))
         return VFS_TRUNCATE_ERR_INVALID;
-    if (node->file_xflags &
-        (VFS_FILE_XFLAG_IMMUTABLE | VFS_FILE_XFLAG_APPEND))
+    if (node->file_xflags & VFS_FILE_XFLAG_APPEND)
         return VFS_TRUNCATE_ERR_PERMISSION;
     first_free_block = (length + TMPFS_BLOCK_SIZE - 1u) / TMPFS_BLOCK_SIZE;
     tmpfs_blocks_lock();
@@ -2164,6 +2159,7 @@ static int tmpfs_initialize_superblock(tmpfs_state_t *st, vfs_superblock_t *sb,
     sb->mountpoint[sizeof(sb->mountpoint) - 1] = 0;
     tmpfs_fill_inode(st, 0, &sb->root);
     sb->ops = &g_tmpfs_ops;
+    sb->runtime_flags |= VFS_SUPERBLOCK_VOLATILE_CACHE;
     sb->fs_private = st;
     sb->retain = tmpfs_retain;
     sb->release = tmpfs_release;

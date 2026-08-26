@@ -396,6 +396,10 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "keyring_abi_probe",
         "fanotify_abi_probe",
         "userfaultfd_abi_probe",
+#elif defined(UAPI_BATCH_EXTENDED_METADATA_ONLY)
+        "cachestat_abi_probe",
+        "xattrat_abi_probe",
+        "fileattr_abi_probe",
 #elif defined(UAPI_BATCH_NATIVE_OPTIONAL_ONLY)
         "native_optional_syscalls_abi_probe",
 #else

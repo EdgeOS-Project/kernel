@@ -101,7 +101,9 @@ int kernel_vfs_cachestat(int32_t descriptor, uint64_t offset,
     result = arch_vfs_cachestat(
         descriptor, offset, length, statistics);
     if (result < 0) return result;
-    if (description.superblock && description.inode) {
+    if (description.superblock && description.inode &&
+        !(description.superblock->runtime_flags &
+          VFS_SUPERBLOCK_VOLATILE_CACHE)) {
         uint64_t dirty_pages = 0;
         uint64_t writeback_pages = 0;
         uint64_t shadow_evicted_pages = 0;

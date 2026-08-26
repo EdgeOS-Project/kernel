@@ -22262,10 +22262,7 @@ static int64_t edge_linux_sys_fileattr(
         if (status < 0) return edge_linux_fileattr_result(status);
         attributes.xflags |= previous.xflags &
                              ~((uint64_t)VFS_FILE_XFLAG_COMMON);
-        attributes.extsize = previous.extsize;
         attributes.nextents = previous.nextents;
-        attributes.projid = previous.projid;
-        attributes.cowextsize = previous.cowextsize;
         if (((previous.xflags ^ attributes.xflags) &
              (VFS_FILE_XFLAG_IMMUTABLE | VFS_FILE_XFLAG_APPEND)) &&
             !(identity.effective_capabilities &

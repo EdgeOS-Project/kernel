@@ -330,6 +330,7 @@ struct vfs_superblock {
 };
 
 #define VFS_SUPERBLOCK_DYNAMIC_LOOKUP 0x00000001u
+#define VFS_SUPERBLOCK_VOLATILE_CACHE 0x00000002u
 
 vfs_superblock_t *vfs_superblock_acquire(vfs_superblock_t *sb);
 void vfs_superblock_release(vfs_superblock_t *sb);

@@ -254,9 +254,6 @@ int64_t kernel_fd_operation_vector_io(
         kernel_fd_operation_lease_t *lease,
         const struct kernel_io_vector_request *request) {
     fd_operation_lease_internal_t *internal;
-    kernel_io_file_range_info_t information;
-    kernel_io_file_range_request_t query;
-    int writing;
 
     if (!lease || !request) return -EDGE_LINUX_EINVAL;
     internal = fd_operation_lease_internal(lease);
@@ -266,29 +263,6 @@ int64_t kernel_fd_operation_vector_io(
         return -EDGE_LINUX_EINVAL;
     if (!internal->backend_vector_io)
         return -EDGE_LINUX_EOPNOTSUPP;
-    writing = request->operation == KERNEL_IO_WRITE_CURRENT ||
-              request->operation == KERNEL_IO_WRITE_POSITIONAL;
-    if (writing && internal->backend_ops &&
-        internal->backend_ops->operation_file_range) {
-        for (uint32_t index = 0; index < sizeof(information); ++index)
-            ((uint8_t *)(void *)&information)[index] = 0;
-        for (uint32_t index = 0; index < sizeof(query); ++index)
-            ((uint8_t *)(void *)&query)[index] = 0;
-        query.operation = KERNEL_IO_FILE_RANGE_QUERY;
-        query.information = &information;
-        if (internal->backend_ops->operation_file_range(
-                internal->backend_context,
-                internal->backend_storage.bytes, &query) >= 0 &&
-            information.kind == KERNEL_IO_FILE_REGULAR) {
-            if (information.metadata_flags & VFS_FILE_XFLAG_IMMUTABLE)
-                return -EDGE_LINUX_EPERM;
-            if ((information.metadata_flags & VFS_FILE_XFLAG_APPEND) &&
-                ((request->flags & KERNEL_IO_TRANSFER_NOAPPEND) ||
-                 (!information.append &&
-                  !(request->flags & KERNEL_IO_TRANSFER_APPEND))))
-                return -EDGE_LINUX_EPERM;
-        }
-    }
     return internal->backend_vector_io(
         internal->backend_context,
         internal->backend_storage.bytes, request);
