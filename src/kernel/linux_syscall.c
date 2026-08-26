@@ -5484,7 +5484,8 @@ static int64_t edge_linux_bpf_map_create(
         attribute.btf_vmlinux_value_type_id ||
         (attribute.map_extra &&
          attribute.map_type != KERNEL_BPF_MAP_TYPE_BLOOM_FILTER &&
-         attribute.map_type != KERNEL_BPF_MAP_TYPE_RHASH))
+         attribute.map_type != KERNEL_BPF_MAP_TYPE_RHASH &&
+         attribute.map_type != KERNEL_BPF_MAP_TYPE_ARENA))
         return -EDGE_LINUX_EINVAL;
     if ((!attribute.btf_descriptor &&
          (attribute.btf_key_type_id || attribute.btf_value_type_id)) ||
@@ -5747,6 +5748,10 @@ static int64_t edge_linux_bpf_map_element(
     if (info.type == KERNEL_BPF_MAP_TYPE_RINGBUF ||
         info.type == KERNEL_BPF_MAP_TYPE_USER_RINGBUF)
         return -EDGE_LINUX_ENOTSUPP;
+    if (info.type == KERNEL_BPF_MAP_TYPE_ARENA)
+        return command == EDGE_LINUX_BPF_MAP_LOOKUP_ELEM ||
+               command == EDGE_LINUX_BPF_MAP_DELETE_ELEM ?
+            -EDGE_LINUX_EINVAL : -EDGE_LINUX_EOPNOTSUPP;
     if (!info.key_size &&
         (command == EDGE_LINUX_BPF_MAP_DELETE_ELEM ||
          command == EDGE_LINUX_BPF_MAP_GET_NEXT_KEY))

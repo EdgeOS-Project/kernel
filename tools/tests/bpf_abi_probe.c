@@ -91,6 +91,7 @@
 #define BPF_MAP_TYPE_RINGBUF 27u
 #define BPF_MAP_TYPE_BLOOM_FILTER 30u
 #define BPF_MAP_TYPE_USER_RINGBUF 31u
+#define BPF_MAP_TYPE_ARENA 33u
 #define BPF_F_NO_PREALLOC (1u << 0)
 #define BPF_F_NO_COMMON_LRU (1u << 1)
 #define BPF_F_REPLACE (1u << 2)
@@ -98,6 +99,9 @@
 #define BPF_F_RDONLY (1u << 3)
 #define BPF_F_WRONLY (1u << 4)
 #define BPF_F_PRESERVE_ELEMS (1u << 11)
+#define BPF_F_MMAPABLE (1u << 10)
+#define BPF_F_SEGV_ON_FAULT (1u << 17)
+#define BPF_F_NO_USER_CONV (1u << 18)
 #define BPF_F_RB_OVERWRITE (1u << 19)
 #define BPF_PROG_TYPE_CGROUP_DEVICE 15u
 #define BPF_CGROUP_DEVICE 6u
@@ -117,6 +121,7 @@
 #define PROT_READ 1
 #define PROT_WRITE 2
 #define MAP_SHARED 1
+#define MAP_PRIVATE 2
 #define POLLIN 1
 #define POLLOUT 4
 #define POLLERR 8
@@ -2939,6 +2944,96 @@ static int test_btf_objects(void) {
     return failures;
 }
 
+static int test_arena_map(void) {
+    union bpf_attr attribute;
+    struct bpf_map_info info;
+    uint32_t value = 0u;
+    long descriptor;
+    long mapping;
+    int failures = 0;
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.map_create.map_type = BPF_MAP_TYPE_ARENA;
+    attribute.map_create.max_entries = 2u;
+    attribute.map_create.map_flags = BPF_F_MMAPABLE;
+    attribute.map_create.map_name[0] = 'a';
+    attribute.map_create.map_name[1] = 'r';
+    attribute.map_create.map_name[2] = 'e';
+    attribute.map_create.map_name[3] = 'n';
+    attribute.map_create.map_name[4] = 'a';
+    descriptor = bpf_call(BPF_MAP_CREATE, &attribute);
+    failures += expect_true("arena create", descriptor >= 0);
+    if (descriptor < 0) return failures + 1;
+
+    clear_bytes(&info, sizeof(info));
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.info.bpf_fd = (uint32_t)descriptor;
+    attribute.info.info_len = sizeof(info);
+    attribute.info.info = (uint64_t)(uintptr_t)&info;
+    failures += expect("arena info", bpf_call(
+        BPF_OBJ_GET_INFO_BY_FD, &attribute), 0);
+    failures += expect_true(
+        "arena info values",
+        info.type == BPF_MAP_TYPE_ARENA && info.key_size == 0u &&
+        info.value_size == 0u && info.max_entries == 2u &&
+        info.map_flags == BPF_F_MMAPABLE);
+
+    mapping = raw_syscall6(
+        SYS_mmap, 0, 2u * 4096u, PROT_READ | PROT_WRITE,
+        MAP_SHARED, descriptor, 0);
+    failures += expect_true("arena mmap", mapping > 0);
+    if (mapping > 0) {
+        volatile uint32_t *words =
+            (volatile uint32_t *)(uintptr_t)mapping;
+
+        words[0] = 0x12345678u;
+        words[1024] = 0x87654321u;
+        failures += expect_true(
+            "arena shared pages",
+            words[0] == 0x12345678u &&
+            words[1024] == 0x87654321u);
+        (void)raw_syscall6(
+            SYS_munmap, mapping, 2u * 4096u, 0, 0, 0, 0);
+    }
+    failures += expect("arena private mmap", raw_syscall6(
+        SYS_mmap, 0, 4096u, PROT_READ, MAP_PRIVATE,
+        descriptor, 0), -EINVAL);
+    failures += expect("arena nonzero offset", raw_syscall6(
+        SYS_mmap, 0, 4096u, PROT_READ, MAP_SHARED,
+        descriptor, 4096u), -EINVAL);
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.map_element.map_fd = (uint32_t)descriptor;
+    attribute.map_element.value = (uint64_t)(uintptr_t)&value;
+    failures += expect("arena lookup", bpf_call(
+        BPF_MAP_LOOKUP_ELEM, &attribute), -EINVAL);
+    failures += expect("arena update", bpf_call(
+        BPF_MAP_UPDATE_ELEM, &attribute), -EOPNOTSUPP);
+    failures += expect("arena delete", bpf_call(
+        BPF_MAP_DELETE_ELEM, &attribute), -EINVAL);
+    failures += expect("arena next key", bpf_call(
+        BPF_MAP_GET_NEXT_KEY, &attribute), -EOPNOTSUPP);
+    (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.map_create.map_type = BPF_MAP_TYPE_ARENA;
+    attribute.map_create.max_entries = 2u;
+    failures += expect("arena mmapable required", bpf_call(
+        BPF_MAP_CREATE, &attribute), -EINVAL);
+    attribute.map_create.map_flags = BPF_F_MMAPABLE;
+    attribute.map_create.key_size = sizeof(uint32_t);
+    failures += expect("arena key size", bpf_call(
+        BPF_MAP_CREATE, &attribute), -EINVAL);
+    attribute.map_create.key_size = 0u;
+    attribute.map_create.map_extra = 1u;
+    failures += expect("arena unaligned address", bpf_call(
+        BPF_MAP_CREATE, &attribute), -EINVAL);
+    attribute.map_create.map_extra = 0xfffff000ull;
+    failures += expect("arena address boundary", bpf_call(
+        BPF_MAP_CREATE, &attribute), -ERANGE);
+    return failures;
+}
+
 static int test_attribute_tail(void) {
     union bpf_attr attribute;
 
@@ -2955,7 +3050,14 @@ static int test_attribute_tail(void) {
 }
 
 START_ATTRIBUTES void _start(void) {
-#ifdef BPF_LEGACY_CGROUP_ONLY
+#ifdef BPF_ARENA_ONLY
+    int failures = test_arena_map();
+
+    print_text(failures ? "BPF_ARENA_ABI_FAIL\n" :
+                          "BPF_ARENA_ABI_PASS\n");
+    (void)raw_syscall6(SYS_exit, failures ? 1 : 0, 0, 0, 0, 0, 0);
+    for (;;) { }
+#elif defined(BPF_LEGACY_CGROUP_ONLY)
     int failures = test_legacy_cgroup_storage();
 
     print_text(failures ? "BPF_LEGACY_CGROUP_STORAGE_FAIL\n" :
@@ -2988,6 +3090,7 @@ START_ATTRIBUTES void _start(void) {
     failures += test_program_test_run_errors();
     failures += test_runtime_statistics();
     failures += test_legacy_cgroup_storage();
+    failures += test_arena_map();
     failures += test_btf_objects();
     failures += test_attribute_tail();
     print_text(failures ? "BPF_ABI_PROBE_FAIL\n" :

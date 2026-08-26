@@ -2811,6 +2811,54 @@ static void test_task_local_storage(void) {
     kernel_bpf_object_release(map);
 }
 
+static void test_arena_map(void) {
+    kernel_bpf_map_create_request_t request = {
+        .type = KERNEL_BPF_MAP_TYPE_ARENA,
+        .max_entries = 2u,
+        .flags = KERNEL_BPF_MAP_MMAPABLE,
+    };
+    kernel_bpf_map_info_t info;
+    uint32_t page_count = 0u;
+    void *first_page = 0;
+    void *second_page = 0;
+    int map;
+
+    map = kernel_bpf_map_create(&request);
+    assert(map >= 0);
+    assert(kernel_bpf_map_info(map, &info) == 0);
+    assert(info.type == KERNEL_BPF_MAP_TYPE_ARENA);
+    assert(info.key_size == 0u);
+    assert(info.value_size == 0u);
+    assert(info.max_entries == 2u);
+    assert(info.flags == KERNEL_BPF_MAP_MMAPABLE);
+    assert(kernel_bpf_map_mmap_info(
+               map, 0u, 2u * 4096u, 1, &page_count) == 0);
+    assert(page_count == 2u);
+    assert(kernel_bpf_map_mmap_page(map, 0u, 0u, &first_page) == 0);
+    assert(kernel_bpf_map_mmap_page(map, 0u, 1u, &second_page) == 0);
+    assert(first_page != 0 && second_page != 0);
+    assert((uint8_t *)second_page - (uint8_t *)first_page == 4096);
+    assert(kernel_bpf_map_mmap_info(
+               map, 4096u, 4096u, 0, &page_count) ==
+           -EDGE_LINUX_EINVAL);
+    assert(kernel_bpf_map_lookup(map, 0, &page_count) ==
+           -EDGE_LINUX_EINVAL);
+    assert(kernel_bpf_map_update(map, 0, &page_count, 0u) ==
+           -EDGE_LINUX_EOPNOTSUPP);
+    assert(kernel_bpf_map_delete(map, 0) ==
+           -EDGE_LINUX_EOPNOTSUPP);
+    kernel_bpf_object_release(map);
+
+    request.flags = 0u;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+    request.flags = KERNEL_BPF_MAP_MMAPABLE;
+    request.key_size = sizeof(uint32_t);
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+    request.key_size = 0u;
+    request.map_extra = 1u;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
+}
+
 int main(void) {
     test_array_map();
     test_cgroup_array();
@@ -2847,6 +2895,7 @@ int main(void) {
     test_socket_local_storage();
     test_inode_local_storage();
     test_task_local_storage();
+    test_arena_map();
     puts("bpf_runtime_unit: PASS");
     return 0;
 }

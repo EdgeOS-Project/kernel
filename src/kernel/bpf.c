@@ -571,7 +571,8 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
     if (!request || !bpf_name_valid(request->name) ||
         request->key_size > KERNEL_BPF_MAX_KEY_SIZE ||
         (!request->value_size &&
-         !bpf_map_type_is_ringbuf(request->type)) ||
+         !bpf_map_type_is_ringbuf(request->type) &&
+         request->type != KERNEL_BPF_MAP_TYPE_ARENA) ||
         (request->value_size > KERNEL_BPF_MAX_VALUE_SIZE &&
          !bpf_map_type_is_local_storage(request->type) &&
          !bpf_map_type_is_legacy_cgroup_storage(request->type)) ||
@@ -603,7 +604,8 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
     }
     if (bpf_map_type_is_queue_stack(request->type) ||
         bpf_map_type_is_ringbuf(request->type) ||
-        request->type == KERNEL_BPF_MAP_TYPE_BLOOM_FILTER) {
+        request->type == KERNEL_BPF_MAP_TYPE_BLOOM_FILTER ||
+        request->type == KERNEL_BPF_MAP_TYPE_ARENA) {
         if (request->key_size) {
             status = -EDGE_LINUX_EINVAL;
             goto fail_btf;
@@ -862,6 +864,30 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
              (validation_flags & KERNEL_BPF_MAP_RB_OVERWRITE)))
             goto invalid_btf;
         stride = 1u;
+    } else if (request->type == KERNEL_BPF_MAP_TYPE_ARENA) {
+        uint64_t virtual_size =
+            (uint64_t)request->max_entries * BPF_PAGE_SIZE;
+
+        if (request->key_size || request->value_size ||
+            request->btf_present ||
+            !(validation_flags & KERNEL_BPF_MAP_MMAPABLE) ||
+            (validation_flags &
+             ~(KERNEL_BPF_MAP_MMAPABLE |
+               KERNEL_BPF_MAP_SEGV_ON_FAULT |
+               KERNEL_BPF_MAP_NO_USER_CONV)) ||
+            (request->map_extra & (BPF_PAGE_SIZE - 1u)))
+            goto invalid_btf;
+        if (virtual_size > UINT32_MAX + 1ull) {
+            status = -EDGE_LINUX_E2BIG;
+            goto fail_btf;
+        }
+        if (request->map_extra &&
+            (request->map_extra >> 32u) !=
+            ((request->map_extra + virtual_size - 1u) >> 32u)) {
+            status = -EDGE_LINUX_ERANGE;
+            goto fail_btf;
+        }
+        stride = BPF_PAGE_SIZE;
     } else if (request->type == KERNEL_BPF_MAP_TYPE_BLOOM_FILTER) {
         uint64_t estimated_bits;
         uint64_t rounded_bits = 64u;
@@ -1955,8 +1981,27 @@ int kernel_bpf_map_mmap_info(int object_id, uint64_t offset,
         goto out;
     }
     map = &object->value.map;
-    if (!bpf_map_is_ringbuf(map)) {
+    if (!bpf_map_is_ringbuf(map) &&
+        map->type != KERNEL_BPF_MAP_TYPE_ARENA) {
         status = -EDGE_LINUX_ENODEV;
+        goto out;
+    }
+    if (map->type == KERNEL_BPF_MAP_TYPE_ARENA) {
+        requested_pages = length / BPF_PAGE_SIZE;
+        if (offset || requested_pages > map->max_entries) {
+            status = -EDGE_LINUX_EINVAL;
+            goto out;
+        }
+        if (writable && map->frozen) {
+            status = -EDGE_LINUX_EPERM;
+            goto out;
+        }
+        if (writable &&
+            (map->flags & KERNEL_BPF_MAP_RDONLY_PROGRAM)) {
+            status = -EDGE_LINUX_EACCES;
+            goto out;
+        }
+        *page_count = (uint32_t)requested_pages;
         goto out;
     }
     first_page = offset / BPF_PAGE_SIZE;
@@ -2001,8 +2046,19 @@ int kernel_bpf_map_mmap_page(int object_id, uint64_t offset,
         goto out;
     }
     map = &object->value.map;
-    if (!bpf_map_is_ringbuf(map)) {
+    if (!bpf_map_is_ringbuf(map) &&
+        map->type != KERNEL_BPF_MAP_TYPE_ARENA) {
         status = -EDGE_LINUX_ENODEV;
+        goto out;
+    }
+    if (map->type == KERNEL_BPF_MAP_TYPE_ARENA) {
+        virtual_page = offset / BPF_PAGE_SIZE + page_index;
+        if (offset || virtual_page >= map->max_entries ||
+            virtual_page >= map->storage_pages) {
+            status = -EDGE_LINUX_EINVAL;
+            goto out;
+        }
+        *page_address = map->storage + virtual_page * BPF_PAGE_SIZE;
         goto out;
     }
     data_pages = map->max_entries / BPF_PAGE_SIZE;
@@ -3125,6 +3181,10 @@ int kernel_bpf_map_lookup_flags(int object_id, const void *key, void *value,
         goto out;
     }
     map = &object->value.map;
+    if (map->type == KERNEL_BPF_MAP_TYPE_ARENA) {
+        status = -EDGE_LINUX_EINVAL;
+        goto out;
+    }
     if (bpf_map_is_ringbuf(map)) {
         status = -EDGE_LINUX_ENOTSUPP;
         goto out;
@@ -3732,6 +3792,10 @@ int kernel_bpf_map_update(int object_id, const void *key, const void *value,
         goto out;
     }
     map = &object->value.map;
+    if (map->type == KERNEL_BPF_MAP_TYPE_ARENA) {
+        status = -EDGE_LINUX_EOPNOTSUPP;
+        goto out;
+    }
     if (bpf_map_is_ringbuf(map)) {
         status = -EDGE_LINUX_ENOTSUPP;
         goto out;
@@ -4544,6 +4608,10 @@ int kernel_bpf_map_lookup_and_delete(int object_id, const void *key,
         goto out;
     }
     map = &object->value.map;
+    if (map->type == KERNEL_BPF_MAP_TYPE_ARENA) {
+        status = -EDGE_LINUX_EOPNOTSUPP;
+        goto out;
+    }
     if (map->frozen) {
         status = -EDGE_LINUX_EPERM;
         goto out;
@@ -4659,6 +4727,10 @@ int kernel_bpf_map_delete(int object_id, const void *key) {
         goto out;
     }
     map = &object->value.map;
+    if (map->type == KERNEL_BPF_MAP_TYPE_ARENA) {
+        status = -EDGE_LINUX_EOPNOTSUPP;
+        goto out;
+    }
     if (map->frozen) {
         status = -EDGE_LINUX_EPERM;
         goto out;
@@ -4894,6 +4966,10 @@ int kernel_bpf_map_next_key(int object_id, const void *key, void *next_key) {
         goto out;
     }
     map = &object->value.map;
+    if (map->type == KERNEL_BPF_MAP_TYPE_ARENA) {
+        status = -EDGE_LINUX_EOPNOTSUPP;
+        goto out;
+    }
     if (bpf_map_is_queue_stack(map)) {
         status = -EDGE_LINUX_EINVAL;
         goto out;

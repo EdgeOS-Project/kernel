@@ -377,12 +377,13 @@ EDGEOS_ASSESSMENTS = [
             "inode local-storage creation with BTF, inode identity shared across file descriptions, insertion, replacement, close-and-reopen persistence, deletion and unsupported iteration semantics",
             "task local-storage creation with BTF, pidfd lookup, insertion, replacement, deletion, PID-generation isolation, task-exit cleanup and unsupported iteration semantics",
             "deprecated shared and per-CPU cgroup-storage maps with attachment allocation, helper access, update, iteration, detach persistence and cgroup-release cleanup",
+            "arena-map creation validation, map information, element-operation errors and shared writable mappings for bounded resident ranges",
             "instruction-array creation, offset update and zeroing behavior, lookup, iteration, freeze and unsupported delete and batch operations",
             "resizable-hash creation flag and size-hint validation, element operations, iteration, lookup-and-delete, batch operations and freeze behavior",
             "ia32 and x32 fixed-width map-create and map-element attribute layouts",
         ],
         "missing": [
-            "remaining map types, socket-map and reuseport program attachment and redirect execution, reuseport disconnect-time removal, modern local-storage program helper access, socket clone propagation and diagnostic export, cgroup owner-removal cleanup, inode destruction cleanup, stack-trace helper population, CPU-map packet redirect execution, device-map packet redirect execution and AF_XDP socket-backed XSK-map entries",
+            "struct-ops maps, sparse 4 GiB arena ranges and arena kfunc integration, socket-map and reuseport program attachment and redirect execution, reuseport disconnect-time removal, modern local-storage program helper access, socket clone propagation and diagnostic export, cgroup owner-removal cleanup, inode destruction cleanup, stack-trace helper population, CPU-map packet redirect execution, device-map packet redirect execution and AF_XDP socket-backed XSK-map entries",
             "resizable-hash concurrent dynamic resizing and full Linux key and value size range",
             "remaining specialized map-family concurrency semantics, plus instruction-array verifier and jump-table integration",
             "additional attachment families and program types",
@@ -453,6 +454,9 @@ EDGEOS_ASSESSMENTS = [
                 "deprecated shared and per-CPU cgroup-storage maps with "
                 "attachment allocation, helper access, update, iteration, "
                 "detach persistence and cgroup-release cleanup, "
+                "arena-map creation validation, map information, "
+                "element-operation errors and shared writable mappings "
+                "for bounded resident ranges, "
                 "instruction-array creation, offset updates, lookup, "
                 "iteration, freeze and unsupported delete and batch behavior, "
                 "resizable-hash creation flags, size hints, element and batch "
