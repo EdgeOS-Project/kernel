@@ -2497,6 +2497,145 @@ static void test_cgroup_local_storage(void) {
     assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
 }
 
+static void test_legacy_cgroup_storage(void) {
+    struct legacy_key {
+        uint64_t cgroup_inode_id;
+        uint32_t attach_type;
+        uint32_t padding;
+    } key = {
+        .cgroup_inode_id = UINT64_C(0xc7000701),
+        .attach_type = KERNEL_BPF_CGROUP_DEVICE,
+    };
+    kernel_bpf_map_create_request_t map_request = {
+        .type = KERNEL_BPF_MAP_TYPE_CGROUP_STORAGE,
+        .key_size = sizeof(key),
+        .value_size = sizeof(uint32_t),
+    };
+    kernel_bpf_instruction_t instructions[] = {
+        { .code = 0x18u, .registers = 0x11u,
+          .offset = 0, .immediate = 0 },
+        { .code = 0u, .registers = 0u,
+          .offset = 0, .immediate = 0 },
+        { .code = 0xb7u, .registers = 2u,
+          .offset = 0, .immediate = 0 },
+        { .code = 0x85u, .registers = 0u,
+          .offset = 0, .immediate = 81 },
+        { .code = 0xbfu, .registers = 0x01u,
+          .offset = 0, .immediate = 0 },
+        { .code = 0xb7u, .registers = 2u,
+          .offset = 0, .immediate = 42 },
+        { .code = 0x63u, .registers = 0x21u,
+          .offset = 0, .immediate = 0 },
+        { .code = 0xb7u, .registers = 0u,
+          .offset = 0, .immediate = 1 },
+        { .code = 0x95u, .registers = 0u,
+          .offset = 0, .immediate = 0 },
+    };
+    kernel_bpf_program_create_request_t program_request = {
+        .type = KERNEL_BPF_PROG_TYPE_CGROUP_DEVICE,
+        .instruction_count = sizeof(instructions) /
+                             sizeof(instructions[0]),
+        .expected_attach_type = KERNEL_BPF_CGROUP_DEVICE,
+        .map_references_resolved = 1u,
+    };
+    kernel_bpf_cgroup_device_context_t context = {
+        .access_type = 1u,
+        .major = 1u,
+        .minor = 3u,
+    };
+    kernel_bpf_map_create_request_t percpu_request = {
+        .type = KERNEL_BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE,
+        .key_size = sizeof(uint64_t),
+        .value_size = sizeof(uint32_t),
+    };
+    kernel_bpf_program_create_request_t simple_request = {
+        .type = KERNEL_BPF_PROG_TYPE_CGROUP_DEVICE,
+        .instruction_count = 2u,
+        .expected_attach_type = KERNEL_BPF_CGROUP_DEVICE,
+    };
+    const kernel_bpf_instruction_t simple_instructions[] = {
+        { .code = 0xb7u, .registers = 0u,
+          .offset = 0, .immediate = 1 },
+        { .code = 0x95u, .registers = 0u,
+          .offset = 0, .immediate = 0 },
+    };
+    uint64_t short_key = UINT64_C(0xc7000801);
+    uint64_t per_cpu_values[256] = {0};
+    uint64_t per_cpu_output[256] = {0};
+    uint32_t value = 0u;
+    uint32_t next_value = 17u;
+    uint32_t result = 0u;
+    struct legacy_key next_key;
+    int map;
+    int program;
+    int percpu_map;
+    int simple_program;
+
+    strcpy(map_request.name, "legacy_cgrp");
+    map = kernel_bpf_map_create(&map_request);
+    assert(map >= 0);
+    assert(kernel_bpf_map_lookup(map, &key, &value) ==
+           -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_map_update(
+               map, &key, &next_value, KERNEL_BPF_ANY) ==
+           -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_map_delete(map, &key) == -EDGE_LINUX_EINVAL);
+    assert(kernel_bpf_map_next_key(map, 0, &next_key) ==
+           -EDGE_LINUX_ENOENT);
+
+    instructions[0].immediate = map;
+    strcpy(program_request.name, "legacy_store");
+    program = kernel_bpf_program_create(
+        &program_request, instructions);
+    assert(program >= 0);
+    assert(kernel_bpf_cgroup_attach(7u, program, 0u, -1) == 0);
+    assert(kernel_bpf_map_next_key(map, 0, &next_key) == 0);
+    assert(!memcmp(&next_key, &key, sizeof(key)));
+    assert(kernel_bpf_cgroup_device_run(
+               7u, &context, &result) == 0 && result == 1u);
+    assert(kernel_bpf_map_lookup(map, &key, &value) == 0);
+    assert(value == 42u);
+    assert(kernel_bpf_map_update(
+               map, &key, &next_value, KERNEL_BPF_EXIST) == 0);
+    assert(kernel_bpf_map_lookup(map, &key, &value) == 0 &&
+           value == next_value);
+    assert(kernel_bpf_cgroup_detach(7u, program) == 0);
+    assert(kernel_bpf_map_lookup(map, &key, &value) == 0 &&
+           value == next_value);
+    kernel_bpf_cgroup_release(7u);
+    assert(kernel_bpf_map_lookup(map, &key, &value) ==
+           -EDGE_LINUX_ENOENT);
+
+    strcpy(percpu_request.name, "legacy_pcpu");
+    percpu_map = kernel_bpf_map_create(&percpu_request);
+    strcpy(simple_request.name, "legacy_plain");
+    simple_program = kernel_bpf_program_create(
+        &simple_request, simple_instructions);
+    assert(percpu_map >= 0 && simple_program >= 0);
+    assert(kernel_bpf_program_bind_map(simple_program, percpu_map) == 0);
+    assert(kernel_bpf_cgroup_attach(
+               8u, simple_program, 0u, -1) == 0);
+    per_cpu_values[0] = 9u;
+    assert(kernel_bpf_map_update(
+               percpu_map, &short_key, per_cpu_values,
+               KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_map_lookup(
+               percpu_map, &short_key, per_cpu_output) == 0);
+    assert(per_cpu_output[0] == 9u);
+    assert(kernel_bpf_cgroup_detach(8u, simple_program) == 0);
+
+    kernel_bpf_object_release(simple_program);
+    kernel_bpf_object_release(percpu_map);
+    kernel_bpf_object_release(program);
+    kernel_bpf_object_release(map);
+
+    map_request.max_entries = 1u;
+    assert(kernel_bpf_map_create(&map_request) == -EDGE_LINUX_EINVAL);
+    map_request.max_entries = 0u;
+    map_request.key_size = sizeof(uint32_t);
+    assert(kernel_bpf_map_create(&map_request) == -EDGE_LINUX_EINVAL);
+}
+
 static void test_socket_local_storage(void) {
     uint8_t btf_blob[25] = {
         0x9f, 0xeb, 1u, 0u,
@@ -2703,6 +2842,7 @@ int main(void) {
     test_pinned_object_lifetime();
     test_socket_maps();
     test_reuseport_socket_array();
+    test_legacy_cgroup_storage();
     test_cgroup_local_storage();
     test_socket_local_storage();
     test_inode_local_storage();

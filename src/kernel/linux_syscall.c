@@ -6104,6 +6104,8 @@ static int64_t edge_linux_bpf_map_batch(
         info.type == KERNEL_BPF_MAP_TYPE_SOCKMAP ||
         info.type == KERNEL_BPF_MAP_TYPE_SOCKHASH ||
         info.type == KERNEL_BPF_MAP_TYPE_REUSEPORT_SOCKARRAY ||
+        info.type == KERNEL_BPF_MAP_TYPE_CGROUP_STORAGE ||
+        info.type == KERNEL_BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE ||
         info.type == KERNEL_BPF_MAP_TYPE_SK_STORAGE ||
         info.type == KERNEL_BPF_MAP_TYPE_INODE_STORAGE ||
         info.type == KERNEL_BPF_MAP_TYPE_TASK_STORAGE ||

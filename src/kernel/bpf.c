@@ -78,6 +78,7 @@
 #define BPF_EXIT  0x90u
 #define BPF_PSEUDO_MAP_FD 1u
 #define BPF_FUNC_TAIL_CALL 12u
+#define BPF_FUNC_GET_LOCAL_STORAGE 81u
 #define BPF_FUNC_RINGBUF_OUTPUT 130u
 #define BPF_MAX_TAIL_CALLS 33u
 #define BPF_RB_NO_WAKEUP (1ull << 0)
@@ -190,6 +191,7 @@ typedef struct kernel_bpf_attachment {
     int32_t object_id;
     int32_t link_object_id;
     uint32_t flags;
+    uint32_t attach_type;
     uint64_t sequence;
 } kernel_bpf_attachment_t;
 
@@ -215,6 +217,15 @@ static uint32_t g_bpf_next_user_id = 1u;
 static uint64_t g_bpf_attachment_sequence;
 
 static void bpf_socket_description_closed(uint64_t identity);
+static int bpf_legacy_cgroup_storage_link_map_locked(
+    kernel_bpf_map_t *map, uint32_t cgroup_id,
+    uint32_t attach_type);
+static void bpf_legacy_cgroup_storage_unlink_map_locked(
+    kernel_bpf_map_t *map, uint32_t cgroup_id,
+    uint32_t attach_type);
+static int bpf_program_legacy_storage_link_locked(
+    const kernel_bpf_program_t *program, uint32_t cgroup_id,
+    uint32_t attach_type);
 
 _Static_assert(sizeof(kernel_bpf_instruction_t) == 8u,
                "BPF instruction layout must match Linux UAPI");
@@ -285,7 +296,8 @@ static int bpf_map_is_map_in_map(const kernel_bpf_map_t *map) {
 static int bpf_map_type_is_percpu(uint32_t type) {
     return type == KERNEL_BPF_MAP_TYPE_PERCPU_HASH ||
            type == KERNEL_BPF_MAP_TYPE_PERCPU_ARRAY ||
-           type == KERNEL_BPF_MAP_TYPE_LRU_PERCPU_HASH;
+           type == KERNEL_BPF_MAP_TYPE_LRU_PERCPU_HASH ||
+           type == KERNEL_BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE;
 }
 
 static int bpf_map_is_percpu(const kernel_bpf_map_t *map) {
@@ -364,6 +376,18 @@ static int bpf_map_is_reuseport_array(const kernel_bpf_map_t *map) {
 
 static int bpf_map_is_cgrp_storage(const kernel_bpf_map_t *map) {
     return map && map->type == KERNEL_BPF_MAP_TYPE_CGRP_STORAGE;
+}
+
+static int bpf_map_is_legacy_cgroup_storage(
+        const kernel_bpf_map_t *map) {
+    return map &&
+        (map->type == KERNEL_BPF_MAP_TYPE_CGROUP_STORAGE ||
+         map->type == KERNEL_BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE);
+}
+
+static int bpf_map_type_is_legacy_cgroup_storage(uint32_t type) {
+    return type == KERNEL_BPF_MAP_TYPE_CGROUP_STORAGE ||
+           type == KERNEL_BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE;
 }
 
 static int bpf_map_is_sk_storage(const kernel_bpf_map_t *map) {
@@ -549,9 +573,11 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
         (!request->value_size &&
          !bpf_map_type_is_ringbuf(request->type)) ||
         (request->value_size > KERNEL_BPF_MAX_VALUE_SIZE &&
-         !bpf_map_type_is_local_storage(request->type)) ||
+         !bpf_map_type_is_local_storage(request->type) &&
+         !bpf_map_type_is_legacy_cgroup_storage(request->type)) ||
         (!request->max_entries &&
-         !bpf_map_type_is_local_storage(request->type)))
+         !bpf_map_type_is_local_storage(request->type) &&
+         !bpf_map_type_is_legacy_cgroup_storage(request->type)))
         return -EDGE_LINUX_EINVAL;
     if ((request->flags &
          (KERNEL_BPF_MAP_RDONLY | KERNEL_BPF_MAP_WRONLY)) ==
@@ -711,6 +737,24 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
             request->btf_present || request->map_extra)
             goto invalid_btf;
         stride = bpf_align8(1u + sizeof(uint64_t));
+    } else if (bpf_map_type_is_legacy_cgroup_storage(request->type)) {
+        if (request->value_size > BPF_LOCAL_STORAGE_VALUE_LIMIT) {
+            status = -EDGE_LINUX_E2BIG;
+            goto fail_btf;
+        }
+        if (request->max_entries ||
+            (request->key_size != sizeof(uint64_t) &&
+             request->key_size != 2u * sizeof(uint64_t)) ||
+            !request->value_size ||
+            (validation_flags & ~KERNEL_BPF_MAP_NUMA_NODE) ||
+            request->map_extra)
+            goto invalid_btf;
+        storage_entries = BPF_CGRP_STORAGE_ENTRIES;
+        stride = request->type ==
+                KERNEL_BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE ?
+            bpf_align8(1u + request->key_size) +
+                value_stride * possible_cpu_count :
+            bpf_align8(1u + request->key_size + request->value_size);
     } else if (bpf_map_type_is_local_storage(request->type)) {
         if (request->value_size > BPF_LOCAL_STORAGE_VALUE_LIMIT) {
             status = -EDGE_LINUX_E2BIG;
@@ -1130,8 +1174,12 @@ static int bpf_program_validate(
     uint16_t map_registers = 0u;
     uint16_t program_array_registers = 0u;
     uint16_t ringbuf_registers = 0u;
+    uint16_t cgroup_storage_registers = 0u;
+    uint16_t storage_value_registers = 0u;
     uint16_t context_registers = 1u << 1;
     uint16_t stack_registers = 1u << 10;
+    int32_t legacy_shared_map = -1;
+    int32_t legacy_percpu_map = -1;
     uint32_t pc;
 
     if (!request || !instructions ||
@@ -1172,8 +1220,21 @@ static int bpf_program_validate(
                 kernel_bpf_map_info(
                     instruction->immediate, &info) < 0 ||
                 (info.type != KERNEL_BPF_MAP_TYPE_PROG_ARRAY &&
-                 info.type != KERNEL_BPF_MAP_TYPE_RINGBUF))
+                 info.type != KERNEL_BPF_MAP_TYPE_RINGBUF &&
+                 !bpf_map_type_is_legacy_cgroup_storage(info.type)))
                 return -EDGE_LINUX_EINVAL;
+            if (info.type == KERNEL_BPF_MAP_TYPE_CGROUP_STORAGE) {
+                if (legacy_shared_map >= 0 &&
+                    legacy_shared_map != instruction->immediate)
+                    return -EDGE_LINUX_EBUSY;
+                legacy_shared_map = instruction->immediate;
+            } else if (info.type ==
+                       KERNEL_BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE) {
+                if (legacy_percpu_map >= 0 &&
+                    legacy_percpu_map != instruction->immediate)
+                    return -EDGE_LINUX_EBUSY;
+                legacy_percpu_map = instruction->immediate;
+            }
             initialized |= (uint16_t)(1u << destination);
             map_registers |= (uint16_t)(1u << destination);
             if (info.type == KERNEL_BPF_MAP_TYPE_PROG_ARRAY) {
@@ -1181,11 +1242,24 @@ static int bpf_program_validate(
                     (uint16_t)(1u << destination);
                 ringbuf_registers &=
                     (uint16_t)~(1u << destination);
-            } else {
+                cgroup_storage_registers &=
+                    (uint16_t)~(1u << destination);
+            } else if (info.type == KERNEL_BPF_MAP_TYPE_RINGBUF) {
                 ringbuf_registers |= (uint16_t)(1u << destination);
                 program_array_registers &=
                     (uint16_t)~(1u << destination);
+                cgroup_storage_registers &=
+                    (uint16_t)~(1u << destination);
+            } else {
+                cgroup_storage_registers |=
+                    (uint16_t)(1u << destination);
+                program_array_registers &=
+                    (uint16_t)~(1u << destination);
+                ringbuf_registers &=
+                    (uint16_t)~(1u << destination);
             }
+            storage_value_registers &=
+                (uint16_t)~(1u << destination);
             context_registers &= (uint16_t)~(1u << destination);
             stack_registers &= (uint16_t)~(1u << destination);
             ++pc;
@@ -1214,6 +1288,20 @@ static int bpf_program_validate(
                         (uint16_t)(1u << destination);
                 else
                     ringbuf_registers &=
+                        (uint16_t)~(1u << destination);
+                if (BPF_SRC(instruction->code) == BPF_X &&
+                    (cgroup_storage_registers & (1u << source)))
+                    cgroup_storage_registers |=
+                        (uint16_t)(1u << destination);
+                else
+                    cgroup_storage_registers &=
+                        (uint16_t)~(1u << destination);
+                if (BPF_SRC(instruction->code) == BPF_X &&
+                    (storage_value_registers & (1u << source)))
+                    storage_value_registers |=
+                        (uint16_t)(1u << destination);
+                else
+                    storage_value_registers &=
                         (uint16_t)~(1u << destination);
                 if (BPF_SRC(instruction->code) == BPF_X &&
                     (context_registers & (1u << source)))
@@ -1255,6 +1343,10 @@ static int bpf_program_validate(
                 program_array_registers &=
                     (uint16_t)~(1u << destination);
                 ringbuf_registers &= (uint16_t)~(1u << destination);
+                cgroup_storage_registers &=
+                    (uint16_t)~(1u << destination);
+                storage_value_registers &=
+                    (uint16_t)~(1u << destination);
                 context_registers &= (uint16_t)~(1u << destination);
                 if (!(stack_registers & (1u << destination)))
                     stack_registers &=
@@ -1264,27 +1356,38 @@ static int bpf_program_validate(
             continue;
         }
         if (class == BPF_LDX && BPF_MODE(instruction->code) == BPF_MEM &&
-            BPF_SIZE(instruction->code) == BPF_W && source == 1u &&
+            BPF_SIZE(instruction->code) == BPF_W &&
             (initialized & (1u << source)) &&
-            instruction->offset >= 0 && instruction->offset <= 8 &&
+            ((source == 1u && instruction->offset >= 0 &&
+              instruction->offset <= 8) ||
+             ((storage_value_registers & (1u << source)) &&
+              instruction->offset >= 0)) &&
             !(instruction->offset & 3)) {
             initialized |= (uint16_t)(1u << destination);
             map_registers &= (uint16_t)~(1u << destination);
             program_array_registers &=
                 (uint16_t)~(1u << destination);
             ringbuf_registers &= (uint16_t)~(1u << destination);
+            cgroup_storage_registers &=
+                (uint16_t)~(1u << destination);
+            storage_value_registers &=
+                (uint16_t)~(1u << destination);
             context_registers &= (uint16_t)~(1u << destination);
             stack_registers &= (uint16_t)~(1u << destination);
             continue;
         }
         if (class == BPF_STX &&
             instruction->code == (BPF_STX | BPF_W | BPF_MEM) &&
-            (stack_registers & (1u << destination)) &&
+            ((stack_registers & (1u << destination)) ||
+             (storage_value_registers & (1u << destination))) &&
             (initialized & (1u << source)) &&
             !(map_registers & (1u << source)) &&
             !(context_registers & (1u << source)) &&
             !(stack_registers & (1u << source)) &&
-            instruction->offset >= -512 && instruction->offset <= -4 &&
+            ((stack_registers & (1u << destination)) ?
+                 (instruction->offset >= -512 &&
+                  instruction->offset <= -4) :
+                 instruction->offset >= 0) &&
             !(instruction->offset & 3)) {
             continue;
         }
@@ -1318,6 +1421,13 @@ static int bpf_program_validate(
                     (map_registers & ((1u << 2) | (1u << 3) |
                                       (1u << 4))))
                     return -EDGE_LINUX_EINVAL;
+            } else if (instruction->immediate ==
+                           (int32_t)BPF_FUNC_GET_LOCAL_STORAGE) {
+                required = (1u << 1) | (1u << 2);
+                if ((initialized & required) != required ||
+                    !(cgroup_storage_registers & (1u << 1)) ||
+                    (map_registers & (1u << 2)))
+                    return -EDGE_LINUX_EINVAL;
             } else {
                 return -EDGE_LINUX_EINVAL;
             }
@@ -1326,6 +1436,11 @@ static int bpf_program_validate(
             map_registers &= (uint16_t)~0x3fu;
             program_array_registers &= (uint16_t)~0x3fu;
             ringbuf_registers &= (uint16_t)~0x3fu;
+            cgroup_storage_registers &= (uint16_t)~0x3fu;
+            storage_value_registers &= (uint16_t)~0x3fu;
+            if (instruction->immediate ==
+                    (int32_t)BPF_FUNC_GET_LOCAL_STORAGE)
+                storage_value_registers |= 1u;
             context_registers &= (uint16_t)~0x3fu;
             stack_registers &= (uint16_t)~0x3fu;
             continue;
@@ -2028,6 +2143,51 @@ static int bpf_program_has_map_locked(const kernel_bpf_program_t *program,
     return 0;
 }
 
+static int bpf_program_has_legacy_storage_type_locked(
+        const kernel_bpf_program_t *program, uint32_t map_type,
+        int except_object_id) {
+    for (uint32_t index = 0; index < BPF_OBJECT_CAPACITY; ++index) {
+        kernel_bpf_object_t *object = &g_bpf_objects[index];
+
+        if ((int)index == except_object_id || !object->used ||
+            object->kind != KERNEL_BPF_OBJECT_MAP ||
+            object->value.map.type != map_type)
+            continue;
+        if (bpf_program_has_map_locked(program, (int)index)) return 1;
+    }
+    return 0;
+}
+
+static int bpf_program_legacy_storage_link_locked(
+        const kernel_bpf_program_t *program, uint32_t cgroup_id,
+        uint32_t attach_type) {
+    int linked[BPF_OBJECT_CAPACITY];
+    uint32_t linked_count = 0u;
+    int status = 0;
+
+    for (uint32_t index = 0; index < BPF_OBJECT_CAPACITY; ++index) {
+        kernel_bpf_object_t *object = &g_bpf_objects[index];
+
+        if (!object->used || object->kind != KERNEL_BPF_OBJECT_MAP ||
+            !bpf_map_is_legacy_cgroup_storage(&object->value.map) ||
+            !bpf_program_has_map_locked(program, (int)index))
+            continue;
+        status = bpf_legacy_cgroup_storage_link_map_locked(
+            &object->value.map, cgroup_id, attach_type);
+        if (status < 0) break;
+        if (status > 0) linked[linked_count++] = (int)index;
+    }
+    if (status < 0) {
+        while (linked_count) {
+            kernel_bpf_object_t *object =
+                &g_bpf_objects[linked[--linked_count]];
+            bpf_legacy_cgroup_storage_unlink_map_locked(
+                &object->value.map, cgroup_id, attach_type);
+        }
+    }
+    return status < 0 ? status : 0;
+}
+
 int kernel_bpf_program_bind_map(int program_object_id, int map_object_id) {
     kernel_bpf_object_t *program_object;
     kernel_bpf_object_t *map_object;
@@ -2048,6 +2208,12 @@ int kernel_bpf_program_bind_map(int program_object_id, int map_object_id) {
     }
     program = &program_object->value.program;
     if (bpf_program_has_map_locked(program, map_object_id)) goto out;
+    if (bpf_map_is_legacy_cgroup_storage(&map_object->value.map) &&
+        bpf_program_has_legacy_storage_type_locked(
+            program, map_object->value.map.type, map_object_id)) {
+        status = -EDGE_LINUX_EBUSY;
+        goto out;
+    }
     if (program->bound_map_count >= BPF_OBJECT_CAPACITY) {
         status = -EDGE_LINUX_E2BIG;
         goto out;
@@ -2240,6 +2406,164 @@ static uint8_t *bpf_map_value(kernel_bpf_map_t *map, uint32_t index) {
     if (bpf_map_is_percpu(map))
         return entry + bpf_align8(1u + map->key_size);
     return entry + 1u + map->key_size;
+}
+
+static uint64_t bpf_legacy_cgroup_inode_id(uint32_t cgroup_id) {
+    return UINT64_C(0xc7000000) |
+           ((uint64_t)(cgroup_id & 0xffffu) << 8u) | 1u;
+}
+
+static void bpf_legacy_cgroup_storage_key(
+        const kernel_bpf_map_t *map, uint32_t cgroup_id,
+        uint32_t attach_type, uint8_t key[16]) {
+    uint64_t inode_id = bpf_legacy_cgroup_inode_id(cgroup_id);
+
+    memset(key, 0, 16u);
+    memcpy(key, &inode_id, sizeof(inode_id));
+    if (map->key_size == 16u)
+        memcpy(key + sizeof(inode_id), &attach_type,
+               sizeof(attach_type));
+}
+
+static void bpf_legacy_cgroup_storage_find_locked(
+        kernel_bpf_map_t *map, const void *key,
+        uint32_t *index_out, uint32_t *free_out) {
+    uint32_t found = UINT32_MAX;
+    uint32_t free_slot = UINT32_MAX;
+
+    for (uint32_t index = 0; index < map->storage_entries; ++index) {
+        uint8_t *entry = bpf_map_entry(map, index);
+
+        if (!entry[0]) {
+            if (free_slot == UINT32_MAX) free_slot = index;
+            continue;
+        }
+        if (!memcmp(entry + 1u, key, map->key_size)) {
+            found = index;
+            break;
+        }
+    }
+    if (index_out) *index_out = found;
+    if (free_out) *free_out = free_slot;
+}
+
+static int bpf_legacy_cgroup_storage_link_map_locked(
+        kernel_bpf_map_t *map, uint32_t cgroup_id,
+        uint32_t attach_type) {
+    uint8_t key[16];
+    uint32_t index;
+    uint32_t free_slot;
+    uint8_t *entry;
+
+    bpf_legacy_cgroup_storage_key(
+        map, cgroup_id, attach_type, key);
+    bpf_legacy_cgroup_storage_find_locked(
+        map, key, &index, &free_slot);
+    if (index != UINT32_MAX) return 0;
+    if (free_slot == UINT32_MAX) return -EDGE_LINUX_ENOSPC;
+    entry = bpf_map_entry(map, free_slot);
+    memset(entry, 0, map->entry_stride);
+    entry[0] = 1u;
+    memcpy(entry + 1u, key, map->key_size);
+    ++map->entry_count;
+    return 1;
+}
+
+static void bpf_legacy_cgroup_storage_unlink_map_locked(
+        kernel_bpf_map_t *map, uint32_t cgroup_id,
+        uint32_t attach_type) {
+    uint8_t key[16];
+    uint32_t index;
+
+    bpf_legacy_cgroup_storage_key(
+        map, cgroup_id, attach_type, key);
+    bpf_legacy_cgroup_storage_find_locked(map, key, &index, 0);
+    if (index == UINT32_MAX) return;
+    memset(bpf_map_entry(map, index), 0, map->entry_stride);
+    if (map->entry_count) --map->entry_count;
+}
+
+static void bpf_legacy_cgroup_storage_release_locked(
+        uint32_t cgroup_id) {
+    uint64_t inode_id = bpf_legacy_cgroup_inode_id(cgroup_id);
+
+    for (uint32_t object_index = 0;
+         object_index < BPF_OBJECT_CAPACITY; ++object_index) {
+        kernel_bpf_object_t *object = &g_bpf_objects[object_index];
+        kernel_bpf_map_t *map;
+
+        if (!object->used || object->kind != KERNEL_BPF_OBJECT_MAP)
+            continue;
+        map = &object->value.map;
+        if (!bpf_map_is_legacy_cgroup_storage(map)) continue;
+        for (uint32_t entry_index = 0;
+             entry_index < map->storage_entries; ++entry_index) {
+            uint8_t *entry = bpf_map_entry(map, entry_index);
+            uint64_t stored_inode = 0u;
+
+            if (!entry[0]) continue;
+            memcpy(&stored_inode, entry + 1u, sizeof(stored_inode));
+            if (stored_inode != inode_id) continue;
+            memset(entry, 0, map->entry_stride);
+            if (map->entry_count) --map->entry_count;
+        }
+    }
+}
+
+static uint8_t *bpf_legacy_cgroup_storage_value_locked(
+        kernel_bpf_map_t *map, uint32_t cgroup_id,
+        uint32_t attach_type) {
+    uint8_t key[16];
+    uint32_t index;
+    uint8_t *value;
+
+    bpf_legacy_cgroup_storage_key(
+        map, cgroup_id, attach_type, key);
+    bpf_legacy_cgroup_storage_find_locked(map, key, &index, 0);
+    if (index == UINT32_MAX) return 0;
+    value = bpf_map_value(map, index);
+    if (map->type == KERNEL_BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE) {
+        uint32_t cpu = edge_smp_current_cpu();
+
+        if (cpu >= map->possible_cpu_count) cpu = 0u;
+        value += (uint64_t)cpu * map->value_stride;
+    }
+    return value;
+}
+
+static int bpf_legacy_storage_address_locked(
+        uintptr_t address, uint32_t size) {
+    if (!size || address > UINTPTR_MAX - size) return 0;
+    for (uint32_t object_index = 0;
+         object_index < BPF_OBJECT_CAPACITY; ++object_index) {
+        kernel_bpf_object_t *object = &g_bpf_objects[object_index];
+        kernel_bpf_map_t *map;
+
+        if (!object->used || object->kind != KERNEL_BPF_OBJECT_MAP)
+            continue;
+        map = &object->value.map;
+        if (!bpf_map_is_legacy_cgroup_storage(map)) continue;
+        for (uint32_t index = 0; index < map->storage_entries; ++index) {
+            uint8_t *entry = bpf_map_entry(map, index);
+            uint32_t value_count;
+
+            if (!entry[0]) continue;
+            value_count = bpf_map_is_percpu(map) ?
+                map->possible_cpu_count : 1u;
+            for (uint32_t value_index = 0;
+                 value_index < value_count; ++value_index) {
+                uintptr_t value_start =
+                    (uintptr_t)bpf_map_value(map, index) +
+                    (uint64_t)value_index * map->value_stride;
+                uintptr_t value_end = value_start + map->value_size;
+
+                if (address >= value_start &&
+                    address + size <= value_end)
+                    return 1;
+            }
+        }
+    }
+    return 0;
 }
 
 static uint8_t *bpf_socket_map_cookie(kernel_bpf_map_t *map,
@@ -2947,6 +3271,29 @@ int kernel_bpf_map_lookup_flags(int object_id, const void *key, void *value,
                sizeof(uint64_t));
         goto out;
     }
+    if (bpf_map_is_legacy_cgroup_storage(map)) {
+        if (!key) {
+            status = -EDGE_LINUX_EFAULT;
+            goto out;
+        }
+        if (map->type == KERNEL_BPF_MAP_TYPE_CGROUP_STORAGE) {
+            if (flags) {
+                status = -EDGE_LINUX_EINVAL;
+                goto out;
+            }
+        } else {
+            status = bpf_map_check_percpu_flags_locked(map, flags);
+            if (status < 0) goto out;
+        }
+        bpf_legacy_cgroup_storage_find_locked(
+            map, key, &index, 0);
+        if (index == UINT32_MAX) {
+            status = -EDGE_LINUX_ENOENT;
+            goto out;
+        }
+        bpf_map_copy_value_out(map, index, value, flags);
+        goto out;
+    }
     if (bpf_map_is_local_storage(map)) {
         status = -EDGE_LINUX_EOPNOTSUPP;
         goto out;
@@ -3488,6 +3835,40 @@ int kernel_bpf_map_update(int object_id, const void *key, const void *value,
     }
     if (bpf_map_is_reuseport_array(map)) {
         status = -EDGE_LINUX_EOPNOTSUPP;
+        goto out;
+    }
+    if (bpf_map_is_legacy_cgroup_storage(map)) {
+        if (map->frozen) {
+            status = -EDGE_LINUX_EPERM;
+            goto out;
+        }
+        if (!key) {
+            status = -EDGE_LINUX_EFAULT;
+            goto out;
+        }
+        if (map->type == KERNEL_BPF_MAP_TYPE_CGROUP_STORAGE) {
+            if (flags != KERNEL_BPF_ANY &&
+                flags != KERNEL_BPF_EXIST) {
+                status = -EDGE_LINUX_EINVAL;
+                goto out;
+            }
+        } else {
+            status = bpf_map_check_percpu_flags_locked(map, flags);
+            if (status < 0) goto out;
+            if (((uint32_t)flags &
+                 ~(KERNEL_BPF_EXIST | KERNEL_BPF_F_CPU |
+                   KERNEL_BPF_F_ALL_CPUS)) != 0u) {
+                status = -EDGE_LINUX_EINVAL;
+                goto out;
+            }
+        }
+        bpf_legacy_cgroup_storage_find_locked(
+            map, key, &index, 0);
+        if (index == UINT32_MAX) {
+            status = -EDGE_LINUX_ENOENT;
+            goto out;
+        }
+        bpf_map_copy_value_in(map, index, value, flags);
         goto out;
     }
     if (bpf_map_is_local_storage(map)) {
@@ -4409,6 +4790,10 @@ int kernel_bpf_map_delete(int object_id, const void *key) {
         status = 0;
         goto out;
     }
+    if (bpf_map_is_legacy_cgroup_storage(map)) {
+        status = -EDGE_LINUX_EINVAL;
+        goto out;
+    }
     if (bpf_map_is_local_storage(map)) {
         status = -EDGE_LINUX_EOPNOTSUPP;
         goto out;
@@ -4633,6 +5018,29 @@ int kernel_bpf_map_next_key(int object_id, const void *key, void *next_key) {
             goto out;
         }
         memcpy(next_key, &socket_index, sizeof(socket_index));
+        goto out;
+    }
+    if (bpf_map_is_legacy_cgroup_storage(map)) {
+        if (key) {
+            bpf_legacy_cgroup_storage_find_locked(
+                map, key, &index, 0);
+            if (index == UINT32_MAX) {
+                status = -EDGE_LINUX_ENOENT;
+                goto out;
+            }
+            next = index + 1u;
+        } else {
+            next = 0u;
+        }
+        while (next < map->storage_entries &&
+               !bpf_map_entry(map, next)[0])
+            ++next;
+        if (next >= map->storage_entries) {
+            status = -EDGE_LINUX_ENOENT;
+            goto out;
+        }
+        memcpy(next_key, bpf_map_entry(map, next) + 1u,
+               map->key_size);
         goto out;
     }
     if (bpf_map_is_local_storage(map)) {
@@ -5082,7 +5490,8 @@ static int bpf_ringbuf_output_locked(kernel_bpf_map_t *map,
 static int bpf_program_run_cgroup_device_locked(
         kernel_bpf_object_t *object,
         const kernel_bpf_cgroup_device_context_t *context,
-        uint32_t *result, int *notify_waiters) {
+        uint32_t *result, int *notify_waiters,
+        uint32_t cgroup_id, uint32_t attach_type) {
     kernel_bpf_instruction_t *instructions;
     uint32_t count;
     uint64_t registers[11] = {0};
@@ -5116,18 +5525,31 @@ static int bpf_program_run_cgroup_device_locked(
             registers[destination] = bpf_alu_result(
                 operation, registers[destination], operand);
         } else if (BPF_CLASS(instruction->code) == BPF_LDX) {
+            uintptr_t address = (uintptr_t)registers[source] +
+                instruction->offset;
             uint32_t value;
-            memcpy(&value, (const uint8_t *)context + instruction->offset,
-                   sizeof(value));
+
+            if (source == 1u) {
+                if (address < (uintptr_t)context ||
+                    address > (uintptr_t)context + sizeof(*context) -
+                                  sizeof(value))
+                    return -EDGE_LINUX_EFAULT;
+            } else if (!bpf_legacy_storage_address_locked(
+                           address, sizeof(value))) {
+                return -EDGE_LINUX_EFAULT;
+            }
+            memcpy(&value, (const void *)address, sizeof(value));
             registers[destination] = value;
         } else if (BPF_CLASS(instruction->code) == BPF_STX) {
             uintptr_t address = (uintptr_t)registers[destination] +
                 instruction->offset;
             uint32_t value = (uint32_t)registers[source];
 
-            if (address < (uintptr_t)stack ||
-                address > (uintptr_t)(stack + sizeof(stack) -
-                                       sizeof(value)))
+            if (!((address >= (uintptr_t)stack &&
+                   address <= (uintptr_t)(stack + sizeof(stack) -
+                                           sizeof(value))) ||
+                  bpf_legacy_storage_address_locked(
+                      address, sizeof(value))))
                 return -EDGE_LINUX_EFAULT;
             memcpy((void *)address, &value, sizeof(value));
         } else if (BPF_CLASS(instruction->code) == BPF_JMP &&
@@ -5177,6 +5599,23 @@ static int bpf_program_run_cgroup_device_locked(
             registers[10] =
                 (uint64_t)(uintptr_t)(stack + sizeof(stack));
             pc = UINT32_MAX;
+        } else if (BPF_CLASS(instruction->code) == BPF_JMP &&
+                   operation == BPF_CALL &&
+                   instruction->immediate ==
+                       (int32_t)BPF_FUNC_GET_LOCAL_STORAGE) {
+            kernel_bpf_object_t *map_object =
+                bpf_object_locked((int32_t)registers[1]);
+            uint8_t *value = 0;
+
+            if (registers[2] || !map_object ||
+                map_object->kind != KERNEL_BPF_OBJECT_MAP ||
+                !bpf_map_is_legacy_cgroup_storage(
+                    &map_object->value.map))
+                return -EDGE_LINUX_EINVAL;
+            value = bpf_legacy_cgroup_storage_value_locked(
+                &map_object->value.map, cgroup_id, attach_type);
+            if (!value) return -EDGE_LINUX_ENOENT;
+            registers[0] = (uint64_t)(uintptr_t)value;
         } else if (BPF_CLASS(instruction->code) == BPF_JMP &&
                    operation == BPF_CALL &&
                    instruction->immediate ==
@@ -5231,7 +5670,8 @@ int kernel_bpf_program_run_cgroup_device(
     bpf_lock();
     object = bpf_object_locked(object_id);
     status = bpf_program_run_cgroup_device_locked(
-        object, context, result, &notify_waiters);
+        object, context, result, &notify_waiters, 0u,
+        KERNEL_BPF_CGROUP_DEVICE);
     bpf_unlock();
     if (notify_waiters) kernel_bpf_ringbuf_state_changed();
     return status;
@@ -5295,6 +5735,9 @@ int kernel_bpf_cgroup_link_create(uint32_t cgroup_id, int object_id,
         result = -EDGE_LINUX_EBUSY;
         goto out;
     }
+    result = bpf_program_legacy_storage_link_locked(
+        &program->value.program, cgroup_id, attach_type);
+    if (result < 0) goto out;
     link_object_id = bpf_allocate_object_locked(
         KERNEL_BPF_OBJECT_LINK, &link);
     if (link_object_id < 0) {
@@ -5312,6 +5755,7 @@ int kernel_bpf_cgroup_link_create(uint32_t cgroup_id, int object_id,
     free_attachment->object_id = object_id;
     free_attachment->link_object_id = link_object_id;
     free_attachment->flags = KERNEL_BPF_F_ALLOW_MULTI;
+    free_attachment->attach_type = attach_type;
     ++g_bpf_attachment_sequence;
     if (!g_bpf_attachment_sequence) ++g_bpf_attachment_sequence;
     free_attachment->sequence = g_bpf_attachment_sequence;
@@ -5377,6 +5821,10 @@ int kernel_bpf_link_update(int link_object_id, int new_object_id,
         result = -EDGE_LINUX_EBUSY;
         goto out;
     }
+    result = bpf_program_legacy_storage_link_locked(
+        &new_program->value.program, attachment->cgroup_id,
+        attachment->attach_type);
+    if (result < 0) goto out;
     ++new_program->references;
     released_object = link->value.link.program_object_id;
     link->value.link.program_object_id = new_object_id;
@@ -5489,6 +5937,20 @@ int kernel_bpf_cgroup_attach(uint32_t cgroup_id, int object_id,
             status = -EDGE_LINUX_EBUSY;
             goto out;
         }
+        {
+            kernel_bpf_object_t *old_object = bpf_object_locked(
+                replacement->object_id);
+
+            if (!old_object || old_object->kind !=
+                    KERNEL_BPF_OBJECT_PROGRAM) {
+                status = -EDGE_LINUX_EBADF;
+                goto out;
+            }
+            status = bpf_program_legacy_storage_link_locked(
+                &object->value.program, cgroup_id,
+                KERNEL_BPF_CGROUP_DEVICE);
+            if (status < 0) goto out;
+        }
         ++object->references;
         released_object = replacement->object_id;
         replacement->object_id = object_id;
@@ -5502,6 +5964,10 @@ int kernel_bpf_cgroup_attach(uint32_t cgroup_id, int object_id,
             status = -EDGE_LINUX_EBUSY;
             goto out;
         }
+        status = bpf_program_legacy_storage_link_locked(
+            &object->value.program, cgroup_id,
+            KERNEL_BPF_CGROUP_DEVICE);
+        if (status < 0) goto out;
         ++object->references;
         memset(free_attachment, 0, sizeof(*free_attachment));
         free_attachment->used = 1u;
@@ -5510,6 +5976,7 @@ int kernel_bpf_cgroup_attach(uint32_t cgroup_id, int object_id,
         free_attachment->link_object_id = -1;
         free_attachment->flags =
             flags & ~KERNEL_BPF_F_REPLACE;
+        free_attachment->attach_type = KERNEL_BPF_CGROUP_DEVICE;
         ++g_bpf_attachment_sequence;
         if (!g_bpf_attachment_sequence) ++g_bpf_attachment_sequence;
         free_attachment->sequence = g_bpf_attachment_sequence;
@@ -5636,7 +6103,8 @@ int kernel_bpf_cgroup_device_run(
         previous_sequence = attachment->sequence;
         object = bpf_object_locked(attachment->object_id);
         status = bpf_program_run_cgroup_device_locked(
-            object, context, &program_result, &notify_waiters);
+            object, context, &program_result, &notify_waiters,
+            cgroup_id, attachment->attach_type);
         if (status < 0) goto out;
         if (!program_result) aggregate = 0u;
     }
@@ -5649,4 +6117,7 @@ out:
 
 void kernel_bpf_cgroup_release(uint32_t cgroup_id) {
     (void)kernel_bpf_cgroup_detach(cgroup_id, -1);
+    bpf_lock();
+    bpf_legacy_cgroup_storage_release_locked(cgroup_id);
+    bpf_unlock();
 }

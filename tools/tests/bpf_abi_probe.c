@@ -84,6 +84,8 @@
 #define BPF_MAP_TYPE_LPM_TRIE 11u
 #define BPF_MAP_TYPE_ARRAY_OF_MAPS 12u
 #define BPF_MAP_TYPE_HASH_OF_MAPS 13u
+#define BPF_MAP_TYPE_CGROUP_STORAGE 19u
+#define BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE 21u
 #define BPF_MAP_TYPE_QUEUE 22u
 #define BPF_MAP_TYPE_STACK 23u
 #define BPF_MAP_TYPE_RINGBUF 27u
@@ -2111,6 +2113,8 @@ static int test_program(void) {
         (void)raw_syscall6(SYS_close, reopened, 0, 0, 0, 0, 0);
 
     (void)raw_syscall6(
+        SYS_mkdirat, AT_FDCWD, (long)"/sys", 0755, 0, 0, 0);
+    (void)raw_syscall6(
         SYS_mkdirat, AT_FDCWD, (long)"/sys/fs", 0755, 0, 0, 0);
     (void)raw_syscall6(
         SYS_mkdirat, AT_FDCWD, (long)"/sys/fs/cgroup", 0755, 0, 0, 0);
@@ -2666,6 +2670,163 @@ static int test_runtime_statistics(void) {
     return failures;
 }
 
+static int test_legacy_cgroup_storage(void) {
+    static const char license[] = "GPL";
+    static const char device_path[] = "/legacy-storage-device";
+    struct legacy_key {
+        uint64_t cgroup_inode_id;
+        uint32_t attach_type;
+        uint32_t padding;
+    } key = {0}, next_key = {0};
+    struct bpf_insn instructions[] = {
+        { .code = 0x18u, .registers = 0x11u },
+        { .code = 0u },
+        { .code = 0xb7u, .registers = 2u },
+        { .code = 0x85u, .immediate = 81 },
+        { .code = 0xbfu, .registers = 0x01u },
+        { .code = 0xb7u, .registers = 2u,
+          .immediate = 0x12345678 },
+        { .code = 0x63u, .registers = 0x21u },
+        { .code = 0xb7u, .registers = 0u, .immediate = 1 },
+        { .code = 0x95u },
+    };
+    union bpf_attr attribute;
+    uint32_t value = 0u;
+    uint32_t replacement = 0x87654321u;
+    long map_descriptor;
+    long per_cpu_descriptor;
+    long program_descriptor;
+    long cgroup_descriptor;
+    int failures = 0;
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.map_create.map_type = BPF_MAP_TYPE_CGROUP_STORAGE;
+    attribute.map_create.key_size = sizeof(key);
+    attribute.map_create.value_size = sizeof(value);
+    attribute.map_create.map_name[0] = 'c';
+    attribute.map_create.map_name[1] = 'g';
+    attribute.map_create.map_name[2] = 's';
+    map_descriptor = bpf_call(BPF_MAP_CREATE, &attribute);
+    failures += expect_true(
+        "legacy cgroup storage create", map_descriptor >= 0);
+    if (map_descriptor < 0) return failures + 1;
+    failures += expect("legacy storage empty next", map_element_raw(
+        BPF_MAP_GET_NEXT_KEY, map_descriptor, 0, &next_key, 0),
+        -ENOENT);
+    failures += expect("legacy storage empty lookup", map_element_raw(
+        BPF_MAP_LOOKUP_ELEM, map_descriptor, &key, &value, 0),
+        -ENOENT);
+    failures += expect("legacy storage delete rejected", map_element_raw(
+        BPF_MAP_DELETE_ELEM, map_descriptor, &key, 0, 0),
+        -EINVAL);
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.map_create.map_type =
+        BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE;
+    attribute.map_create.key_size = sizeof(uint64_t);
+    attribute.map_create.value_size = sizeof(value);
+    attribute.map_create.map_name[0] = 'p';
+    attribute.map_create.map_name[1] = 'c';
+    attribute.map_create.map_name[2] = 'g';
+    per_cpu_descriptor = bpf_call(BPF_MAP_CREATE, &attribute);
+    failures += expect_true(
+        "legacy per-CPU storage create", per_cpu_descriptor >= 0);
+    if (per_cpu_descriptor >= 0)
+        (void)raw_syscall6(
+            SYS_close, per_cpu_descriptor, 0, 0, 0, 0, 0);
+    attribute.map_create.max_entries = 1u;
+    failures += expect("legacy storage max entries", bpf_call(
+        BPF_MAP_CREATE, &attribute), -EINVAL);
+
+    instructions[0].immediate = (int32_t)map_descriptor;
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.prog_load.prog_type = BPF_PROG_TYPE_CGROUP_DEVICE;
+    attribute.prog_load.insn_count =
+        sizeof(instructions) / sizeof(instructions[0]);
+    attribute.prog_load.insns =
+        (uint64_t)(uintptr_t)instructions;
+    attribute.prog_load.license = (uint64_t)(uintptr_t)license;
+    attribute.prog_load.expected_attach_type = BPF_CGROUP_DEVICE;
+    attribute.prog_load.prog_name[0] = 'c';
+    attribute.prog_load.prog_name[1] = 'g';
+    attribute.prog_load.prog_name[2] = 's';
+    program_descriptor = bpf_call(BPF_PROG_LOAD, &attribute);
+    failures += expect_true(
+        "legacy storage program load", program_descriptor >= 0);
+
+    (void)raw_syscall6(
+        SYS_mkdirat, AT_FDCWD, (long)"/sys", 0755, 0, 0, 0);
+    (void)raw_syscall6(
+        SYS_mkdirat, AT_FDCWD, (long)"/sys/fs", 0755, 0, 0, 0);
+    (void)raw_syscall6(
+        SYS_mkdirat, AT_FDCWD, (long)"/sys/fs/cgroup",
+        0755, 0, 0, 0);
+    (void)raw_syscall6(
+        SYS_mount, (long)"none", (long)"/sys/fs/cgroup",
+        (long)"cgroup2", 0, 0, 0);
+    cgroup_descriptor = raw_syscall6(
+        SYS_openat, AT_FDCWD, (long)"/sys/fs/cgroup",
+        O_RDONLY | O_DIRECTORY, 0, 0, 0);
+    failures += expect_true(
+        "legacy storage open cgroup", cgroup_descriptor >= 0);
+    if (program_descriptor >= 0 && cgroup_descriptor >= 0) {
+        clear_bytes(&attribute, sizeof(attribute));
+        attribute.prog_attach.target_fd =
+            (uint32_t)cgroup_descriptor;
+        attribute.prog_attach.attach_bpf_fd =
+            (uint32_t)program_descriptor;
+        attribute.prog_attach.attach_type = BPF_CGROUP_DEVICE;
+        failures += expect("legacy storage attach", bpf_call(
+            BPF_PROG_ATTACH, &attribute), 0);
+        failures += expect("legacy storage first key", map_element_raw(
+            BPF_MAP_GET_NEXT_KEY, map_descriptor, 0, &key, 0), 0);
+        failures += expect_true(
+            "legacy storage key attach type",
+            key.cgroup_inode_id != 0u &&
+            key.attach_type == BPF_CGROUP_DEVICE);
+        (void)raw_syscall6(
+            SYS_unlinkat, AT_FDCWD, (long)device_path, 0, 0, 0, 0);
+        failures += expect("legacy storage trigger", raw_syscall6(
+            SYS_mknodat, AT_FDCWD, (long)device_path,
+            S_IFCHR | 0600, (1u << 8u) | 3u, 0, 0), 0);
+        failures += expect("legacy storage lookup", map_element_raw(
+            BPF_MAP_LOOKUP_ELEM, map_descriptor, &key, &value, 0), 0);
+        failures += expect("legacy storage helper value", value,
+                           0x12345678);
+        failures += expect("legacy storage update", map_element_raw(
+            BPF_MAP_UPDATE_ELEM, map_descriptor, &key,
+            &replacement, BPF_EXIST), 0);
+        value = 0u;
+        failures += expect("legacy storage updated lookup", map_element_raw(
+            BPF_MAP_LOOKUP_ELEM, map_descriptor, &key, &value, 0), 0);
+        failures += expect("legacy storage updated value", value,
+                           replacement);
+        clear_bytes(&attribute, sizeof(attribute));
+        attribute.prog_attach.target_fd =
+            (uint32_t)cgroup_descriptor;
+        attribute.prog_attach.attach_bpf_fd =
+            (uint32_t)program_descriptor;
+        attribute.prog_attach.attach_type = BPF_CGROUP_DEVICE;
+        failures += expect("legacy storage detach", bpf_call(
+            BPF_PROG_DETACH, &attribute), 0);
+        failures += expect("legacy storage retained", map_element_raw(
+            BPF_MAP_LOOKUP_ELEM, map_descriptor, &key, &value, 0), 0);
+        failures += expect("legacy storage retained value", value,
+                           replacement);
+        (void)raw_syscall6(
+            SYS_unlinkat, AT_FDCWD, (long)device_path, 0, 0, 0, 0);
+    }
+    if (cgroup_descriptor >= 0)
+        (void)raw_syscall6(
+            SYS_close, cgroup_descriptor, 0, 0, 0, 0, 0);
+    if (program_descriptor >= 0)
+        (void)raw_syscall6(
+            SYS_close, program_descriptor, 0, 0, 0, 0, 0);
+    (void)raw_syscall6(
+        SYS_close, map_descriptor, 0, 0, 0, 0, 0);
+    return failures;
+}
+
 static int test_btf_objects(void) {
     struct test_btf_blob {
         uint16_t magic;
@@ -2794,6 +2955,14 @@ static int test_attribute_tail(void) {
 }
 
 START_ATTRIBUTES void _start(void) {
+#ifdef BPF_LEGACY_CGROUP_ONLY
+    int failures = test_legacy_cgroup_storage();
+
+    print_text(failures ? "BPF_LEGACY_CGROUP_STORAGE_FAIL\n" :
+                          "BPF_LEGACY_CGROUP_STORAGE_PASS\n");
+    (void)raw_syscall6(SYS_exit, failures ? 1 : 0, 0, 0, 0, 0, 0);
+    for (;;) { }
+#else
     int failures = test_array_map();
 
     if (failures == 77) {
@@ -2818,10 +2987,12 @@ START_ATTRIBUTES void _start(void) {
     failures += test_program_bind_map();
     failures += test_program_test_run_errors();
     failures += test_runtime_statistics();
+    failures += test_legacy_cgroup_storage();
     failures += test_btf_objects();
     failures += test_attribute_tail();
     print_text(failures ? "BPF_ABI_PROBE_FAIL\n" :
                           "BPF_ABI_PROBE_PASS\n");
     (void)raw_syscall6(SYS_exit, failures ? 1 : 0, 0, 0, 0, 0, 0);
     for (;;) { }
+#endif
 }

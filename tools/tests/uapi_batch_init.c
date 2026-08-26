@@ -238,6 +238,8 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "bpf_inode_storage_abi_probe",
 #elif defined(UAPI_BATCH_BPF_TASK_STORAGE_ONLY)
         "bpf_task_storage_abi_probe",
+#elif defined(UAPI_BATCH_BPF_ABI_ONLY)
+        "bpf_abi_probe",
 #elif defined(UAPI_BATCH_BPF_INSN_ARRAY_ONLY)
         "bpf_insn_array_abi_probe",
 #elif defined(UAPI_BATCH_BPF_RHASH_ONLY)
