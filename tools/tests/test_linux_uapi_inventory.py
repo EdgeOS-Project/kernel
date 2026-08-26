@@ -113,7 +113,10 @@ class LinuxUapiInventoryTests(unittest.TestCase):
             if item["domain"] == "io_uring"
         )
         self.assertEqual(assessment["status"], "partial")
-        self.assertIn("asynchronous worker execution", assessment["missing"])
+        self.assertIn(
+            "independent worker progression while the owner executes no syscall",
+            assessment["missing"],
+        )
 
     def test_edgeos_io_uring_opcode_values_match_frozen_inventory(self) -> None:
         root = Path(__file__).resolve().parents[2]

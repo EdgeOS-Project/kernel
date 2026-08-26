@@ -120,6 +120,13 @@ typedef struct kernel_io_uring_cancel_match {
     uint8_t reserved[3];
 } kernel_io_uring_cancel_match_t;
 
+typedef struct kernel_io_uring_worker_request {
+    struct edge_linux_io_uring_sqe submission;
+    uint64_t sequence;
+    int32_t ring_id;
+    int32_t descriptor;
+} kernel_io_uring_worker_request_t;
+
 int kernel_io_uring_page_allocator_register(
     const kernel_io_uring_page_allocator_t *allocator);
 int kernel_io_uring_create(uint32_t entries,
@@ -358,6 +365,16 @@ int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data);
 int kernel_io_uring_pending_cancel_match(
     int32_t ring_id, const kernel_io_uring_cancel_match_t *match,
     uint64_t *canceled_user_data);
+int kernel_io_uring_worker_add(
+    int32_t ring_id, int32_t owner_pid,
+    const struct edge_linux_io_uring_sqe *submission,
+    uint32_t ready_operation);
+int kernel_io_uring_worker_materialize_next(
+    int32_t owner_pid, int32_t ring_filter,
+    kernel_io_uring_worker_request_t *request);
+int kernel_io_uring_worker_finish(
+    int32_t ring_id, uint64_t sequence, int32_t result,
+    uint32_t completion_flags);
 uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us);
 int kernel_io_uring_mmap_info(int32_t ring_id, uint64_t offset,
                               uint64_t length, uint32_t *page_count);

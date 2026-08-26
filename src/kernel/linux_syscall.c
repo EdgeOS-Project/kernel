@@ -13392,6 +13392,85 @@ static int32_t edge_linux_io_uring_execute(
     return result;
 }
 
+static int edge_linux_io_uring_worker_eligible(
+        const struct edge_linux_io_uring_sqe *submission) {
+    uint8_t disallowed_flags =
+        EDGE_LINUX_IOSQE_IO_DRAIN |
+        EDGE_LINUX_IOSQE_IO_LINK |
+        EDGE_LINUX_IOSQE_IO_HARDLINK |
+        EDGE_LINUX_IOSQE_BUFFER_SELECT;
+
+    if (!submission || submission->personality ||
+        (submission->flags & disallowed_flags))
+        return 0;
+    switch (submission->opcode) {
+    case EDGE_LINUX_IORING_OP_READ:
+    case EDGE_LINUX_IORING_OP_WRITE:
+    case EDGE_LINUX_IORING_OP_READV:
+    case EDGE_LINUX_IORING_OP_WRITEV:
+    case EDGE_LINUX_IORING_OP_READ_FIXED:
+    case EDGE_LINUX_IORING_OP_WRITE_FIXED:
+    case EDGE_LINUX_IORING_OP_READV_FIXED:
+    case EDGE_LINUX_IORING_OP_WRITEV_FIXED:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static uint32_t edge_linux_io_uring_worker_ready_operation(
+        const struct edge_linux_io_uring_sqe *submission) {
+    switch (submission->opcode) {
+    case EDGE_LINUX_IORING_OP_WRITE:
+    case EDGE_LINUX_IORING_OP_WRITEV:
+    case EDGE_LINUX_IORING_OP_WRITE_FIXED:
+    case EDGE_LINUX_IORING_OP_WRITEV_FIXED:
+        return KERNEL_IO_WRITE_CURRENT;
+    default:
+        return KERNEL_IO_READ_CURRENT;
+    }
+}
+
+static uint32_t edge_linux_io_uring_worker_service(
+        edge_linux_syscall_context_t *context,
+        int32_t ring_filter, uint32_t budget) {
+    uint32_t completed = 0u;
+
+    if (!context) return 0u;
+    while (budget--) {
+        kernel_io_uring_worker_request_t request;
+        edge_linux_io_uring_notification_t notification = {0};
+        uint32_t completion_flags = 0u;
+        int32_t operation_result;
+        int result = kernel_io_uring_worker_materialize_next(
+            kernel_current_pid(), ring_filter, &request);
+
+        if (result == 0) break;
+        if (result < 0) {
+            if (request.ring_id >= 0 && request.sequence)
+                (void)kernel_io_uring_worker_finish(
+                    request.ring_id, request.sequence,
+                    result, 0u);
+            break;
+        }
+        operation_result = edge_linux_io_uring_execute_current(
+            context, request.ring_id, &request.submission,
+            &completion_flags, &notification);
+        (void)kernel_fd_close(request.descriptor);
+        (void)kernel_io_uring_worker_finish(
+            request.ring_id, request.sequence,
+            operation_result, completion_flags);
+        if (notification.present)
+            (void)kernel_io_uring_completion_add_async(
+                request.ring_id, notification.user_data,
+                notification.result, EDGE_LINUX_IORING_CQE_F_NOTIF);
+        if (operation_result == -EDGE_LINUX_EAGAIN)
+            break;
+        ++completed;
+    }
+    return completed;
+}
+
 static int64_t edge_linux_sys_io_uring_setup(
         edge_linux_syscall_context_t *context) {
     struct edge_linux_io_uring_params parameters;
@@ -13707,9 +13786,29 @@ static int64_t edge_linux_sys_io_uring_enter(
                 previous_link_available, previous_link_opcode,
                 previous_link_sequence);
         } else {
-            operation_result = edge_linux_io_uring_execute(
-                context, ring_id, &submission,
-                &completion_flags, &notification);
+            if ((submission.flags & EDGE_LINUX_IOSQE_ASYNC) &&
+                edge_linux_io_uring_worker_eligible(&submission)) {
+                operation_result = kernel_io_uring_worker_add(
+                    ring_id, kernel_current_pid(), &submission,
+                    edge_linux_io_uring_worker_ready_operation(
+                        &submission));
+                if (operation_result == 0)
+                    operation_result = EDGE_LINUX_IORING_PENDING_RESULT;
+            } else {
+                operation_result = edge_linux_io_uring_execute(
+                    context, ring_id, &submission,
+                    &completion_flags, &notification);
+                if (operation_result == -EDGE_LINUX_EAGAIN &&
+                    edge_linux_io_uring_worker_eligible(&submission)) {
+                    operation_result = kernel_io_uring_worker_add(
+                        ring_id, kernel_current_pid(), &submission,
+                        edge_linux_io_uring_worker_ready_operation(
+                            &submission));
+                    if (operation_result == 0)
+                        operation_result =
+                            EDGE_LINUX_IORING_PENDING_RESULT;
+                }
+            }
         }
         if (operation_result != EDGE_LINUX_IORING_PENDING_RESULT &&
             (!(submission.flags & EDGE_LINUX_IOSQE_CQE_SKIP_SUCCESS) ||
@@ -13755,6 +13854,7 @@ static int64_t edge_linux_sys_io_uring_enter(
         if (thread_state)
             thread_state->io_uring_wait_submitted = submitted;
     }
+    (void)edge_linux_io_uring_worker_service(context, ring_id, 8u);
     (void)kernel_io_uring_collect(ring_id, boottime_monotonic_us());
     if ((flags & EDGE_LINUX_IORING_ENTER_GETEVENTS) && minimum) {
         uint32_t completion_count =
@@ -13769,6 +13869,8 @@ static int64_t edge_linux_sys_io_uring_enter(
             int released;
             int yielded;
 
+            (void)edge_linux_io_uring_worker_service(
+                context, ring_id, 8u);
             (void)kernel_io_uring_collect(
                 ring_id, boottime_monotonic_us());
             completion_count = edge_linux_io_uring_napi_busy_poll(
@@ -23562,6 +23664,7 @@ int edge_linux_syscall_dispatch(edge_linux_syscall_context_t *context) {
     int rseq_status;
 
     if (!context) return EDGE_LINUX_SYSCALL_NOT_HANDLED;
+    (void)edge_linux_io_uring_worker_service(context, -1, 8u);
     if (edge_linux_syscall_map(context->architecture, context->raw_number,
                                &context->id, &context->route_status) < 0)
         return EDGE_LINUX_SYSCALL_NOT_HANDLED;

@@ -210,11 +210,12 @@ EDGEOS_ASSESSMENTS = [
             "IORING_SETUP_NO_MMAP user-backed shared SQ/CQ storage and SQE storage with retained page lifetime",
             "dynamically sized fixed-buffer page lists with retained transfer after the original mapping is removed",
             "single-backend pinned fixed-buffer transfers for supported device-specific character descriptors",
+            "read and write SQEs deferred through an owner-context worker with retained ordinary or fixed file descriptions, readiness gating, EAGAIN retry, cancellation and CQE_SKIP_SUCCESS completion rules",
             "RECV_ZC for TCP sockets with nodev ZCRX areas, retained descriptions, CQE32 offsets, refill control and copy fallback",
             "SQPOLL setup, affinity validation, non-fixed descriptor feature reporting and SQ_WAKEUP or SQ_WAIT enter control",
         ],
         "missing": [
-            "asynchronous worker execution",
+            "independent worker progression while the owner executes no syscall",
             "device-backed ZCRX registration and ZCRX import/export sharing",
             "remaining URING_CMD socket and device command consumers",
             "remaining ia32 and x32 semantic coverage across supported operations",
@@ -336,6 +337,9 @@ EDGEOS_ASSESSMENTS = [
                 "plus SQPOLL setup combinations, CPU affinity validation, "
                 "non-fixed descriptor feature reporting, SQ_WAKEUP and "
                 "SQ_WAIT completion control, "
+                "plus IOSQE_ASYNC fixed-buffer pipe reads with deferred "
+                "readiness, retained file descriptions and completion after "
+                "the producer writes, "
                 "plus ia32 and x32 fixed-buffer registration, setup and mapped "
                 "ring layouts, NOP SQE/CQE completion and READV iovec boundary "
                 "handling"

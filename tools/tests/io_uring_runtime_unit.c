@@ -2601,6 +2601,105 @@ int main(void) {
         test_page_release(0, &overflow_sq);
         kernel_io_uring_release(second_ring_id);
     }
+    {
+        struct edge_linux_io_uring_params worker_parameters = {0};
+        struct edge_linux_io_uring_sqe worker_submission = {0};
+        kernel_io_uring_worker_request_t worker_request;
+        kernel_io_uring_page_t worker_cq;
+        struct edge_linux_io_uring_cqe *worker_completion;
+        uint64_t canceled_user_data = 0u;
+        kernel_io_uring_cancel_match_t cancel_match = {0};
+        const int32_t fixed_file[] = {13};
+
+        assert(kernel_io_uring_create(
+                   4u, &worker_parameters, &second_ring_id) == 0);
+        assert(kernel_io_uring_mmap_page(
+                   second_ring_id, KERNEL_IO_URING_OFF_CQ_RING,
+                   0u, &worker_cq) == 0);
+        worker_completion = (struct edge_linux_io_uring_cqe *)(
+            (uint8_t *)worker_cq.address + worker_parameters.cq_off.cqes);
+        worker_submission.opcode = 22u;
+        worker_submission.descriptor = 12;
+        worker_submission.user_data = 0x574f524b455231ull;
+        g_ready_descriptor = 12;
+        g_ready_generation = g_descriptor_generation[12];
+        assert(kernel_io_uring_worker_add(
+                   second_ring_id, 42, &worker_submission,
+                   KERNEL_IO_READ_CURRENT) == 0);
+        assert(g_fixed_file_references == 1u);
+        assert(kernel_io_uring_worker_materialize_next(
+                   41, -1, &worker_request) == 0);
+        assert(kernel_io_uring_worker_materialize_next(
+                   42, -1, &worker_request) == 1);
+        assert(worker_request.ring_id == second_ring_id &&
+               worker_request.descriptor == 12 &&
+               worker_request.submission.descriptor == 12 &&
+               worker_request.submission.user_data ==
+                   worker_submission.user_data);
+        assert(g_materialize_flags == KERNEL_FD_CLOEXEC);
+        assert(g_fixed_file_references == 1u);
+        assert(kernel_io_uring_worker_finish(
+                   second_ring_id, worker_request.sequence,
+                   -EDGE_LINUX_EAGAIN, 0u) == 0);
+        assert(kernel_io_uring_worker_materialize_next(
+                   42, second_ring_id, &worker_request) == 1);
+        assert(kernel_io_uring_worker_finish(
+                   second_ring_id, worker_request.sequence,
+                   9, 0x20u) == 0);
+        assert(g_fixed_file_references == 0u);
+        assert(kernel_io_uring_completion_count(second_ring_id) == 1u);
+        assert(worker_completion[0].user_data ==
+                   worker_submission.user_data &&
+               worker_completion[0].result == 9 &&
+               worker_completion[0].flags == 0x20u);
+
+        assert(kernel_io_uring_files_register(
+                   second_ring_id, fixed_file, 1u) == 0);
+        assert(g_fixed_file_references == 1u);
+        worker_submission.flags = 1u;
+        worker_submission.descriptor = 0;
+        worker_submission.user_data = 0x574f524b455232ull;
+        g_ready_descriptor = 13;
+        g_ready_generation = g_descriptor_generation[13];
+        assert(kernel_io_uring_worker_add(
+                   second_ring_id, 42, &worker_submission,
+                   KERNEL_IO_READ_CURRENT) == 0);
+        assert(g_fixed_file_references == 2u);
+        assert(kernel_io_uring_files_unregister(second_ring_id) == 0);
+        assert(g_fixed_file_references == 1u);
+        assert(kernel_io_uring_worker_materialize_next(
+                   42, second_ring_id, &worker_request) == 1);
+        assert(worker_request.descriptor == 13 &&
+               !(worker_request.submission.flags & 1u));
+        assert(kernel_io_uring_worker_finish(
+                   second_ring_id, worker_request.sequence,
+                   -EDGE_LINUX_EIO, 0u) == 0);
+        assert(g_fixed_file_references == 0u);
+        assert(kernel_io_uring_completion_count(second_ring_id) == 2u);
+        assert(worker_completion[1].user_data ==
+                   worker_submission.user_data &&
+               worker_completion[1].result == -EDGE_LINUX_EIO);
+
+        worker_submission.flags = 0u;
+        worker_submission.descriptor = 14;
+        worker_submission.user_data = 0x574f524b455233ull;
+        g_ready_descriptor = 14;
+        g_ready_generation = g_descriptor_generation[14];
+        assert(kernel_io_uring_worker_add(
+                   second_ring_id, 42, &worker_submission,
+                   KERNEL_IO_READ_CURRENT) == 0);
+        assert(g_fixed_file_references == 1u);
+        cancel_match.user_data = worker_submission.user_data;
+        cancel_match.flags = KERNEL_IO_URING_CANCEL_USERDATA;
+        assert(kernel_io_uring_pending_cancel_match(
+                   second_ring_id, &cancel_match,
+                   &canceled_user_data) == 0);
+        assert(canceled_user_data == worker_submission.user_data);
+        assert(g_fixed_file_references == 0u);
+        g_ready_descriptor = -1;
+        test_page_release(0, &worker_cq);
+        kernel_io_uring_release(second_ring_id);
+    }
     for (uint32_t index = 0; index < TEST_PAGE_COUNT; ++index)
         assert(g_references[index] == 0);
 

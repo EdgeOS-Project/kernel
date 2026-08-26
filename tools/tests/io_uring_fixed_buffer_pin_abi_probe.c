@@ -56,6 +56,7 @@
 #define IORING_UNREGISTER_BUFFERS 1u
 #define IORING_OP_READ_FIXED 4u
 #define IORING_OP_WRITE_FIXED 5u
+#define IOSQE_ASYNC (1u << 4)
 #define IORING_OFF_SQ_RING 0x00000000ull
 #define IORING_OFF_CQ_RING 0x08000000ull
 #define IORING_OFF_SQES 0x10000000ull
@@ -357,6 +358,63 @@ static int submit(
     return (int)entered;
 }
 
+static int submit_async_read(
+        long ring, struct io_uring_params *parameters,
+        void *sq_ring, void *cq_ring, struct io_uring_sqe *sqes,
+        int32_t descriptor, uint64_t address, uint32_t length,
+        uint64_t user_data, int32_t writer, const void *source) {
+    volatile uint32_t *sq_head = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.head);
+    volatile uint32_t *sq_tail = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.tail);
+    volatile uint32_t *sq_mask = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.ring_mask);
+    volatile uint32_t *sq_array = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters->sq_off.array);
+    volatile uint32_t *cq_head = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters->cq_off.head);
+    volatile uint32_t *cq_tail = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters->cq_off.tail);
+    volatile uint32_t *cq_mask = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters->cq_off.ring_mask);
+    struct io_uring_cqe *cqes = (struct io_uring_cqe *)(void *)(
+        (uint8_t *)cq_ring + parameters->cq_off.cqes);
+    uint32_t sq_index = *sq_tail & *sq_mask;
+    uint32_t cq_index;
+    long entered;
+
+    bytes_zero(&sqes[sq_index], sizeof(sqes[sq_index]));
+    sqes[sq_index].opcode = IORING_OP_READ_FIXED;
+    sqes[sq_index].flags = IOSQE_ASYNC;
+    sqes[sq_index].descriptor = descriptor;
+    sqes[sq_index].offset = UINT64_MAX;
+    sqes[sq_index].address = address;
+    sqes[sq_index].length = length;
+    sqes[sq_index].user_data = user_data;
+    sqes[sq_index].buffer_index = 0u;
+    sq_array[sq_index] = sq_index;
+    __atomic_store_n(sq_tail, *sq_tail + 1u, __ATOMIC_RELEASE);
+    entered = raw_syscall6(
+        SYS_io_uring_enter, ring, 1, 0, 0, 0, 0);
+    if (entered != 1 || *sq_head != *sq_tail || *cq_head != *cq_tail)
+        return -1;
+    (void)raw_syscall6(SYS_sched_yield, 0, 0, 0, 0, 0, 0);
+    if (*cq_head != *cq_tail) return -1;
+    if (raw_syscall6(
+            SYS_write, writer, (long)source,
+            length, 0, 0, 0) != (long)length)
+        return -1;
+    entered = raw_syscall6(
+        SYS_io_uring_enter, ring, 0, 1,
+        IORING_ENTER_GETEVENTS, 0, 0);
+    if (entered != 0 || *cq_head == *cq_tail) return -1;
+    cq_index = *cq_head & *cq_mask;
+    if (cqes[cq_index].user_data != user_data) return -1;
+    entered = cqes[cq_index].result;
+    __atomic_store_n(cq_head, *cq_head + 1u, __ATOMIC_RELEASE);
+    return (int)entered;
+}
+
 static int run_probe(void) {
     static const char first[] = "registered-before-unmap\n";
     static const char second[] = "read-after-unmap\n";
@@ -457,6 +515,22 @@ static int run_probe(void) {
         SYS_read, output_pipe[0], (long)observed,
         sizeof(second), 0, 0, 0) != (long)sizeof(second);
     failures += !bytes_equal(observed, second, sizeof(second));
+
+    failures += submit_async_read(
+        ring, &parameters, sq_ring, cq_ring, sqes,
+        input_pipe[0], buffer.base + SECOND_OFFSET + 256u,
+        sizeof(first), 0x4153594e43524541ull,
+        input_pipe[1], first) != (int)sizeof(first);
+    failures += submit(
+        ring, &parameters, sq_ring, cq_ring, sqes,
+        IORING_OP_WRITE_FIXED, output_pipe[1],
+        buffer.base + SECOND_OFFSET + 256u,
+        sizeof(first), 0x4153594e43565246ull) != (int)sizeof(first);
+    bytes_zero(observed, sizeof(observed));
+    failures += raw_syscall6(
+        SYS_read, output_pipe[0], (long)observed,
+        sizeof(first), 0, 0, 0) != (long)sizeof(first);
+    failures += !bytes_equal(observed, first, sizeof(first));
 
     result = raw_syscall6(
         SYS_socketpair, AF_UNIX, SOCK_STREAM, 0,

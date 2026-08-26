@@ -139,6 +139,9 @@ typedef struct kernel_io_uring_pending {
     kernel_io_uring_waitid_copy_t waitid_copy;
     kernel_io_uring_page_t read_page;
     kernel_fd_operation_lease_t descriptor_lease;
+    int32_t worker_owner_pid;
+    uint32_t worker_reserved;
+    struct edge_linux_io_uring_sqe worker_submission;
 } kernel_io_uring_pending_t;
 
 typedef struct kernel_io_uring_fixed_buffer {
@@ -339,6 +342,9 @@ static int32_t io_uring_event_retain_locked(
 #define IO_URING_PENDING_WAITID 6u
 #define IO_URING_PENDING_READ_MULTISHOT 7u
 #define IO_URING_PENDING_RECV_ZC 8u
+#define IO_URING_PENDING_WORKER 9u
+#define IO_URING_WORKER_FIXED_FILE (1u << 0)
+#define IO_URING_WORKER_CQE_SKIP_SUCCESS (1u << 6)
 
 static kernel_io_uring_t g_io_urings[KERNEL_IO_URING_MAX_RINGS];
 static kernel_io_uring_fixed_buffer_t
@@ -845,7 +851,8 @@ static void io_uring_release_storage(kernel_io_uring_t *ring) {
         if (pending->used &&
             (pending->kind == IO_URING_PENDING_POLL ||
              pending->kind == IO_URING_PENDING_READ_MULTISHOT ||
-             pending->kind == IO_URING_PENDING_RECV_ZC) &&
+             pending->kind == IO_URING_PENDING_RECV_ZC ||
+             pending->kind == IO_URING_PENDING_WORKER) &&
             kernel_fd_operation_view(&pending->descriptor_lease))
             (void)kernel_fd_operation_release(
                 &pending->descriptor_lease);
@@ -4764,7 +4771,9 @@ int kernel_io_uring_pending_cancel_match(
                 ring->pending[slot].kind ==
                     IO_URING_PENDING_READ_MULTISHOT ||
                 ring->pending[slot].kind ==
-                    IO_URING_PENDING_RECV_ZC) {
+                    IO_URING_PENDING_RECV_ZC ||
+                ring->pending[slot].kind ==
+                    IO_URING_PENDING_WORKER) {
                 result = kernel_fd_operation_move(
                     &descriptor_lease,
                     &ring->pending[slot].descriptor_lease);
@@ -4834,6 +4843,238 @@ int kernel_io_uring_pending_cancel(int32_t ring_id, uint64_t user_data) {
     match.flags = KERNEL_IO_URING_CANCEL_USERDATA;
     return kernel_io_uring_pending_cancel_match(
         ring_id, &match, &canceled_user_data);
+}
+
+int kernel_io_uring_worker_add(
+        int32_t ring_id, int32_t owner_pid,
+        const struct edge_linux_io_uring_sqe *submission,
+        uint32_t ready_operation) {
+    kernel_fd_operation_lease_t descriptor_lease = {0};
+    kernel_fd_operation_lease_t *fixed_lease = 0;
+    kernel_io_uring_pending_t *pending = 0;
+    kernel_io_uring_t *ring;
+    uint64_t file_description_id = 0u;
+    uint64_t flags;
+    int result;
+
+    if (!submission || owner_pid <= 0 ||
+        (ready_operation != KERNEL_IO_READ_CURRENT &&
+         ready_operation != KERNEL_IO_WRITE_CURRENT))
+        return -EDGE_LINUX_EINVAL;
+    if (!(submission->flags & IO_URING_WORKER_FIXED_FILE)) {
+        result = kernel_fd_operation_acquire(
+            submission->descriptor, &descriptor_lease);
+        if (result < 0) return result;
+        result = kernel_fd_operation_description_id(
+            &descriptor_lease, &file_description_id);
+        if (result < 0) goto finish;
+    }
+
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        result = -EDGE_LINUX_EBADF;
+        goto unlock;
+    }
+    if (submission->flags & IO_URING_WORKER_FIXED_FILE) {
+        uint32_t index = (uint32_t)submission->descriptor;
+        if (index >= ring->fixed_file_count ||
+            !ring->fixed_file_used[index]) {
+            result = -EDGE_LINUX_EBADF;
+            goto unlock;
+        }
+        fixed_lease = io_uring_fixed_file_lease(
+            ring->fixed_file_pages, index);
+        result = fixed_lease ? kernel_fd_operation_clone(
+                                  &descriptor_lease, fixed_lease) :
+                              -EDGE_LINUX_EBADF;
+        if (result < 0) goto unlock;
+        result = kernel_fd_operation_description_id(
+            &descriptor_lease, &file_description_id);
+        if (result < 0) goto unlock;
+    }
+    for (uint32_t slot = 0;
+         slot < KERNEL_IO_URING_MAX_PENDING; ++slot) {
+        if (!ring->pending[slot].used) {
+            pending = &ring->pending[slot];
+            break;
+        }
+    }
+    if (!pending) {
+        result = -EDGE_LINUX_EBUSY;
+        goto unlock;
+    }
+    memset(pending, 0, sizeof(*pending));
+    result = kernel_fd_operation_move(
+        &pending->descriptor_lease, &descriptor_lease);
+    if (result < 0) {
+        memset(pending, 0, sizeof(*pending));
+        goto unlock;
+    }
+    ++ring->next_pending_sequence;
+    if (!ring->next_pending_sequence)
+        ++ring->next_pending_sequence;
+    pending->used = 1u;
+    pending->kind = IO_URING_PENDING_WORKER;
+    pending->opcode = submission->opcode;
+    pending->descriptor = submission->descriptor;
+    pending->file_description_id = file_description_id;
+    pending->events = ready_operation;
+    pending->user_data = submission->user_data;
+    pending->sequence = ring->next_pending_sequence;
+    pending->worker_owner_pid = owner_pid;
+    pending->worker_submission = *submission;
+    result = 0;
+unlock:
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+finish:
+    if (kernel_fd_operation_view(&descriptor_lease))
+        (void)kernel_fd_operation_release(&descriptor_lease);
+    return result;
+}
+
+int kernel_io_uring_worker_materialize_next(
+        int32_t owner_pid, int32_t ring_filter,
+        kernel_io_uring_worker_request_t *request) {
+    kernel_fd_operation_lease_t descriptor_lease = {0};
+    kernel_io_uring_pending_t *selected = 0;
+    uint64_t selected_sequence = UINT64_MAX;
+    uint32_t ready_operation = 0u;
+    uint64_t flags;
+    int result = 0;
+
+    if (owner_pid <= 0 || !request || ring_filter < -1 ||
+        ring_filter >= (int32_t)KERNEL_IO_URING_MAX_RINGS)
+        return -EDGE_LINUX_EINVAL;
+    memset(request, 0, sizeof(*request));
+    request->ring_id = -1;
+    request->descriptor = -1;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    for (uint32_t ring_index = 0;
+         ring_index < KERNEL_IO_URING_MAX_RINGS; ++ring_index) {
+        kernel_io_uring_t *ring = &g_io_urings[ring_index];
+        if (!ring->used ||
+            (ring_filter >= 0 && ring_filter != (int32_t)ring_index))
+            continue;
+        for (uint32_t slot = 0;
+             slot < KERNEL_IO_URING_MAX_PENDING; ++slot) {
+            kernel_io_uring_pending_t *pending = &ring->pending[slot];
+            if (!pending->used ||
+                pending->kind != IO_URING_PENDING_WORKER ||
+                pending->worker_owner_pid != owner_pid ||
+                pending->ready_latched ||
+                pending->sequence >= selected_sequence)
+                continue;
+            selected = pending;
+            selected_sequence = pending->sequence;
+            request->ring_id = (int32_t)ring_index;
+        }
+    }
+    if (!selected) goto unlock;
+    result = kernel_fd_operation_clone(
+        &descriptor_lease, &selected->descriptor_lease);
+    if (result < 0) goto unlock;
+    request->sequence = selected->sequence;
+    request->submission = selected->worker_submission;
+    ready_operation = selected->events;
+    result = 1;
+unlock:
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (result != 1) {
+        if (kernel_fd_operation_view(&descriptor_lease))
+            (void)kernel_fd_operation_release(&descriptor_lease);
+        return result;
+    }
+    result = kernel_fd_operation_ready(
+        &descriptor_lease, ready_operation);
+    if (result == 0) {
+        (void)kernel_fd_operation_release(&descriptor_lease);
+        return 0;
+    }
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    selected = 0;
+    {
+        kernel_io_uring_t *ring =
+            io_uring_lookup_locked(request->ring_id);
+        if (ring) {
+            for (uint32_t slot = 0;
+                 slot < KERNEL_IO_URING_MAX_PENDING; ++slot) {
+                kernel_io_uring_pending_t *pending =
+                    &ring->pending[slot];
+                if (pending->used &&
+                    pending->kind == IO_URING_PENDING_WORKER &&
+                    pending->sequence == request->sequence &&
+                    !pending->ready_latched) {
+                    selected = pending;
+                    pending->ready_latched = 1u;
+                    break;
+                }
+            }
+        }
+    }
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (!selected) {
+        (void)kernel_fd_operation_release(&descriptor_lease);
+        return 0;
+    }
+    result = kernel_fd_operation_materialize(
+        &descriptor_lease, KERNEL_FD_CLOEXEC, &request->descriptor);
+    (void)kernel_fd_operation_release(&descriptor_lease);
+    if (result < 0) return result;
+    request->submission.descriptor = request->descriptor;
+    request->submission.flags &= ~IO_URING_WORKER_FIXED_FILE;
+    return 1;
+}
+
+int kernel_io_uring_worker_finish(
+        int32_t ring_id, uint64_t sequence, int32_t result,
+        uint32_t completion_flags) {
+    kernel_fd_operation_lease_t descriptor_lease = {0};
+    kernel_io_uring_pending_t *pending = 0;
+    kernel_io_uring_t *ring;
+    uint64_t user_data = 0u;
+    uint8_t submission_flags = 0u;
+    uint64_t flags;
+    int finish_result = -EDGE_LINUX_ENOENT;
+
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring) {
+        finish_result = -EDGE_LINUX_EBADF;
+        goto unlock;
+    }
+    for (uint32_t slot = 0;
+         slot < KERNEL_IO_URING_MAX_PENDING; ++slot) {
+        if (ring->pending[slot].used &&
+            ring->pending[slot].kind == IO_URING_PENDING_WORKER &&
+            ring->pending[slot].sequence == sequence) {
+            pending = &ring->pending[slot];
+            break;
+        }
+    }
+    if (!pending) goto unlock;
+    if (result == -EDGE_LINUX_EAGAIN) {
+        pending->ready_latched = 0u;
+        finish_result = 0;
+        goto unlock;
+    }
+    user_data = pending->user_data;
+    submission_flags = pending->worker_submission.flags;
+    finish_result = kernel_fd_operation_move(
+        &descriptor_lease, &pending->descriptor_lease);
+    if (finish_result < 0) goto unlock;
+    memset(pending, 0, sizeof(*pending));
+unlock:
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (kernel_fd_operation_view(&descriptor_lease))
+        (void)kernel_fd_operation_release(&descriptor_lease);
+    if (finish_result < 0 || result == -EDGE_LINUX_EAGAIN)
+        return finish_result;
+    if ((submission_flags & IO_URING_WORKER_CQE_SKIP_SUCCESS) &&
+        result >= 0)
+        return 0;
+    return kernel_io_uring_completion_add_async(
+        ring_id, user_data, result, completion_flags);
 }
 
 typedef struct io_uring_pending_snapshot {
@@ -4990,7 +5231,8 @@ static int io_uring_pending_remove_locked(
     release->epoll_index = -1;
     if ((pending->kind == IO_URING_PENDING_POLL ||
          pending->kind == IO_URING_PENDING_READ_MULTISHOT ||
-         pending->kind == IO_URING_PENDING_RECV_ZC) &&
+         pending->kind == IO_URING_PENDING_RECV_ZC ||
+         pending->kind == IO_URING_PENDING_WORKER) &&
         kernel_fd_operation_view(&pending->descriptor_lease) &&
         kernel_fd_operation_move(
             &release->descriptor_lease,
@@ -5210,6 +5452,10 @@ uint32_t kernel_io_uring_collect(int32_t ring_id, uint64_t now_us) {
         }
         io_uring_pending_snapshot(&pending, &ring->pending[slot]);
         if (!pending.used) {
+            spin_unlock_irqrestore(&g_io_uring_lock, flags);
+            continue;
+        }
+        if (pending.kind == IO_URING_PENDING_WORKER) {
             spin_unlock_irqrestore(&g_io_uring_lock, flags);
             continue;
         }
