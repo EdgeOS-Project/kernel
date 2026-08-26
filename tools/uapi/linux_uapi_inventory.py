@@ -37,15 +37,17 @@ EDGEOS_ASSESSMENTS = [
             "SP800-108 counter-mode SHA-224 and SHA-256 derivation with Linux output and other-info limits",
             "SP800-108 counter-mode SHA-1, SHA-384 and SHA-512 derivation when those digest algorithms are configured",
             "request-key helper construction with assumed authorization, positive instantiation, negative caching and caller-selected rejection errors",
+            "X.509 RSA public-key query, raw and PKCS#1 encryption, SHA-family PKCS#1 verification, automatic certificate descriptions and public-only operation errors",
             "ia32 and x32 iovec and key-derivation parameter layouts",
         ],
         "missing": [
-            "asymmetric key operations",
+            "ia32 and x32 asymmetric public-key runtime oracle coverage",
         ],
         "runtime_tests": [
             "tools/tests/keyring_abi_probe.c",
             "tools/tests/keyring_dh_abi_probe.c",
             "tools/tests/keyring_request_abi_probe.c",
+            "tools/tests/keyring_asymmetric_abi_probe.c",
             "tools/tests/keyring_runtime_unit.c",
             "tools/tests/ia32_keyctl_compat_uapi_probe.c",
             "tools/tests/x32_keyctl_compat_uapi_probe.c",
@@ -64,6 +66,9 @@ EDGEOS_ASSESSMENTS = [
                 "SHA-384 or SHA-512 KDF output, "
                 "plus request-key helper authorization, instantiation, "
                 "negative caching and caller-selected rejection errors, "
+                "plus X.509 RSA public-key capability queries, raw and "
+                "PKCS#1 encryption, SHA-family PKCS#1 verification, "
+                "automatic certificate descriptions and public-only errors, "
                 "plus ia32 and x32 boundary-checked iovec and KDF layouts"
             ),
         },

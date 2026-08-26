@@ -10,6 +10,7 @@
 #include "kernel/keyring_runtime.h"
 #include "kernel/linux_errno.h"
 #include "kernel/pipe_runtime.h"
+#include "kernel/random.h"
 #include "kernel/sha1_runtime.h"
 #include "kernel/sha256_runtime.h"
 #include "kernel/sha512_runtime.h"
@@ -79,6 +80,7 @@ enum kernel_key_kind {
     KERNEL_KEY_KIND_USER,
     KERNEL_KEY_KIND_LOGON,
     KERNEL_KEY_KIND_BIG_KEY,
+    KERNEL_KEY_KIND_ASYMMETRIC,
 };
 
 typedef struct kernel_key_object {
@@ -99,6 +101,10 @@ typedef struct kernel_key_object {
     uint32_t user_namespace_id;
     uint32_t permissions;
     uint32_t payload_length;
+    uint32_t asymmetric_modulus_offset;
+    uint32_t asymmetric_modulus_length;
+    uint32_t asymmetric_exponent_offset;
+    uint32_t asymmetric_exponent_length;
     uint32_t link_count;
     uint64_t expires_us;
     int32_t links[KERNEL_KEY_LINK_MAX];
@@ -140,6 +146,8 @@ static uint8_t g_key_dh_base[KERNEL_KEY_DH_MAX_BYTES];
 static uint8_t g_key_dh_secret[KERNEL_KEY_DH_MAX_BYTES];
 static uint8_t g_key_kdf_otherinfo[KERNEL_KEY_KDF_MAX_OTHERINFO];
 static uint8_t g_key_kdf_output[KERNEL_KEY_KDF_MAX_OUTPUT];
+static uint8_t g_key_rsa_encoded[KERNEL_KEY_DH_MAX_BYTES];
+static uint8_t g_key_pkey_input[KERNEL_KEY_DH_MAX_BYTES];
 static uint32_t g_key_dh_left[KERNEL_KEY_DH_MAX_LIMBS];
 static uint32_t g_key_dh_right[KERNEL_KEY_DH_MAX_LIMBS];
 static uint32_t g_key_dh_modulus[KERNEL_KEY_DH_MAX_LIMBS];
@@ -245,6 +253,265 @@ static enum kernel_key_kind key_kind_from_type(const char *type) {
     if (!strcmp(type, "user")) return KERNEL_KEY_KIND_USER;
     if (!strcmp(type, "logon")) return KERNEL_KEY_KIND_LOGON;
     if (!strcmp(type, "big_key")) return KERNEL_KEY_KIND_BIG_KEY;
+    if (!strcmp(type, "asymmetric"))
+        return KERNEL_KEY_KIND_ASYMMETRIC;
+    return 0;
+}
+
+static int key_der_read(const uint8_t *data, uint32_t length,
+                        uint32_t *offset, uint8_t *tag,
+                        const uint8_t **value, uint32_t *value_length) {
+    uint32_t cursor;
+    uint32_t content_length;
+    uint8_t first_length;
+
+    if (!data || !offset || *offset >= length)
+        return -EDGE_LINUX_EBADMSG;
+    cursor = *offset;
+    *tag = data[cursor++];
+    if (cursor >= length) return -EDGE_LINUX_EBADMSG;
+    first_length = data[cursor++];
+    if (!(first_length & 0x80u)) {
+        content_length = first_length;
+    } else {
+        uint32_t bytes = first_length & 0x7fu;
+
+        if (!bytes || bytes > 4u || bytes > length - cursor)
+            return -EDGE_LINUX_EBADMSG;
+        content_length = 0u;
+        for (uint32_t index = 0; index < bytes; ++index) {
+            if (content_length > (UINT32_MAX >> 8u))
+                return -EDGE_LINUX_EBADMSG;
+            content_length =
+                (content_length << 8u) | data[cursor++];
+        }
+        if (content_length < 128u)
+            return -EDGE_LINUX_EBADMSG;
+    }
+    if (content_length > length - cursor)
+        return -EDGE_LINUX_EBADMSG;
+    *value = data + cursor;
+    *value_length = content_length;
+    *offset = cursor + content_length;
+    return 0;
+}
+
+static int key_der_rsa_sequence(
+    const uint8_t *root, const uint8_t *data, uint32_t length,
+    uint32_t *modulus_offset, uint32_t *modulus_length,
+    uint32_t *exponent_offset, uint32_t *exponent_length) {
+    const uint8_t *sequence;
+    const uint8_t *modulus;
+    const uint8_t *exponent;
+    uint32_t sequence_length;
+    uint32_t modulus_size;
+    uint32_t exponent_size;
+    uint32_t outer = 0u;
+    uint32_t inner = 0u;
+    uint8_t tag;
+
+    if (key_der_read(data, length, &outer, &tag, &sequence,
+                     &sequence_length) < 0 ||
+        tag != 0x30u || outer != length)
+        return -EDGE_LINUX_EBADMSG;
+    if (key_der_read(sequence, sequence_length, &inner, &tag, &modulus,
+                     &modulus_size) < 0 || tag != 0x02u ||
+        !modulus_size)
+        return -EDGE_LINUX_EBADMSG;
+    if (modulus[0] == 0u && modulus_size > 1u) {
+        ++modulus;
+        --modulus_size;
+    }
+    if (key_der_read(sequence, sequence_length, &inner, &tag, &exponent,
+                     &exponent_size) < 0 || tag != 0x02u ||
+        !exponent_size || inner != sequence_length)
+        return -EDGE_LINUX_EBADMSG;
+    while (exponent_size > 1u && exponent[0] == 0u) {
+        ++exponent;
+        --exponent_size;
+    }
+    if (modulus_size < 64u || modulus_size > KERNEL_KEY_DH_MAX_BYTES ||
+        exponent_size > sizeof(uint64_t) || !(exponent[exponent_size - 1u] & 1u))
+        return -EDGE_LINUX_EKEYREJECTED;
+    *modulus_offset = (uint32_t)(modulus - root);
+    *modulus_length = modulus_size;
+    *exponent_offset = (uint32_t)(exponent - root);
+    *exponent_length = exponent_size;
+    return 0;
+}
+
+static int key_der_find_rsa(
+    const uint8_t *root, const uint8_t *data, uint32_t length,
+    uint32_t depth, uint32_t *modulus_offset, uint32_t *modulus_length,
+    uint32_t *exponent_offset, uint32_t *exponent_length) {
+    uint32_t cursor = 0u;
+
+    if (depth > 16u) return -EDGE_LINUX_EBADMSG;
+    while (cursor < length) {
+        const uint8_t *value;
+        uint32_t value_length;
+        uint32_t element_start = cursor;
+        uint8_t tag;
+        int result;
+
+        result = key_der_read(data, length, &cursor, &tag, &value,
+                              &value_length);
+        if (result < 0) return result;
+        if (tag == 0x30u &&
+            key_der_rsa_sequence(
+                root, data + element_start, cursor - element_start,
+                modulus_offset, modulus_length, exponent_offset,
+                exponent_length) == 0)
+            return 0;
+        if (tag == 0x03u && value_length > 1u && value[0] == 0u &&
+            key_der_rsa_sequence(
+                root, value + 1u, value_length - 1u, modulus_offset,
+                modulus_length, exponent_offset, exponent_length) == 0)
+            return 0;
+        if ((tag & 0x20u) && value_length) {
+            result = key_der_find_rsa(
+                root, value, value_length, depth + 1u, modulus_offset,
+                modulus_length, exponent_offset, exponent_length);
+            if (result == 0) return 0;
+        }
+    }
+    return -EDGE_LINUX_EKEYREJECTED;
+}
+
+static int key_asymmetric_parse(
+    const uint8_t *payload, uint32_t payload_length,
+    uint32_t *modulus_offset, uint32_t *modulus_length,
+    uint32_t *exponent_offset, uint32_t *exponent_length) {
+    static const uint8_t rsa_encryption_oid[] = {
+        0x06u, 0x09u, 0x2au, 0x86u, 0x48u, 0x86u,
+        0xf7u, 0x0du, 0x01u, 0x01u, 0x01u,
+    };
+    const uint8_t *outer;
+    uint32_t outer_length;
+    uint32_t cursor = 0u;
+    uint8_t tag;
+    int oid_found = 0;
+
+    if (!payload || !payload_length)
+        return -EDGE_LINUX_EINVAL;
+    if (key_der_read(payload, payload_length, &cursor, &tag, &outer,
+                     &outer_length) < 0 || tag != 0x30u ||
+        cursor != payload_length)
+        return -EDGE_LINUX_EBADMSG;
+    for (uint32_t index = 0u;
+         index + sizeof(rsa_encryption_oid) <= payload_length; ++index) {
+        if (!memcmp(payload + index, rsa_encryption_oid,
+                    sizeof(rsa_encryption_oid))) {
+            oid_found = 1;
+            break;
+        }
+    }
+    if (!oid_found) return -EDGE_LINUX_EKEYREJECTED;
+    return key_der_find_rsa(
+        payload, payload, payload_length, 0u, modulus_offset,
+        modulus_length, exponent_offset, exponent_length);
+}
+
+static int key_asymmetric_make_description(
+    const uint8_t *payload, uint32_t payload_length,
+    uint32_t modulus_offset, uint32_t modulus_length,
+    uint32_t exponent_offset, uint32_t exponent_length,
+    char *description, uint32_t capacity) {
+    static const uint8_t common_name_oid[] = {
+        0x06u, 0x03u, 0x55u, 0x04u, 0x03u,
+    };
+    static const uint8_t subject_key_id_oid[] = {
+        0x06u, 0x03u, 0x55u, 0x1du, 0x0eu,
+    };
+    static const char hex[] = "0123456789abcdef";
+    const uint8_t *common_name = 0;
+    const uint8_t *key_id = 0;
+    uint8_t fallback_key_id[20];
+    uint32_t common_name_length = 0u;
+    uint32_t key_id_length = 0u;
+    uint32_t output = 0u;
+
+    if (!description || capacity < 8u) return -EDGE_LINUX_EINVAL;
+    for (uint32_t index = 0u;
+         index + sizeof(common_name_oid) < payload_length; ++index) {
+        const uint8_t *value;
+        uint32_t value_length;
+        uint32_t cursor;
+        uint8_t tag;
+
+        if (memcmp(payload + index, common_name_oid,
+                   sizeof(common_name_oid)))
+            continue;
+        cursor = index + sizeof(common_name_oid);
+        if (key_der_read(payload, payload_length, &cursor, &tag, &value,
+                         &value_length) == 0 &&
+            (tag == 0x0cu || tag == 0x13u || tag == 0x14u ||
+             tag == 0x16u) && value_length) {
+            common_name = value;
+            common_name_length = value_length;
+        }
+    }
+    for (uint32_t index = 0u;
+         index + sizeof(subject_key_id_oid) < payload_length; ++index) {
+        const uint8_t *value;
+        const uint8_t *inner;
+        uint32_t value_length;
+        uint32_t inner_length;
+        uint32_t cursor;
+        uint32_t inner_cursor = 0u;
+        uint8_t tag;
+        uint8_t inner_tag;
+
+        if (memcmp(payload + index, subject_key_id_oid,
+                   sizeof(subject_key_id_oid)))
+            continue;
+        cursor = index + sizeof(subject_key_id_oid);
+        if (key_der_read(payload, payload_length, &cursor, &tag, &value,
+                         &value_length) < 0 || tag != 0x04u)
+            continue;
+        if (key_der_read(value, value_length, &inner_cursor, &inner_tag,
+                         &inner, &inner_length) == 0 &&
+            inner_tag == 0x04u && inner_cursor == value_length) {
+            key_id = inner;
+            key_id_length = inner_length;
+        } else {
+            key_id = value;
+            key_id_length = value_length;
+        }
+        break;
+    }
+    if (!key_id || !key_id_length) {
+        kernel_sha1_context_t context;
+
+        kernel_sha1_init(&context);
+        kernel_sha1_update(
+            &context, payload + modulus_offset, modulus_length);
+        kernel_sha1_update(
+            &context, payload + exponent_offset, exponent_length);
+        kernel_sha1_final(&context, fallback_key_id);
+        key_id = fallback_key_id;
+        key_id_length = sizeof(fallback_key_id);
+    }
+    if (!common_name || !common_name_length) {
+        common_name = (const uint8_t *)"id";
+        common_name_length = 2u;
+    }
+    for (uint32_t index = 0u; index < common_name_length &&
+         output + 1u < capacity; ++index) {
+        uint8_t character = common_name[index];
+        description[output++] =
+            character >= 0x20u && character < 0x7fu ?
+            (char)character : '_';
+    }
+    if (output + 2u >= capacity) return -EDGE_LINUX_EOVERFLOW;
+    description[output++] = ':';
+    description[output++] = ' ';
+    for (uint32_t index = 0u; index < key_id_length &&
+         output + 2u < capacity; ++index) {
+        description[output++] = hex[key_id[index] >> 4u];
+        description[output++] = hex[key_id[index] & 0x0fu];
+    }
+    description[output] = 0;
     return 0;
 }
 
@@ -694,6 +961,33 @@ _Static_assert(sizeof(kernel_keyctl_kdf_params_t) == 56u,
 _Static_assert(sizeof(kernel_keyctl_kdf_params32_t) == 44u,
                "compat keyctl KDF parameters must match Linux UAPI");
 
+typedef struct kernel_keyctl_pkey_query {
+    uint32_t supported_operations;
+    uint32_t key_size;
+    uint16_t maximum_data_size;
+    uint16_t maximum_signature_size;
+    uint16_t maximum_encrypted_size;
+    uint16_t maximum_decrypted_size;
+    uint32_t spare[10];
+} kernel_keyctl_pkey_query_t;
+
+typedef struct kernel_keyctl_pkey_parameters {
+    int32_t key_id;
+    uint32_t input_length;
+    uint32_t output_length;
+    uint32_t spare[7];
+} kernel_keyctl_pkey_parameters_t;
+
+typedef struct kernel_keyctl_pkey_options {
+    const char *encoding;
+    const char *hash;
+} kernel_keyctl_pkey_options_t;
+
+_Static_assert(sizeof(kernel_keyctl_pkey_query_t) == 56u,
+               "public-key query must match Linux UAPI");
+_Static_assert(sizeof(kernel_keyctl_pkey_parameters_t) == 40u,
+               "public-key parameters must match Linux UAPI");
+
 static int key_dh_compare(const uint32_t *left, const uint32_t *right,
                           uint32_t limbs) {
     while (limbs) {
@@ -1072,6 +1366,383 @@ out_unlock_copy:
     return result;
 }
 
+static int key_pkey_options_parse(
+    const kernel_keyring_user_access_t *access, uint64_t user_info,
+    kernel_keyctl_pkey_options_t *options) {
+    char *cursor;
+    int have_encoding = 0;
+    int have_hash = 0;
+    int result;
+
+    if (!user_info) return -EDGE_LINUX_EFAULT;
+    result = key_copy_user_string(
+        access, user_info, g_key_callout_scratch,
+        sizeof(g_key_callout_scratch), 0);
+    if (result < 0) return result;
+    options->encoding = "raw";
+    options->hash = 0;
+    cursor = g_key_callout_scratch;
+    while (*cursor) {
+        char *token;
+        char *end;
+
+        while (*cursor == ' ' || *cursor == '\t') ++cursor;
+        if (!*cursor) break;
+        token = cursor;
+        while (*cursor && *cursor != ' ' && *cursor != '\t') ++cursor;
+        end = cursor;
+        if (*cursor) ++cursor;
+        *end = 0;
+        if (!strncmp(token, "enc=", 4u)) {
+            if (have_encoding || !token[4])
+                return -EDGE_LINUX_EINVAL;
+            options->encoding = token + 4u;
+            have_encoding = 1;
+        } else if (!strncmp(token, "hash=", 5u)) {
+            if (have_hash || !token[5])
+                return -EDGE_LINUX_EINVAL;
+            options->hash = token + 5u;
+            have_hash = 1;
+        } else {
+            return -EDGE_LINUX_EINVAL;
+        }
+    }
+    if (strcmp(options->encoding, "raw") &&
+        strcmp(options->encoding, "pkcs1"))
+        return -EDGE_LINUX_EINVAL;
+    if (!strcmp(options->encoding, "raw") && options->hash)
+        return -EDGE_LINUX_EINVAL;
+    if (options->hash && strcmp(options->hash, "none") &&
+        strcmp(options->hash, "sha1") &&
+        strcmp(options->hash, "sha224") &&
+        strcmp(options->hash, "sha256") &&
+        strcmp(options->hash, "sha384") &&
+        strcmp(options->hash, "sha512"))
+        return -EDGE_LINUX_ENOENT;
+    return 0;
+}
+
+static int key_pkey_snapshot_locked(
+    const kernel_linux_identity_t *identity, int32_t serial,
+    uint32_t *modulus_length, uint32_t *exponent_length) {
+    kernel_key_task_state_t *state = key_task_get_locked(identity);
+    kernel_key_object_t *key = state ?
+        key_resolve_locked(identity, state, serial, 0) : 0;
+    uint64_t modulus_end;
+    uint64_t exponent_end;
+
+    if (!state) return -EDGE_LINUX_ENFILE;
+    if (!key) return -EDGE_LINUX_ENOKEY;
+    if (key_validate(key) < 0) return -EDGE_LINUX_ENOKEY;
+    if (key_permission_locked(identity, state, key, 8u) < 0)
+        return -EDGE_LINUX_EACCES;
+    if (key->kind != KERNEL_KEY_KIND_ASYMMETRIC)
+        return -EDGE_LINUX_EOPNOTSUPP;
+    modulus_end = (uint64_t)key->asymmetric_modulus_offset +
+        key->asymmetric_modulus_length;
+    exponent_end = (uint64_t)key->asymmetric_exponent_offset +
+        key->asymmetric_exponent_length;
+    if (!key->asymmetric_modulus_length ||
+        !key->asymmetric_exponent_length ||
+        modulus_end > key->payload_length ||
+        exponent_end > key->payload_length)
+        return -EDGE_LINUX_EKEYREJECTED;
+    memcpy(g_key_dh_prime,
+           key->payload + key->asymmetric_modulus_offset,
+           key->asymmetric_modulus_length);
+    memcpy(g_key_dh_private,
+           key->payload + key->asymmetric_exponent_offset,
+           key->asymmetric_exponent_length);
+    *modulus_length = key->asymmetric_modulus_length;
+    *exponent_length = key->asymmetric_exponent_length;
+    return 0;
+}
+
+static int key_rsa_public_operation(
+    const uint8_t *input, uint32_t input_length,
+    uint32_t modulus_length, uint32_t exponent_length,
+    uint8_t *output) {
+    uint32_t limbs = (modulus_length + 3u) / 4u;
+    uint32_t input_limbs = (input_length + 3u) / 4u;
+    uint32_t exponent_bits = exponent_length * 8u;
+
+    if (!input || !output || !limbs || input_length > modulus_length)
+        return -EDGE_LINUX_EINVAL;
+    key_dh_load(g_key_dh_prime, modulus_length, g_key_dh_modulus, limbs);
+    key_dh_load(input, input_length, g_key_dh_product,
+                KERNEL_KEY_DH_MAX_LIMBS * 2u);
+    if (input_limbs > limbs ||
+        (input_limbs == limbs &&
+         key_dh_compare(g_key_dh_product, g_key_dh_modulus, limbs) >= 0))
+        return -EDGE_LINUX_EINVAL;
+    key_dh_reduce_product(g_key_dh_product, input_limbs,
+                          g_key_dh_modulus, limbs, g_key_dh_right);
+    memset(g_key_dh_left, 0, limbs * sizeof(g_key_dh_left[0]));
+    g_key_dh_left[0] = 1u;
+    for (uint32_t bit = 0; bit < exponent_bits; ++bit) {
+        key_dh_multiply_mod(g_key_dh_left, g_key_dh_left,
+                            g_key_dh_modulus, limbs, g_key_dh_result);
+        memcpy(g_key_dh_left, g_key_dh_result,
+               limbs * sizeof(g_key_dh_left[0]));
+        if ((g_key_dh_private[bit / 8u] >>
+             (7u - bit % 8u)) & 1u) {
+            key_dh_multiply_mod(g_key_dh_left, g_key_dh_right,
+                                g_key_dh_modulus, limbs,
+                                g_key_dh_result);
+            memcpy(g_key_dh_left, g_key_dh_result,
+                   limbs * sizeof(g_key_dh_left[0]));
+        }
+    }
+    memset(output, 0, modulus_length);
+    for (uint32_t offset = 0; offset < modulus_length; ++offset)
+        output[modulus_length - 1u - offset] =
+            (uint8_t)(g_key_dh_left[offset / 4u] >>
+                      ((offset % 4u) * 8u));
+    return 0;
+}
+
+static int key_rsa_digest_prefix(
+    const char *hash, const uint8_t **prefix, uint32_t *prefix_length,
+    uint32_t *digest_length) {
+    static const uint8_t sha1[] = {
+        0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e,
+        0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14,
+    };
+    static const uint8_t sha224[] = {
+        0x30, 0x2d, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86,
+        0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x04, 0x05,
+        0x00, 0x04, 0x1c,
+    };
+    static const uint8_t sha256[] = {
+        0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86,
+        0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05,
+        0x00, 0x04, 0x20,
+    };
+    static const uint8_t sha384[] = {
+        0x30, 0x41, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86,
+        0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02, 0x05,
+        0x00, 0x04, 0x30,
+    };
+    static const uint8_t sha512[] = {
+        0x30, 0x51, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86,
+        0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03, 0x05,
+        0x00, 0x04, 0x40,
+    };
+
+    if (!hash || !strcmp(hash, "none")) {
+        *prefix = 0;
+        *prefix_length = 0u;
+        *digest_length = 0u;
+    } else if (!strcmp(hash, "sha1")) {
+        *prefix = sha1;
+        *prefix_length = sizeof(sha1);
+        *digest_length = 20u;
+    } else if (!strcmp(hash, "sha224")) {
+        *prefix = sha224;
+        *prefix_length = sizeof(sha224);
+        *digest_length = 28u;
+    } else if (!strcmp(hash, "sha256")) {
+        *prefix = sha256;
+        *prefix_length = sizeof(sha256);
+        *digest_length = 32u;
+    } else if (!strcmp(hash, "sha384")) {
+        *prefix = sha384;
+        *prefix_length = sizeof(sha384);
+        *digest_length = 48u;
+    } else if (!strcmp(hash, "sha512")) {
+        *prefix = sha512;
+        *prefix_length = sizeof(sha512);
+        *digest_length = 64u;
+    } else {
+        return -EDGE_LINUX_ENOENT;
+    }
+    return 0;
+}
+
+static void key_pkey_clear_scratch(void) {
+    memset(g_key_dh_private, 0, sizeof(g_key_dh_private));
+    memset(g_key_dh_prime, 0, sizeof(g_key_dh_prime));
+    memset(g_key_dh_base, 0, sizeof(g_key_dh_base));
+    memset(g_key_dh_secret, 0, sizeof(g_key_dh_secret));
+    memset(g_key_rsa_encoded, 0, sizeof(g_key_rsa_encoded));
+    memset(g_key_pkey_input, 0, sizeof(g_key_pkey_input));
+    memset(g_key_dh_left, 0, sizeof(g_key_dh_left));
+    memset(g_key_dh_right, 0, sizeof(g_key_dh_right));
+    memset(g_key_dh_modulus, 0, sizeof(g_key_dh_modulus));
+    memset(g_key_dh_result, 0, sizeof(g_key_dh_result));
+    memset(g_key_dh_product, 0, sizeof(g_key_dh_product));
+    memset(g_key_dh_remainder, 0, sizeof(g_key_dh_remainder));
+}
+
+static int64_t keyctl_pkey_operation(
+    const kernel_linux_identity_t *identity,
+    const kernel_keyring_user_access_t *access, uint32_t command,
+    const uint64_t arguments[4]) {
+    kernel_keyctl_pkey_options_t options;
+    kernel_keyctl_pkey_parameters_t parameters;
+    kernel_keyctl_pkey_query_t query;
+    uint32_t modulus_length = 0u;
+    uint32_t exponent_length = 0u;
+    int result;
+
+    key_lock(&g_key_copy_lock);
+    if (command == EDGE_LINUX_KEYCTL_PKEY_QUERY) {
+        if (arguments[1]) {
+            result = -EDGE_LINUX_EINVAL;
+            goto out;
+        }
+        result = key_pkey_options_parse(access, arguments[2], &options);
+        if (result < 0) goto out;
+        key_lock(&g_key_lock);
+        result = key_pkey_snapshot_locked(
+            identity, (int32_t)arguments[0], &modulus_length,
+            &exponent_length);
+        key_unlock(&g_key_lock);
+        if (result < 0) goto out;
+        memset(&query, 0, sizeof(query));
+        query.supported_operations =
+            !strcmp(options.encoding, "pkcs1") ? 0x09u : 0x01u;
+        query.key_size = modulus_length * 8u;
+        query.maximum_data_size = (uint16_t)modulus_length;
+        query.maximum_signature_size = (uint16_t)modulus_length;
+        query.maximum_encrypted_size = (uint16_t)modulus_length;
+        query.maximum_decrypted_size = (uint16_t)modulus_length;
+        if (!arguments[3] || !access->copy_to_user ||
+            access->copy_to_user(
+                access->context, arguments[3], &query,
+                sizeof(query)) < 0)
+            result = -EDGE_LINUX_EFAULT;
+        else
+            result = 0;
+        goto out;
+    }
+
+    if (!arguments[0] || !access->copy_from_user ||
+        access->copy_from_user(
+            access->context, &parameters, arguments[0],
+            sizeof(parameters)) < 0) {
+        result = -EDGE_LINUX_EFAULT;
+        goto out;
+    }
+    result = key_pkey_options_parse(access, arguments[1], &options);
+    if (result < 0) goto out;
+    key_lock(&g_key_lock);
+    result = key_pkey_snapshot_locked(
+        identity, parameters.key_id, &modulus_length,
+        &exponent_length);
+    key_unlock(&g_key_lock);
+    if (result < 0) goto out;
+    if (parameters.input_length > modulus_length ||
+        parameters.output_length > modulus_length) {
+        result = -EDGE_LINUX_EINVAL;
+        goto out;
+    }
+    if (command == EDGE_LINUX_KEYCTL_PKEY_DECRYPT ||
+        command == EDGE_LINUX_KEYCTL_PKEY_SIGN) {
+        result = -EDGE_LINUX_EINVAL;
+        goto out;
+    }
+    if (command == EDGE_LINUX_KEYCTL_PKEY_ENCRYPT) {
+        uint32_t padding_length;
+
+        if (parameters.input_length &&
+            (!arguments[2] || access->copy_from_user(
+                access->context, g_key_dh_base, arguments[2],
+                parameters.input_length) < 0)) {
+            result = -EDGE_LINUX_EFAULT;
+            goto out;
+        }
+        if (!strcmp(options.encoding, "pkcs1")) {
+            if (parameters.input_length > modulus_length - 11u) {
+                result = -EDGE_LINUX_EOVERFLOW;
+                goto out;
+            }
+            padding_length =
+                modulus_length - parameters.input_length - 3u;
+            g_key_rsa_encoded[0] = 0u;
+            g_key_rsa_encoded[1] = 2u;
+            edge_random_fill(g_key_rsa_encoded + 2u, padding_length);
+            for (uint32_t index = 0; index < padding_length; ++index)
+                while (!g_key_rsa_encoded[2u + index])
+                    edge_random_fill(g_key_rsa_encoded + 2u + index, 1u);
+            g_key_rsa_encoded[2u + padding_length] = 0u;
+            memcpy(g_key_rsa_encoded + 3u + padding_length,
+                   g_key_dh_base, parameters.input_length);
+        } else {
+            memset(g_key_rsa_encoded, 0, modulus_length);
+            memcpy(g_key_rsa_encoded + modulus_length -
+                       parameters.input_length,
+                   g_key_dh_base, parameters.input_length);
+        }
+        result = key_rsa_public_operation(
+            g_key_rsa_encoded, modulus_length, modulus_length,
+            exponent_length, g_key_dh_secret);
+        if (result < 0) goto out;
+        if (!arguments[3] || !access->copy_to_user ||
+            access->copy_to_user(
+                access->context, arguments[3], g_key_dh_secret,
+                modulus_length) < 0)
+            result = -EDGE_LINUX_EFAULT;
+        else
+            result = (int)modulus_length;
+        goto out;
+    }
+    if (command == EDGE_LINUX_KEYCTL_PKEY_VERIFY) {
+        const uint8_t *prefix;
+        uint32_t prefix_length;
+        uint32_t digest_length;
+        uint32_t padding_length;
+
+        result = key_rsa_digest_prefix(
+            options.hash, &prefix, &prefix_length, &digest_length);
+        if (result < 0) goto out;
+        if (digest_length && parameters.input_length != digest_length) {
+            result = -EDGE_LINUX_EINVAL;
+            goto out;
+        }
+        if (parameters.output_length != modulus_length ||
+            prefix_length + parameters.input_length + 11u >
+                modulus_length) {
+            result = -EDGE_LINUX_EINVAL;
+            goto out;
+        }
+        if ((parameters.input_length &&
+             (!arguments[2] || access->copy_from_user(
+                 access->context, g_key_pkey_input, arguments[2],
+                 parameters.input_length) < 0)) ||
+            !arguments[3] || access->copy_from_user(
+                access->context, g_key_dh_base, arguments[3],
+                parameters.output_length) < 0) {
+            result = -EDGE_LINUX_EFAULT;
+            goto out;
+        }
+        result = key_rsa_public_operation(
+            g_key_dh_base, parameters.output_length, modulus_length,
+            exponent_length, g_key_rsa_encoded);
+        if (result < 0) goto out;
+        memset(g_key_dh_secret, 0xffu, modulus_length);
+        g_key_dh_secret[0] = 0u;
+        g_key_dh_secret[1] = 1u;
+        padding_length = modulus_length - prefix_length -
+            parameters.input_length - 3u;
+        g_key_dh_secret[2u + padding_length] = 0u;
+        if (prefix_length)
+            memcpy(g_key_dh_secret + 3u + padding_length,
+                   prefix, prefix_length);
+        memcpy(g_key_dh_secret + 3u + padding_length + prefix_length,
+               g_key_pkey_input, parameters.input_length);
+        result = memcmp(g_key_rsa_encoded, g_key_dh_secret,
+                        modulus_length) == 0 ?
+            0 : -EDGE_LINUX_EINVAL;
+        goto out;
+    }
+    result = -EDGE_LINUX_EOPNOTSUPP;
+out:
+    key_pkey_clear_scratch();
+    key_unlock(&g_key_copy_lock);
+    return result;
+}
+
 static int key_link_locked(
     const kernel_linux_identity_t *identity,
     kernel_key_task_state_t *state, kernel_key_object_t *key,
@@ -1362,6 +2033,10 @@ static int64_t keyctl_instantiate_buffer(
     kernel_key_object_t *authorization;
     kernel_key_object_t *target;
     kernel_key_object_t *destination;
+    uint32_t modulus_offset = 0u;
+    uint32_t modulus_length = 0u;
+    uint32_t exponent_offset = 0u;
+    uint32_t exponent_length = 0u;
     int64_t result = -EDGE_LINUX_EPERM;
 
     key_lock(&g_key_lock);
@@ -1374,6 +2049,16 @@ static int64_t keyctl_instantiate_buffer(
     } else if (authorization && !authorization->revoked &&
                authorization->request_target == target_serial &&
                target && target->constructing) {
+        if (target->kind == KERNEL_KEY_KIND_ASYMMETRIC) {
+            result = key_asymmetric_parse(
+                g_key_payload_scratch, payload_length,
+                &modulus_offset, &modulus_length,
+                &exponent_offset, &exponent_length);
+            if (result < 0) {
+                key_unlock(&g_key_lock);
+                return result;
+            }
+        }
         destination = ring_serial ? key_resolve_locked(
             identity, state, ring_serial, 1) :
             key_find_locked(authorization->request_destination);
@@ -1391,6 +2076,10 @@ static int64_t keyctl_instantiate_buffer(
                 if (payload_length)
                     memcpy(target->payload, g_key_payload_scratch,
                            payload_length);
+                target->asymmetric_modulus_offset = modulus_offset;
+                target->asymmetric_modulus_length = modulus_length;
+                target->asymmetric_exponent_offset = exponent_offset;
+                target->asymmetric_exponent_length = exponent_length;
                 target->negative = 0u;
                 target->reject_error = 0;
                 target->constructing = 0u;
@@ -1575,6 +2264,10 @@ int64_t kernel_keyring_add_key(
     kernel_key_task_state_t *state;
     kernel_key_object_t *ring;
     kernel_key_object_t *key = 0;
+    uint32_t modulus_offset = 0u;
+    uint32_t modulus_length = 0u;
+    uint32_t exponent_offset = 0u;
+    uint32_t exponent_length = 0u;
     uint32_t index;
     int result;
 
@@ -1590,7 +2283,8 @@ int64_t kernel_keyring_add_key(
         key_unlock(&g_key_copy_lock);
         return -EDGE_LINUX_ENODEV;
     }
-    if (!g_key_description_scratch[0] ||
+    if ((!g_key_description_scratch[0] &&
+         kind != KERNEL_KEY_KIND_ASYMMETRIC) ||
         (kind == KERNEL_KEY_KIND_KEYRING &&
          g_key_description_scratch[0] == '.')) {
         key_unlock(&g_key_copy_lock);
@@ -1602,6 +2296,28 @@ int64_t kernel_keyring_add_key(
                                payload, payload_length) < 0)) {
         key_unlock(&g_key_copy_lock);
         return -EDGE_LINUX_EFAULT;
+    }
+    if (kind == KERNEL_KEY_KIND_ASYMMETRIC) {
+        result = key_asymmetric_parse(
+            g_key_payload_scratch, (uint32_t)payload_length,
+            &modulus_offset, &modulus_length,
+            &exponent_offset, &exponent_length);
+        if (result < 0) {
+            key_unlock(&g_key_copy_lock);
+            return result;
+        }
+        if (!g_key_description_scratch[0]) {
+            result = key_asymmetric_make_description(
+                g_key_payload_scratch, (uint32_t)payload_length,
+                modulus_offset, modulus_length,
+                exponent_offset, exponent_length,
+                g_key_description_scratch,
+                sizeof(g_key_description_scratch));
+            if (result < 0) {
+                key_unlock(&g_key_copy_lock);
+                return result;
+            }
+        }
     }
 
     key_lock(&g_key_lock);
@@ -1636,7 +2352,9 @@ int64_t kernel_keyring_add_key(
                     EDGE_LINUX_KEY_POS_VIEW | EDGE_LINUX_KEY_POS_SEARCH |
                     EDGE_LINUX_KEY_POS_LINK | EDGE_LINUX_KEY_POS_SETATTR |
                     EDGE_LINUX_KEY_POS_WRITE | EDGE_LINUX_KEY_USR_VIEW;
-                if (kind != KERNEL_KEY_KIND_LOGON)
+                if (kind == KERNEL_KEY_KIND_ASYMMETRIC)
+                    permissions &= ~EDGE_LINUX_KEY_POS_WRITE;
+                else if (kind != KERNEL_KEY_KIND_LOGON)
                     permissions |= EDGE_LINUX_KEY_POS_READ;
                 key = key_allocate_locked(
                 kind, g_key_type_scratch, g_key_description_scratch,
@@ -1654,6 +2372,10 @@ int64_t kernel_keyring_add_key(
             if (payload_length)
                 memcpy(key->payload, g_key_payload_scratch,
                        (uint32_t)payload_length);
+            key->asymmetric_modulus_offset = modulus_offset;
+            key->asymmetric_modulus_length = modulus_length;
+            key->asymmetric_exponent_offset = exponent_offset;
+            key->asymmetric_exponent_length = exponent_length;
             key_notify_locked(key, KERNEL_KEY_NOTIFY_UPDATED, 0u);
             result = key->serial;
         }
@@ -1952,7 +2674,8 @@ int64_t kernel_keyring_keyctl(
         command == EDGE_LINUX_KEYCTL_PKEY_DECRYPT ||
         command == EDGE_LINUX_KEYCTL_PKEY_SIGN ||
         command == EDGE_LINUX_KEYCTL_PKEY_VERIFY)
-        return -EDGE_LINUX_EOPNOTSUPP;
+        return keyctl_pkey_operation(
+            identity, access, command, arguments);
     key_lock(&g_key_lock);
     state = key_task_get_locked(identity);
     if (!state) {
@@ -2007,7 +2730,8 @@ int64_t kernel_keyring_keyctl(
     }
     if (command == EDGE_LINUX_KEYCTL_CAPABILITIES) {
         const uint8_t capabilities[2] = {
-            0x01u | 0x02u | 0x04u | 0x10u | 0x20u | 0x40u | 0x80u,
+            0x01u | 0x02u | 0x04u | 0x08u | 0x10u | 0x20u |
+                0x40u | 0x80u,
 #ifdef CONFIG_KEY_NOTIFICATIONS
             0x01u | 0x04u,
 #else
@@ -2108,6 +2832,10 @@ int64_t kernel_keyring_keyctl(
 
     switch (command) {
     case EDGE_LINUX_KEYCTL_UPDATE:
+        if (key->kind == KERNEL_KEY_KIND_ASYMMETRIC) {
+            result = -EDGE_LINUX_EOPNOTSUPP;
+            break;
+        }
         if (arguments[2] > KERNEL_KEY_PAYLOAD_MAX) {
             result = arguments[2] > 1024u * 1024u - 1u ?
                 -EDGE_LINUX_EINVAL : -EDGE_LINUX_ENOMEM;

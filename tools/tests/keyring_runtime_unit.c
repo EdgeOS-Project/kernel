@@ -44,8 +44,32 @@ typedef struct test_keyctl_kdf_params {
     uint32_t padding;
 } test_keyctl_kdf_params_t;
 
+typedef struct test_keyctl_pkey_query {
+    uint32_t supported_operations;
+    uint32_t key_size;
+    uint16_t maximum_data_size;
+    uint16_t maximum_signature_size;
+    uint16_t maximum_encrypted_size;
+    uint16_t maximum_decrypted_size;
+    uint32_t spare[10];
+} test_keyctl_pkey_query_t;
+
+typedef struct test_keyctl_pkey_parameters {
+    int32_t key_id;
+    uint32_t input_length;
+    uint32_t output_length;
+    uint32_t spare[7];
+} test_keyctl_pkey_parameters_t;
+
 uint64_t boottime_monotonic_us(void) {
     return test_time_us;
+}
+
+void edge_random_fill(void *buffer, uint32_t length) {
+    uint8_t *bytes = (uint8_t *)buffer;
+
+    for (uint32_t index = 0; index < length; ++index)
+        bytes[index] = (uint8_t)(index + 1u);
 }
 
 static int copy_from_user(void *context, void *destination,
@@ -529,6 +553,7 @@ int main(void) {
                arguments) == 2);
     assert((capabilities[0] & 1u) != 0u);
     assert((capabilities[0] & 2u) != 0u);
+    assert((capabilities[0] & 8u) != 0u);
     assert((capabilities[1] & 1u) != 0u);
     assert((capabilities[1] & 4u) != 0u);
     for (uint32_t index = 2; index < sizeof(capabilities); ++index)
@@ -573,7 +598,96 @@ int main(void) {
                arguments) == -EDGE_LINUX_EINVAL);
     assert(kernel_keyring_keyctl(
                &parent, &access, EDGE_LINUX_KEYCTL_PKEY_QUERY,
-               arguments) == -EDGE_LINUX_EOPNOTSUPP);
+               arguments) == -EDGE_LINUX_EFAULT);
+
+    {
+        uint8_t rsa_certificate[90] = {0};
+        uint8_t encrypted[64] = {0};
+        uint8_t digest[32] = {0};
+        uint8_t signature[64] = {0};
+        uint8_t plaintext = 0x41u;
+        test_keyctl_pkey_query_t query;
+        test_keyctl_pkey_parameters_t parameters;
+        int64_t asymmetric;
+
+        rsa_certificate[0] = 0x30u;
+        rsa_certificate[1] = 88u;
+        rsa_certificate[2] = 0x06u;
+        rsa_certificate[3] = 9u;
+        rsa_certificate[4] = 0x2au;
+        rsa_certificate[5] = 0x86u;
+        rsa_certificate[6] = 0x48u;
+        rsa_certificate[7] = 0x86u;
+        rsa_certificate[8] = 0xf7u;
+        rsa_certificate[9] = 0x0du;
+        rsa_certificate[10] = 1u;
+        rsa_certificate[11] = 1u;
+        rsa_certificate[12] = 1u;
+        rsa_certificate[13] = 0x03u;
+        rsa_certificate[14] = 75u;
+        rsa_certificate[15] = 0u;
+        rsa_certificate[16] = 0x30u;
+        rsa_certificate[17] = 72u;
+        rsa_certificate[18] = 0x02u;
+        rsa_certificate[19] = 65u;
+        rsa_certificate[20] = 0u;
+        memset(rsa_certificate + 21u, 0xa5u, 64u);
+        rsa_certificate[84] = 0xb7u;
+        rsa_certificate[85] = 0x02u;
+        rsa_certificate[86] = 3u;
+        rsa_certificate[87] = 1u;
+        rsa_certificate[88] = 0u;
+        rsa_certificate[89] = 1u;
+        asymmetric = kernel_keyring_add_key(
+            &parent, &access, (uint64_t)(uintptr_t)"asymmetric",
+            (uint64_t)(uintptr_t)"unit-rsa",
+            (uint64_t)(uintptr_t)rsa_certificate,
+            sizeof(rsa_certificate), EDGE_LINUX_KEY_SPEC_SESSION_KEYRING);
+        assert(asymmetric > 0);
+        assert(kernel_keyring_add_key(
+                   &parent, &access,
+                   (uint64_t)(uintptr_t)"asymmetric", 0u,
+                   (uint64_t)(uintptr_t)rsa_certificate,
+                   sizeof(rsa_certificate),
+                   EDGE_LINUX_KEY_SPEC_SESSION_KEYRING) > 0);
+
+        memset(&query, 0xff, sizeof(query));
+        memset(arguments, 0, sizeof(arguments));
+        arguments[0] = (uint64_t)(uint32_t)asymmetric;
+        arguments[2] = (uint64_t)(uintptr_t)"enc=pkcs1 hash=sha256";
+        arguments[3] = (uint64_t)(uintptr_t)&query;
+        assert(kernel_keyring_keyctl(
+                   &parent, &access, EDGE_LINUX_KEYCTL_PKEY_QUERY,
+                   arguments) == 0);
+        assert(query.supported_operations == 9u);
+        assert(query.key_size == 512u);
+        assert(query.maximum_data_size == 64u);
+        for (uint32_t index = 0;
+             index < sizeof(query.spare) / sizeof(query.spare[0]); ++index)
+            assert(query.spare[index] == 0u);
+
+        memset(&parameters, 0, sizeof(parameters));
+        parameters.key_id = (int32_t)asymmetric;
+        parameters.input_length = 1u;
+        parameters.output_length = sizeof(encrypted);
+        arguments[0] = (uint64_t)(uintptr_t)&parameters;
+        arguments[1] = (uint64_t)(uintptr_t)"enc=raw";
+        arguments[2] = (uint64_t)(uintptr_t)&plaintext;
+        arguments[3] = (uint64_t)(uintptr_t)encrypted;
+        assert(kernel_keyring_keyctl(
+                   &parent, &access, EDGE_LINUX_KEYCTL_PKEY_ENCRYPT,
+                   arguments) == (int64_t)sizeof(encrypted));
+
+        parameters.input_length = sizeof(digest);
+        parameters.output_length = sizeof(signature);
+        arguments[1] =
+            (uint64_t)(uintptr_t)"enc=pkcs1 hash=sha256";
+        arguments[2] = (uint64_t)(uintptr_t)digest;
+        arguments[3] = (uint64_t)(uintptr_t)signature;
+        assert(kernel_keyring_keyctl(
+                   &parent, &access, EDGE_LINUX_KEYCTL_PKEY_VERIFY,
+                   arguments) == -EDGE_LINUX_EINVAL);
+    }
 
     memset(arguments, 0, sizeof(arguments));
     arguments[0] = (uint64_t)key;
