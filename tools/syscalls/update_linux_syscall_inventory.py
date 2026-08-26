@@ -21,7 +21,10 @@ from arch_syscall_parity import normalize, parse  # noqa: E402
 
 
 ARCHITECTURE_EXCEPTIONS = {
-    "arch_prctl": ["x86_64 register and TLS control"],
+    "arch_prctl": [
+        "x86_64 register and TLS control",
+        "ia32 CPUID and xstate control; FS and GS requests return EINVAL",
+    ],
     "get_thread_area": ["legacy x86_64 TLS descriptor ABI"],
     "ioperm": ["x86_64 I/O-port permission mechanism"],
     "iopl": ["x86_64 I/O privilege mechanism"],
@@ -76,6 +79,8 @@ PARTIAL_SYSCALL_PROBES = {
     "bpf": "tools/tests/bpf_abi_probe.c",
     "kexec_file_load": "tools/tests/native_optional_syscalls_abi_probe.c",
     "kexec_load": "tools/tests/native_optional_syscalls_abi_probe.c",
+    "uprobe": "tools/tests/native_optional_syscalls_abi_probe.c",
+    "uretprobe": "tools/tests/native_optional_syscalls_abi_probe.c",
 }
 
 
@@ -175,6 +180,10 @@ def build_document() -> dict[str, Any]:
                 },
             }
         )
+    for name, entry in existing.items():
+        if name not in names and entry.get("architectures") == {}:
+            syscalls.append(entry)
+    syscalls.sort(key=lambda entry: entry["id"])
     return {
         "schema": 1,
         "description": "Canonical EdgeOS Linux syscall ABI inventory",

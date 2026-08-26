@@ -170,6 +170,28 @@ static int test_kexec_permissions(void) {
     return expect_result("kexec permission child", status, 0);
 }
 
+#if defined(__x86_64__)
+static int test_uretprobe_direct_entry(void) {
+    int status = -1;
+    long child = raw_syscall6(SYS_clone, 17, 0, 0, 0, 0, 0);
+
+    if (child < 0) return expect_result("uretprobe fork", child, 0);
+    if (child == 0) {
+        (void)raw_syscall6(SYS_uretprobe, 0, 0, 0, 0, 0, 0);
+        (void)raw_syscall6(SYS_exit, 99, 0, 0, 0, 0, 0);
+        __builtin_unreachable();
+    }
+    if (raw_syscall6(
+            SYS_wait4, child, (long)&status, 0, 0, 0, 0) != child)
+        return expect_result("uretprobe wait4", -1, 0);
+    if ((status & 0x7f) == 4) return 0;
+    print_text("FAIL uretprobe direct signal status=");
+    print_number(status);
+    print_text("\n");
+    return 1;
+}
+#endif
+
 static int test_optional_calls(void) {
     int failures = 0;
     struct kexec_segment segment = {
@@ -231,10 +253,11 @@ static int test_optional_calls(void) {
         raw_syscall6(SYS_map_shadow_stack, 0, 0, 0, 0, 0, 0),
         -ENOTSUP, -ENOSYS);
 #if defined(__x86_64__)
-    failures += expect_one_of(
+    failures += expect_result(
         "uprobe direct entry",
         raw_syscall6(SYS_uprobe, 0, 0, 0, 0, 0, 0),
-        -ENOSYS, -ENXIO);
+        -ENXIO);
+    failures += test_uretprobe_direct_entry();
 #endif
     return failures;
 }

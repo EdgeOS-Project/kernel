@@ -3441,6 +3441,23 @@ static int64_t edge_linux_sys_kexec(
     return -EDGE_LINUX_EOPNOTSUPP;
 }
 
+static int64_t edge_linux_sys_uprobe_entry(
+        edge_linux_syscall_context_t *context) {
+    uint8_t information[KERNEL_SIGNAL_INFO_SIZE];
+    int32_t pid;
+
+    if (context->id == EDGE_LINUX_SYS_uprobe)
+        return -EDGE_LINUX_ENXIO;
+
+    pid = kernel_current_pid();
+    if (pid <= 0) return -1;
+    kernel_signal_info_build_sender(
+        information, EDGE_LINUX_SIGILL, 128, 0, 0u, 0u);
+    (void)kernel_linux_signal_send(
+        pid, EDGE_LINUX_SIGILL, 1, information);
+    return -1;
+}
+
 static int64_t edge_linux_sys_namespace(
     edge_linux_syscall_context_t *context) {
     kernel_linux_identity_t identity;

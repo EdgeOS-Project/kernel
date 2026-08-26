@@ -9085,17 +9085,19 @@
     {
       "id": "uprobe",
       "semantic_id": "uprobe",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_uprobe_entry",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/native_optional_syscalls_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "partial",
       "architectures": {
         "x86_64": {
           "number": 336,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_uprobe_entry",
+          "evidence_status": "runtime-probe-listed"
         },
         "aarch64": null
       }
@@ -9103,17 +9105,19 @@
     {
       "id": "uretprobe",
       "semantic_id": "uretprobe",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_uprobe_entry",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/native_optional_syscalls_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "partial",
       "architectures": {
         "x86_64": {
           "number": 335,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_uprobe_entry",
+          "evidence_status": "runtime-probe-listed"
         },
         "aarch64": null
       }

@@ -632,6 +632,10 @@ case EDGE_LINUX_SYS_unlink:
 case EDGE_LINUX_SYS_unlinkat:
     context->result = edge_linux_sys_unlink(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
+case EDGE_LINUX_SYS_uprobe:
+case EDGE_LINUX_SYS_uretprobe:
+    context->result = edge_linux_sys_uprobe_entry(context);
+    return EDGE_LINUX_SYSCALL_HANDLED;
 case EDGE_LINUX_SYS_userfaultfd:
     context->result = edge_linux_sys_userfaultfd(context);
     return EDGE_LINUX_SYSCALL_HANDLED;
