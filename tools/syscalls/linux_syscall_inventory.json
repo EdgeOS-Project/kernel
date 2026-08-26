@@ -168,19 +168,19 @@
         "tools/tests/clock_adjust_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 159,
           "status": "implemented",
           "route": "shared:edge_linux_sys_clock_adjust",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 171,
           "status": "implemented",
           "route": "shared:edge_linux_sys_clock_adjust",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -497,19 +497,19 @@
         "tools/tests/clock_adjust_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 305,
           "status": "implemented",
           "route": "shared:edge_linux_sys_clock_adjust",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 266,
           "status": "implemented",
           "route": "shared:edge_linux_sys_clock_adjust",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -597,19 +597,19 @@
         "tools/tests/time_set_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 227,
           "status": "implemented",
           "route": "shared:edge_linux_sys_set_wall_time",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 112,
           "status": "implemented",
           "route": "shared:edge_linux_sys_set_wall_time",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -7828,19 +7828,19 @@
         "tools/tests/time_set_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 164,
           "status": "implemented",
           "route": "shared:edge_linux_sys_set_wall_time",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 170,
           "status": "implemented",
           "route": "shared:edge_linux_sys_set_wall_time",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -9248,19 +9248,19 @@
         "tools/tests/vhangup_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 153,
           "status": "implemented",
           "route": "shared:edge_linux_sys_vhangup",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 58,
           "status": "implemented",
           "route": "shared:edge_linux_sys_vhangup",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },

@@ -388,6 +388,10 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "select_abi_probe",
         "signal_altstack_abi_probe",
         "signal_wait_mask_abi_probe",
+#elif defined(UAPI_BATCH_TIME_ADMIN_ONLY)
+        "clock_adjust_abi_probe",
+        "time_set_abi_probe",
+        "vhangup_abi_probe",
 #elif defined(UAPI_BATCH_NATIVE_OPTIONAL_ONLY)
         "native_optional_syscalls_abi_probe",
 #else
