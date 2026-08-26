@@ -171,6 +171,7 @@ EDGEOS_ASSESSMENTS = [
             "READ_FIXED and WRITE_FIXED through pinned pages for regular files, pipes, stream sockets, pseudo-terminals, physical terminals and memory character devices",
             "READV_FIXED and WRITEV_FIXED with pinned registered-buffer ranges for regular files and pipes",
             "ia32 and x32 fixed-buffer registration plus READV and WRITEV compat iovec conversion",
+            "ia32 and x32 SENDMSG, RECVMSG and 64-bit timeout layouts through shared io_uring execution",
             "bounded legacy provided-buffer groups with FIFO selection for READ, READV and RECV",
             "PROVIDE_BUFFERS and REMOVE_BUFFERS with Linux buffer IDs and CQE flags",
             "user-provided buffer-ring registration, status, unregistration and 16-bit head wrap",
@@ -230,7 +231,7 @@ EDGEOS_ASSESSMENTS = [
         "missing": [
             "btrfs encoded read and write ioctls require a writable compression-aware btrfs backend",
             "ublk URING_CMD requires a real userspace block-device backend; no ublk control or queue device is exposed",
-            "remaining ia32 and x32 message, timeout and path-operation semantic coverage",
+            "remaining ia32 and x32 path-operation semantic coverage",
         ],
         "runtime_tests": [
             "tools/tests/io_uring_abi_probe.c",

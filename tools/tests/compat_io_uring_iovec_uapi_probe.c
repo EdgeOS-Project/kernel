@@ -12,6 +12,7 @@
 #define SYS_mprotect 125
 #define SYS_mmap 192
 #define SYS_pipe2 331
+#define SYS_socketcall 102
 #elif defined(__x86_64__) && defined(__ILP32__)
 #define PROBE_NAME "X32_IO_URING_IOVEC_UAPI_PROBE"
 #define X32_SYSCALL_BIT UINT32_C(0x40000000)
@@ -22,6 +23,7 @@
 #define SYS_mprotect 10
 #define SYS_exit 60
 #define SYS_pipe2 293
+#define SYS_socketpair 53
 #else
 #error "compat_io_uring_iovec_uapi_probe requires ia32 or x32"
 #endif
@@ -40,6 +42,7 @@
 #define IORING_REGISTER_BUFFERS 0
 #define IORING_UNREGISTER_BUFFERS 1
 #define IORING_ENTER_GETEVENTS 1
+#define ETIME 62
 #define IORING_OFF_SQ_RING UINT32_C(0)
 #define IORING_OFF_CQ_RING UINT32_C(0x08000000)
 #define IORING_OFF_SQES UINT32_C(0x10000000)
@@ -47,6 +50,21 @@
 struct compat_iovec {
     uint32_t base;
     uint32_t length;
+};
+
+struct compat_msghdr {
+    uint32_t name;
+    uint32_t name_length;
+    uint32_t iov;
+    uint32_t iov_length;
+    uint32_t control;
+    uint32_t control_length;
+    uint32_t flags;
+};
+
+struct kernel_timespec {
+    int64_t seconds;
+    int64_t nanoseconds;
 };
 
 struct io_sqring_offsets {
@@ -124,6 +142,10 @@ static unsigned char source_buffer = 0x5au;
 static unsigned char write_buffer = 0xa5u;
 static unsigned char verify_buffer;
 static int32_t pipe_descriptors[2];
+static int32_t socket_descriptors[2];
+static struct compat_iovec message_vector;
+static struct compat_msghdr message_header;
+static struct kernel_timespec timeout = {0, 1};
 
 #if defined(__i386__)
 __attribute__((naked)) static long raw_call6(
@@ -222,6 +244,22 @@ static void fail_result(const char *reason, long result) {
 
 static int syscall_failed(long result) {
     return (uint32_t)result >= UINT32_C(0xfffff001);
+}
+
+static void clear_bytes(void *destination, uint32_t length) {
+    unsigned char *bytes = destination;
+    while (length) bytes[--length] = 0;
+}
+
+static long create_socketpair(void) {
+#if defined(__i386__)
+    uint32_t arguments[4] = {
+        1u, 1u, 0u, (uint32_t)(uintptr_t)socket_descriptors,
+    };
+    return call6(SYS_socketcall, 8, arguments, 0, 0, 0, 0);
+#else
+    return call6(SYS_socketpair, 1, 1, 0, socket_descriptors, 0, 0);
+#endif
 }
 
 static void require_result(long actual, long expected, const char *name) {
@@ -368,10 +406,88 @@ __attribute__((noreturn)) void _start(void) {
                          &verify_buffer, 1, 0, 0, 0),
                    1, "pipe-read-after-writev");
     if (verify_buffer != write_buffer) fail("writev-payload");
+
+    require_result(create_socketpair(), 0, "socketpair");
+    message_vector.base = (uint32_t)(uintptr_t)&source_buffer;
+    message_vector.length = 1;
+    clear_bytes(&message_header, sizeof(message_header));
+    message_header.iov = (uint32_t)(uintptr_t)&message_vector;
+    message_header.iov_length = 1;
+    clear_bytes(&sqes[1], sizeof(sqes[1]));
+    sqes[1].opcode = 9;
+    sqes[1].descriptor = socket_descriptors[0];
+    sqes[1].address = (uint32_t)(uintptr_t)&message_header;
+    sqes[1].length = 1;
+    sqes[1].user_data = UINT64_C(0x1111222233334444);
+    sq_array[1] = 1;
+    *sq_tail = 4;
+    require_result(call6(SYS_io_uring_enter, ring, 1, 1,
+                         IORING_ENTER_GETEVENTS, 0, 0),
+                   1, "enter-sendmsg");
+    if (*cq_tail - *cq_head != 1u ||
+        cqes[*cq_head & (ring_parameters.cq_entries - 1u)].result != 1 ||
+        cqes[*cq_head & (ring_parameters.cq_entries - 1u)].user_data !=
+            UINT64_C(0x1111222233334444))
+        fail("sendmsg-layout");
+    *cq_head += 1u;
+    verify_buffer = 0;
+    require_result(call6(SYS_read, socket_descriptors[1],
+                         &verify_buffer, 1, 0, 0, 0),
+                   1, "socket-read-after-sendmsg");
+    if (verify_buffer != source_buffer) fail("sendmsg-payload");
+
+    require_result(call6(SYS_write, socket_descriptors[0],
+                         &write_buffer, 1, 0, 0, 0),
+                   1, "socket-write-before-recvmsg");
+    read_buffer = 0;
+    message_vector.base = (uint32_t)(uintptr_t)&read_buffer;
+    clear_bytes(&sqes[0], sizeof(sqes[0]));
+    sqes[0].opcode = 10;
+    sqes[0].descriptor = socket_descriptors[1];
+    sqes[0].address = (uint32_t)(uintptr_t)&message_header;
+    sqes[0].length = 1;
+    sqes[0].user_data = UINT64_C(0x5555666677778888);
+    sq_array[0] = 0;
+    *sq_tail = 5;
+    require_result(call6(SYS_io_uring_enter, ring, 1, 1,
+                         IORING_ENTER_GETEVENTS, 0, 0),
+                   1, "enter-recvmsg");
+    if (*cq_tail - *cq_head != 1u ||
+        cqes[*cq_head & (ring_parameters.cq_entries - 1u)].result != 1 ||
+        cqes[*cq_head & (ring_parameters.cq_entries - 1u)].user_data !=
+            UINT64_C(0x5555666677778888) ||
+        read_buffer != write_buffer)
+        fail("recvmsg-layout");
+    *cq_head += 1u;
+
+    clear_bytes(&sqes[1], sizeof(sqes[1]));
+    sqes[1].opcode = 11;
+    sqes[1].descriptor = -1;
+    sqes[1].address = (uint32_t)(uintptr_t)&timeout;
+    sqes[1].length = 1;
+    sqes[1].user_data = UINT64_C(0x9999aaaabbbbcccc);
+    sq_array[1] = 1;
+    *sq_tail = 6;
+    require_result(call6(SYS_io_uring_enter, ring, 1, 1,
+                         IORING_ENTER_GETEVENTS, 0, 0),
+                   1, "enter-timeout");
+    if (*cq_tail - *cq_head != 1u ||
+        cqes[*cq_head & (ring_parameters.cq_entries - 1u)].user_data !=
+            UINT64_C(0x9999aaaabbbbcccc))
+        fail("timeout-cqe-layout");
+    if (cqes[*cq_head & (ring_parameters.cq_entries - 1u)].result != -ETIME)
+        fail_result(
+            "timeout-result",
+            cqes[*cq_head & (ring_parameters.cq_entries - 1u)].result);
+    *cq_head += 1u;
     require_result(call6(SYS_close, pipe_descriptors[0], 0, 0, 0, 0, 0),
                    0, "close-pipe-read");
     require_result(call6(SYS_close, pipe_descriptors[1], 0, 0, 0, 0, 0),
                    0, "close-pipe-write");
+    require_result(call6(SYS_close, socket_descriptors[0], 0, 0, 0, 0, 0),
+                   0, "close-socket-zero");
+    require_result(call6(SYS_close, socket_descriptors[1], 0, 0, 0, 0, 0),
+                   0, "close-socket-one");
     require_result(call6(SYS_close, ring, 0, 0, 0, 0, 0), 0, "close");
 
     print_text(PROBE_NAME "_PASS\n");
