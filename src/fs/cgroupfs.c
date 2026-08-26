@@ -24,6 +24,7 @@
 #include "kernel/smp.h"
 #include "kernel/signal_queue.h"
 #include "kernel/signal_runtime.h"
+#include "kernel/task_scratch.h"
 #include "string.h"
 #include "sys/boottime.h"
 #include "sys/spinlock.h"
@@ -3990,6 +3991,136 @@ static int cgroupfs_bpf_target_node_locked(
     return 0;
 }
 
+typedef struct {
+    int object_id;
+    int link_object_id;
+    uint32_t flags;
+    uint32_t cgroup_id;
+    uint32_t level;
+} cgroupfs_bpf_effective_entry_t;
+
+typedef struct {
+    uint32_t chain[CGROUPFS_MAX_NODES];
+    cgroupfs_bpf_effective_entry_t
+        effective[KERNEL_BPF_MAX_ATTACHMENTS];
+    int local_objects[KERNEL_BPF_MAX_ATTACHMENTS];
+    int local_links[KERNEL_BPF_MAX_ATTACHMENTS];
+    uint32_t local_flags[KERNEL_BPF_MAX_ATTACHMENTS];
+    int ordered_objects[KERNEL_BPF_MAX_ATTACHMENTS];
+    uint32_t ordered_cgroups[KERNEL_BPF_MAX_ATTACHMENTS];
+} cgroupfs_bpf_work_t;
+
+static cgroupfs_bpf_work_t *cgroupfs_bpf_work_current(void) {
+    kernel_task_scratch_t *scratch = arch_task_scratch_current();
+
+    if (!scratch || sizeof(cgroupfs_bpf_work_t) >
+                        sizeof(scratch->bpf_cgroup_scratch))
+        return 0;
+    return (cgroupfs_bpf_work_t *)(void *)scratch->bpf_cgroup_scratch;
+}
+
+static int cgroupfs_bpf_hierarchy_allows_attach_locked(uint32_t node) {
+    while (node) {
+        int object_id = -1;
+        uint32_t flags = 0u;
+        uint32_t count = 0u;
+        int status;
+
+        node = g_cgroupfs.nodes[node].parent;
+        status = kernel_bpf_cgroup_query(
+            node, &object_id, &flags, 1u, &count, 0);
+        if (status < 0 && status != -EDGE_LINUX_ENOSPC)
+            return status;
+        if (!count) continue;
+        if (flags & KERNEL_BPF_F_ALLOW_MULTI) return 1;
+        return (flags & KERNEL_BPF_F_ALLOW_OVERRIDE) ? 1 : 0;
+    }
+    return 1;
+}
+
+static int cgroupfs_bpf_effective_entries_locked(
+        const uint32_t *chain, uint32_t chain_count,
+        cgroupfs_bpf_work_t *work,
+        uint32_t *effective_count) {
+    uint32_t selected_count = 0u;
+
+    if (!chain || !chain_count || !work || !effective_count)
+        return -EDGE_LINUX_EINVAL;
+    for (uint32_t level = 0u; level < chain_count; ++level) {
+        uint32_t local_count = 0u;
+        int status = kernel_bpf_cgroup_query_links(
+            chain[level], work->local_objects, work->local_flags,
+            work->local_links,
+            KERNEL_BPF_MAX_ATTACHMENTS, &local_count, 0);
+
+        if (status < 0) return status;
+        if (!local_count ||
+            (selected_count &&
+             !(work->local_flags[0] & KERNEL_BPF_F_ALLOW_MULTI)))
+            continue;
+        if (local_count > KERNEL_BPF_MAX_ATTACHMENTS - selected_count)
+            return -EDGE_LINUX_E2BIG;
+        for (uint32_t index = 0u; index < local_count; ++index) {
+            work->effective[selected_count].object_id =
+                work->local_objects[index];
+            work->effective[selected_count].link_object_id =
+                work->local_links[index];
+            work->effective[selected_count].flags =
+                work->local_flags[index];
+            work->effective[selected_count].cgroup_id = chain[level];
+            work->effective[selected_count].level = level;
+            ++selected_count;
+        }
+    }
+    *effective_count = selected_count;
+    return 0;
+}
+
+static uint32_t cgroupfs_bpf_emit_effective_entries(
+        const cgroupfs_bpf_effective_entry_t *effective,
+        uint32_t effective_count, uint32_t chain_count,
+        int *object_ids, uint32_t *attach_flags,
+        int *link_object_ids, uint32_t *source_cgroup_ids,
+        uint32_t capacity) {
+    uint32_t emitted = 0u;
+
+    for (uint32_t level = chain_count; level > 0u; --level) {
+        for (uint32_t index = 0u; index < effective_count; ++index) {
+            const cgroupfs_bpf_effective_entry_t *entry = &effective[index];
+
+            if (entry->level != level - 1u ||
+                !(entry->flags & KERNEL_BPF_F_PREORDER))
+                continue;
+            if (emitted < capacity) {
+                object_ids[emitted] = entry->object_id;
+                if (attach_flags) attach_flags[emitted] = 0u;
+                if (link_object_ids) link_object_ids[emitted] = -1;
+                if (source_cgroup_ids)
+                    source_cgroup_ids[emitted] = entry->cgroup_id;
+            }
+            ++emitted;
+        }
+    }
+    for (uint32_t level = 0u; level < chain_count; ++level) {
+        for (uint32_t index = 0u; index < effective_count; ++index) {
+            const cgroupfs_bpf_effective_entry_t *entry = &effective[index];
+
+            if (entry->level != level ||
+                (entry->flags & KERNEL_BPF_F_PREORDER))
+                continue;
+            if (emitted < capacity) {
+                object_ids[emitted] = entry->object_id;
+                if (attach_flags) attach_flags[emitted] = 0u;
+                if (link_object_ids) link_object_ids[emitted] = -1;
+                if (source_cgroup_ids)
+                    source_cgroup_ids[emitted] = entry->cgroup_id;
+            }
+            ++emitted;
+        }
+    }
+    return emitted;
+}
+
 int cgroupfs_bpf_program_attach(vfs_superblock_t *sb,
                                 const vfs_inode_t *inode,
                                 int object_id, uint32_t flags,
@@ -4002,6 +4133,11 @@ int cgroupfs_bpf_program_attach(vfs_superblock_t *sb,
     cgroupfs_initialize();
     cgroupfs_lock(&g_cgroupfs_lock);
     status = cgroupfs_bpf_target_node_locked(sb, inode, &node);
+    if (status == 0) {
+        status = cgroupfs_bpf_hierarchy_allows_attach_locked(node);
+        if (status == 0) status = -EDGE_LINUX_EPERM;
+        else if (status > 0) status = 0;
+    }
     if (status == 0)
         status = kernel_bpf_cgroup_attach(
             node, object_id, flags, replace_object_id,
@@ -4038,6 +4174,11 @@ int cgroupfs_bpf_link_create(vfs_superblock_t *sb,
     cgroupfs_initialize();
     cgroupfs_lock(&g_cgroupfs_lock);
     status = cgroupfs_bpf_target_node_locked(sb, inode, &node);
+    if (status == 0) {
+        status = cgroupfs_bpf_hierarchy_allows_attach_locked(node);
+        if (status == 0) status = -EDGE_LINUX_EPERM;
+        else if (status > 0) status = 0;
+    }
     if (status == 0)
         status = kernel_bpf_cgroup_link_create(
             node, object_id, attach_type, flags,
@@ -4051,15 +4192,16 @@ static int cgroupfs_bpf_program_query_internal(
         int effective, int *object_ids, uint32_t *attach_flags,
         int *link_object_ids, uint32_t capacity, uint32_t *count,
         uint64_t *revision) {
-    uint32_t chain[CGROUPFS_MAX_NODES];
+    cgroupfs_bpf_work_t *work;
     uint32_t chain_count = 0u;
     uint32_t node;
-    uint32_t total = 0u;
+    uint32_t effective_count = 0u;
     int status;
-    int overflow = 0;
 
     if (!count || (capacity && !object_ids))
         return -EDGE_LINUX_EINVAL;
+    work = cgroupfs_bpf_work_current();
+    if (!work) return -EDGE_LINUX_ENOMEM;
     if (revision) *revision = 0u;
     cgroupfs_initialize();
     cgroupfs_lock(&g_cgroupfs_lock);
@@ -4068,40 +4210,26 @@ static int cgroupfs_bpf_program_query_internal(
         cgroupfs_unlock(&g_cgroupfs_lock);
         return status;
     }
-    chain[chain_count++] = node;
+    work->chain[chain_count++] = node;
     while (effective && node && chain_count < CGROUPFS_MAX_NODES) {
         node = g_cgroupfs.nodes[node].parent;
-        chain[chain_count++] = node;
+        work->chain[chain_count++] = node;
     }
-    cgroupfs_unlock(&g_cgroupfs_lock);
-
-    while (chain_count) {
-        uint32_t local_count = 0u;
-        uint32_t remaining = total < capacity ? capacity - total : 0u;
-        uint64_t local_revision = 0u;
-
-        node = effective ? chain[--chain_count] : chain[0];
+    if (!effective) {
         status = kernel_bpf_cgroup_query_links(
-            node, remaining ? object_ids + total : 0,
-            remaining && attach_flags ? attach_flags + total : 0,
-            remaining && link_object_ids ? link_object_ids + total : 0,
-            remaining, &local_count, &local_revision);
-        if (status < 0 && status != -EDGE_LINUX_ENOSPC) return status;
-        if (status == -EDGE_LINUX_ENOSPC) overflow = 1;
-        if (!effective && revision) *revision = local_revision;
-        if (effective && attach_flags) {
-            uint32_t copied = local_count < remaining ?
-                              local_count : remaining;
-            for (uint32_t index = 0u; index < copied; ++index)
-                attach_flags[total + index] = 0u;
-        }
-        if (local_count > UINT32_MAX - total)
-            return -EDGE_LINUX_EOVERFLOW;
-        total += local_count;
-        if (!effective) break;
+            work->chain[0], object_ids, attach_flags, link_object_ids,
+            capacity, count, revision);
+        cgroupfs_unlock(&g_cgroupfs_lock);
+        return status;
     }
-    *count = total;
-    return overflow || total > capacity ? -EDGE_LINUX_ENOSPC : 0;
+    status = cgroupfs_bpf_effective_entries_locked(
+        work->chain, chain_count, work, &effective_count);
+    cgroupfs_unlock(&g_cgroupfs_lock);
+    if (status < 0) return status;
+    *count = cgroupfs_bpf_emit_effective_entries(
+        work->effective, effective_count, chain_count,
+        object_ids, attach_flags, link_object_ids, 0, capacity);
+    return *count > capacity ? -EDGE_LINUX_ENOSPC : 0;
 }
 
 int cgroupfs_bpf_program_query(vfs_superblock_t *sb,
@@ -4130,25 +4258,36 @@ int cgroupfs_bpf_program_query_links(vfs_superblock_t *sb,
 int cgroupfs_bpf_device_allowed(
     uint32_t cgroup_id,
     const kernel_bpf_cgroup_device_context_t *context) {
-    uint32_t chain[CGROUPFS_MAX_NODES];
+    cgroupfs_bpf_work_t *work;
     uint32_t count = 0u;
+    uint32_t effective_count = 0u;
     uint32_t node;
+    int status;
 
     if (!context) return 0;
+    work = cgroupfs_bpf_work_current();
+    if (!work) return 0;
     cgroupfs_initialize();
     cgroupfs_lock(&g_cgroupfs_lock);
     node = cgroupfs_node_valid(cgroup_id, 0) ? cgroup_id : 0u;
-    chain[count++] = node;
+    work->chain[count++] = node;
     while (node && count < CGROUPFS_MAX_NODES) {
         node = g_cgroupfs.nodes[node].parent;
-        chain[count++] = node;
+        work->chain[count++] = node;
     }
+    status = cgroupfs_bpf_effective_entries_locked(
+        work->chain, count, work, &effective_count);
     cgroupfs_unlock(&g_cgroupfs_lock);
-
-    while (count) {
+    if (status < 0) return 0;
+    effective_count = cgroupfs_bpf_emit_effective_entries(
+        work->effective, effective_count, count,
+        work->ordered_objects, 0, 0, work->ordered_cgroups,
+        KERNEL_BPF_MAX_ATTACHMENTS);
+    for (uint32_t index = 0u; index < effective_count; ++index) {
         uint32_t result = 1u;
-        if (kernel_bpf_cgroup_device_run(
-                chain[--count], context, &result) < 0 || !result)
+        if (kernel_bpf_program_run_cgroup_device_at(
+                work->ordered_objects[index], work->ordered_cgroups[index],
+                context, &result) < 0 || !result)
             return 0;
     }
     return 1;

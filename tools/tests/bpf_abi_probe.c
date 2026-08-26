@@ -94,6 +94,7 @@
 #define BPF_MAP_TYPE_ARENA 33u
 #define BPF_F_NO_PREALLOC (1u << 0)
 #define BPF_F_NO_COMMON_LRU (1u << 1)
+#define BPF_F_ALLOW_OVERRIDE (1u << 0)
 #define BPF_F_ALLOW_MULTI (1u << 1)
 #define BPF_F_REPLACE (1u << 2)
 #define BPF_F_BEFORE (1u << 3)
@@ -120,6 +121,7 @@
 #define F_GETFD 1
 #define FD_CLOEXEC 1
 #define AT_FDCWD -100
+#define AT_REMOVEDIR 0x200
 #define O_RDONLY 0
 #define O_DIRECTORY 00200000
 #define S_IFCHR 0020000
@@ -2057,6 +2059,8 @@ static int test_program(void) {
     long link_descriptor;
     long replacement_descriptor = -1;
     long positioned_links[4] = {-1, -1, -1, -1};
+    long hierarchy_parent_descriptor = -1;
+    long hierarchy_child_descriptor = -1;
     long reopened;
     int failures = 0;
 
@@ -2745,6 +2749,180 @@ static int test_program(void) {
             attribute.prog_attach.expected_revision = revision + 1u;
             failures += expect("program empty dual position detach", bpf_call(
                 BPF_PROG_DETACH, &attribute), 0);
+
+            failures += expect("hierarchy parent mkdir", raw_syscall6(
+                SYS_mkdirat, cgroup_descriptor,
+                (long)"edgeos-bpf-hierarchy", 0755, 0, 0, 0), 0);
+            hierarchy_parent_descriptor = raw_syscall6(
+                SYS_openat, cgroup_descriptor,
+                (long)"edgeos-bpf-hierarchy",
+                O_RDONLY | O_DIRECTORY, 0, 0, 0);
+            failures += expect_true(
+                "hierarchy parent open", hierarchy_parent_descriptor >= 0);
+            if (hierarchy_parent_descriptor >= 0) {
+                failures += expect("hierarchy child mkdir", raw_syscall6(
+                    SYS_mkdirat, hierarchy_parent_descriptor,
+                    (long)"child", 0755, 0, 0, 0), 0);
+                hierarchy_child_descriptor = raw_syscall6(
+                    SYS_openat, hierarchy_parent_descriptor,
+                    (long)"child", O_RDONLY | O_DIRECTORY, 0, 0, 0);
+                failures += expect_true(
+                    "hierarchy child open", hierarchy_child_descriptor >= 0);
+            }
+            if (hierarchy_child_descriptor >= 0) {
+                uint32_t effective_ids[4] = {0u, 0u, 0u, 0u};
+
+                clear_bytes(&attribute, sizeof(attribute));
+                attribute.prog_attach.target_fd =
+                    (uint32_t)hierarchy_parent_descriptor;
+                attribute.prog_attach.attach_bpf_fd =
+                    (uint32_t)descriptor;
+                attribute.prog_attach.attach_type = BPF_CGROUP_DEVICE;
+                failures += expect("hierarchy parent fixed attach", bpf_call(
+                    BPF_PROG_ATTACH, &attribute), 0);
+
+                clear_bytes(&attribute, sizeof(attribute));
+                attribute.prog_attach.target_fd =
+                    (uint32_t)hierarchy_child_descriptor;
+                attribute.prog_attach.attach_bpf_fd =
+                    (uint32_t)replacement_descriptor;
+                attribute.prog_attach.attach_type = BPF_CGROUP_DEVICE;
+                failures += expect("hierarchy fixed parent blocks child",
+                    bpf_call(BPF_PROG_ATTACH, &attribute), -EPERM);
+
+                clear_bytes(&attribute, sizeof(attribute));
+                attribute.prog_attach.target_fd =
+                    (uint32_t)hierarchy_parent_descriptor;
+                attribute.prog_attach.attach_bpf_fd =
+                    (uint32_t)descriptor;
+                attribute.prog_attach.attach_type = BPF_CGROUP_DEVICE;
+                failures += expect("hierarchy parent fixed detach", bpf_call(
+                    BPF_PROG_DETACH, &attribute), 0);
+
+                clear_bytes(&attribute, sizeof(attribute));
+                attribute.prog_attach.target_fd =
+                    (uint32_t)hierarchy_parent_descriptor;
+                attribute.prog_attach.attach_bpf_fd =
+                    (uint32_t)descriptor;
+                attribute.prog_attach.attach_type = BPF_CGROUP_DEVICE;
+                attribute.prog_attach.attach_flags = BPF_F_ALLOW_OVERRIDE;
+                failures += expect("hierarchy parent override attach", bpf_call(
+                    BPF_PROG_ATTACH, &attribute), 0);
+
+                clear_bytes(&attribute, sizeof(attribute));
+                attribute.prog_attach.target_fd =
+                    (uint32_t)hierarchy_child_descriptor;
+                attribute.prog_attach.attach_bpf_fd =
+                    (uint32_t)replacement_descriptor;
+                attribute.prog_attach.attach_type = BPF_CGROUP_DEVICE;
+                failures += expect("hierarchy child overrides parent", bpf_call(
+                    BPF_PROG_ATTACH, &attribute), 0);
+
+                clear_bytes(&attribute, sizeof(attribute));
+                attribute.prog_query.target_fd =
+                    (uint32_t)hierarchy_child_descriptor;
+                attribute.prog_query.attach_type = BPF_CGROUP_DEVICE;
+                attribute.prog_query.query_flags = 1u;
+                attribute.prog_query.prog_ids =
+                    (uint64_t)(uintptr_t)effective_ids;
+                attribute.prog_query.prog_count = 4u;
+                failures += expect("hierarchy override effective query",
+                    bpf_call(BPF_PROG_QUERY, &attribute), 0);
+                failures += expect_true(
+                    "hierarchy override effective values",
+                    attribute.prog_query.prog_count == 1u &&
+                    attribute.prog_query.attach_flags == 0u &&
+                    attribute.prog_query.revision == 0u &&
+                    effective_ids[0] == replacement_program_id);
+
+                clear_bytes(&attribute, sizeof(attribute));
+                attribute.prog_attach.target_fd =
+                    (uint32_t)hierarchy_child_descriptor;
+                attribute.prog_attach.attach_bpf_fd =
+                    (uint32_t)replacement_descriptor;
+                attribute.prog_attach.attach_type = BPF_CGROUP_DEVICE;
+                failures += expect("hierarchy override child detach", bpf_call(
+                    BPF_PROG_DETACH, &attribute), 0);
+                attribute.prog_attach.target_fd =
+                    (uint32_t)hierarchy_parent_descriptor;
+                attribute.prog_attach.attach_bpf_fd = (uint32_t)descriptor;
+                failures += expect("hierarchy override parent detach", bpf_call(
+                    BPF_PROG_DETACH, &attribute), 0);
+
+                clear_bytes(&attribute, sizeof(attribute));
+                attribute.prog_attach.target_fd =
+                    (uint32_t)hierarchy_parent_descriptor;
+                attribute.prog_attach.attach_bpf_fd = (uint32_t)descriptor;
+                attribute.prog_attach.attach_type = BPF_CGROUP_DEVICE;
+                attribute.prog_attach.attach_flags =
+                    BPF_F_ALLOW_MULTI | BPF_F_PREORDER;
+                failures += expect("hierarchy parent multi preorder attach",
+                    bpf_call(BPF_PROG_ATTACH, &attribute), 0);
+
+                clear_bytes(&attribute, sizeof(attribute));
+                attribute.prog_attach.target_fd =
+                    (uint32_t)hierarchy_parent_descriptor;
+                attribute.prog_attach.attach_bpf_fd =
+                    (uint32_t)replacement_descriptor;
+                attribute.prog_attach.attach_type = BPF_CGROUP_DEVICE;
+                attribute.prog_attach.attach_flags = BPF_F_ALLOW_OVERRIDE;
+                failures += expect("hierarchy local mode mismatch", bpf_call(
+                    BPF_PROG_ATTACH, &attribute), -EPERM);
+
+                clear_bytes(&attribute, sizeof(attribute));
+                attribute.prog_attach.target_fd =
+                    (uint32_t)hierarchy_child_descriptor;
+                attribute.prog_attach.attach_bpf_fd =
+                    (uint32_t)replacement_descriptor;
+                attribute.prog_attach.attach_type = BPF_CGROUP_DEVICE;
+                failures += expect("hierarchy multi permits child", bpf_call(
+                    BPF_PROG_ATTACH, &attribute), 0);
+
+                clear_bytes(effective_ids, sizeof(effective_ids));
+                clear_bytes(&attribute, sizeof(attribute));
+                attribute.prog_query.target_fd =
+                    (uint32_t)hierarchy_child_descriptor;
+                attribute.prog_query.attach_type = BPF_CGROUP_DEVICE;
+                attribute.prog_query.query_flags = 1u;
+                attribute.prog_query.prog_ids =
+                    (uint64_t)(uintptr_t)effective_ids;
+                attribute.prog_query.prog_count = 4u;
+                failures += expect("hierarchy multi effective query", bpf_call(
+                    BPF_PROG_QUERY, &attribute), 0);
+                failures += expect_true(
+                    "hierarchy multi preorder values",
+                    attribute.prog_query.prog_count == 2u &&
+                    effective_ids[0] == program_id &&
+                    effective_ids[1] == replacement_program_id);
+
+                clear_bytes(&attribute, sizeof(attribute));
+                attribute.prog_attach.target_fd =
+                    (uint32_t)hierarchy_child_descriptor;
+                attribute.prog_attach.attach_bpf_fd =
+                    (uint32_t)replacement_descriptor;
+                attribute.prog_attach.attach_type = BPF_CGROUP_DEVICE;
+                failures += expect("hierarchy multi child detach", bpf_call(
+                    BPF_PROG_DETACH, &attribute), 0);
+                attribute.prog_attach.target_fd =
+                    (uint32_t)hierarchy_parent_descriptor;
+                attribute.prog_attach.attach_bpf_fd = (uint32_t)descriptor;
+                failures += expect("hierarchy multi parent detach", bpf_call(
+                    BPF_PROG_DETACH, &attribute), 0);
+            }
+            if (hierarchy_child_descriptor >= 0)
+                (void)raw_syscall6(
+                    SYS_close, hierarchy_child_descriptor, 0, 0, 0, 0, 0);
+            if (hierarchy_parent_descriptor >= 0) {
+                failures += expect("hierarchy child remove", raw_syscall6(
+                    SYS_unlinkat, hierarchy_parent_descriptor,
+                    (long)"child", AT_REMOVEDIR, 0, 0, 0), 0);
+                (void)raw_syscall6(
+                    SYS_close, hierarchy_parent_descriptor, 0, 0, 0, 0, 0);
+                failures += expect("hierarchy parent remove", raw_syscall6(
+                    SYS_unlinkat, cgroup_descriptor,
+                    (long)"edgeos-bpf-hierarchy", AT_REMOVEDIR,
+                    0, 0, 0), 0);
+            }
         }
         if (replacement_descriptor >= 0)
             (void)raw_syscall6(

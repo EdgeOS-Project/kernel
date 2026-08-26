@@ -16,6 +16,7 @@
 #define KERNEL_TASK_PATH_MAX 4096u
 #define KERNEL_TASK_PATH_SCRATCH_COUNT 13u
 #define KERNEL_TASK_POLL_MAX 1024u
+#define KERNEL_TASK_BPF_CGROUP_SCRATCH_SIZE 16384u
 #define KERNEL_TASK_WAIT_SOURCE_MAX \
     (EDGE_RUNTIME_MAX_PIPES + EDGE_RUNTIME_MAX_SOCKETS)
 
@@ -33,6 +34,8 @@ typedef struct kernel_task_scratch {
         uint64_t perf_event_values[EDGE_RUNTIME_MAX_PERF_EVENTS * 3u + 3u];
     };
     uint8_t xattr_scratch[EDGE_LINUX_XATTR_VALUE_MAX];
+    /* Cgroup BPF evaluation may run while VFS path scratch remains live. */
+    uint8_t bpf_cgroup_scratch[KERNEL_TASK_BPF_CGROUP_SCRATCH_SIZE];
     /*
      * SCM_RIGHTS receive keeps a 253-descriptor publication transaction off
      * the syscall stack. The target is inactive outside recvmsg and remains

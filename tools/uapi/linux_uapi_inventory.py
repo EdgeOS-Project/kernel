@@ -361,6 +361,7 @@ EDGEOS_ASSESSMENTS = [
             "BTF-backed map creation with retained BTF object lifetime",
             "cgroup link objects with descriptor lifetime, ID enumeration, information queries, program replacement, explicit detach and close-time detach",
             "cgroup link and legacy program multi-position attachment with link or program FD and ID anchors, prepend and append placement, preorder matching and expected-revision guards",
+            "hierarchical cgroup attachment policy with non-overridable parent rejection, overridable parent replacement, multi-program inheritance and preorder-effective execution",
             "kernel and user ring-buffer maps with mmap, poll and cgroup-device output execution",
             "cgroup array maps with retained cgroup lifetime, replacement and deletion semantics",
             "BPF filesystem mounting, object pinning, access-restricted reopening and unlink lifetime",
@@ -388,7 +389,6 @@ EDGEOS_ASSESSMENTS = [
             "resizable-hash concurrent dynamic resizing and full Linux key and value size range",
             "remaining specialized map-family concurrency semantics, plus instruction-array verifier and jump-table integration",
             "additional attachment families and program types",
-            "complete hierarchical allow-override attachment semantics",
             "complete BTF type-graph validation and program integration",
         ],
         "runtime_tests": [

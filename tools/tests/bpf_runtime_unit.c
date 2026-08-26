@@ -1569,6 +1569,9 @@ static void test_program(void) {
                3u, object, KERNEL_BPF_F_ALLOW_MULTI,
                -1, -1, 0u) == 0);
     assert(kernel_bpf_cgroup_attach(
+               3u, deny_object, KERNEL_BPF_F_ALLOW_OVERRIDE,
+               -1, -1, 0u) == -EDGE_LINUX_EPERM);
+    assert(kernel_bpf_cgroup_attach(
                3u, deny_object, KERNEL_BPF_F_ALLOW_MULTI,
                -1, -1, 0u) == 0);
     result = 1u;

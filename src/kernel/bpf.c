@@ -5837,6 +5837,14 @@ static int bpf_program_run_cgroup_device_locked(
 int kernel_bpf_program_run_cgroup_device(
     int object_id, const kernel_bpf_cgroup_device_context_t *context,
     uint32_t *result) {
+    return kernel_bpf_program_run_cgroup_device_at(
+        object_id, 0u, context, result);
+}
+
+int kernel_bpf_program_run_cgroup_device_at(
+    int object_id, uint32_t cgroup_id,
+    const kernel_bpf_cgroup_device_context_t *context,
+    uint32_t *result) {
     kernel_bpf_object_t *object;
     int notify_waiters = 0;
     int status;
@@ -5845,7 +5853,7 @@ int kernel_bpf_program_run_cgroup_device(
     bpf_lock();
     object = bpf_object_locked(object_id);
     status = bpf_program_run_cgroup_device_locked(
-        object, context, result, &notify_waiters, 0u,
+        object, context, result, &notify_waiters, cgroup_id,
         KERNEL_BPF_CGROUP_DEVICE);
     bpf_unlock();
     if (notify_waiters) kernel_bpf_ringbuf_state_changed();
@@ -5977,7 +5985,7 @@ int kernel_bpf_cgroup_link_create(uint32_t cgroup_id, int object_id,
         }
         if (attachment->cgroup_id == cgroup_id &&
             !(attachment->flags & KERNEL_BPF_F_ALLOW_MULTI)) {
-            result = -EDGE_LINUX_EINVAL;
+            result = -EDGE_LINUX_EPERM;
             goto out;
         }
         if (attachment->cgroup_id == cgroup_id &&
@@ -6164,6 +6172,8 @@ int kernel_bpf_cgroup_attach(uint32_t cgroup_id, int object_id,
     int after = (flags & KERNEL_BPF_F_AFTER) != 0;
     int anchor_preorder_mismatch = 0;
     int has_attachments = 0;
+    uint32_t saved_flags = flags &
+        (KERNEL_BPF_F_ALLOW_OVERRIDE | KERNEL_BPF_F_ALLOW_MULTI);
 
     if ((flags & ~(KERNEL_BPF_F_ALLOW_OVERRIDE |
                    KERNEL_BPF_F_ALLOW_MULTI |
@@ -6205,8 +6215,15 @@ int kernel_bpf_cgroup_attach(uint32_t cgroup_id, int object_id,
             continue;
         }
         if (attachment->cgroup_id != cgroup_id) continue;
-        if (attachment->attach_type == KERNEL_BPF_CGROUP_DEVICE)
+        if (attachment->attach_type == KERNEL_BPF_CGROUP_DEVICE) {
             has_attachments = 1;
+            if ((attachment->flags &
+                 (KERNEL_BPF_F_ALLOW_OVERRIDE |
+                  KERNEL_BPF_F_ALLOW_MULTI)) != saved_flags) {
+                status = -EDGE_LINUX_EPERM;
+                goto out;
+            }
+        }
         if (relative_object_id >= 0 && !anchor &&
             attachment->object_id == relative_object_id) {
             if (!!(attachment->flags & KERNEL_BPF_F_PREORDER) ==
@@ -6225,8 +6242,7 @@ int kernel_bpf_cgroup_attach(uint32_t cgroup_id, int object_id,
                 replacement = attachment;
             continue;
         }
-        if (!(flags & KERNEL_BPF_F_ALLOW_MULTI) ||
-            !(attachment->flags & KERNEL_BPF_F_ALLOW_MULTI)) {
+        if (!(flags & KERNEL_BPF_F_ALLOW_MULTI)) {
             status = -EDGE_LINUX_EINVAL;
             goto out;
         }

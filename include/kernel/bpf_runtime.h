@@ -316,6 +316,10 @@ int kernel_bpf_ringbuf_poll_state(int object_id, int *readable,
 int kernel_bpf_program_run_cgroup_device(
     int object_id, const kernel_bpf_cgroup_device_context_t *context,
     uint32_t *result);
+int kernel_bpf_program_run_cgroup_device_at(
+    int object_id, uint32_t cgroup_id,
+    const kernel_bpf_cgroup_device_context_t *context,
+    uint32_t *result);
 int kernel_bpf_cgroup_attach(uint32_t cgroup_id, int object_id,
                              uint32_t flags, int replace_object_id,
                              int relative_object_id,
