@@ -272,6 +272,9 @@ int kernel_bpf_inode_storage_delete(int object_id,
                                     uint64_t filesystem_identity,
                                     uint32_t inode_number,
                                     uint32_t inode_generation);
+uint32_t kernel_bpf_inode_storage_owner_release(
+    uint64_t filesystem_identity, uint32_t inode_number,
+    uint32_t inode_generation);
 int kernel_bpf_task_storage_lookup(int object_id, int32_t tid,
                                    uint64_t start_time_ticks,
                                    void *value, uint64_t flags);

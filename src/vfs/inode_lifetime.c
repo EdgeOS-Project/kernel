@@ -4,6 +4,7 @@
  */
 
 #include "vfs/vfs.h"
+#include "kernel/bpf_runtime.h"
 
 static const vfs_inode_lifetime_backend_ops_t *g_lifetime_backend_ops;
 static void *g_lifetime_backend_context;
@@ -94,10 +95,16 @@ int vfs_inode_open(vfs_superblock_t *sb, const vfs_inode_t *inode) {
 
 void vfs_inode_close(vfs_superblock_t *sb, const vfs_inode_t *inode) {
     vfs_superblock_t *stable;
+    vfs_inode_t current;
     if (!sb || !inode) return;
     stable = vfs_superblock_stable(sb);
     if (stable->ops && stable->ops->inode_close)
         stable->ops->inode_close(stable, inode);
+    if (stable->ops && stable->ops->getattr &&
+        stable->ops->getattr(stable, inode, &current) < 0)
+        (void)kernel_bpf_inode_storage_owner_release(
+            (uint64_t)(uintptr_t)vfs_superblock_identity(stable),
+            inode->ino, inode->generation);
     vfs_superblock_release(stable);
 }
 

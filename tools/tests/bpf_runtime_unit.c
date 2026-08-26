@@ -2724,6 +2724,7 @@ static void test_inode_local_storage(void) {
     uint64_t filesystem_identity = 0xabcdef00ull;
     uint32_t inode_number = 42u;
     uint32_t inode_generation = 7u;
+    uint32_t second_inode_number = 43u;
     uint32_t value = 0x31415926u;
     uint32_t output = 0u;
     uint32_t next_key = 0u;
@@ -2751,14 +2752,29 @@ static void test_inode_local_storage(void) {
                map, filesystem_identity, inode_number,
                inode_generation + 1u, &output, 0u) ==
            -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_inode_storage_update(
+               map, filesystem_identity, second_inode_number,
+               inode_generation, &value, KERNEL_BPF_NOEXIST) == 0);
+    assert(kernel_bpf_inode_storage_owner_release(
+               filesystem_identity, inode_number,
+               inode_generation) == 1u);
+    assert(kernel_bpf_inode_storage_owner_release(
+               filesystem_identity, inode_number,
+               inode_generation) == 0u);
+    assert(kernel_bpf_inode_storage_lookup(
+               map, filesystem_identity, inode_number,
+               inode_generation, &output, 0u) == -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_inode_storage_lookup(
+               map, filesystem_identity, second_inode_number,
+               inode_generation, &output, 0u) == 0);
     assert(kernel_bpf_map_next_key(map, 0, &next_key) ==
            -EDGE_LINUX_ENOTSUPP);
     assert(kernel_bpf_inode_storage_delete(
                map, filesystem_identity, inode_number,
-               inode_generation) == 0);
-    assert(kernel_bpf_inode_storage_delete(
-               map, filesystem_identity, inode_number,
                inode_generation) == -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_inode_storage_delete(
+               map, filesystem_identity, second_inode_number,
+               inode_generation) == 0);
     kernel_bpf_object_release(btf);
     kernel_bpf_object_release(map);
 }

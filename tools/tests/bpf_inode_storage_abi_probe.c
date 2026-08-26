@@ -9,11 +9,13 @@
 #define SYS_close 3
 #define SYS_exit 60
 #define SYS_openat 257
+#define SYS_unlinkat 263
 #define SYS_bpf 321
 #elif defined(__aarch64__)
 #define START_ATTRIBUTES __attribute__((noreturn))
 #define SYS_openat 56
 #define SYS_close 57
+#define SYS_unlinkat 35
 #define SYS_write 64
 #define SYS_exit 93
 #define SYS_bpf 280
@@ -23,6 +25,9 @@
 
 #define AT_FDCWD -100
 #define O_RDONLY 0
+#define O_RDWR 2
+#define O_CREAT 64
+#define O_EXCL 128
 
 #define BPF_MAP_CREATE 0
 #define BPF_MAP_LOOKUP_ELEM 1
@@ -100,6 +105,14 @@ void *memset(void *destination, int value, unsigned long length) {
     volatile unsigned char *bytes = destination;
 
     while (length--) *bytes++ = (unsigned char)value;
+    return destination;
+}
+
+void *memcpy(void *destination, const void *source, unsigned long length) {
+    volatile unsigned char *output = destination;
+    const volatile unsigned char *input = source;
+
+    while (length--) *output++ = *input++;
     return destination;
 }
 
@@ -334,6 +347,44 @@ static int test_inode_storage(void) {
                 BPF_MAP_DELETE_ELEM, (int)map_fd, &reopened_fd,
                 0, 0), -ENOENT);
         (void)raw_syscall6(SYS_close, reopened_fd, 0, 0, 0, 0, 0);
+    }
+
+    for (uint32_t iteration = 0; iteration < 300u; ++iteration) {
+        int transient_fd = (int)raw_syscall6(
+            SYS_openat, AT_FDCWD,
+            (long)"/inode-storage-owner-test",
+            O_RDWR | O_CREAT | O_EXCL, 0600, 0, 0);
+        long insert_result;
+
+        if (transient_fd < 0) {
+            failures += expect_result(
+                "inode-destroy-open", transient_fd, 0);
+            break;
+        }
+        insert_result = map_element(
+            BPF_MAP_UPDATE_ELEM, (int)map_fd,
+            &transient_fd, &value, BPF_NOEXIST);
+        if (insert_result != 0) {
+            failures += expect_result(
+                "inode-destroy-insert", insert_result, 0);
+            (void)raw_syscall6(
+                SYS_unlinkat, AT_FDCWD,
+                (long)"/inode-storage-owner-test", 0, 0, 0, 0);
+            (void)raw_syscall6(
+                SYS_close, transient_fd, 0, 0, 0, 0, 0);
+            break;
+        }
+        failures += expect_result(
+            "inode-destroy-unlink", raw_syscall6(
+                SYS_unlinkat, AT_FDCWD,
+                (long)"/inode-storage-owner-test", 0, 0, 0, 0), 0);
+        failures += expect_result(
+            "inode-open-unlinked", map_element(
+                BPF_MAP_LOOKUP_ELEM, (int)map_fd,
+                &transient_fd, &output, 0), 0);
+        (void)raw_syscall6(
+            SYS_close, transient_fd, 0, 0, 0, 0, 0);
+        if (failures) break;
     }
 
 close_files:

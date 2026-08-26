@@ -4534,6 +4534,44 @@ int kernel_bpf_inode_storage_delete(int object_id,
                                 inode_generation));
 }
 
+uint32_t kernel_bpf_inode_storage_owner_release(
+        uint64_t filesystem_identity, uint32_t inode_number,
+        uint32_t inode_generation) {
+    bpf_local_storage_owner_t expected = bpf_inode_storage_owner(
+        filesystem_identity, inode_number, inode_generation);
+    uint32_t released = 0u;
+
+    if (!filesystem_identity) return 0u;
+    bpf_lock();
+    for (uint32_t object_index = 0;
+         object_index < BPF_OBJECT_CAPACITY; ++object_index) {
+        kernel_bpf_object_t *object = &g_bpf_objects[object_index];
+        kernel_bpf_map_t *map;
+
+        if (!object->used || object->kind != KERNEL_BPF_OBJECT_MAP)
+            continue;
+        map = &object->value.map;
+        if (map->type != KERNEL_BPF_MAP_TYPE_INODE_STORAGE)
+            continue;
+        for (uint32_t entry_index = 0;
+             entry_index < map->storage_entries; ++entry_index) {
+            uint8_t *entry = bpf_map_entry(map, entry_index);
+            bpf_local_storage_owner_t owner = {0};
+
+            if (!entry[0]) continue;
+            memcpy(&owner, entry + 1u, sizeof(owner));
+            if (owner.primary != expected.primary ||
+                owner.secondary != expected.secondary)
+                continue;
+            memset(entry, 0, map->entry_stride);
+            if (map->entry_count) --map->entry_count;
+            ++released;
+        }
+    }
+    bpf_unlock();
+    return released;
+}
+
 static bpf_local_storage_owner_t bpf_task_storage_owner(
         int32_t tid, uint64_t start_time_ticks) {
     bpf_local_storage_owner_t owner;
