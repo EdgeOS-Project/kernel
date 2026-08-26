@@ -36,7 +36,7 @@ int kernel_process_wait_query_build(
         return 0;
     }
     if (request->selector == 0) {
-        if (caller_pgid <= 0) return -EDGE_LINUX_ECHILD;
+        if (caller_pgid < 0) return -EDGE_LINUX_ECHILD;
         query->id_type = KERNEL_PROCESS_WAIT_ID_PGID;
         query->id = caller_pgid;
         return 0;
