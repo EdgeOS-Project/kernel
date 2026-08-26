@@ -3469,46 +3469,50 @@
     {
       "id": "kexec_file_load",
       "semantic_id": "kexec_file_load",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_kexec",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/native_optional_syscalls_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "partial",
       "architectures": {
         "x86_64": {
           "number": 320,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_kexec",
+          "evidence_status": "runtime-probe-listed"
         },
         "aarch64": {
           "number": 294,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_kexec",
+          "evidence_status": "runtime-probe-listed"
         }
       }
     },
     {
       "id": "kexec_load",
       "semantic_id": "kexec_load",
-      "shared_handler": null,
+      "shared_handler": "edge_linux_sys_kexec",
       "architecture_exceptions": [],
-      "runtime_tests": [],
+      "runtime_tests": [
+        "tools/tests/native_optional_syscalls_abi_probe.c"
+      ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "partial",
       "architectures": {
         "x86_64": {
           "number": 246,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_kexec",
+          "evidence_status": "runtime-probe-listed"
         },
         "aarch64": {
           "number": 104,
-          "status": "enosys",
-          "route": "enosys",
-          "evidence_status": "explicit-enosys"
+          "status": "implemented",
+          "route": "shared:edge_linux_sys_kexec",
+          "evidence_status": "runtime-probe-listed"
         }
       }
     },

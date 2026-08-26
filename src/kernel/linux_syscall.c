@@ -3355,6 +3355,69 @@ static int64_t edge_linux_sys_reboot(
     }
 }
 
+#define EDGE_LINUX_KEXEC_ON_CRASH 0x00000001u
+#define EDGE_LINUX_KEXEC_UPDATE_ELFCOREHDR 0x00000004u
+#define EDGE_LINUX_KEXEC_CRASH_HOTPLUG_SUPPORT 0x00000008u
+#define EDGE_LINUX_KEXEC_ARCH_MASK 0xffff0000u
+#define EDGE_LINUX_KEXEC_ARCH_X86_64 (62u << 16)
+#define EDGE_LINUX_KEXEC_ARCH_AARCH64 (183u << 16)
+#define EDGE_LINUX_KEXEC_SEGMENT_MAX 16u
+#define EDGE_LINUX_KEXEC_FILE_FLAGS 0x0000003fu
+
+typedef struct edge_linux_kexec_segment {
+    uint64_t buffer;
+    uint64_t buffer_size;
+    uint64_t memory;
+    uint64_t memory_size;
+} edge_linux_kexec_segment_t;
+
+static int64_t edge_linux_sys_kexec(
+    edge_linux_syscall_context_t *context) {
+    kernel_linux_identity_t identity;
+
+    if (kernel_current_linux_identity(&identity) < 0)
+        return -EDGE_LINUX_ESRCH;
+    if (!(identity.effective_capabilities &
+          (1ull << EDGE_LINUX_CAP_SYS_BOOT)))
+        return -EDGE_LINUX_EPERM;
+
+    if (context->id == EDGE_LINUX_SYS_kexec_load) {
+        edge_linux_kexec_segment_t segments[EDGE_LINUX_KEXEC_SEGMENT_MAX];
+        uint64_t count = context->arguments[1];
+        uint64_t flags = context->arguments[3];
+        uint64_t allowed_flags = EDGE_LINUX_KEXEC_ON_CRASH |
+            EDGE_LINUX_KEXEC_UPDATE_ELFCOREHDR |
+            EDGE_LINUX_KEXEC_CRASH_HOTPLUG_SUPPORT;
+        uint64_t expected_architecture =
+            context->architecture == EDGE_LINUX_ARCH_AARCH64 ?
+                EDGE_LINUX_KEXEC_ARCH_AARCH64 :
+                EDGE_LINUX_KEXEC_ARCH_X86_64;
+        uint64_t architecture = flags & EDGE_LINUX_KEXEC_ARCH_MASK;
+
+        if ((flags & ~(EDGE_LINUX_KEXEC_ARCH_MASK | allowed_flags)) != 0 ||
+            count > EDGE_LINUX_KEXEC_SEGMENT_MAX)
+            return -EDGE_LINUX_EINVAL;
+        if (architecture != 0 && architecture != expected_architecture)
+            return -EDGE_LINUX_EINVAL;
+        if (count && edge_linux_copy_from_user(
+                context, segments, context->arguments[2],
+                count * sizeof(segments[0])) < 0)
+            return -EDGE_LINUX_EFAULT;
+
+        /*
+         * Segment validation is complete before the architecture handoff.
+         * The machine transition backend is deliberately not represented as
+         * loaded until it can preserve firmware, interrupt-controller, and
+         * secondary-CPU state on both supported architectures.
+         */
+        return -EDGE_LINUX_EOPNOTSUPP;
+    }
+
+    if (context->arguments[4] & ~EDGE_LINUX_KEXEC_FILE_FLAGS)
+        return -EDGE_LINUX_EINVAL;
+    return -EDGE_LINUX_EOPNOTSUPP;
+}
+
 static int64_t edge_linux_sys_namespace(
     edge_linux_syscall_context_t *context) {
     kernel_linux_identity_t identity;
