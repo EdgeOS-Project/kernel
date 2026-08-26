@@ -5181,6 +5181,34 @@ int kernel_bpf_sk_storage_lookup(int object_id,
         object_id, KERNEL_BPF_MAP_TYPE_SK_STORAGE, owner, value, flags);
 }
 
+int kernel_bpf_sk_storage_exists(int object_id,
+                                 uint64_t socket_identity) {
+    bpf_local_storage_owner_t owner = {socket_identity, 0u};
+    kernel_bpf_object_t *object;
+    kernel_bpf_map_t *map;
+    uint32_t index;
+    int status = 0;
+
+    if (!owner.primary) return -EDGE_LINUX_EBADF;
+    bpf_lock();
+    object = bpf_object_locked(object_id);
+    if (!object || object->kind != KERNEL_BPF_OBJECT_MAP) {
+        status = -EDGE_LINUX_EBADF;
+        goto out;
+    }
+    map = &object->value.map;
+    if (map->type != KERNEL_BPF_MAP_TYPE_SK_STORAGE ||
+        !bpf_map_is_local_storage(map)) {
+        status = -EDGE_LINUX_EINVAL;
+        goto out;
+    }
+    bpf_local_storage_find_locked(map, owner, &index, 0);
+    status = index == UINT32_MAX ? -EDGE_LINUX_ENOENT : 0;
+out:
+    bpf_unlock();
+    return status;
+}
+
 int kernel_bpf_sk_storage_update(int object_id,
                                  uint64_t socket_identity,
                                  const void *value, uint64_t flags) {

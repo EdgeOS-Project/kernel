@@ -14,6 +14,13 @@
 #define TEST_IPPROTO_TCP 6u
 #define TEST_IPPROTO_UDP 17u
 #define TEST_NLMSG_DONE 3u
+#define TEST_NLA_F_NESTED 0x8000u
+#define TEST_INET_DIAG_REQ_SK_BPF_STORAGES 2u
+#define TEST_INET_DIAG_SK_BPF_STORAGES 20u
+#define TEST_SK_DIAG_BPF_STORAGE_REQ_MAP_FD 1u
+#define TEST_SK_DIAG_BPF_STORAGE 1u
+#define TEST_SK_DIAG_BPF_STORAGE_MAP_ID 2u
+#define TEST_SK_DIAG_BPF_STORAGE_MAP_VALUE 3u
 
 typedef struct test_nlmsghdr {
     uint32_t length;
@@ -56,10 +63,23 @@ typedef struct test_message {
     uint32_t inode;
 } test_message_t;
 
+typedef struct test_nlattr {
+    uint16_t length;
+    uint16_t type;
+} test_nlattr_t;
+
 typedef struct test_source {
     edge_linux_sock_diag_snapshot_t snapshots[5];
     uint32_t count;
 } test_source_t;
+
+typedef struct test_bpf_source {
+    edge_linux_sock_diag_bpf_map_t maps[2];
+    uint64_t owners[2];
+    uint32_t values[2];
+    uint32_t retained;
+    uint32_t released;
+} test_bpf_source_t;
 
 static uint16_t test_be16(uint16_t value) {
     return (uint16_t)((value << 8) | (value >> 8));
@@ -73,6 +93,76 @@ static int snapshot_at(void *context, uint32_t network_namespace,
     if (ordinal >= source->count) return 0;
     *snapshot = source->snapshots[ordinal];
     return snapshot->cookie[1] == network_namespace;
+}
+
+static int test_bpf_map_from_descriptor(
+    void *context, int32_t descriptor,
+    edge_linux_sock_diag_bpf_map_t *map) {
+    test_bpf_source_t *source = (test_bpf_source_t *)context;
+    uint32_t index;
+
+    if (descriptor < 10 || descriptor > 11)
+        return -EDGE_LINUX_EBADF;
+    index = (uint32_t)(descriptor - 10);
+    *map = source->maps[index];
+    ++source->retained;
+    return 0;
+}
+
+static int test_bpf_next_map(
+    void *context, uint32_t *cursor,
+    edge_linux_sock_diag_bpf_map_t *map) {
+    test_bpf_source_t *source = (test_bpf_source_t *)context;
+
+    if (*cursor >= 2u) return -EDGE_LINUX_ENOENT;
+    *map = source->maps[*cursor];
+    ++*cursor;
+    ++source->retained;
+    return 0;
+}
+
+static int test_bpf_exists(
+    void *context, const edge_linux_sock_diag_bpf_map_t *map,
+    uint64_t socket_identity) {
+    test_bpf_source_t *source = (test_bpf_source_t *)context;
+    uint32_t index = (uint32_t)map->object_id - 1u;
+
+    return index < 2u && source->owners[index] == socket_identity ?
+        0 : -EDGE_LINUX_ENOENT;
+}
+
+static int test_bpf_lookup(
+    void *context, const edge_linux_sock_diag_bpf_map_t *map,
+    uint64_t socket_identity, void *value) {
+    test_bpf_source_t *source = (test_bpf_source_t *)context;
+    uint32_t index = (uint32_t)map->object_id - 1u;
+
+    if (index >= 2u || source->owners[index] != socket_identity)
+        return -EDGE_LINUX_ENOENT;
+    memcpy(value, &source->values[index], sizeof(source->values[index]));
+    return 0;
+}
+
+static void test_bpf_release(
+    void *context, const edge_linux_sock_diag_bpf_map_t *map) {
+    test_bpf_source_t *source = (test_bpf_source_t *)context;
+
+    (void)map;
+    ++source->released;
+}
+
+static edge_linux_sock_diag_bpf_ops_t test_bpf_ops_for(
+    test_bpf_source_t *source) {
+    edge_linux_sock_diag_bpf_ops_t ops = {
+        .map_from_descriptor = test_bpf_map_from_descriptor,
+        .next_map = test_bpf_next_map,
+        .lookup = test_bpf_lookup,
+        .exists = test_bpf_exists,
+        .release = test_bpf_release,
+        .context = source,
+    };
+
+    return ops;
 }
 
 static test_request_t request_for(uint8_t family, uint8_t protocol,
@@ -108,6 +198,7 @@ static void initialize_source(test_source_t *source) {
     snapshot->cookie[1] = 7u;
     snapshot->receive_queue = 2u;
     snapshot->user_id = 1000u;
+    snapshot->socket_identity = 0x1001u;
 
     snapshot = &source->snapshots[1];
     snapshot->family = TEST_AF_INET;
@@ -271,6 +362,125 @@ static void test_udp_ipv6_and_errors(void) {
         -EDGE_LINUX_ENOBUFS);
 }
 
+static const test_nlattr_t *test_find_attribute(
+    const uint8_t *data, uint32_t length, uint16_t type) {
+    uint32_t offset = 0u;
+
+    while (offset + sizeof(test_nlattr_t) <= length) {
+        const test_nlattr_t *attribute =
+            (const test_nlattr_t *)(data + offset);
+        uint32_t padded;
+
+        if (attribute->length < sizeof(*attribute) ||
+            attribute->length > length - offset)
+            return 0;
+        if ((attribute->type & 0x3fffu) == type) return attribute;
+        padded = (attribute->length + 3u) & ~3u;
+        if (padded > length - offset) return 0;
+        offset += padded;
+    }
+    return 0;
+}
+
+static void test_bpf_socket_storage_export(void) {
+    test_source_t source;
+    test_bpf_source_t bpf_source;
+    edge_linux_sock_diag_bpf_ops_t ops;
+    uint8_t request_data[sizeof(test_request_t) + 20u];
+    uint8_t response[512];
+    test_request_t *request = (test_request_t *)request_data;
+    test_nlattr_t *outer;
+    test_nlattr_t *map_fd;
+    const test_nlattr_t *storage_reply;
+    const test_nlattr_t *entry;
+    const test_nlattr_t *map_id;
+    const test_nlattr_t *map_value;
+    uint32_t response_length = 0u;
+    uint32_t value = 0u;
+    uint32_t id = 0u;
+
+    initialize_source(&source);
+    memset(&bpf_source, 0, sizeof(bpf_source));
+    bpf_source.maps[0].object_id = 1;
+    bpf_source.maps[0].user_id = 101u;
+    bpf_source.maps[0].value_size = sizeof(uint32_t);
+    bpf_source.maps[1].object_id = 2;
+    bpf_source.maps[1].user_id = 102u;
+    bpf_source.maps[1].value_size = sizeof(uint32_t);
+    bpf_source.owners[0] = source.snapshots[0].socket_identity;
+    bpf_source.owners[1] = source.snapshots[1].socket_identity;
+    bpf_source.values[0] = 0x11223344u;
+    bpf_source.values[1] = 0x55667788u;
+    ops = test_bpf_ops_for(&bpf_source);
+
+    memset(request_data, 0, sizeof(request_data));
+    *request = request_for(
+        TEST_AF_INET, TEST_IPPROTO_TCP,
+        1u << EDGE_LINUX_TCP_LISTEN);
+    outer = (test_nlattr_t *)(request_data + sizeof(*request));
+    outer->length = sizeof(*outer) + sizeof(*map_fd) + sizeof(int32_t);
+    outer->type = TEST_INET_DIAG_REQ_SK_BPF_STORAGES |
+                  TEST_NLA_F_NESTED;
+    map_fd = (test_nlattr_t *)(request_data + sizeof(*request) +
+                              sizeof(*outer));
+    map_fd->length = sizeof(*map_fd) + sizeof(int32_t);
+    map_fd->type = TEST_SK_DIAG_BPF_STORAGE_REQ_MAP_FD;
+    *(int32_t *)(request_data + sizeof(*request) + sizeof(*outer) +
+                sizeof(*map_fd)) = 10;
+    request->header.length = sizeof(*request) + outer->length;
+
+    assert(edge_linux_sock_diag_respond_with_bpf_storage(
+        7u, 77u, request_data, request->header.length,
+        snapshot_at, &source, source.count,
+        response, sizeof(response), &response_length, 1, &ops) == 0);
+    assert(bpf_source.retained == 1u);
+    assert(bpf_source.released == 1u);
+    assert(((test_message_t *)response)->header.length >
+           sizeof(test_message_t));
+    storage_reply = test_find_attribute(
+        response + sizeof(test_message_t),
+        ((test_message_t *)response)->header.length -
+            sizeof(test_message_t),
+        TEST_INET_DIAG_SK_BPF_STORAGES);
+    assert(storage_reply != 0);
+    assert((storage_reply->type & TEST_NLA_F_NESTED) != 0u);
+    entry = test_find_attribute(
+        (const uint8_t *)storage_reply + sizeof(*storage_reply),
+        storage_reply->length - sizeof(*storage_reply),
+        TEST_SK_DIAG_BPF_STORAGE);
+    assert(entry != 0);
+    map_id = test_find_attribute(
+        (const uint8_t *)entry + sizeof(*entry),
+        entry->length - sizeof(*entry),
+        TEST_SK_DIAG_BPF_STORAGE_MAP_ID);
+    map_value = test_find_attribute(
+        (const uint8_t *)entry + sizeof(*entry),
+        entry->length - sizeof(*entry),
+        TEST_SK_DIAG_BPF_STORAGE_MAP_VALUE);
+    assert(map_id != 0 && map_value != 0);
+    memcpy(&id, (const uint8_t *)map_id + sizeof(*map_id), sizeof(id));
+    memcpy(&value, (const uint8_t *)map_value + sizeof(*map_value),
+           sizeof(value));
+    assert(id == 101u);
+    assert(value == 0x11223344u);
+
+    bpf_source.retained = 0u;
+    bpf_source.released = 0u;
+    outer->length = sizeof(*outer);
+    request->header.length = sizeof(*request) + outer->length;
+    assert(edge_linux_sock_diag_respond_with_bpf_storage(
+        7u, 77u, request_data, request->header.length,
+        snapshot_at, &source, source.count,
+        response, sizeof(response), &response_length, 1, &ops) == 0);
+    assert(bpf_source.retained == 2u);
+    assert(bpf_source.released == 2u);
+    assert(edge_linux_sock_diag_respond_with_bpf_storage(
+        7u, 77u, request_data, request->header.length,
+        snapshot_at, &source, source.count,
+        response, sizeof(response), &response_length, 0, &ops) ==
+        -EDGE_LINUX_EPERM);
+}
+
 static void test_lwip_state_mapping(void) {
     assert(edge_linux_sock_diag_state_from_lwip(0u) ==
            EDGE_LINUX_TCP_CLOSE);
@@ -288,6 +498,7 @@ int main(void) {
     test_tcp_dump_and_state_filter();
     test_tuple_cookie_and_namespace_filters();
     test_udp_ipv6_and_errors();
+    test_bpf_socket_storage_export();
     test_lwip_state_mapping();
     puts("linux_sock_diag_unit: PASS");
     return 0;

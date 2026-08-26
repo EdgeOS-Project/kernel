@@ -1572,6 +1572,7 @@ typedef struct {
     uint8_t shutdown_write;
     uint32_t shutdown_read_generation;
     uint16_t references;
+    uint64_t open_description_identity;
     int error;
     struct udp_pcb *udp;
     struct tcp_pcb *tcp;
@@ -11933,6 +11934,8 @@ static int fd_initialize_socket_reserved(kernel_task_t *task, uint32_t fd,
         (flags & LINUX_SOCK_CLOEXEC) ? LINUX_FD_CLOEXEC : 0u;
     result = fd_description_create(&task->fds[fd]);
     if (result < 0) return result;
+    g_sockets[socket_index].open_description_identity =
+        task->fds[fd].open_description_id;
     return 0;
 }
 
@@ -13449,6 +13452,7 @@ static int arm64_sock_diag_snapshot_at(
     snapshot->cookie[0] = ordinal + 1u;
     snapshot->cookie[1] = network_namespace;
     snapshot->user_id = socket->peer_uid;
+    snapshot->socket_identity = socket->open_description_identity;
     for (uint32_t index = 0; index < socket->rx_count; ++index) {
         uint32_t slot = (socket->rx_head + index) % KERNEL_SOCKET_RX_ENTRIES;
         const arm64_socket_rx_t *entry = &socket->rx[slot];
@@ -13545,12 +13549,18 @@ static int netlink_process_request(kernel_socket_t *socket,
         if (netlink_packet_queued(socket)) return -LINUX_EAGAIN;
         netlink_packet_reset(socket);
         bytes_zero(socket->netlink_buffer, sizeof(socket->netlink_buffer));
-        result = edge_linux_sock_diag_respond(
+        kernel_task_t *task = current_task();
+        int bpf_capable = task &&
+            (task->capabilities.effective &
+             (1ULL << EDGE_LINUX_CAP_BPF)) != 0;
+
+        result = edge_linux_sock_diag_respond_with_bpf_storage(
             socket->network_namespace, socket->netlink_port_id,
             data, length,
-            arm64_sock_diag_snapshot_at, 0, g_socket_capacity,
+            arm64_sock_diag_snapshot_at, task, g_socket_capacity,
             socket->netlink_buffer, sizeof(socket->netlink_buffer),
-            &response_length);
+            &response_length, bpf_capable,
+            &edge_linux_sock_diag_bpf_runtime_ops);
         if (result < 0) {
             netlink_queue_error(socket, &request, result);
             return 0;
@@ -18255,6 +18265,10 @@ int arch_socket_create_unix_pair_construct(
         fd_description_discard(&prepared[0]);
         goto fail_sockets;
     }
+    g_sockets[sockets[0]].open_description_identity =
+        prepared[0].open_description_id;
+    g_sockets[sockets[1]].open_description_identity =
+        prepared[1].open_description_id;
 
     irq_flags = kernel_fd_table_lock(&table->runtime);
     result = 0;

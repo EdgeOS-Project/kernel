@@ -11,6 +11,8 @@
 #define SYS_socket 41
 #define SYS_connect 42
 #define SYS_accept 43
+#define SYS_sendto 44
+#define SYS_recvfrom 45
 #define SYS_bind 49
 #define SYS_listen 50
 #define SYS_exit 60
@@ -28,6 +30,8 @@
 #define SYS_listen 201
 #define SYS_accept 202
 #define SYS_connect 203
+#define SYS_sendto 206
+#define SYS_recvfrom 207
 #define SYS_bpf 280
 #else
 #error "bpf_sk_storage_abi_probe requires a Linux 64-bit architecture"
@@ -36,13 +40,88 @@
 #define AT_FDCWD -100
 #define O_RDONLY 0
 #define AF_INET 2
+#define AF_NETLINK 16
 #define SOCK_STREAM 1
+#define SOCK_RAW 3
+#define SOCK_NONBLOCK 0x800
+#define NETLINK_SOCK_DIAG 4
+#define SOCK_DIAG_BY_FAMILY 20
+#define NLM_F_REQUEST 1u
+#define NLM_F_ROOT 0x100u
+#define NLM_F_MATCH 0x200u
+#define TCP_LISTEN 10u
+#define INET_DIAG_REQ_SK_BPF_STORAGES 2u
+#define INET_DIAG_SK_BPF_STORAGES 20u
+#define SK_DIAG_BPF_STORAGE_REQ_MAP_FD 1u
+#define SK_DIAG_BPF_STORAGE 1u
+#define SK_DIAG_BPF_STORAGE_MAP_ID 2u
+#define SK_DIAG_BPF_STORAGE_MAP_VALUE 3u
+#define NLA_F_NESTED 0x8000u
 
 struct socket_address_v4 {
     uint16_t family;
     uint16_t port;
     uint32_t address;
     uint8_t padding[8];
+};
+
+struct socket_address_netlink {
+    uint16_t family;
+    uint16_t padding;
+    uint32_t port_id;
+    uint32_t groups;
+};
+
+struct netlink_header {
+    uint32_t length;
+    uint16_t type;
+    uint16_t flags;
+    uint32_t sequence;
+    uint32_t port_id;
+};
+
+struct netlink_attribute {
+    uint16_t length;
+    uint16_t type;
+};
+
+struct inet_diag_sockid {
+    uint16_t source_port;
+    uint16_t destination_port;
+    uint32_t source[4];
+    uint32_t destination[4];
+    uint32_t interface_index;
+    uint32_t cookie[2];
+};
+
+struct inet_diag_request_v2 {
+    uint8_t family;
+    uint8_t protocol;
+    uint8_t extensions;
+    uint8_t padding;
+    uint32_t states;
+    struct inet_diag_sockid id;
+};
+
+struct inet_diag_message {
+    uint8_t family;
+    uint8_t state;
+    uint8_t timer;
+    uint8_t retransmits;
+    struct inet_diag_sockid id;
+    uint32_t expires_ms;
+    uint32_t receive_queue;
+    uint32_t write_queue;
+    uint32_t user_id;
+    uint32_t inode;
+};
+
+struct diag_request_packet {
+    struct netlink_header header;
+    struct inet_diag_request_v2 request;
+    struct netlink_attribute storages;
+    struct netlink_attribute map;
+    int32_t map_fd;
 };
 
 #define BPF_MAP_CREATE 0
@@ -63,6 +142,7 @@ struct socket_address_v4 {
 #define EEXIST 17
 #define EINVAL 22
 #define ENOTSOCK 88
+#define ENETUNREACH 101
 #define ENOTSUPP 524
 
 struct bpf_map_create_attribute {
@@ -123,6 +203,15 @@ void *memset(void *destination, int value, unsigned long length) {
     volatile unsigned char *bytes = destination;
 
     while (length--) *bytes++ = (unsigned char)value;
+    return destination;
+}
+
+void *memcpy(void *destination, const void *source,
+             unsigned long length) {
+    volatile unsigned char *output = destination;
+    const volatile unsigned char *input = source;
+
+    while (length--) *output++ = *input++;
     return destination;
 }
 
@@ -261,6 +350,170 @@ static long map_element(long command, int map_fd, const void *key,
         sizeof(attribute), 0, 0, 0);
 }
 
+static uint32_t netlink_align(uint32_t value) {
+    return (value + 3u) & ~3u;
+}
+
+static const struct netlink_attribute *find_attribute(
+    const unsigned char *data, uint32_t length, uint16_t type) {
+    uint32_t offset = 0u;
+
+    while (offset + sizeof(struct netlink_attribute) <= length) {
+        const struct netlink_attribute *attribute =
+            (const struct netlink_attribute *)(data + offset);
+        uint32_t padded;
+
+        if (attribute->length < sizeof(*attribute) ||
+            attribute->length > length - offset)
+            return 0;
+        if ((attribute->type & 0x3fffu) == type) return attribute;
+        padded = netlink_align(attribute->length);
+        if (padded > length - offset) return 0;
+        offset += padded;
+    }
+    return 0;
+}
+
+static int test_socket_storage_diag(int map_fd, int socket_fd,
+                                    uint32_t expected_value) {
+    struct socket_address_v4 listener_address = {
+        .family = AF_INET,
+    };
+    struct socket_address_netlink kernel = {
+        .family = AF_NETLINK,
+    };
+    struct diag_request_packet request;
+    unsigned char response[4096];
+    long received;
+    long diag_fd;
+    int found = 0;
+    int failures = 0;
+
+    failures += expect_result(
+        "sk-diag-bind", raw_syscall6(
+            SYS_bind, socket_fd, (long)&listener_address,
+            sizeof(listener_address), 0, 0, 0), 0);
+    failures += expect_result(
+        "sk-diag-listen", raw_syscall6(
+            SYS_listen, socket_fd, 4, 0, 0, 0, 0), 0);
+    if (failures) return failures;
+
+    diag_fd = raw_syscall6(
+        SYS_socket, AF_NETLINK, SOCK_RAW | SOCK_NONBLOCK,
+        NETLINK_SOCK_DIAG,
+        0, 0, 0);
+    if (diag_fd < 0)
+        return expect_result("sk-diag-socket", diag_fd, 0);
+    memset(&request, 0, sizeof(request));
+    request.header.length = sizeof(request);
+    request.header.type = SOCK_DIAG_BY_FAMILY;
+    request.header.flags = NLM_F_REQUEST | NLM_F_ROOT | NLM_F_MATCH;
+    request.header.sequence = 71u;
+    request.request.family = AF_INET;
+    request.request.protocol = 6u;
+    request.request.states = 1u << TCP_LISTEN;
+    request.request.id.cookie[0] = 0xffffffffu;
+    request.request.id.cookie[1] = 0xffffffffu;
+    request.storages.length = sizeof(request.storages) +
+                              sizeof(request.map) +
+                              sizeof(request.map_fd);
+    request.storages.type = INET_DIAG_REQ_SK_BPF_STORAGES |
+                            NLA_F_NESTED;
+    request.map.length = sizeof(request.map) + sizeof(request.map_fd);
+    request.map.type = SK_DIAG_BPF_STORAGE_REQ_MAP_FD;
+    request.map_fd = map_fd;
+
+    failures += expect_result(
+        "sk-diag-send", raw_syscall6(
+            SYS_sendto, diag_fd, (long)&request, sizeof(request), 0,
+            (long)&kernel, sizeof(kernel)), sizeof(request));
+    received = raw_syscall6(
+        SYS_recvfrom, diag_fd, (long)response, sizeof(response),
+        0, 0, 0);
+    if (received <= 0) {
+        failures += expect_result("sk-diag-receive", received, 1);
+        goto out;
+    }
+    for (uint32_t offset = 0;
+         offset + sizeof(struct netlink_header) <= (uint32_t)received;) {
+        const struct netlink_header *header =
+            (const struct netlink_header *)(response + offset);
+        uint32_t padded;
+
+        if (header->length < sizeof(*header) ||
+            header->length > (uint32_t)received - offset)
+            break;
+        if (header->type == 2u &&
+            header->length >= sizeof(*header) + sizeof(int32_t)) {
+            int32_t error;
+
+            memcpy(&error, response + offset + sizeof(*header),
+                   sizeof(error));
+            print_text("FAIL sk-diag-netlink-error=");
+            print_number(error);
+            print_text("\n");
+        }
+        if (header->type == SOCK_DIAG_BY_FAMILY &&
+            header->length >= sizeof(*header) +
+                              sizeof(struct inet_diag_message)) {
+            const unsigned char *attributes = response + offset +
+                sizeof(*header) + sizeof(struct inet_diag_message);
+            uint32_t attributes_length = header->length -
+                sizeof(*header) - sizeof(struct inet_diag_message);
+            const struct netlink_attribute *storages = find_attribute(
+                attributes, attributes_length,
+                INET_DIAG_SK_BPF_STORAGES);
+
+            if (storages) {
+                const struct netlink_attribute *entry = find_attribute(
+                    (const unsigned char *)storages + sizeof(*storages),
+                    storages->length - sizeof(*storages),
+                    SK_DIAG_BPF_STORAGE);
+                if (entry) {
+                    const struct netlink_attribute *map_id = find_attribute(
+                        (const unsigned char *)entry + sizeof(*entry),
+                        entry->length - sizeof(*entry),
+                        SK_DIAG_BPF_STORAGE_MAP_ID);
+                    const struct netlink_attribute *value = find_attribute(
+                        (const unsigned char *)entry + sizeof(*entry),
+                        entry->length - sizeof(*entry),
+                        SK_DIAG_BPF_STORAGE_MAP_VALUE);
+                    uint32_t actual_id = 0u;
+                    uint32_t actual_value = 0u;
+
+                    if (map_id && map_id->length >=
+                                      sizeof(*map_id) + sizeof(actual_id) &&
+                        value && value->length >=
+                                     sizeof(*value) + sizeof(actual_value)) {
+                        memcpy(&actual_id,
+                               (const unsigned char *)map_id +
+                                   sizeof(*map_id),
+                               sizeof(actual_id));
+                        memcpy(&actual_value,
+                               (const unsigned char *)value + sizeof(*value),
+                               sizeof(actual_value));
+                        if (actual_id != 0u &&
+                            actual_value == expected_value)
+                            found = 1;
+                    }
+                }
+            }
+        }
+        padded = netlink_align(header->length);
+        if (!padded || padded > (uint32_t)received - offset) break;
+        offset += padded;
+    }
+    if (!found) {
+        print_text("FAIL sk-diag-bytes=");
+        print_number(received);
+        print_text("\n");
+    }
+    failures += expect_result("sk-diag-storage", found, 1);
+out:
+    (void)raw_syscall6(SYS_close, diag_fd, 0, 0, 0, 0, 0);
+    return failures;
+}
+
 static int test_socket_storage_clone(int btf_fd) {
     struct socket_address_v4 listener_address = {
         .family = AF_INET,
@@ -270,7 +523,7 @@ static int test_socket_storage_clone(int btf_fd) {
     struct socket_address_v4 peer_address = {
         .family = AF_INET,
         .port = 0x5998u,
-        .address = 0x0f02000au,
+        .address = 0x0100007fu,
     };
     uint32_t clone_value = 0x1234abcdu;
     uint32_t accepted_value = 0x88776655u;
@@ -315,10 +568,15 @@ static int test_socket_storage_clone(int btf_fd) {
         "sk-plain-source", map_element(
             BPF_MAP_UPDATE_ELEM, (int)plain_map, &listener,
             &plain_value, BPF_NOEXIST), 0);
-    failures += expect_result(
-        "sk-connect", raw_syscall6(
+    {
+        long connect_result = raw_syscall6(
             SYS_connect, client, (long)&peer_address,
-            sizeof(peer_address), 0, 0, 0), 0);
+            sizeof(peer_address), 0, 0, 0);
+
+        if (connect_result != -ENETUNREACH)
+            failures += expect_result("sk-connect", connect_result, 0);
+        if (connect_result < 0) goto out;
+    }
     accepted = (int)raw_syscall6(
         SYS_accept, listener, 0, 0, 0, 0, 0);
     if (accepted < 0) {
@@ -426,6 +684,8 @@ static int test_socket_storage(void) {
         "sk-insert", map_element(
             BPF_MAP_UPDATE_ELEM, (int)map_fd, &socket_fd,
             &value, BPF_NOEXIST), 0);
+    failures += test_socket_storage_diag(
+        (int)map_fd, socket_fd, value);
     failures += expect_result(
         "sk-alias-lookup", map_element(
             BPF_MAP_LOOKUP_ELEM, (int)map_fd, &alias_fd,
@@ -486,8 +746,48 @@ close_btf:
     return failures;
 }
 
+static int test_socket_storage_diag_only(void) {
+    uint32_t value = 0x11223344u;
+    long btf_fd;
+    long map_fd;
+    long socket_fd;
+    int failures = 0;
+
+    btf_fd = load_integer_btf();
+    if (btf_fd < 0)
+        return expect_result("sk-diag-btf-load", btf_fd, 0) + 1;
+    map_fd = create_map(
+        (int)btf_fd, BPF_F_NO_PREALLOC | BPF_F_CLONE, 0u);
+    if (map_fd < 0) {
+        failures += expect_result("sk-diag-create", map_fd, 0);
+        goto close_btf;
+    }
+    socket_fd = raw_syscall6(
+        SYS_socket, AF_INET, SOCK_STREAM, 0, 0, 0, 0);
+    if (socket_fd < 0) {
+        failures += expect_result("sk-diag-stream", socket_fd, 0);
+        goto close_map;
+    }
+    failures += expect_result(
+        "sk-diag-insert", map_element(
+            BPF_MAP_UPDATE_ELEM, (int)map_fd, &socket_fd,
+            &value, BPF_NOEXIST), 0);
+    failures += test_socket_storage_diag(
+        (int)map_fd, (int)socket_fd, value);
+    (void)raw_syscall6(SYS_close, socket_fd, 0, 0, 0, 0, 0);
+close_map:
+    (void)raw_syscall6(SYS_close, map_fd, 0, 0, 0, 0, 0);
+close_btf:
+    (void)raw_syscall6(SYS_close, btf_fd, 0, 0, 0, 0, 0);
+    return failures;
+}
+
 START_ATTRIBUTES void _start(void) {
+#ifdef BPF_SK_STORAGE_DIAG_ONLY
+    int failures = test_socket_storage_diag_only();
+#else
     int failures = test_socket_storage();
+#endif
 
     print_text(failures ? "BPF_SK_STORAGE_ABI_FAIL\n" :
                           "BPF_SK_STORAGE_ABI_PASS\n");

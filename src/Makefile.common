@@ -94,6 +94,7 @@ EDGE_SHARED_SRCS := \
 	$(SRC)/kernel/linux_genetlink.c \
 	$(SRC)/kernel/linux_netlink.c \
 	$(SRC)/kernel/linux_sock_diag.c \
+	$(SRC)/kernel/linux_sock_diag_bpf.c \
 	$(SRC)/kernel/netlink_delivery_policy.c \
 	$(SRC)/kernel/linux_ptrace.c \
 	$(SRC)/kernel/linux_seek.c \

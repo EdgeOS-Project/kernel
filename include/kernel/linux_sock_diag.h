@@ -9,6 +9,8 @@
 
 #include <stdint.h>
 
+#include "kernel/runtime_limits.h"
+
 #define EDGE_LINUX_NETLINK_SOCK_DIAG 4u
 #define EDGE_LINUX_SOCK_DIAG_BY_FAMILY 20u
 
@@ -42,11 +44,37 @@ typedef struct edge_linux_sock_diag_snapshot {
     uint32_t write_queue;
     uint32_t user_id;
     uint32_t inode;
+    uint64_t socket_identity;
 } edge_linux_sock_diag_snapshot_t;
 
 typedef int (*edge_linux_sock_diag_snapshot_fn)(
     void *context, uint32_t network_namespace, uint32_t ordinal,
     edge_linux_sock_diag_snapshot_t *snapshot);
+
+typedef struct edge_linux_sock_diag_bpf_map {
+    int32_t object_id;
+    uint32_t user_id;
+    uint32_t value_size;
+} edge_linux_sock_diag_bpf_map_t;
+
+typedef struct edge_linux_sock_diag_bpf_ops {
+    int (*map_from_descriptor)(void *context, int32_t descriptor,
+                               edge_linux_sock_diag_bpf_map_t *map);
+    int (*next_map)(void *context, uint32_t *cursor,
+                    edge_linux_sock_diag_bpf_map_t *map);
+    int (*lookup)(void *context,
+                  const edge_linux_sock_diag_bpf_map_t *map,
+                  uint64_t socket_identity, void *value);
+    int (*exists)(void *context,
+                  const edge_linux_sock_diag_bpf_map_t *map,
+                  uint64_t socket_identity);
+    void (*release)(void *context,
+                    const edge_linux_sock_diag_bpf_map_t *map);
+    void *context;
+} edge_linux_sock_diag_bpf_ops_t;
+
+extern const edge_linux_sock_diag_bpf_ops_t
+    edge_linux_sock_diag_bpf_runtime_ops;
 
 /* Converts an lwIP tcp_state value into the Linux TCP state ABI. */
 uint8_t edge_linux_sock_diag_state_from_lwip(uint8_t state);
@@ -62,5 +90,13 @@ int edge_linux_sock_diag_respond(
     edge_linux_sock_diag_snapshot_fn snapshot_at, void *snapshot_context,
     uint32_t snapshot_limit, void *response, uint32_t response_capacity,
     uint32_t *response_length);
+
+int edge_linux_sock_diag_respond_with_bpf_storage(
+    uint32_t network_namespace, uint32_t port_id,
+    const void *request, uint32_t request_length,
+    edge_linux_sock_diag_snapshot_fn snapshot_at, void *snapshot_context,
+    uint32_t snapshot_limit, void *response, uint32_t response_capacity,
+    uint32_t *response_length, int bpf_capable,
+    const edge_linux_sock_diag_bpf_ops_t *bpf_ops);
 
 #endif

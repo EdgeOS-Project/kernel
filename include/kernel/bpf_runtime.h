@@ -268,6 +268,8 @@ int kernel_bpf_cgrp_storage_delete(int object_id,
 int kernel_bpf_sk_storage_lookup(int object_id,
                                  uint64_t socket_identity,
                                  void *value, uint64_t flags);
+int kernel_bpf_sk_storage_exists(int object_id,
+                                 uint64_t socket_identity);
 int kernel_bpf_sk_storage_update(int object_id,
                                  uint64_t socket_identity,
                                  const void *value, uint64_t flags);

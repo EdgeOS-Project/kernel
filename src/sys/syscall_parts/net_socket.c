@@ -891,6 +891,8 @@ int64_t arch_socket_create_descriptor(uint32_t domain_u, uint32_t type_u,
         fd_abort_reserved(p, fd);
         return (uint64_t)-ENFILE;
     }
+    s->open_description_identity =
+        file_ref_identity(p->fds[fd].file_ref);
     p->fds[fd].pipe_id = sid;
     p->fds[fd].flags = LINUX_O_RDWR | (nonblock ? LINUX_O_NONBLOCK : 0);
     p->fds[fd].fd_flags = cloexec ? LINUX_FD_CLOEXEC : 0;
@@ -1220,6 +1222,10 @@ int arch_socket_create_unix_pair_construct(
         socket_drop_ref(second_socket_id);
         return -ENFILE;
     }
+    first_socket->open_description_identity =
+        file_ref_identity(first_description);
+    second_socket->open_description_identity =
+        file_ref_identity(second_description);
 
     memset(prepared, 0, sizeof(prepared));
     prepared[0].kind = FD_SOCKET;
@@ -2422,6 +2428,8 @@ static int x86_socket_accept_prepare_entry(
             socket_drop_ref(sid);
         return status;
     }
+    child->open_description_identity =
+        file_ref_identity(p->fds[nfd].file_ref);
     if (child->refs <= child->acceptq_refs) socket_add_ref(sid);
     p->fds[nfd].pipe_id = sid;
     p->fds[nfd].flags = LINUX_O_RDWR | ((flags & LINUX_SOCK_NONBLOCK) ? LINUX_O_NONBLOCK : 0);
@@ -3149,6 +3157,7 @@ static int x86_sock_diag_snapshot_at(
     snapshot->cookie[1] = network_namespace;
     snapshot->receive_queue = socket->rx_len;
     snapshot->user_id = socket->cred_uid;
+    snapshot->socket_identity = socket->open_description_identity;
     if (socket->type == LINUX_SOCK_STREAM && socket->lwip_pcb) {
         struct tcp_pcb *tcp = (struct tcp_pcb *)socket->lwip_pcb;
 
@@ -3246,11 +3255,18 @@ static int netlink_kernel_request(void *context, const void *payload,
 
         if (netlink_ensure_bound(socket) < 0) return -EADDRINUSE;
         if (start > capacity) return -ENOBUFS;
-        result = edge_linux_sock_diag_respond(
+        task_t *task = process_current_task();
+        edge_fd_proc_t *descriptors = fd_proc_with_stdio();
+        int bpf_capable = task &&
+            (task->capabilities.effective &
+             (1ULL << EDGE_LINUX_CAP_BPF)) != 0;
+
+        result = edge_linux_sock_diag_respond_with_bpf_storage(
             socket->network_namespace, socket->netlink_port_id,
             payload, length,
-            x86_sock_diag_snapshot_at, 0, EDGE_MAX_SOCKETS,
-            socket->rx_buf + start, capacity - start, &response_length);
+            x86_sock_diag_snapshot_at, descriptors, EDGE_MAX_SOCKETS,
+            socket->rx_buf + start, capacity - start, &response_length,
+            bpf_capable, &edge_linux_sock_diag_bpf_runtime_ops);
         if (result < 0) {
             if (!payload || length < sizeof(struct edge_linux_nlmsghdr))
                 return result;

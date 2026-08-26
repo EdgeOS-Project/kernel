@@ -379,6 +379,7 @@ EDGEOS_ASSESSMENTS = [
             "reuseport socket-array creation, bound TCP and UDP insertion, single-map membership, cookie lookup, replacement, deletion, disconnect-time and close-time removal, and key iteration semantics",
             "cgroup local-storage creation with BTF, cgroup FD lookup, insertion, replacement, deletion, reference lifetime, owner-removal cleanup with retained-reference balancing and unsupported iteration semantics",
             "socket local-storage creation with BTF, socket FD and alias lookup, insertion, replacement, listener-to-accepted-socket cloning, deletion, last-close removal and unsupported iteration semantics",
+            "socket local-storage inet_diag export with CAP_BPF authorization, requested-map selection, all-map enumeration, duplicate rejection, retained map lifetime and aligned nested value attributes",
             "inode local-storage creation with BTF, inode identity shared across file descriptions, insertion, replacement, close-and-reopen persistence, final inode-destruction cleanup, deletion and unsupported iteration semantics",
             "task local-storage creation with BTF, pidfd lookup, insertion, replacement, deletion, PID-generation isolation, task-exit cleanup and unsupported iteration semantics",
             "deprecated shared and per-CPU cgroup-storage maps with attachment allocation, helper access, update, iteration, detach persistence and cgroup-release cleanup",
@@ -388,7 +389,7 @@ EDGEOS_ASSESSMENTS = [
             "ia32 and x32 fixed-width map-create and map-element attribute layouts",
         ],
         "missing": [
-            "struct-ops maps, sparse 4 GiB arena ranges and arena kfunc integration, socket-map and reuseport program attachment and redirect execution, modern local-storage program helper access, socket diagnostic export, CPU-map packet redirect execution, device-map packet redirect execution and AF_XDP socket-backed XSK-map entries",
+            "struct-ops maps, sparse 4 GiB arena ranges and arena kfunc integration, socket-map and reuseport program attachment and redirect execution, modern local-storage program helper access, CPU-map packet redirect execution, device-map packet redirect execution and AF_XDP socket-backed XSK-map entries",
             "resizable-hash lockless per-bucket concurrency",
             "remaining specialized map-family concurrency semantics, plus instruction-array verifier and jump-table integration",
             "additional attachment families and program types",
@@ -458,7 +459,8 @@ EDGEOS_ASSESSMENTS = [
                 "unsupported iteration, "
                 "socket local-storage BTF creation, socket FD and alias "
                 "lookup, insertion, replacement, deletion, last-close "
-                "removal and unsupported iteration, "
+                "removal, unsupported iteration and CAP_BPF-authorized "
+                "inet_diag export with selected or all-map nested values, "
                 "inode local-storage BTF creation, shared inode identity "
                 "across file descriptions, insertion, replacement, "
                 "close-and-reopen persistence, final inode-destruction "

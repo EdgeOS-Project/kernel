@@ -1740,6 +1740,7 @@ typedef struct {
 typedef struct {
     int used;
     int refs;
+    uint64_t open_description_identity;
     /*
      * Protect receive-queue bytes, record metadata, and ancillary records.
      * AF_UNIX sendmsg must publish its first payload byte and SCM_RIGHTS as one

@@ -2975,11 +2975,14 @@ static void test_socket_local_storage(void) {
     assert(g_close_observer != 0);
     assert(kernel_bpf_sk_storage_lookup(
                map, identity, &output, 0u) == -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_sk_storage_exists(
+               map, identity) == -EDGE_LINUX_ENOENT);
     assert(kernel_bpf_sk_storage_update(
                map, identity, &value, KERNEL_BPF_EXIST) ==
            -EDGE_LINUX_ENOENT);
     assert(kernel_bpf_sk_storage_update(
                map, identity, &value, KERNEL_BPF_NOEXIST) == 0);
+    assert(kernel_bpf_sk_storage_exists(map, identity) == 0);
     assert(kernel_bpf_sk_storage_lookup(
                map, identity, &output, 0u) == 0);
     assert(output == value);
@@ -2990,21 +2993,28 @@ static void test_socket_local_storage(void) {
                map, identity, &replacement, KERNEL_BPF_EXIST) == 0);
     assert(kernel_bpf_sk_storage_clone(
                identity, cloned_identity) == 0);
+    assert(kernel_bpf_sk_storage_exists(map, cloned_identity) == 0);
     assert(kernel_bpf_sk_storage_lookup(
                map, cloned_identity, &output, 0u) == 0);
     assert(output == replacement);
     g_close_observer(cloned_identity);
+    assert(kernel_bpf_sk_storage_exists(
+               map, cloned_identity) == -EDGE_LINUX_ENOENT);
     assert(kernel_bpf_sk_storage_lookup(
                map, cloned_identity, &output, 0u) ==
            -EDGE_LINUX_ENOENT);
     assert(kernel_bpf_map_next_key(map, 0, &next_key) ==
            -EDGE_LINUX_ENOTSUPP);
     assert(kernel_bpf_sk_storage_delete(map, identity) == 0);
+    assert(kernel_bpf_sk_storage_exists(
+               map, identity) == -EDGE_LINUX_ENOENT);
     assert(kernel_bpf_sk_storage_delete(map, identity) ==
            -EDGE_LINUX_ENOENT);
     assert(kernel_bpf_sk_storage_update(
                map, identity, &value, KERNEL_BPF_ANY) == 0);
     g_close_observer(identity);
+    assert(kernel_bpf_sk_storage_exists(
+               map, identity) == -EDGE_LINUX_ENOENT);
     assert(kernel_bpf_sk_storage_lookup(
                map, identity, &output, 0u) == -EDGE_LINUX_ENOENT);
     kernel_bpf_object_release(btf);
