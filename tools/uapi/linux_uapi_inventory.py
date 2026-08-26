@@ -372,6 +372,7 @@ EDGEOS_ASSESSMENTS = [
             "program test-run and unknown-command error ordering for the supported program family",
             "stack-trace map creation, build-ID value layouts, rounded bucket addressing, raw sys_enter tracepoint attachment and get_stackid helper population",
             "socket-filter program loading, SO_ATTACH_BPF replacement, receive-path execution, descriptor-independent attachment lifetime and SO_DETACH_FILTER release",
+            "socket-filter helper execution for socket cookies, socket owner UIDs and network-namespace cookies",
             "CPU-map creation, CPU and queue validation, entry lifecycle, optional program descriptor rejection and Linux unsupported-operation behavior",
             "device-map and device-hash creation, network-interface validation, entry lifecycle, capacity, iteration and program descriptor behavior",
             "XSK-map creation, syscall lookup rejection, socket descriptor and family error behavior, deletion, key iteration and unsupported batch behavior",
@@ -440,6 +441,8 @@ EDGEOS_ASSESSMENTS = [
                 "after program descriptor close, irreversible SO_LOCK_FILTER "
                 "mutation protection, classic SO_GET_FILTER length queries "
                 "and program export, eBPF export denial and detach behavior, "
+                "socket-filter socket-cookie, owner-UID and network-namespace "
+                "cookie helpers, "
                 "CPU-map "
                 "qsize state, CPU bounds, program descriptor errors "
                 "and unsupported operations, device-map and device-hash "

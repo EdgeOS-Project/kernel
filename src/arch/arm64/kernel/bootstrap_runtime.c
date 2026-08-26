@@ -1573,6 +1573,7 @@ typedef struct {
     uint32_t shutdown_read_generation;
     uint16_t references;
     uint64_t open_description_identity;
+    uint32_t owner_uid;
     int error;
     struct udp_pcb *udp;
     struct tcp_pcb *tcp;
@@ -11303,6 +11304,10 @@ static uint32_t socket_filter_pbuf_length(const kernel_socket_t *socket,
     if (socket->bpf_filter_object_id >= 0) {
         bytes_zero(&context, sizeof(context));
         context.length = packet->tot_len;
+        context.socket_uid = socket->owner_uid;
+        context.socket_cookie = socket->open_description_identity;
+        context.network_namespace_cookie =
+            (uint64_t)socket->network_namespace + 1u;
         if (kernel_bpf_program_run_socket_filter(
                 socket->bpf_filter_object_id, &context, &accepted) < 0)
             return 0u;
@@ -11644,6 +11649,7 @@ static int socket_allocate_slot(uint32_t domain, uint32_t type, uint32_t protoco
             socket->peer_pid = current_task()->pid;
             socket->peer_uid = current_task()->euid;
             socket->peer_gid = current_task()->egid;
+            socket->owner_uid = current_task()->euid;
             socket->network_namespace = current_task()->namespaces.net;
         }
         return (int)i;
@@ -11896,6 +11902,7 @@ static err_t socket_tcp_accept(void *argument, struct tcp_pcb *new_pcb, err_t er
             listener->bpf_filter_object_id;
     }
     child->network_namespace = listener->network_namespace;
+    child->owner_uid = listener->owner_uid;
     child->tcp = new_pcb;
     child->connected = 1;
     socket_option_apply_ip_state(child);
@@ -19055,6 +19062,7 @@ static int socket_ipv4_connect_local(
     child->connected = 1;
     child->local_stream = 1;
     child->network_namespace = listener->network_namespace;
+    child->owner_uid = listener->owner_uid;
     child->unix_peer = (int16_t)(client - g_sockets);
     child->peer_pid = task->pid;
     child->peer_uid = task->euid;

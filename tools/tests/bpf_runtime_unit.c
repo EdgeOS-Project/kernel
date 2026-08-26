@@ -3213,6 +3213,53 @@ static void test_socket_filter_program(void) {
                program, &context, &result) == 0);
     assert(result == context.length);
     kernel_bpf_object_release(program);
+
+    {
+        kernel_bpf_instruction_t helper_instructions[] = {
+            { .code = 0x85u, .registers = 0u,
+              .offset = 0, .immediate = 46 },
+            { .code = 0x95u, .registers = 0u,
+              .offset = 0, .immediate = 0 },
+        };
+
+        context.socket_uid = 1000u;
+        context.socket_cookie = 0x12345678u;
+        context.network_namespace_cookie = 0x87654321u;
+        request.instruction_count = 2u;
+        strcpy(request.name, "socket_help");
+
+        program = kernel_bpf_program_create(
+            &request, helper_instructions);
+        assert(program >= 0);
+        assert(kernel_bpf_program_run_socket_filter(
+                   program, &context, &result) == 0);
+        assert(result == (uint32_t)context.socket_cookie);
+        kernel_bpf_object_release(program);
+
+        helper_instructions[0].immediate = 47;
+        program = kernel_bpf_program_create(
+            &request, helper_instructions);
+        assert(program >= 0);
+        assert(kernel_bpf_program_run_socket_filter(
+                   program, &context, &result) == 0);
+        assert(result == context.socket_uid);
+        kernel_bpf_object_release(program);
+
+        helper_instructions[0].immediate = 122;
+        program = kernel_bpf_program_create(
+            &request, helper_instructions);
+        assert(program >= 0);
+        assert(kernel_bpf_program_run_socket_filter(
+                   program, &context, &result) == 0);
+        assert(result ==
+               (uint32_t)context.network_namespace_cookie);
+        kernel_bpf_object_release(program);
+
+        request.type = KERNEL_BPF_PROG_TYPE_CGROUP_DEVICE;
+        assert(kernel_bpf_program_create(
+                   &request, helper_instructions) ==
+               -EDGE_LINUX_EINVAL);
+    }
 }
 
 int main(void) {

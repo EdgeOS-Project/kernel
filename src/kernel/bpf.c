@@ -79,7 +79,10 @@
 #define BPF_PSEUDO_MAP_FD 1u
 #define BPF_FUNC_TAIL_CALL 12u
 #define BPF_FUNC_GET_STACKID 27u
+#define BPF_FUNC_GET_SOCKET_COOKIE 46u
+#define BPF_FUNC_GET_SOCKET_UID 47u
 #define BPF_FUNC_GET_LOCAL_STORAGE 81u
+#define BPF_FUNC_GET_NETNS_COOKIE 122u
 #define BPF_FUNC_RINGBUF_OUTPUT 130u
 #define BPF_MAX_TAIL_CALLS 33u
 #define BPF_RB_NO_WAKEUP (1ull << 0)
@@ -2088,6 +2091,18 @@ static int bpf_program_validate(
                     !(context_registers & (1u << 1)) ||
                     !(stack_trace_registers & (1u << 2)) ||
                     (map_registers & (1u << 3)))
+                    return -EDGE_LINUX_EINVAL;
+            } else if (instruction->immediate ==
+                           (int32_t)BPF_FUNC_GET_SOCKET_COOKIE ||
+                       instruction->immediate ==
+                           (int32_t)BPF_FUNC_GET_SOCKET_UID ||
+                       instruction->immediate ==
+                           (int32_t)BPF_FUNC_GET_NETNS_COOKIE) {
+                required = 1u << 1;
+                if (request->type !=
+                        KERNEL_BPF_PROG_TYPE_SOCKET_FILTER ||
+                    (initialized & required) != required ||
+                    !(context_registers & (1u << 1)))
                     return -EDGE_LINUX_EINVAL;
             } else {
                 return -EDGE_LINUX_EINVAL;
@@ -6565,6 +6580,31 @@ static int bpf_program_run_cgroup_device_locked(
             registers[10] =
                 (uint64_t)(uintptr_t)(stack + sizeof(stack));
             pc = UINT32_MAX;
+        } else if (BPF_CLASS(instruction->code) == BPF_JMP &&
+                   operation == BPF_CALL &&
+                   (instruction->immediate ==
+                        (int32_t)BPF_FUNC_GET_SOCKET_COOKIE ||
+                    instruction->immediate ==
+                        (int32_t)BPF_FUNC_GET_SOCKET_UID ||
+                    instruction->immediate ==
+                        (int32_t)BPF_FUNC_GET_NETNS_COOKIE)) {
+            const kernel_bpf_socket_filter_context_t *socket_context =
+                (const kernel_bpf_socket_filter_context_t *)(uintptr_t)
+                    registers[1];
+
+            if (program_type != KERNEL_BPF_PROG_TYPE_SOCKET_FILTER ||
+                context_size < sizeof(*socket_context) ||
+                socket_context != context)
+                return -EDGE_LINUX_EINVAL;
+            if (instruction->immediate ==
+                    (int32_t)BPF_FUNC_GET_SOCKET_COOKIE)
+                registers[0] = socket_context->socket_cookie;
+            else if (instruction->immediate ==
+                         (int32_t)BPF_FUNC_GET_SOCKET_UID)
+                registers[0] = socket_context->socket_uid;
+            else
+                registers[0] =
+                    socket_context->network_namespace_cookie;
         } else if (BPF_CLASS(instruction->code) == BPF_JMP &&
                    operation == BPF_CALL &&
                    instruction->immediate ==

@@ -2525,6 +2525,10 @@ static int socket_filter_accepts(const edge_socket_t *s, const uint8_t *pkt, uin
     if (s->bpf_filter_object_id >= 0) {
         memset(&context, 0, sizeof(context));
         context.length = len;
+        context.socket_uid = s->cred_uid;
+        context.socket_cookie = s->open_description_identity;
+        context.network_namespace_cookie =
+            (uint64_t)s->network_namespace + 1u;
         if (kernel_bpf_program_run_socket_filter(
                 s->bpf_filter_object_id, &context, &keep) < 0)
             return 0;

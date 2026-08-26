@@ -114,6 +114,9 @@ typedef struct kernel_bpf_socket_filter_context {
     uint32_t length;
     uint32_t packet_type;
     uint32_t mark;
+    uint32_t socket_uid;
+    uint64_t socket_cookie;
+    uint64_t network_namespace_cookie;
 } kernel_bpf_socket_filter_context_t;
 
 typedef struct kernel_bpf_map_create_request {

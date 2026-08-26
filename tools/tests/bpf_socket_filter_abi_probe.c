@@ -105,6 +105,13 @@ void *memset(void *destination, int value, unsigned long length) {
     return destination;
 }
 
+void *memcpy(void *destination, const void *source, unsigned long length) {
+    unsigned char *output = (unsigned char *)destination;
+    const unsigned char *input = (const unsigned char *)source;
+    while (length--) *output++ = *input++;
+    return destination;
+}
+
 static long raw_syscall6(long number, long first, long second, long third,
                          long fourth, long fifth, long sixth) {
 #if defined(__x86_64__)
@@ -232,6 +239,44 @@ START_ATTRIBUTES void _start(void) {
         { .code = 0x95u, .registers = 0u,
           .offset = 0, .immediate = 0 },
     };
+    const struct bpf_instruction cookie_instructions[] = {
+        { .code = 0x85u, .registers = 0u,
+          .offset = 0, .immediate = 46 },
+        { .code = 0x55u, .registers = 0u,
+          .offset = 1, .immediate = 0 },
+        { .code = 0x05u, .registers = 0u,
+          .offset = 1, .immediate = 0 },
+        { .code = 0xb7u, .registers = 0u,
+          .offset = 0, .immediate = -1 },
+        { .code = 0x95u, .registers = 0u,
+          .offset = 0, .immediate = 0 },
+    };
+    const struct bpf_instruction uid_instructions[] = {
+        { .code = 0x85u, .registers = 0u,
+          .offset = 0, .immediate = 47 },
+        { .code = 0x07u, .registers = 0u,
+          .offset = 0, .immediate = 1 },
+        { .code = 0x55u, .registers = 0u,
+          .offset = 1, .immediate = 0 },
+        { .code = 0x05u, .registers = 0u,
+          .offset = 1, .immediate = 0 },
+        { .code = 0xb7u, .registers = 0u,
+          .offset = 0, .immediate = -1 },
+        { .code = 0x95u, .registers = 0u,
+          .offset = 0, .immediate = 0 },
+    };
+    const struct bpf_instruction netns_cookie_instructions[] = {
+        { .code = 0x85u, .registers = 0u,
+          .offset = 0, .immediate = 122 },
+        { .code = 0x55u, .registers = 0u,
+          .offset = 1, .immediate = 0 },
+        { .code = 0x05u, .registers = 0u,
+          .offset = 1, .immediate = 0 },
+        { .code = 0xb7u, .registers = 0u,
+          .offset = 0, .immediate = -1 },
+        { .code = 0x95u, .registers = 0u,
+          .offset = 0, .immediate = 0 },
+    };
     struct linux_sockaddr_in address = {
         .family = AF_INET,
         .port = 0x0787u,
@@ -245,6 +290,9 @@ START_ATTRIBUTES void _start(void) {
     long sender;
     long reject_program;
     long length_program;
+    long cookie_program;
+    long uid_program;
+    long netns_cookie_program;
     int failures = 0;
 
     receiver = raw_syscall6(SYS_socket, AF_INET, SOCK_DGRAM, 0, 0, 0, 0);
@@ -302,11 +350,26 @@ START_ATTRIBUTES void _start(void) {
             reject_instructions, 2u, "reject");
         length_program = load_program(
             length_instructions, 2u, "length");
+        cookie_program = load_program(
+            cookie_instructions, 5u, "cookie");
+        uid_program = load_program(
+            uid_instructions, 6u, "uid");
+        netns_cookie_program = load_program(
+            netns_cookie_instructions, 5u, "netns_cookie");
         failures += expect_result(
             "reject-load", reject_program < 0 ? reject_program : 0, 0);
         failures += expect_result(
             "length-load", length_program < 0 ? length_program : 0, 0);
-        if (reject_program >= 0 && length_program >= 0) {
+        failures += expect_result(
+            "cookie-load", cookie_program < 0 ? cookie_program : 0, 0);
+        failures += expect_result(
+            "uid-load", uid_program < 0 ? uid_program : 0, 0);
+        failures += expect_result(
+            "netns-cookie-load",
+            netns_cookie_program < 0 ? netns_cookie_program : 0, 0);
+        if (reject_program >= 0 && length_program >= 0 &&
+            cookie_program >= 0 && uid_program >= 0 &&
+            netns_cookie_program >= 0) {
             failures += expect_result(
                 "reject-attach",
                 attach_program((int)receiver, (int)reject_program), 0);
@@ -333,6 +396,53 @@ START_ATTRIBUTES void _start(void) {
                 raw_syscall6(SYS_recvfrom, receiver, (long)&received, 1,
                              MSG_DONTWAIT, 0, 0), 1);
             failures += expect_result("length-value", received, 'y');
+            failures += expect_result(
+                "cookie-attach",
+                attach_program((int)receiver, (int)cookie_program), 0);
+            (void)raw_syscall6(
+                SYS_close, cookie_program, 0, 0, 0, 0, 0);
+            sent = 'c';
+            failures += expect_result(
+                "cookie-send",
+                raw_syscall6(SYS_sendto, sender, (long)&sent, 1, 0,
+                             (long)&address, sizeof(address)), 1);
+            failures += expect_result(
+                "cookie-recv",
+                raw_syscall6(SYS_recvfrom, receiver, (long)&received, 1,
+                             MSG_DONTWAIT, 0, 0), 1);
+            failures += expect_result("cookie-value", received, 'c');
+            failures += expect_result(
+                "uid-attach",
+                attach_program((int)receiver, (int)uid_program), 0);
+            (void)raw_syscall6(
+                SYS_close, uid_program, 0, 0, 0, 0, 0);
+            sent = 'u';
+            failures += expect_result(
+                "uid-send",
+                raw_syscall6(SYS_sendto, sender, (long)&sent, 1, 0,
+                             (long)&address, sizeof(address)), 1);
+            failures += expect_result(
+                "uid-recv",
+                raw_syscall6(SYS_recvfrom, receiver, (long)&received, 1,
+                             MSG_DONTWAIT, 0, 0), 1);
+            failures += expect_result("uid-value", received, 'u');
+            failures += expect_result(
+                "netns-cookie-attach",
+                attach_program(
+                    (int)receiver, (int)netns_cookie_program), 0);
+            (void)raw_syscall6(
+                SYS_close, netns_cookie_program, 0, 0, 0, 0, 0);
+            sent = 'n';
+            failures += expect_result(
+                "netns-cookie-send",
+                raw_syscall6(SYS_sendto, sender, (long)&sent, 1, 0,
+                             (long)&address, sizeof(address)), 1);
+            failures += expect_result(
+                "netns-cookie-recv",
+                raw_syscall6(SYS_recvfrom, receiver, (long)&received, 1,
+                             MSG_DONTWAIT, 0, 0), 1);
+            failures += expect_result(
+                "netns-cookie-value", received, 'n');
             {
                 uint32_t filter_length = 0u;
                 failures += expect_result(
