@@ -3727,6 +3727,15 @@ static int test_unsupported_extension_errors(void) {
             (uint32_t)program_descriptor;
         failures += expect("program stream unavailable", bpf_call(
             BPF_PROG_STREAM_READ_BY_FD, &attribute), -ENOENT);
+        attribute.prog_stream_read.stream_id = 1u;
+        failures += expect("program stdout empty", bpf_call(
+            BPF_PROG_STREAM_READ_BY_FD, &attribute), 0);
+        attribute.prog_stream_read.stream_id = 2u;
+        failures += expect("program stderr empty", bpf_call(
+            BPF_PROG_STREAM_READ_BY_FD, &attribute), 0);
+        attribute.prog_stream_read.stream_id = 3u;
+        failures += expect("program stream range", bpf_call(
+            BPF_PROG_STREAM_READ_BY_FD, &attribute), -ENOENT);
 
         clear_bytes(&attribute, sizeof(attribute));
         attribute.prog_assoc_struct_ops.map_fd =

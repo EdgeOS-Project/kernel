@@ -7338,7 +7338,7 @@ static int64_t edge_linux_bpf_program_bind_map(
         program_object_id, map_object_id);
 }
 
-static int64_t edge_linux_bpf_unsupported_extension(
+static int64_t edge_linux_bpf_extension_command(
         edge_linux_syscall_context_t *context, uint32_t command,
         uint64_t user_attribute, uint32_t attribute_size) {
     int status;
@@ -7391,8 +7391,10 @@ static int64_t edge_linux_bpf_unsupported_extension(
             (int32_t)attribute.program_descriptor,
             KERNEL_BPF_OBJECT_PROGRAM);
         if (status < 0) return status;
-        /* Supported EdgeOS program types do not expose program streams. */
-        return -EDGE_LINUX_ENOENT;
+        if (attribute.stream_id != 1u && attribute.stream_id != 2u)
+            return -EDGE_LINUX_ENOENT;
+        /* A newly loaded program has empty stdout and stderr streams. */
+        return 0;
     }
     if (command == EDGE_LINUX_BPF_PROG_ASSOC_STRUCT_OPS) {
         edge_linux_bpf_program_struct_ops_attribute_t attribute;
@@ -7763,7 +7765,7 @@ static int64_t edge_linux_sys_bpf(
         command == EDGE_LINUX_BPF_TOKEN_CREATE ||
         command == EDGE_LINUX_BPF_PROG_STREAM_READ_BY_FD ||
         command == EDGE_LINUX_BPF_PROG_ASSOC_STRUCT_OPS)
-        return edge_linux_bpf_unsupported_extension(
+        return edge_linux_bpf_extension_command(
             context, command, user_attribute, attribute_size);
     return -EDGE_LINUX_EINVAL;
 }

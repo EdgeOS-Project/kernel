@@ -415,6 +415,7 @@ EDGEOS_ASSESSMENTS = [
             "runtime statistics enable descriptors with close-time disable semantics",
             "program test-run and unknown-command error ordering for the supported program family",
             "Linux-order attribute and descriptor validation for iterator creation, delegated token creation, program stream reads and struct-ops association when no supported backend object exists",
+            "stdout and stderr program-stream selection with empty-stream reads for supported programs",
             "stack-trace map creation, build-ID value layouts, rounded bucket addressing, raw sys_enter tracepoint attachment and get_stackid helper population",
             "socket-filter program loading, SO_ATTACH_BPF replacement, receive-path execution, descriptor-independent attachment lifetime and SO_DETACH_FILTER release",
             "socket-filter helper execution for socket cookies, socket owner UIDs and network-namespace cookies",
@@ -439,7 +440,7 @@ EDGEOS_ASSESSMENTS = [
             "resizable-hash lockless per-bucket concurrency",
             "remaining specialized map-family concurrency semantics, plus instruction-array verifier and jump-table integration",
             "additional attachment families and program types",
-            "BPF iterator links, delegated BPF tokens, program streams and struct-ops association",
+            "BPF iterator links, delegated BPF tokens, program-stream producers and kfunc integration, and struct-ops association",
             "BTF program line and function metadata integration, CO-RE relocation and split or module BTF",
         ],
         "runtime_tests": [
@@ -536,6 +537,7 @@ EDGEOS_ASSESSMENTS = [
                 "iterator-create, token-create, program-stream-read and "
                 "struct-ops-association attribute and descriptor error "
                 "ordering when no supported backend object exists, "
+                "stdout and stderr empty-stream reads for supported programs, "
                 "plus ia32 "
                 "and x32 page-boundary map-create, "
                 "map-update and map-lookup attribute layouts"
