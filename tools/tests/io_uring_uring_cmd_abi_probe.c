@@ -4,21 +4,27 @@
 #include <stdint.h>
 
 #if defined(__x86_64__)
+#define SYS_read 0
 #define SYS_write 1
 #define SYS_close 3
 #define SYS_mmap 9
 #define SYS_munmap 11
+#define SYS_ioctl 16
 #define SYS_socket 41
+#define SYS_sendto 44
 #define SYS_bind 49
 #define SYS_socketpair 53
 #define SYS_exit 60
 #elif defined(__aarch64__)
 #define SYS_close 57
+#define SYS_read 63
 #define SYS_write 64
 #define SYS_exit 93
 #define SYS_socket 198
 #define SYS_socketpair 199
 #define SYS_bind 200
+#define SYS_sendto 206
+#define SYS_ioctl 29
 #define SYS_munmap 215
 #define SYS_mmap 222
 #else
@@ -33,12 +39,16 @@
 #define MAP_SHARED 1u
 #define PAGE_SIZE 4096u
 #define AF_UNIX 1
+#define AF_INET 2
 #define SOCK_DGRAM 2
 #define SOL_SOCKET 1u
 #define SO_TYPE 3u
 #define SO_REUSEADDR 2u
 #define EINVAL 22
 #define EOPNOTSUPP 95
+#define SIOCGIFFLAGS 0x8913u
+#define SIOCSIFFLAGS 0x8914u
+#define IFF_UP 1u
 
 #define IORING_OFF_SQ_RING 0x00000000ull
 #define IORING_OFF_CQ_RING 0x08000000ull
@@ -46,6 +56,8 @@
 #define IORING_SETUP_SQE128 (1u << 10)
 #define IORING_OP_URING_CMD 46u
 #define IORING_OP_URING_CMD128 64u
+#define SOCKET_URING_OP_SIOCINQ 0u
+#define SOCKET_URING_OP_SIOCOUTQ 1u
 #define SOCKET_URING_OP_GETSOCKOPT 2u
 #define SOCKET_URING_OP_SETSOCKOPT 3u
 #define SOCKET_URING_OP_GETSOCKNAME 5u
@@ -53,6 +65,18 @@
 struct user_sockaddr {
     uint16_t family;
     uint8_t data[14];
+};
+
+struct user_sockaddr_in {
+    uint16_t family;
+    uint16_t port;
+    uint32_t address;
+    uint8_t zero[8];
+};
+
+struct user_ifreq {
+    char name[16];
+    uint8_t value[24];
 };
 
 struct io_uring_sqe {
@@ -167,6 +191,27 @@ static int record_failure(int failed, const char *label) {
     return failed;
 }
 
+static int bring_loopback_up(long descriptor) {
+    struct user_ifreq request;
+    uint16_t flags;
+
+    memset(&request, 0, sizeof(request));
+    request.name[0] = 'l';
+    request.name[1] = 'o';
+    if (raw_syscall6(
+            SYS_ioctl, descriptor, SIOCGIFFLAGS,
+            (long)&request, 0, 0, 0) != 0)
+        return 1;
+    flags = (uint16_t)request.value[0] |
+        ((uint16_t)request.value[1] << 8u);
+    flags |= IFF_UP;
+    request.value[0] = (uint8_t)flags;
+    request.value[1] = (uint8_t)(flags >> 8u);
+    return raw_syscall6(
+        SYS_ioctl, descriptor, SIOCSIFFLAGS,
+        (long)&request, 0, 0, 0) != 0;
+}
+
 static void *map_ring(long descriptor, uint64_t offset) {
     long result = raw_syscall6(
         SYS_mmap, 0, PAGE_SIZE, PROT_READ | PROT_WRITE,
@@ -211,8 +256,11 @@ static int submit_one(
     return 0;
 }
 
-static int run_ring(long socket_descriptor, uint32_t setup_flags,
-                    uint8_t opcode) {
+static int run_ring(long socket_descriptor, long queue_descriptor,
+                    long queue_sender,
+                    const struct user_sockaddr_in *queue_address,
+                    uint32_t setup_flags, uint8_t opcode) {
+    static const uint8_t payload[] = {'q', 'u', 'e', 'u', 'e'};
     struct io_uring_params parameters;
     struct io_uring_sqe request;
     struct user_sockaddr name;
@@ -221,6 +269,7 @@ static int run_ring(long socket_descriptor, uint32_t setup_flags,
     void *sqes;
     uint32_t name_length;
     uint32_t option_value;
+    uint8_t receive_buffer[sizeof(payload)];
     uint32_t stride = setup_flags & IORING_SETUP_SQE128 ? 128u : 64u;
     long descriptor;
     int failures = 0;
@@ -298,6 +347,39 @@ static int run_ring(long socket_descriptor, uint32_t setup_flags,
         descriptor, &parameters, sq_ring, cq_ring, sqes, stride,
         &request, -EOPNOTSUPP), "UNKNOWN_COMMAND_FAIL\n");
 
+    memset(&request, 0, sizeof(request));
+    request.opcode = opcode;
+    request.descriptor = (int32_t)socket_descriptor;
+    request.offset = SOCKET_URING_OP_SIOCINQ;
+    request.user_data = 6u;
+    failures += record_failure(submit_one(
+        descriptor, &parameters, sq_ring, cq_ring, sqes, stride,
+        &request, -EOPNOTSUPP), "SIOCINQ_UNSUPPORTED_PROTOCOL_FAIL\n");
+
+    failures += record_failure(raw_syscall6(
+        SYS_sendto, queue_sender, (long)payload, sizeof(payload), 0,
+        (long)queue_address, sizeof(*queue_address)) !=
+        (long)sizeof(payload),
+        "SOCKET_QUEUE_WRITE_FAIL\n");
+    memset(&request, 0, sizeof(request));
+    request.opcode = opcode;
+    request.descriptor = (int32_t)queue_descriptor;
+    request.offset = SOCKET_URING_OP_SIOCINQ;
+    request.user_data = 7u;
+    failures += record_failure(submit_one(
+        descriptor, &parameters, sq_ring, cq_ring, sqes, stride,
+        &request, sizeof(payload)), "SIOCINQ_RESULT_FAIL\n");
+
+    request.offset = SOCKET_URING_OP_SIOCOUTQ;
+    request.user_data = 8u;
+    failures += record_failure(submit_one(
+        descriptor, &parameters, sq_ring, cq_ring, sqes, stride,
+        &request, 0), "SIOCOUTQ_RESULT_FAIL\n");
+    failures += record_failure(raw_syscall6(
+        SYS_read, queue_descriptor, (long)receive_buffer,
+        sizeof(payload), 0, 0, 0) != (long)sizeof(payload),
+        "SOCKET_QUEUE_READ_FAIL\n");
+
     (void)raw_syscall6(SYS_munmap, (long)sqes, PAGE_SIZE, 0, 0, 0, 0);
     (void)raw_syscall6(SYS_munmap, (long)cq_ring, PAGE_SIZE, 0, 0, 0, 0);
     (void)raw_syscall6(SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
@@ -307,6 +389,9 @@ static int run_ring(long socket_descriptor, uint32_t setup_flags,
 
 void _start(void) {
     int32_t sockets[2] = {-1, -1};
+    struct user_sockaddr_in queue_address;
+    long queue_receiver = -1;
+    long queue_sender = -1;
     long socket_descriptor = -1;
     int failures = 0;
 
@@ -318,16 +403,45 @@ void _start(void) {
     } else {
         socket_descriptor = sockets[0];
     }
+    memset(&queue_address, 0, sizeof(queue_address));
+    queue_address.family = AF_INET;
+    queue_address.port = 0xc29bu;
+    queue_address.address = 0x0100007fu;
+    if (!failures) {
+        queue_receiver = raw_syscall6(
+            SYS_socket, AF_INET, SOCK_DGRAM, 0, 0, 0, 0);
+        queue_sender = raw_syscall6(
+            SYS_socket, AF_INET, SOCK_DGRAM, 0, 0, 0, 0);
+        failures += record_failure(
+            queue_receiver < 0 || queue_sender < 0,
+            "QUEUE_SOCKET_CREATE_FAIL\n");
+    }
     if (!failures)
-        failures += run_ring(socket_descriptor, 0u, IORING_OP_URING_CMD);
+        failures += record_failure(
+            bring_loopback_up(queue_receiver),
+            "LOOPBACK_ENABLE_FAIL\n");
+    if (!failures)
+        failures += record_failure(raw_syscall6(
+            SYS_bind, queue_receiver, (long)&queue_address,
+            sizeof(queue_address), 0, 0, 0) != 0,
+            "QUEUE_SOCKET_BIND_FAIL\n");
     if (!failures)
         failures += run_ring(
-            socket_descriptor, IORING_SETUP_SQE128,
+            socket_descriptor, queue_receiver, queue_sender,
+            &queue_address, 0u, IORING_OP_URING_CMD);
+    if (!failures)
+        failures += run_ring(
+            socket_descriptor, queue_receiver, queue_sender,
+            &queue_address, IORING_SETUP_SQE128,
             IORING_OP_URING_CMD128);
     if (socket_descriptor >= 0)
         (void)raw_syscall6(SYS_close, socket_descriptor, 0, 0, 0, 0, 0);
     if (sockets[1] >= 0)
         (void)raw_syscall6(SYS_close, sockets[1], 0, 0, 0, 0, 0);
+    if (queue_receiver >= 0)
+        (void)raw_syscall6(SYS_close, queue_receiver, 0, 0, 0, 0, 0);
+    if (queue_sender >= 0)
+        (void)raw_syscall6(SYS_close, queue_sender, 0, 0, 0, 0, 0);
     print_text(failures ? "io-uring-uring-cmd: FAIL\n" :
                           "io-uring-uring-cmd: PASS\n");
     raw_syscall6(SYS_exit, failures ? 1 : 0, 0, 0, 0, 0, 0);

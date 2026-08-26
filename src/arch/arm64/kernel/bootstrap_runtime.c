@@ -18382,6 +18382,30 @@ static int socket_describe_retained(
     info->domain = socket->domain;
     info->type = socket->type;
     info->protocol = socket->protocol;
+    if (socket->domain == LINUX_AF_UNIX || socket->local_stream) {
+        if ((socket->type == LINUX_SOCK_DGRAM ||
+             socket->type == LINUX_SOCK_SEQPACKET) &&
+            socket->dgram_count)
+            info->receive_queue_bytes =
+                socket->dgrams[socket->dgram_head].length;
+        else
+            info->receive_queue_bytes = socket->unix_rx_count;
+    } else if (socket->domain == LINUX_AF_NETLINK) {
+        info->receive_queue_bytes = netlink_packet_front_length(socket);
+    } else if (socket->rx_count) {
+        arm64_socket_rx_t *entry = &socket->rx[socket->rx_head];
+
+        info->receive_queue_bytes = entry->pbuf ?
+            entry->pbuf->tot_len - entry->offset : 0u;
+    }
+    if ((socket->domain == LINUX_AF_INET ||
+         socket->domain == LINUX_AF_INET6) &&
+        socket->type == LINUX_SOCK_STREAM && socket->tcp) {
+        uint32_t available = tcp_sndbuf(socket->tcp);
+
+        info->send_queue_bytes = available < TCP_SND_BUF ?
+            TCP_SND_BUF - available : 0u;
+    }
     info->connected = socket->connected ? 1u : 0u;
     info->listening = socket->listening ? 1u : 0u;
     info->bound = socket->bind_length ? 1u : 0u;

@@ -12537,7 +12537,23 @@ static int64_t edge_linux_io_uring_execute_uring_cmd(
         nested.arguments[2] = submission->address3;
         return edge_linux_sys_socket_address(&nested);
     case EDGE_LINUX_SOCKET_URING_OP_SIOCINQ:
+        if (descriptor_info.domain != EDGE_LINUX_AF_INET &&
+            descriptor_info.domain != EDGE_LINUX_AF_INET6)
+            return -EDGE_LINUX_EOPNOTSUPP;
+        if (descriptor_info.listening &&
+            descriptor_info.type == EDGE_LINUX_SOCK_STREAM)
+            return -EDGE_LINUX_EINVAL;
+        return descriptor_info.receive_queue_bytes > INT32_MAX ?
+            INT32_MAX : (int64_t)descriptor_info.receive_queue_bytes;
     case EDGE_LINUX_SOCKET_URING_OP_SIOCOUTQ:
+        if (descriptor_info.domain != EDGE_LINUX_AF_INET &&
+            descriptor_info.domain != EDGE_LINUX_AF_INET6)
+            return -EDGE_LINUX_EOPNOTSUPP;
+        if (descriptor_info.listening &&
+            descriptor_info.type == EDGE_LINUX_SOCK_STREAM)
+            return -EDGE_LINUX_EINVAL;
+        return descriptor_info.send_queue_bytes > INT32_MAX ?
+            INT32_MAX : (int64_t)descriptor_info.send_queue_bytes;
     case EDGE_LINUX_SOCKET_URING_OP_TX_TIMESTAMP:
     default:
         return -EDGE_LINUX_EOPNOTSUPP;

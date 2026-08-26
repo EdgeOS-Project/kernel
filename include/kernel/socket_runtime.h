@@ -42,6 +42,8 @@ typedef struct kernel_socket_descriptor_info {
     uint32_t domain;
     uint32_t type;
     uint32_t protocol;
+    uint32_t receive_queue_bytes;
+    uint32_t send_queue_bytes;
     uint8_t connected;
     uint8_t listening;
     uint8_t bound;

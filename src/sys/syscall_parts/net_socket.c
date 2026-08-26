@@ -1285,6 +1285,20 @@ static int x86_socket_describe_entry(
     info->domain = (uint32_t)socket->domain;
     info->type = (uint32_t)socket->type;
     info->protocol = (uint32_t)socket->protocol;
+    if ((socket->type == LINUX_SOCK_DGRAM ||
+         socket->type == LINUX_SOCK_SEQPACKET) &&
+        socket->packet_count)
+        info->receive_queue_bytes = socket_packet_front_length(socket);
+    else
+        info->receive_queue_bytes = socket->rx_len;
+    if ((socket->domain == LINUX_AF_INET ||
+         socket->domain == LINUX_AF_INET6) &&
+        socket->type == LINUX_SOCK_STREAM && socket->lwip_pcb) {
+        uint32_t available = tcp_sndbuf((struct tcp_pcb *)socket->lwip_pcb);
+
+        info->send_queue_bytes = available < TCP_SND_BUF ?
+            TCP_SND_BUF - available : 0u;
+    }
     info->connected = socket->connected ? 1u : 0u;
     info->listening = socket->listening ? 1u : 0u;
     info->bound = socket->bind_len ? 1u : 0u;

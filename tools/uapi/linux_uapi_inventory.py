@@ -189,7 +189,7 @@ EDGEOS_ASSESSMENTS = [
             "MSG_RING data delivery, CQE flag forwarding and buffered target-CQ overflow",
             "MSG_RING registered-file transfer with explicit or allocated target slots, CQE skipping and retained lifetime",
             "SEND_ZC and SENDMSG_ZC copy fallback for IPv4 and IPv6 sockets with Linux main and notification CQEs",
-            "URING_CMD and URING_CMD128 dispatch for socket GETSOCKOPT, SETSOCKOPT, GETSOCKNAME and GETPEERNAME commands",
+            "URING_CMD and URING_CMD128 dispatch for socket SIOCINQ, SIOCOUTQ, GETSOCKOPT, SETSOCKOPT, GETSOCKNAME and GETPEERNAME commands",
             "pending poll requests retain their open file descriptions across descriptor close and reuse",
             "EPOLL_WAIT with retained epoll objects, asynchronous completion and native x86_64 and AArch64 event layouts",
             "LINK_TIMEOUT cancellation races, target lifetime and paired completion results",
@@ -220,7 +220,7 @@ EDGEOS_ASSESSMENTS = [
             "SQPOLL setup, affinity validation, non-fixed descriptor feature reporting and SQ_WAKEUP or SQ_WAIT enter control",
         ],
         "missing": [
-            "remaining URING_CMD socket and device command consumers",
+            "URING_CMD socket TX_TIMESTAMP and remaining supported device command consumers",
             "remaining ia32 and x32 semantic coverage across supported operations",
         ],
         "runtime_tests": [
@@ -332,7 +332,7 @@ EDGEOS_ASSESSMENTS = [
                 "registration, mmap rejection and registered wait arguments, "
                 "plus IORING_SETUP_NO_MMAP shared-ring and SQE user memory, "
                 "page-alignment errors, direct NOP submission and CQE layout, "
-                "plus URING_CMD and URING_CMD128 socket option and name "
+                "plus URING_CMD and URING_CMD128 socket queue, option and name "
                 "commands with unsupported-command and layout validation, "
                 "plus TCP RECV_ZC with nodev ZCRX registration, CQE32 data "
                 "offsets, finite multishot completion, refill mmap, flush "
