@@ -2395,6 +2395,11 @@ static void test_reuseport_socket_array(void) {
     assert(kernel_bpf_map_delete(map, &key) == -EDGE_LINUX_ENOENT);
     assert(kernel_bpf_reuseport_array_update(
                map, &key, 10u, KERNEL_BPF_ANY) == 0);
+    kernel_bpf_reuseport_socket_detach(0x1122334455667788ull);
+    assert(kernel_bpf_map_lookup(map, &key, &cookie) ==
+           -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_reuseport_array_update(
+               map, &key, 10u, KERNEL_BPF_ANY) == 0);
     g_close_observer(0x1122334455667788ull);
     assert(kernel_bpf_map_lookup(map, &key, &cookie) ==
            -EDGE_LINUX_ENOENT);

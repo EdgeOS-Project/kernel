@@ -2629,7 +2629,8 @@ static uint8_t *bpf_socket_map_cookie(kernel_bpf_map_t *map,
     return entry + 1u + (bpf_map_is_sockhash(map) ? map->key_size : 0u);
 }
 
-static void bpf_socket_description_closed(uint64_t identity) {
+static void bpf_socket_description_remove(uint64_t identity,
+                                          int reuseport_only) {
     if (!identity) return;
     bpf_lock();
     for (uint32_t object_index = 0;
@@ -2641,10 +2642,13 @@ static void bpf_socket_description_closed(uint64_t identity) {
             object->kind != KERNEL_BPF_OBJECT_MAP)
             continue;
         map = &object->value.map;
-        if (!bpf_map_is_socket_map(map) &&
-            !bpf_map_is_reuseport_array(map) &&
-            !bpf_map_is_sk_storage(map))
+        if (reuseport_only) {
+            if (!bpf_map_is_reuseport_array(map)) continue;
+        } else if (!bpf_map_is_socket_map(map) &&
+                   !bpf_map_is_reuseport_array(map) &&
+                   !bpf_map_is_sk_storage(map)) {
             continue;
+        }
         for (uint32_t entry_index = 0;
              entry_index < map->storage_entries; ++entry_index) {
             uint8_t *entry = bpf_map_entry(map, entry_index);
@@ -2659,6 +2663,14 @@ static void bpf_socket_description_closed(uint64_t identity) {
         }
     }
     bpf_unlock();
+}
+
+static void bpf_socket_description_closed(uint64_t identity) {
+    bpf_socket_description_remove(identity, 0);
+}
+
+void kernel_bpf_reuseport_socket_detach(uint64_t description_identity) {
+    bpf_socket_description_remove(description_identity, 1);
 }
 
 static void bpf_map_copy_value_out(kernel_bpf_map_t *map, uint32_t index,

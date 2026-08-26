@@ -1642,6 +1642,10 @@ static int64_t x86_socket_connect_entry(
             s->type == LINUX_SOCK_DGRAM && s->lwip_pcb)
             EDGE_LWIP_DO(
                 udp_disconnect((struct udp_pcb *)s->lwip_pcb));
+        if ((s->domain == LINUX_AF_INET || s->domain == LINUX_AF_INET6) &&
+            s->type == LINUX_SOCK_DGRAM)
+            kernel_bpf_reuseport_socket_detach(
+                file_ref_identity(fde->file_ref));
         s->connected = 0;
         s->peer_len = 0;
         s->rx_peer_len = 0;

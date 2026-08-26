@@ -19089,6 +19089,11 @@ static int64_t socket_connect_retained(
             return -LINUX_EAFNOSUPPORT;
         if (socket->domain == LINUX_AF_UNIX) socket->unix_peer = -1;
         if (socket->udp) udp_disconnect(socket->udp);
+        if ((socket->domain == LINUX_AF_INET ||
+             socket->domain == LINUX_AF_INET6) &&
+            socket->type == LINUX_SOCK_DGRAM)
+            kernel_bpf_reuseport_socket_detach(
+                fd->open_description_id);
         socket->connected = 0;
         socket->connecting = 0;
         socket->connect_start_us = 0;

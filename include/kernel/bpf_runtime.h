@@ -237,6 +237,7 @@ int kernel_bpf_socket_map_update(int object_id, const void *key,
 int kernel_bpf_reuseport_array_update(int object_id, const void *key,
                                       uint64_t socket_descriptor,
                                       uint64_t flags);
+void kernel_bpf_reuseport_socket_detach(uint64_t description_identity);
 int kernel_bpf_perf_event_array_update(int object_id, const void *key,
                                        int32_t event_id, uint64_t flags);
 int kernel_bpf_cgroup_array_update(int object_id, const void *key,

@@ -8,6 +8,7 @@
 #define SYS_write 1
 #define SYS_close 3
 #define SYS_socket 41
+#define SYS_connect 42
 #define SYS_bind 49
 #define SYS_listen 50
 #define SYS_setsockopt 54
@@ -19,6 +20,7 @@
 #define SYS_write 64
 #define SYS_exit 93
 #define SYS_socket 198
+#define SYS_connect 203
 #define SYS_bind 200
 #define SYS_listen 201
 #define SYS_setsockopt 208
@@ -27,6 +29,7 @@
 #error "bpf_reuseport_array_abi_probe requires a Linux 64-bit architecture"
 #endif
 
+#define AF_UNSPEC 0
 #define AF_UNIX 1
 #define AF_INET 2
 #define SOCK_STREAM 1
@@ -267,6 +270,7 @@ static int test_reuseport_array(void) {
     int first = -1;
     int second = -1;
     int udp = -1;
+    int disconnect_udp = -1;
     int unbound = -1;
     int no_reuse = -1;
     int unix_socket = -1;
@@ -335,12 +339,16 @@ static int test_reuseport_array(void) {
     first = open_bound_socket(SOCK_STREAM, 1, 1);
     second = open_bound_socket(SOCK_STREAM, 1, 1);
     udp = open_bound_socket(SOCK_DGRAM, 1, 0);
+    disconnect_udp = open_bound_socket(SOCK_DGRAM, 1, 0);
     failures += expect_result(
         "reuseport-first-socket", first < 0 ? first : 0, 0);
     failures += expect_result(
         "reuseport-second-socket", second < 0 ? second : 0, 0);
     failures += expect_result(
         "reuseport-udp-socket", udp < 0 ? udp : 0, 0);
+    failures += expect_result(
+        "reuseport-disconnect-udp-socket",
+        disconnect_udp < 0 ? disconnect_udp : 0, 0);
     if (first >= 0) {
         value = (uint32_t)first;
         failures += expect_result(
@@ -405,6 +413,24 @@ static int test_reuseport_array(void) {
                 BPF_MAP_LOOKUP_ELEM, (int)map, &key_two,
                 &cookie, 0), -ENOENT);
     }
+    if (disconnect_udp >= 0) {
+        struct sockaddr_in unspec = {0};
+
+        value = (uint32_t)disconnect_udp;
+        failures += expect_result(
+            "reuseport-disconnect-insert", map_element(
+                BPF_MAP_UPDATE_ELEM, (int)map, &key_two,
+                &value, BPF_ANY), 0);
+        unspec.family = AF_UNSPEC;
+        failures += expect_result(
+            "reuseport-udp-disconnect", raw_syscall6(
+                SYS_connect, disconnect_udp, (long)&unspec,
+                sizeof(unspec), 0, 0, 0), 0);
+        failures += expect_result(
+            "reuseport-disconnect-removes", map_element(
+                BPF_MAP_LOOKUP_ELEM, (int)map, &key_two,
+                &cookie, 0), -ENOENT);
+    }
     if (first >= 0)
         (void)raw_syscall6(SYS_close, first, 0, 0, 0, 0, 0);
     if (second >= 0)
@@ -415,6 +441,9 @@ static int test_reuseport_array(void) {
         (void)raw_syscall6(SYS_close, no_reuse, 0, 0, 0, 0, 0);
     if (unix_socket >= 0)
         (void)raw_syscall6(SYS_close, unix_socket, 0, 0, 0, 0, 0);
+    if (disconnect_udp >= 0)
+        (void)raw_syscall6(
+            SYS_close, disconnect_udp, 0, 0, 0, 0, 0);
     (void)raw_syscall6(SYS_close, map, 0, 0, 0, 0, 0);
     return failures;
 }
