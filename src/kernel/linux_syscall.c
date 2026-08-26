@@ -5208,8 +5208,17 @@ static int64_t edge_linux_sys_memfd_secret(
 #define EDGE_LINUX_BPF_LINK_GET_FD_BY_ID 30u
 #define EDGE_LINUX_BPF_LINK_GET_NEXT_ID  31u
 #define EDGE_LINUX_BPF_ENABLE_STATS      32u
+#define EDGE_LINUX_BPF_ITER_CREATE       33u
 #define EDGE_LINUX_BPF_LINK_DETACH       34u
 #define EDGE_LINUX_BPF_PROG_BIND_MAP     35u
+#define EDGE_LINUX_BPF_TOKEN_CREATE      36u
+#define EDGE_LINUX_BPF_PROG_STREAM_READ_BY_FD 37u
+#define EDGE_LINUX_BPF_PROG_ASSOC_STRUCT_OPS 38u
+
+#define EDGE_LINUX_BPF_F_TEST_SKB_CHECKSUM_COMPLETE (1u << 2)
+#define EDGE_LINUX_BPF_F_TEST_RUN_ON_CPU (1u << 0)
+#define EDGE_LINUX_BPF_TEST_PACKET_MAX 4096u
+#define EDGE_LINUX_BPF_TEST_REPEAT_MAX 1000000u
 
 #define EDGE_LINUX_BPF_F_RDONLY (1u << 3)
 #define EDGE_LINUX_BPF_F_WRONLY (1u << 4)
@@ -7020,6 +7029,16 @@ static int64_t edge_linux_bpf_program_test_run(
         edge_linux_syscall_context_t *context, uint64_t user_attribute,
         uint32_t attribute_size) {
     edge_linux_bpf_program_test_attribute_t attribute;
+    kernel_bpf_program_info_t program_info;
+    kernel_bpf_socket_filter_context_t socket_context;
+    kernel_task_scratch_t *scratch = arch_task_scratch_current();
+    uint32_t repeat;
+    uint32_t return_value = 0u;
+    uint32_t output_size;
+    uint32_t copy_size;
+    uint32_t duration;
+    uint64_t started;
+    uint64_t elapsed;
     int program_object_id;
     int status;
 
@@ -7034,7 +7053,111 @@ static int64_t edge_linux_bpf_program_test_run(
         (int32_t)attribute.program_descriptor,
         KERNEL_BPF_OBJECT_PROGRAM);
     if (program_object_id < 0) return program_object_id;
-    return -EDGE_LINUX_ENOTSUPP;
+    status = kernel_bpf_program_info(program_object_id, &program_info);
+    if (status < 0) return status;
+    if (program_info.type != KERNEL_BPF_PROG_TYPE_SOCKET_FILTER)
+        goto raw_tracepoint;
+    if ((attribute.flags &
+         ~EDGE_LINUX_BPF_F_TEST_SKB_CHECKSUM_COMPLETE) ||
+        attribute.cpu || attribute.batch_size ||
+        attribute.input_context || attribute.output_context)
+        return -EDGE_LINUX_EINVAL;
+    if (attribute.input_data_size < 14u ||
+        attribute.input_data_size > EDGE_LINUX_BPF_TEST_PACKET_MAX)
+        return -EDGE_LINUX_EINVAL;
+    if (!attribute.input_data) return -EDGE_LINUX_EFAULT;
+    if (!scratch) return -EDGE_LINUX_ENOMEM;
+    repeat = attribute.repeat ? attribute.repeat : 1u;
+    if (repeat > EDGE_LINUX_BPF_TEST_REPEAT_MAX)
+        return -EDGE_LINUX_E2BIG;
+    if (edge_linux_copy_from_user(
+            context, scratch->xattr_scratch, attribute.input_data,
+            attribute.input_data_size) < 0)
+        return -EDGE_LINUX_EFAULT;
+
+    memset(&socket_context, 0, sizeof(socket_context));
+    socket_context.length = attribute.input_data_size;
+    started = boottime_monotonic_us();
+    for (uint32_t iteration = 0u; iteration < repeat; ++iteration) {
+        status = kernel_bpf_program_run_socket_filter(
+            program_object_id, &socket_context, &return_value);
+        if (status < 0) return status;
+    }
+    elapsed = boottime_monotonic_us() - started;
+    elapsed = elapsed * 1000u / repeat;
+    duration = elapsed > UINT32_MAX ? UINT32_MAX : (uint32_t)elapsed;
+
+    /* Linux rebuilds the Ethernet header after socket-filter execution. */
+    memset(scratch->xattr_scratch, 0, 14u);
+    output_size = attribute.input_data_size;
+    copy_size = output_size;
+    status = 0;
+    if (attribute.output_data_size &&
+        copy_size > attribute.output_data_size) {
+        copy_size = attribute.output_data_size;
+        status = -EDGE_LINUX_ENOSPC;
+    }
+    if (attribute.output_data && copy_size &&
+        edge_linux_copy_to_user(
+            context, attribute.output_data, scratch->xattr_scratch,
+            copy_size) < 0)
+        return -EDGE_LINUX_EFAULT;
+    if (edge_linux_copy_to_user(
+            context,
+            user_attribute + offsetof(
+                edge_linux_bpf_program_test_attribute_t,
+                output_data_size),
+            &output_size, sizeof(output_size)) < 0 ||
+        edge_linux_copy_to_user(
+            context,
+            user_attribute + offsetof(
+                edge_linux_bpf_program_test_attribute_t,
+                return_value),
+            &return_value, sizeof(return_value)) < 0 ||
+        edge_linux_copy_to_user(
+            context,
+            user_attribute + offsetof(
+                edge_linux_bpf_program_test_attribute_t, duration),
+            &duration, sizeof(duration)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    return status;
+
+raw_tracepoint:
+    if (program_info.type != KERNEL_BPF_PROG_TYPE_RAW_TRACEPOINT)
+        return -EDGE_LINUX_ENOTSUPP;
+    if (attribute.input_data || attribute.output_data ||
+        attribute.input_data_size || attribute.output_data_size ||
+        attribute.output_context || attribute.output_context_size ||
+        attribute.duration || attribute.repeat || attribute.batch_size ||
+        (attribute.flags & ~EDGE_LINUX_BPF_F_TEST_RUN_ON_CPU) ||
+        (!(attribute.flags & EDGE_LINUX_BPF_F_TEST_RUN_ON_CPU) &&
+         attribute.cpu))
+        return -EDGE_LINUX_EINVAL;
+    if (attribute.input_context_size > 6u * sizeof(uint64_t))
+        return -EDGE_LINUX_EINVAL;
+    if ((attribute.flags & EDGE_LINUX_BPF_F_TEST_RUN_ON_CPU) &&
+        attribute.cpu >= kernel_bpf_possible_cpu_count())
+        return -EDGE_LINUX_ENXIO;
+    if (!scratch) return -EDGE_LINUX_ENOMEM;
+    if (attribute.input_context_size &&
+        edge_linux_copy_from_user(
+            context, scratch->xattr_scratch, attribute.input_context,
+            attribute.input_context_size) < 0)
+        return -EDGE_LINUX_EFAULT;
+    status = kernel_bpf_program_run_raw_tracepoint(
+        program_object_id,
+        (const uint64_t *)(const void *)scratch->xattr_scratch,
+        attribute.input_context_size / sizeof(uint64_t),
+        &return_value);
+    if (status < 0) return status;
+    if (edge_linux_copy_to_user(
+            context,
+            user_attribute + offsetof(
+                edge_linux_bpf_program_test_attribute_t,
+                return_value),
+            &return_value, sizeof(return_value)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    return 0;
 }
 
 static int64_t edge_linux_bpf_enable_stats(

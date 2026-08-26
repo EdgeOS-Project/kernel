@@ -3262,6 +3262,34 @@ static void test_socket_filter_program(void) {
     }
 }
 
+static void test_raw_tracepoint_program(void) {
+    const kernel_bpf_instruction_t instructions[] = {
+        { .code = 0x61u, .registers = 0x10u,
+          .offset = 8, .immediate = 0 },
+        { .code = 0x95u, .registers = 0u,
+          .offset = 0, .immediate = 0 },
+    };
+    kernel_bpf_program_create_request_t request = {
+        .type = KERNEL_BPF_PROG_TYPE_RAW_TRACEPOINT,
+        .instruction_count = 2u,
+    };
+    uint64_t arguments[2] = { 0x1122334455667788ull, 321u };
+    uint32_t result = 0u;
+    int program;
+
+    strcpy(request.name, "raw_test");
+    program = kernel_bpf_program_create(&request, instructions);
+    assert(program >= 0);
+    assert(kernel_bpf_program_run_raw_tracepoint(
+               program, arguments, 2u, &result) == 0);
+    assert(result == 321u);
+    assert(kernel_bpf_program_run_raw_tracepoint(
+               program, 0, 2u, &result) == -EDGE_LINUX_EINVAL);
+    assert(kernel_bpf_program_run_raw_tracepoint(
+               program, arguments, 7u, &result) == -EDGE_LINUX_EINVAL);
+    kernel_bpf_object_release(program);
+}
+
 int main(void) {
     test_array_map();
     test_cgroup_array();
@@ -3300,6 +3328,7 @@ int main(void) {
     test_task_local_storage();
     test_arena_map();
     test_socket_filter_program();
+    test_raw_tracepoint_program();
     puts("bpf_runtime_unit: PASS");
     return 0;
 }

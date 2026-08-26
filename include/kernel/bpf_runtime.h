@@ -337,6 +337,9 @@ int kernel_bpf_program_run_cgroup_device_at(
 int kernel_bpf_program_run_socket_filter(
     int object_id, const kernel_bpf_socket_filter_context_t *context,
     uint32_t *result);
+int kernel_bpf_program_run_raw_tracepoint(
+    int object_id, const uint64_t *arguments, uint32_t argument_count,
+    uint32_t *result);
 int kernel_bpf_raw_tracepoint_open(const char *name, int object_id);
 void kernel_bpf_raw_tracepoint_sys_enter(void *user_registers,
                                          uint64_t system_call_number);

@@ -6708,6 +6708,29 @@ int kernel_bpf_program_run_socket_filter(
     return status;
 }
 
+int kernel_bpf_program_run_raw_tracepoint(
+        int object_id, const uint64_t *arguments, uint32_t argument_count,
+        uint32_t *result) {
+    kernel_bpf_object_t *object;
+    uint64_t empty_context = 0u;
+    int notify_waiters = 0;
+    int status;
+
+    if (!result || argument_count > 6u ||
+        (argument_count && !arguments))
+        return -EDGE_LINUX_EINVAL;
+    bpf_lock();
+    object = bpf_object_locked(object_id);
+    status = bpf_program_run_cgroup_device_locked(
+        object, argument_count ? (const void *)arguments :
+                                 (const void *)&empty_context,
+        argument_count * sizeof(*arguments), result, &notify_waiters,
+        0u, 0u, KERNEL_BPF_PROG_TYPE_RAW_TRACEPOINT);
+    bpf_unlock();
+    if (notify_waiters) kernel_bpf_ringbuf_state_changed();
+    return status;
+}
+
 int kernel_bpf_program_run_cgroup_device_at(
     int object_id, uint32_t cgroup_id,
     const kernel_bpf_cgroup_device_context_t *context,

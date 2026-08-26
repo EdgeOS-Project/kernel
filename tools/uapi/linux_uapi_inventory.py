@@ -436,6 +436,7 @@ EDGEOS_ASSESSMENTS = [
             "resizable-hash lockless per-bucket concurrency",
             "remaining specialized map-family concurrency semantics, plus instruction-array verifier and jump-table integration",
             "additional attachment families and program types",
+            "BPF iterator links, delegated BPF tokens, program streams and struct-ops association",
             "BTF program line and function metadata integration, CO-RE relocation and split or module BTF",
         ],
         "runtime_tests": [
@@ -456,6 +457,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/bpf_stack_trace_abi_probe.c",
             "tools/tests/bpf_btf_graph_abi_probe.c",
             "tools/tests/bpf_socket_filter_abi_probe.c",
+            "tools/tests/bpf_prog_test_run_abi_probe.c",
             "tools/tests/bpf_runtime_unit.c",
         ],
         "linux_oracle": {
@@ -474,8 +476,10 @@ EDGEOS_ASSESSMENTS = [
                 "cgroup array descriptors and retained cgroup lifetime, "
                 "BPF filesystem object pinning, explicit program-map binding, "
                 "BTF graph and typed-map size validation, "
-                "runtime statistics descriptors and supported program-test "
-                "error behavior, stack-trace map creation, value-depth limits, "
+                "runtime statistics descriptors and socket-filter or raw-"
+                "tracepoint program-test execution, returned packet data, "
+                "repeat timing, output truncation and error behavior, "
+                "stack-trace map creation, value-depth limits, "
                 "rounded bucket addressing, raw sys_enter tracepoint attachment "
                 "and get_stackid helper population, socket-filter loading, "
                 "SO_ATTACH_BPF replacement, "
