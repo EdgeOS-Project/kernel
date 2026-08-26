@@ -39,6 +39,7 @@
 #define SOCK_DGRAM 2
 #define SOL_SOCKET 1
 #define SO_GET_FILTER 26
+#define SO_ATTACH_FILTER 26
 #define SO_DETACH_FILTER 27
 #define SO_LOCK_FILTER 44
 #define SO_ATTACH_BPF 50
@@ -55,6 +56,19 @@ struct bpf_instruction {
     uint8_t registers;
     int16_t offset;
     int32_t immediate;
+};
+
+struct classic_bpf_instruction {
+    uint16_t code;
+    uint8_t jump_true;
+    uint8_t jump_false;
+    uint32_t value;
+};
+
+struct classic_bpf_program {
+    uint16_t length;
+    uint16_t padding[3];
+    uint64_t instructions;
 };
 
 struct bpf_program_load_attribute {
@@ -197,6 +211,15 @@ static long attach_program(int socket_descriptor,
 }
 
 START_ATTRIBUTES void _start(void) {
+    const struct classic_bpf_instruction classic_accept_instruction = {
+        .code = 0x06u,
+        .value = UINT32_MAX,
+    };
+    const struct classic_bpf_program classic_accept_program = {
+        .length = 1u,
+        .instructions =
+            (uint64_t)(uintptr_t)&classic_accept_instruction,
+    };
     const struct bpf_instruction reject_instructions[] = {
         { .code = 0xb7u, .registers = 0u,
           .offset = 0, .immediate = 0 },
@@ -242,6 +265,39 @@ START_ATTRIBUTES void _start(void) {
         failures += expect_result(
             "bind", raw_syscall6(SYS_bind, receiver, (long)&address,
                                   sizeof(address), 0, 0, 0), 0);
+        failures += expect_result(
+            "classic-attach",
+            raw_syscall6(SYS_setsockopt, receiver, SOL_SOCKET,
+                         SO_ATTACH_FILTER,
+                         (long)&classic_accept_program,
+                         sizeof(classic_accept_program), 0), 0);
+        {
+            uint32_t filter_length = 0u;
+            failures += expect_result(
+                "classic-filter-length-query",
+                raw_syscall6(SYS_getsockopt, receiver, SOL_SOCKET,
+                             SO_GET_FILTER, 0,
+                             (long)&filter_length, 0), 0);
+            failures += expect_result(
+                "classic-filter-length", filter_length, 1);
+        }
+        {
+            struct classic_bpf_instruction dumped = {0};
+            uint32_t filter_length = 1u;
+            failures += expect_result(
+                "classic-filter-dump",
+                raw_syscall6(SYS_getsockopt, receiver, SOL_SOCKET,
+                             SO_GET_FILTER, (long)&dumped,
+                             (long)&filter_length, 0), 0);
+            failures += expect_result(
+                "classic-filter-dump-length", filter_length, 1);
+            failures += expect_result(
+                "classic-filter-code", dumped.code,
+                classic_accept_instruction.code);
+            failures += expect_result(
+                "classic-filter-value", dumped.value,
+                classic_accept_instruction.value);
+        }
         reject_program = load_program(
             reject_instructions, 2u, "reject");
         length_program = load_program(
