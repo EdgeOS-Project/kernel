@@ -383,12 +383,12 @@ EDGEOS_ASSESSMENTS = [
             "deprecated shared and per-CPU cgroup-storage maps with attachment allocation, helper access, update, iteration, detach persistence and cgroup-release cleanup",
             "arena-map creation validation, map information, element-operation errors and shared writable mappings for bounded resident ranges",
             "instruction-array creation, offset update and zeroing behavior, lookup, iteration, freeze and unsupported delete and batch operations",
-            "resizable-hash creation flag and size-hint validation, incremental storage growth, element operations, iteration, lookup-and-delete, batch operations and freeze behavior",
+            "resizable-hash creation flag and size-hint validation, incremental storage growth, Linux key and value size limits, multi-page element copies, element operations, iteration, lookup-and-delete, batch operations and freeze behavior",
             "ia32 and x32 fixed-width map-create and map-element attribute layouts",
         ],
         "missing": [
             "struct-ops maps, sparse 4 GiB arena ranges and arena kfunc integration, socket-map and reuseport program attachment and redirect execution, modern local-storage program helper access, socket diagnostic export, CPU-map packet redirect execution, device-map packet redirect execution and AF_XDP socket-backed XSK-map entries",
-            "resizable-hash lockless per-bucket concurrency and full Linux key and value size range",
+            "resizable-hash lockless per-bucket concurrency",
             "remaining specialized map-family concurrency semantics, plus instruction-array verifier and jump-table integration",
             "additional attachment families and program types",
             "BTF program line and function metadata integration, CO-RE relocation and split or module BTF",
@@ -475,7 +475,8 @@ EDGEOS_ASSESSMENTS = [
                 "instruction-array creation, offset updates, lookup, "
                 "iteration, freeze and unsupported delete and batch behavior, "
                 "resizable-hash creation flags, size hints, incremental "
-                "storage growth, element and batch operations, iteration, "
+                "storage growth, Linux key and value size limits, multi-page "
+                "element copies, element and batch operations, iteration, "
                 "lookup-and-delete and freeze behavior, "
                 "plus ia32 "
                 "and x32 page-boundary map-create, "

@@ -164,13 +164,14 @@ static int expect_result(const char *name, long actual, long expected) {
     return 1;
 }
 
-static long create_map(uint32_t max_entries, uint32_t flags,
-                       uint64_t map_extra) {
+static long create_sized_map(uint32_t key_size, uint32_t value_size,
+                             uint32_t max_entries, uint32_t flags,
+                             uint64_t map_extra) {
     struct bpf_map_create_attribute attribute = {0};
 
     attribute.map_type = BPF_MAP_TYPE_RHASH;
-    attribute.key_size = sizeof(uint32_t);
-    attribute.value_size = sizeof(uint64_t);
+    attribute.key_size = key_size;
+    attribute.value_size = value_size;
     attribute.max_entries = max_entries;
     attribute.map_flags = flags;
     attribute.map_extra = map_extra;
@@ -182,6 +183,13 @@ static long create_map(uint32_t max_entries, uint32_t flags,
     return raw_syscall6(
         SYS_bpf, BPF_MAP_CREATE, (long)&attribute,
         sizeof(attribute), 0, 0, 0);
+}
+
+static long create_map(uint32_t max_entries, uint32_t flags,
+                       uint64_t map_extra) {
+    return create_sized_map(
+        sizeof(uint32_t), sizeof(uint64_t), max_entries, flags,
+        map_extra);
 }
 
 static long map_element(long command, int map_fd, uint32_t *key,
@@ -223,6 +231,40 @@ static long lookup_batch(int map_fd, uint32_t *keys, uint64_t *values,
     return status;
 }
 
+static int test_multi_page_elements(void) {
+    static uint8_t key[8192];
+    static uint8_t value[8192];
+    static uint8_t output[8192];
+    long descriptor;
+    int failures = 0;
+
+    for (uint32_t index = 0; index < sizeof(key); ++index) {
+        key[index] = (uint8_t)(index * 17u + 3u);
+        value[index] = (uint8_t)(index * 29u + 7u);
+        output[index] = 0u;
+    }
+    descriptor = create_sized_map(
+        sizeof(key), sizeof(value), 2u, BPF_F_NO_PREALLOC, 1u);
+    if (descriptor < 0)
+        return expect_result("multi-page-create", descriptor, 0);
+    failures += expect_result(
+        "multi-page-update", map_element(
+            BPF_MAP_UPDATE_ELEM, descriptor, (uint32_t *)key, value,
+            BPF_NOEXIST), 0);
+    failures += expect_result(
+        "multi-page-lookup", map_element(
+            BPF_MAP_LOOKUP_ELEM, descriptor, (uint32_t *)key, output,
+            0u), 0);
+    for (uint32_t index = 0; index < sizeof(value); ++index) {
+        if (output[index] == value[index]) continue;
+        print_text("FAIL multi-page-value\n");
+        ++failures;
+        break;
+    }
+    (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+    return failures;
+}
+
 static int test_resizable_hash(void) {
     uint32_t keys[] = {10u, 20u, 30u};
     uint64_t values[] = {100u, 200u, 300u};
@@ -251,6 +293,24 @@ static int test_resizable_hash(void) {
     failures += expect_result(
         "max-entries-overflow", create_map(
             (1u << 31u) + 1u, BPF_F_NO_PREALLOC, 0u), -E2BIG);
+    descriptor = create_sized_map(
+        65535u, 64u, 1u, BPF_F_NO_PREALLOC, 1u);
+    failures += descriptor < 0 ?
+        expect_result("large-key", descriptor, 0) : 0;
+    if (descriptor >= 0)
+        (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+    failures += expect_result(
+        "key-over-u16", create_sized_map(
+            65536u, 64u, 1u, BPF_F_NO_PREALLOC, 1u), -E2BIG);
+    descriptor = create_sized_map(
+        4u, 4194251u, 1u, BPF_F_NO_PREALLOC, 1u);
+    failures += descriptor < 0 ?
+        expect_result("large-value", descriptor, 0) : 0;
+    if (descriptor >= 0)
+        (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+    failures += expect_result(
+        "element-too-large", create_sized_map(
+            4u, 4194252u, 1u, BPF_F_NO_PREALLOC, 1u), -E2BIG);
     descriptor = create_map(2u, BPF_F_NO_PREALLOC, 1u);
     if (descriptor < 0)
         return failures + expect_result("create", descriptor, 0);
@@ -335,10 +395,14 @@ static int test_resizable_hash(void) {
 START_ATTRIBUTES void _start(void) {
     int failures = test_resizable_hash();
 
+    failures += test_multi_page_elements();
+
     if (failures) {
         print_text("bpf-rhash: FAIL\n");
         raw_syscall6(SYS_exit, 1, 0, 0, 0, 0, 0);
     }
+    print_text("bpf-rhash: PASS\n");
+    print_text("bpf-rhash: PASS\n");
     print_text("bpf-rhash: PASS\n");
     raw_syscall6(SYS_exit, 0, 0, 0, 0, 0, 0);
     for (;;) { }

@@ -293,14 +293,17 @@ static uint32_t bpf_align8(uint32_t value) {
     return (value + 7u) & ~7u;
 }
 
+static int bpf_map_type_is_hash(uint32_t type) {
+    return type == KERNEL_BPF_MAP_TYPE_HASH ||
+           type == KERNEL_BPF_MAP_TYPE_PERCPU_HASH ||
+           type == KERNEL_BPF_MAP_TYPE_LRU_HASH ||
+           type == KERNEL_BPF_MAP_TYPE_LRU_PERCPU_HASH ||
+           type == KERNEL_BPF_MAP_TYPE_HASH_OF_MAPS ||
+           type == KERNEL_BPF_MAP_TYPE_RHASH;
+}
+
 static int bpf_map_is_hash(const kernel_bpf_map_t *map) {
-    return map &&
-        (map->type == KERNEL_BPF_MAP_TYPE_HASH ||
-         map->type == KERNEL_BPF_MAP_TYPE_PERCPU_HASH ||
-         map->type == KERNEL_BPF_MAP_TYPE_LRU_HASH ||
-         map->type == KERNEL_BPF_MAP_TYPE_LRU_PERCPU_HASH ||
-         map->type == KERNEL_BPF_MAP_TYPE_HASH_OF_MAPS ||
-         map->type == KERNEL_BPF_MAP_TYPE_RHASH);
+    return map && bpf_map_type_is_hash(map->type);
 }
 
 static int bpf_map_is_array(const kernel_bpf_map_t *map) {
@@ -635,6 +638,10 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
          (KERNEL_BPF_MAP_RDONLY | KERNEL_BPF_MAP_WRONLY)) ==
         (KERNEL_BPF_MAP_RDONLY | KERNEL_BPF_MAP_WRONLY))
         return -EDGE_LINUX_EINVAL;
+    if (bpf_map_type_is_hash(request->type) &&
+        (uint64_t)request->key_size + request->value_size >
+            KERNEL_BPF_MAX_HASH_KEY_VALUE_SIZE)
+        return -EDGE_LINUX_E2BIG;
     validation_flags = request->flags &
         ~(KERNEL_BPF_MAP_RDONLY | KERNEL_BPF_MAP_WRONLY);
     stored_flags = validation_flags;
@@ -850,6 +857,10 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
             bpf_align8(1u + request->key_size + request->value_size);
     } else if (request->type == KERNEL_BPF_MAP_TYPE_RHASH) {
         if (request->max_entries > (1u << 31u)) {
+            status = -EDGE_LINUX_E2BIG;
+            goto fail_btf;
+        }
+        if (request->key_size > UINT16_MAX) {
             status = -EDGE_LINUX_E2BIG;
             goto fail_btf;
         }

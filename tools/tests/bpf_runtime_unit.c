@@ -479,6 +479,13 @@ static void test_resizable_hash_map(void) {
     request.map_extra = 0u;
     request.max_entries = (1u << 31u) + 1u;
     assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_E2BIG);
+    request.max_entries = 1u;
+    request.key_size = 65536u;
+    request.value_size = 64u;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_E2BIG);
+    request.key_size = 4u;
+    request.value_size = 4194252u;
+    assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_E2BIG);
 }
 
 static void test_lru_hash_map(void) {

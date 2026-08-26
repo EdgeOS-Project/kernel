@@ -5734,6 +5734,7 @@ static int64_t edge_linux_bpf_map_element(
     kernel_bpf_map_info_t info;
     uint8_t *key = 0;
     uint8_t *value = 0;
+    uint32_t key_pages = 0u;
     uint32_t value_size = 0u;
     uint32_t value_pages = 0u;
     int object_id;
@@ -5784,14 +5785,15 @@ static int64_t edge_linux_bpf_map_element(
         if (status < 0) return status;
     }
     if (info.key_size) {
-        key = (uint8_t *)arch_vm_alloc_page();
+        key_pages = (info.key_size + 4095u) / 4096u;
+        key = (uint8_t *)arch_vm_alloc_pages(key_pages);
         if (!key) return -EDGE_LINUX_ENOMEM;
     }
     if (command != EDGE_LINUX_BPF_MAP_DELETE_ELEM) {
         value_pages = (value_size + 4095u) / 4096u;
         value = (uint8_t *)arch_vm_alloc_pages(value_pages);
         if (!value) {
-            if (key) arch_vm_free_page(key);
+            edge_linux_bpf_free_pages(key, key_pages);
             return -EDGE_LINUX_ENOMEM;
         }
     }
@@ -6042,7 +6044,7 @@ static int64_t edge_linux_bpf_map_element(
     }
 out:
     edge_linux_bpf_free_pages(value, value_pages);
-    if (key) arch_vm_free_page(key);
+    edge_linux_bpf_free_pages(key, key_pages);
     return status;
 }
 
@@ -6076,6 +6078,7 @@ static int64_t edge_linux_bpf_map_batch(
     kernel_bpf_map_info_t info;
     uint8_t *key;
     uint8_t *value;
+    uint32_t key_pages;
     uint32_t cursor = 0;
     uint32_t processed = 0;
     uint32_t requested;
@@ -6151,12 +6154,13 @@ static int64_t edge_linux_bpf_map_batch(
           command == EDGE_LINUX_BPF_MAP_LOOKUP_AND_DELETE_BATCH) &&
          !attribute.output_batch))
         return -EDGE_LINUX_EFAULT;
-    key = (uint8_t *)arch_vm_alloc_page();
+    key_pages = (info.key_size + 4095u) / 4096u;
+    key = (uint8_t *)arch_vm_alloc_pages(key_pages);
     if (!key) return -EDGE_LINUX_ENOMEM;
     value_pages = (value_size + 4095u) / 4096u;
     value = (uint8_t *)arch_vm_alloc_pages(value_pages);
     if (!value) {
-        arch_vm_free_page(key);
+        edge_linux_bpf_free_pages(key, key_pages);
         return -EDGE_LINUX_ENOMEM;
     }
     if (attribute.input_batch && edge_linux_copy_from_user(
@@ -6280,7 +6284,7 @@ static int64_t edge_linux_bpf_map_batch(
     }
 out:
     edge_linux_bpf_free_pages(value, value_pages);
-    arch_vm_free_page(key);
+    edge_linux_bpf_free_pages(key, key_pages);
     return status;
 }
 
