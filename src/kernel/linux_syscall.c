@@ -3361,6 +3361,7 @@ static int64_t edge_linux_sys_reboot(
 #define EDGE_LINUX_KEXEC_UPDATE_ELFCOREHDR 0x00000004u
 #define EDGE_LINUX_KEXEC_CRASH_HOTPLUG_SUPPORT 0x00000008u
 #define EDGE_LINUX_KEXEC_ARCH_MASK 0xffff0000u
+#define EDGE_LINUX_KEXEC_ARCH_I386 (3u << 16)
 #define EDGE_LINUX_KEXEC_ARCH_X86_64 (62u << 16)
 #define EDGE_LINUX_KEXEC_ARCH_AARCH64 (183u << 16)
 #define EDGE_LINUX_KEXEC_FILE_FLAGS 0x0000003fu
@@ -3454,6 +3455,12 @@ static int64_t edge_linux_sys_kexec(
         return -EDGE_LINUX_EPERM;
 
     if (context->id == EDGE_LINUX_SYS_kexec_load) {
+        typedef struct edge_linux_kexec_segment32 {
+            uint32_t buffer;
+            uint32_t buffer_size;
+            uint32_t memory;
+            uint32_t memory_size;
+        } edge_linux_kexec_segment32_t;
         kernel_kexec_segment_t segments[KERNEL_KEXEC_SEGMENT_MAX];
         kernel_kexec_access_t access = {
             .context = context,
@@ -3471,6 +3478,8 @@ static int64_t edge_linux_sys_kexec(
         uint64_t expected_architecture =
             context->architecture == EDGE_LINUX_ARCH_AARCH64 ?
                 EDGE_LINUX_KEXEC_ARCH_AARCH64 :
+            context->architecture == EDGE_LINUX_ARCH_IA32 ?
+                EDGE_LINUX_KEXEC_ARCH_I386 :
                 EDGE_LINUX_KEXEC_ARCH_X86_64;
         uint64_t architecture = flags & EDGE_LINUX_KEXEC_ARCH_MASK;
 
@@ -3479,10 +3488,24 @@ static int64_t edge_linux_sys_kexec(
             return -EDGE_LINUX_EINVAL;
         if (architecture != 0 && architecture != expected_architecture)
             return -EDGE_LINUX_EINVAL;
-        if (count && edge_linux_copy_from_user(
-                context, segments, context->arguments[2],
-                count * sizeof(segments[0])) < 0)
+        if (count && edge_linux_architecture_is_compat32(
+                         context->architecture)) {
+            edge_linux_kexec_segment32_t compat[KERNEL_KEXEC_SEGMENT_MAX];
+            if (edge_linux_copy_from_user(
+                    context, compat, context->arguments[2],
+                    count * sizeof(compat[0])) < 0)
+                return -EDGE_LINUX_EFAULT;
+            for (uint32_t index = 0; index < count; ++index) {
+                segments[index].buffer = compat[index].buffer;
+                segments[index].buffer_size = compat[index].buffer_size;
+                segments[index].memory = compat[index].memory;
+                segments[index].memory_size = compat[index].memory_size;
+            }
+        } else if (count && edge_linux_copy_from_user(
+                       context, segments, context->arguments[2],
+                       count * sizeof(segments[0])) < 0) {
             return -EDGE_LINUX_EFAULT;
+        }
         if (count && (flags & EDGE_LINUX_KEXEC_ON_CRASH))
             return -EDGE_LINUX_EADDRNOTAVAIL;
 

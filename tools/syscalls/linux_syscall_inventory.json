@@ -3499,7 +3499,8 @@
       "shared_handler": "edge_linux_sys_kexec",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/native_optional_syscalls_abi_probe.c"
+        "tools/tests/native_optional_syscalls_abi_probe.c",
+        "tools/tests/ia32_kexec_load_uapi_probe.c"
       ],
       "linux_oracle": "required",
       "oracle_status": "partial",

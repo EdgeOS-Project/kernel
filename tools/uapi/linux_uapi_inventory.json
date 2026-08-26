@@ -411,6 +411,7 @@
         "tools/tests/ia32_time_uapi_probe.c",
         "tools/tests/ia32_disabled_syscalls_uapi_probe.c",
         "tools/tests/ia32_io_privilege_uapi_probe.c",
+        "tools/tests/ia32_kexec_load_uapi_probe.c",
         "tools/tests/ia32_keyctl_compat_uapi_probe.c",
         "tools/tests/compat_io_uring_iovec_uapi_probe.c",
         "tools/tests/compat_userfaultfd_uapi_probe.c",
