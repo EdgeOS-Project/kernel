@@ -52,6 +52,7 @@
 #include "arch/x86_64/io_ports.h"
 #include "stdio.h"
 #include "string.h"
+#include "sys/boottime.h"
 #include "sys/mmio.h"
 
 #include <stdint.h>
@@ -107,6 +108,14 @@
 #define VIRTIO_SCSI_CDB_SIZE   32u
 #define VIRTIO_SCSI_SENSE_SIZE 96u
 #define VIRTIO_SCSI_S_OK       0u
+#define VIRTIO_SCSI_S_OVERRUN  1u
+#define VIRTIO_SCSI_S_ABORTED  2u
+#define VIRTIO_SCSI_S_BAD_TARGET 3u
+#define VIRTIO_SCSI_S_RESET    4u
+#define VIRTIO_SCSI_S_BUSY     5u
+#define VIRTIO_SCSI_S_TRANSPORT_FAILURE 6u
+#define VIRTIO_SCSI_S_TARGET_FAILURE 7u
+#define VIRTIO_SCSI_S_NEXUS_FAILURE 8u
 #define VIRTIO_SCSI_S_SIMPLE   0u
 
 #define VRING_DESC_F_NEXT  1u
@@ -125,6 +134,19 @@
 #define VIRTIO_MODERN_ISR_MIN_SIZE 1u
 
 #define SCSI_STATUS_GOOD 0x00u
+#define SCSI_STATUS_CHECK_CONDITION 0x02u
+#define SCSI_DRIVER_SENSE 0x08u
+#define SCSI_DID_OK 0x00u
+#define SCSI_DID_NO_CONNECT 0x01u
+#define SCSI_DID_BUS_BUSY 0x02u
+#define SCSI_DID_TIME_OUT 0x03u
+#define SCSI_DID_BAD_TARGET 0x04u
+#define SCSI_DID_ABORT 0x05u
+#define SCSI_DID_ERROR 0x07u
+#define SCSI_DID_RESET 0x08u
+#define SCSI_DID_TRANSPORT_DISRUPTED 0x0eu
+#define SCSI_DID_TARGET_FAILURE 0x10u
+#define SCSI_DID_NEXUS_FAILURE 0x11u
 #define SCSI_CMD_TEST_UNIT_READY 0x00u
 #define SCSI_CMD_INQUIRY 0x12u
 #define SCSI_CMD_READ_CAPACITY_10 0x25u
@@ -208,6 +230,15 @@ static uint8_t g_vtscsi_ring[VIRTIO_SCSI_RING_BYTES] __attribute__((aligned(VIRT
 static struct virtio_scsi_cmd_req g_vtscsi_req __attribute__((aligned(16)));
 static struct virtio_scsi_cmd_resp g_vtscsi_resp __attribute__((aligned(16)));
 static volatile int g_vtscsi_busy;
+
+static uint64_t virtio_scsi_dma_addr(const void *pointer) {
+    uintptr_t address = (uintptr_t)pointer;
+
+    if (address >= EDGE_MMIO_LOW_ALIAS_BASE &&
+        address < EDGE_MMIO_LOW_ALIAS_BASE + EDGE_MMIO_LOW_ALIAS_SIZE)
+        return (uint64_t)(address - EDGE_MMIO_LOW_ALIAS_BASE);
+    return (uint64_t)address;
+}
 
 static uint64_t pci_bar_base(uint8_t bus, uint8_t slot, uint8_t func, uint8_t bar, int *is_io) {
     uint32_t lo;
@@ -457,9 +488,9 @@ static uint16_t virtio_queue_size_read(void) {
 }
 
 static void virtio_queue_program(uint16_t qsz) {
-    uint64_t desc = (uint64_t)(uintptr_t)g_vtscsi.desc;
-    uint64_t avail = (uint64_t)(uintptr_t)g_vtscsi.avail;
-    uint64_t used = (uint64_t)(uintptr_t)g_vtscsi.used;
+    uint64_t desc = virtio_scsi_dma_addr(g_vtscsi.desc);
+    uint64_t avail = virtio_scsi_dma_addr(g_vtscsi.avail);
+    uint64_t used = virtio_scsi_dma_addr(g_vtscsi.used);
     g_vtscsi.queue_notify_off = mmio_read16(g_vtscsi.common_base, VIRTIO_PCI_COMMON_Q_NOFF);
     mmio_write16(g_vtscsi.common_base, VIRTIO_PCI_COMMON_Q_SIZE, qsz);
     mmio_write64(g_vtscsi.common_base, VIRTIO_PCI_COMMON_Q_DESCLO, desc);
@@ -486,11 +517,30 @@ static void virtio_scsi_set_lun(uint8_t lun[8], uint8_t target, uint16_t target_
     lun[3] = (uint8_t)target_lun;
 }
 
-static int virtio_scsi_submit(const uint8_t *cdb, uint32_t cdb_len,
-                              void *data, uint32_t data_len, int data_in) {
+static uint8_t virtio_scsi_host_status(uint8_t response) {
+    switch (response) {
+    case VIRTIO_SCSI_S_OK: return SCSI_DID_OK;
+    case VIRTIO_SCSI_S_OVERRUN: return SCSI_DID_ERROR;
+    case VIRTIO_SCSI_S_ABORTED: return SCSI_DID_ABORT;
+    case VIRTIO_SCSI_S_BAD_TARGET: return SCSI_DID_BAD_TARGET;
+    case VIRTIO_SCSI_S_RESET: return SCSI_DID_RESET;
+    case VIRTIO_SCSI_S_BUSY: return SCSI_DID_BUS_BUSY;
+    case VIRTIO_SCSI_S_TRANSPORT_FAILURE:
+        return SCSI_DID_TRANSPORT_DISRUPTED;
+    case VIRTIO_SCSI_S_TARGET_FAILURE: return SCSI_DID_TARGET_FAILURE;
+    case VIRTIO_SCSI_S_NEXUS_FAILURE: return SCSI_DID_NEXUS_FAILURE;
+    default: return SCSI_DID_ERROR;
+    }
+}
+
+static int virtio_scsi_submit_result(
+        const uint8_t *cdb, uint32_t cdb_len, void *data,
+        uint32_t data_len, int data_in, uint32_t timeout_milliseconds,
+        virtio_scsi_passthrough_result_t *result) {
     uint16_t head = 0;
     uint16_t old_used;
     uint16_t desc = 0;
+    uint64_t deadline;
 
     if (!g_vtscsi.common_base || !cdb || cdb_len == 0 || cdb_len > VIRTIO_SCSI_CDB_SIZE) return -1;
     if (data_len && !data) return -1;
@@ -505,28 +555,28 @@ static int virtio_scsi_submit(const uint8_t *cdb, uint32_t cdb_len,
     g_vtscsi_req.task_attr = VIRTIO_SCSI_S_SIMPLE;
     memcpy(g_vtscsi_req.cdb, cdb, cdb_len);
 
-    g_vtscsi.desc[0].addr = (uint64_t)(uintptr_t)&g_vtscsi_req;
+    g_vtscsi.desc[0].addr = virtio_scsi_dma_addr(&g_vtscsi_req);
     g_vtscsi.desc[0].len = sizeof(g_vtscsi_req);
     g_vtscsi.desc[0].flags = VRING_DESC_F_NEXT;
     desc = 1;
 
     if (data_len && !data_in) {
         g_vtscsi.desc[0].next = desc;
-        g_vtscsi.desc[desc].addr = (uint64_t)(uintptr_t)data;
+        g_vtscsi.desc[desc].addr = virtio_scsi_dma_addr(data);
         g_vtscsi.desc[desc].len = data_len;
         g_vtscsi.desc[desc].flags = VRING_DESC_F_NEXT;
         desc++;
     }
 
     g_vtscsi.desc[desc - 1].next = desc;
-    g_vtscsi.desc[desc].addr = (uint64_t)(uintptr_t)&g_vtscsi_resp;
+    g_vtscsi.desc[desc].addr = virtio_scsi_dma_addr(&g_vtscsi_resp);
     g_vtscsi.desc[desc].len = sizeof(g_vtscsi_resp);
     g_vtscsi.desc[desc].flags = VRING_DESC_F_WRITE | (data_len && data_in ? VRING_DESC_F_NEXT : 0);
     desc++;
 
     if (data_len && data_in) {
         g_vtscsi.desc[desc - 1].next = desc;
-        g_vtscsi.desc[desc].addr = (uint64_t)(uintptr_t)data;
+        g_vtscsi.desc[desc].addr = virtio_scsi_dma_addr(data);
         g_vtscsi.desc[desc].len = data_len;
         g_vtscsi.desc[desc].flags = VRING_DESC_F_WRITE;
     }
@@ -539,24 +589,58 @@ static int virtio_scsi_submit(const uint8_t *cdb, uint32_t cdb_len,
     __sync_synchronize();
     virtio_queue_notify();
 
-    for (uint32_t spin = 0; spin < 20000000u; ++spin) {
+    if (!timeout_milliseconds) timeout_milliseconds = 30000u;
+    deadline = boottime_monotonic_us() +
+        (uint64_t)timeout_milliseconds * 1000u;
+    while (boottime_monotonic_us() < deadline) {
         __sync_synchronize();
         if (g_vtscsi.used->idx != old_used) {
+            uint32_t sense_length = g_vtscsi_resp.sense_len;
+
             virtio_ack_isr();
             g_vtscsi.used_idx = g_vtscsi.used->idx;
-            __sync_lock_release(&g_vtscsi_busy);
-            if (g_vtscsi_resp.response == VIRTIO_SCSI_S_OK &&
-                g_vtscsi_resp.status == SCSI_STATUS_GOOD) {
-                return 0;
+            if (result) {
+                memset(result, 0, sizeof(*result));
+                if (sense_length > sizeof(result->sense))
+                    sense_length = sizeof(result->sense);
+                result->residual_length = g_vtscsi_resp.resid;
+                result->device_status = g_vtscsi_resp.status;
+                result->host_status = virtio_scsi_host_status(
+                    g_vtscsi_resp.response);
+                result->sense_length = (uint8_t)sense_length;
+                if (sense_length) {
+                    memcpy(result->sense, g_vtscsi_resp.sense,
+                           sense_length);
+                    if (g_vtscsi_resp.status ==
+                        SCSI_STATUS_CHECK_CONDITION)
+                        result->driver_status = SCSI_DRIVER_SENSE;
+                }
             }
-            return -1;
+            __sync_lock_release(&g_vtscsi_busy);
+            return 0;
         }
         __asm__ __volatile__("pause");
     }
 
     printf("[virtio-scsi] request timeout opcode=0x%x\n", cdb[0]);
+    if (result) {
+        memset(result, 0, sizeof(*result));
+        result->host_status = SCSI_DID_TIME_OUT;
+        result->residual_length = data_len;
+    }
     __sync_lock_release(&g_vtscsi_busy);
     return -1;
+}
+
+static int virtio_scsi_submit(const uint8_t *cdb, uint32_t cdb_len,
+                              void *data, uint32_t data_len, int data_in) {
+    virtio_scsi_passthrough_result_t result;
+
+    if (virtio_scsi_submit_result(
+            cdb, cdb_len, data, data_len, data_in, 0, &result) < 0)
+        return -1;
+    return result.host_status == SCSI_DID_OK &&
+           result.device_status == SCSI_STATUS_GOOD ? 0 : -1;
 }
 
 static int virtio_scsi_test_unit_ready(void) {
@@ -726,4 +810,18 @@ int virtio_scsi_read(uint32_t lba, uint32_t sector_count, void *buf) {
 int virtio_scsi_write(uint32_t lba, uint32_t sector_count, const void *buf) {
     if (sector_count > g_vtscsi.max_sectors) return -1;
     return virtio_scsi_rw10(SCSI_CMD_WRITE_10, lba, sector_count, (void *)buf);
+}
+
+int virtio_scsi_passthrough(
+        const uint8_t *cdb, uint32_t cdb_length, void *data,
+        uint32_t data_length, int data_in, uint32_t timeout_milliseconds,
+        virtio_scsi_passthrough_result_t *result) {
+    if (!g_vtscsi.present || !cdb || !cdb_length ||
+        cdb_length > VIRTIO_SCSI_PASSTHROUGH_MAX_CDB ||
+        data_length > VIRTIO_SCSI_PASSTHROUGH_MAX_DATA ||
+        (!!data_length != !!data) || !result)
+        return -1;
+    return virtio_scsi_submit_result(
+        cdb, cdb_length, data, data_length, data_in,
+        timeout_milliseconds, result);
 }

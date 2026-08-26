@@ -103,7 +103,8 @@ static long raw_syscall4(long number, long a0, long a1, long a2, long a3) {
 #endif
 }
 
-#ifdef UAPI_BATCH_IO_URING_NVME_CMD_ONLY
+#if defined(UAPI_BATCH_IO_URING_NVME_CMD_ONLY) || \
+    defined(UAPI_BATCH_IO_URING_BSG_CMD_ONLY)
 static long raw_syscall5(long number, long a0, long a1, long a2, long a3,
                          long a4) {
 #if defined(__x86_64__)
@@ -244,6 +245,8 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "io_uring_uring_cmd_abi_probe",
 #elif defined(UAPI_BATCH_IO_URING_NVME_CMD_ONLY)
         "io_uring_nvme_uring_cmd_abi_probe",
+#elif defined(UAPI_BATCH_IO_URING_BSG_CMD_ONLY)
+        "io_uring_bsg_uring_cmd_abi_probe",
 #elif defined(UAPI_BATCH_IO_URING_ZCRX_ONLY)
         "io_uring_zcrx_abi_probe",
 #elif defined(UAPI_BATCH_IO_URING_SQPOLL_ONLY)
@@ -307,7 +310,8 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
     };
     int failures = 0;
 
-#ifdef UAPI_BATCH_IO_URING_NVME_CMD_ONLY
+#if defined(UAPI_BATCH_IO_URING_NVME_CMD_ONLY) || \
+    defined(UAPI_BATCH_IO_URING_BSG_CMD_ONLY)
     (void)raw_syscall5(SYS_mount, (long)"devtmpfs", (long)"/dev",
                        (long)"devtmpfs", 0, 0);
 #endif

@@ -823,6 +823,23 @@ struct edge_linux_nvme_uring_cmd {
     uint32_t reserved2;
 };
 
+struct edge_linux_bsg_uring_cmd {
+    uint64_t request;
+    uint32_t request_length;
+    uint32_t protocol;
+    uint32_t subprotocol;
+    uint32_t maximum_response_length;
+    uint64_t response;
+    uint64_t data_out;
+    uint32_t data_out_length;
+    uint32_t data_out_vector_count;
+    uint64_t data_in;
+    uint32_t data_in_length;
+    uint32_t data_in_vector_count;
+    uint32_t timeout_milliseconds;
+    uint8_t reserved[12];
+};
+
 #define EDGE_LINUX_NVME_URING_CMD_IO        0xc0484e80u
 #define EDGE_LINUX_NVME_URING_CMD_IO_VEC    0xc0484e81u
 #define EDGE_LINUX_NVME_URING_CMD_ADMIN     0xc0484e82u
@@ -1167,6 +1184,15 @@ _Static_assert(offsetof(struct edge_linux_nvme_uring_cmd, address) == 24,
 _Static_assert(offsetof(struct edge_linux_nvme_uring_cmd,
                         timeout_milliseconds) == 64,
                "Linux NVMe io_uring timeout offset mismatch");
+_Static_assert(sizeof(struct edge_linux_bsg_uring_cmd) == 80,
+               "Linux BSG io_uring command size mismatch");
+_Static_assert(offsetof(struct edge_linux_bsg_uring_cmd, response) == 24,
+               "Linux BSG io_uring response offset mismatch");
+_Static_assert(offsetof(struct edge_linux_bsg_uring_cmd, data_in) == 48,
+               "Linux BSG io_uring input offset mismatch");
+_Static_assert(offsetof(struct edge_linux_bsg_uring_cmd,
+                        timeout_milliseconds) == 64,
+               "Linux BSG io_uring timeout offset mismatch");
 _Static_assert(sizeof(struct edge_linux_io_sqring_offsets) == 40,
                "Linux io_uring SQ offset size mismatch");
 _Static_assert(sizeof(struct edge_linux_io_cqring_offsets) == 40,

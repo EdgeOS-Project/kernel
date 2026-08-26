@@ -356,11 +356,14 @@ void dev_init(uint32_t magic, void *mb_info) {
 #endif
 
 #ifdef CONFIG_VIRTIO_SCSI
-    if (!g_has_module_ramdisk && !block_find("sda")) bootlog_stage("Probing VirtIO SCSI device");
-    if (!g_has_module_ramdisk && !block_find("sda") && virtio_scsi_init() == 0 && virtio_scsi_present()) {
+    if (!virtio_scsi_present()) bootlog_stage("Probing VirtIO SCSI device");
+    if (!virtio_scsi_present() && virtio_scsi_init() == 0 &&
+        virtio_scsi_present()) {
         block_ops_t ops = {virtio_scsi_read_ops, virtio_scsi_write_ops};
-        block_register("sda", virtio_scsi_sector_size(), virtio_scsi_sector_count(), 0, 0, ops);
-        dev_register_partitions(block_find("sda"), "sda", 0);
+        const char *name = block_find("sda") ? "sdb" : "sda";
+        block_register(name, virtio_scsi_sector_size(),
+                       virtio_scsi_sector_count(), 0, 0, ops);
+        dev_register_partitions(block_find(name), name, 0);
     }
 #else
     if (!g_has_module_ramdisk && !block_find("sda")) bootlog_stage("VirtIO SCSI driver disabled");

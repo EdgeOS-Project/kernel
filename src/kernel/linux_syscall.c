@@ -10,6 +10,7 @@
 #include "block/block.h"
 #include "console.h"
 #include "drivers/nvme.h"
+#include "drivers/virtio_scsi.h"
 #include "fs/cgroupfs.h"
 #include "fs/swap.h"
 #include "kernel/aio_runtime.h"
@@ -12491,7 +12492,7 @@ static int64_t edge_linux_io_uring_execute_send_zc(
     }
 }
 
-#ifdef CONFIG_NVME
+#if defined(CONFIG_NVME) || defined(CONFIG_VIRTIO_SCSI)
 static void edge_linux_io_uring_free_pages(void *buffer,
                                            uint32_t pages) {
     uint8_t *bytes = (uint8_t *)buffer;
@@ -12500,7 +12501,9 @@ static void edge_linux_io_uring_free_pages(void *buffer,
     for (uint32_t page = 0; page < pages; ++page)
         arch_vm_free_page(bytes + (uint64_t)page * 4096u);
 }
+#endif
 
+#ifdef CONFIG_NVME
 static int edge_linux_io_uring_nvme_copy_vectors(
         edge_linux_syscall_context_t *context,
         const struct edge_linux_iovec *vectors, uint32_t vector_count,
@@ -12761,6 +12764,172 @@ finish:
 #endif
 }
 
+static int edge_linux_io_uring_bsg_command_allowed(
+        const uint8_t *command, uint32_t command_length,
+        int descriptor_writable) {
+    uint8_t operation;
+
+    if (!command || !command_length) return 0;
+    operation = command[0];
+    switch (operation) {
+    case 0x00u: /* TEST UNIT READY */
+    case 0x03u: /* REQUEST SENSE */
+    case 0x08u: /* READ(6) */
+    case 0x12u: /* INQUIRY */
+    case 0x1au: /* MODE SENSE(6) */
+    case 0x25u: /* READ CAPACITY(10) */
+    case 0x28u: /* READ(10) */
+    case 0x88u: /* READ(16) */
+    case 0x9eu: /* SERVICE ACTION IN(16) */
+    case 0xa8u: /* READ(12) */
+        return 1;
+    default:
+        return descriptor_writable;
+    }
+}
+
+static int64_t edge_linux_io_uring_bsg_cmd(
+        edge_linux_syscall_context_t *context, int32_t ring_id,
+        const struct edge_linux_io_uring_sqe *submission,
+        const uint8_t command_payload[80],
+        edge_linux_io_uring_notification_t *completion) {
+#ifdef CONFIG_VIRTIO_SCSI
+    struct edge_linux_bsg_uring_cmd command;
+    kernel_vfs_descriptor_t descriptor;
+    virtio_scsi_passthrough_result_t scsi_result;
+    uint8_t cdb[VIRTIO_SCSI_PASSTHROUGH_MAX_CDB];
+    uint8_t *data = 0;
+    uint64_t completion_result;
+    uint32_t data_length;
+    uint32_t data_pages = 0u;
+    uint32_t setup_flags = 0u;
+    int data_in;
+    int fixed;
+    int result;
+
+    if (!command_payload || !completion)
+        return -EDGE_LINUX_EINVAL;
+    result = kernel_io_uring_setup_flags(ring_id, &setup_flags);
+    if (result < 0) return result;
+    if (!(setup_flags & (EDGE_LINUX_IORING_SETUP_SQE128 |
+                         EDGE_LINUX_IORING_SETUP_SQE_MIXED)) ||
+        !(setup_flags & (EDGE_LINUX_IORING_SETUP_CQE32 |
+                         EDGE_LINUX_IORING_SETUP_CQE_MIXED)))
+        return -EDGE_LINUX_EOPNOTSUPP;
+    memcpy(&command, command_payload, sizeof(command));
+    if (command.protocol != 0u || command.subprotocol != 0u)
+        return -EDGE_LINUX_EINVAL;
+    if (!command.request || !command.request_length)
+        return -EDGE_LINUX_EINVAL;
+    if (command.data_out_length && command.data_in_length)
+        return -EDGE_LINUX_EOPNOTSUPP;
+    if (command.data_out_vector_count || command.data_in_vector_count)
+        return -EDGE_LINUX_EOPNOTSUPP;
+    if (command.request_length > sizeof(cdb))
+        return -EDGE_LINUX_EINVAL;
+    if (edge_linux_copy_from_user(
+            context, cdb, command.request,
+            command.request_length) < 0)
+        return -EDGE_LINUX_EFAULT;
+    if (kernel_vfs_describe_descriptor(
+            submission->descriptor, &descriptor) < 0)
+        return -EDGE_LINUX_EBADF;
+    if (!edge_linux_io_uring_bsg_command_allowed(
+            cdb, command.request_length, descriptor.writable))
+        return -EDGE_LINUX_EPERM;
+    data_in = command.data_in_length != 0u;
+    data_length = data_in ? command.data_in_length :
+        command.data_out_length;
+    if (data_length > VIRTIO_SCSI_PASSTHROUGH_MAX_DATA)
+        return -EDGE_LINUX_ENOMEM;
+    fixed = (submission->operation_flags &
+             EDGE_LINUX_IORING_URING_CMD_FIXED) != 0u;
+    if (data_length) {
+        uint64_t user_address = data_in ? command.data_in :
+            command.data_out;
+
+        if (!user_address) return -EDGE_LINUX_EFAULT;
+        if (fixed && kernel_io_uring_fixed_buffer_validate(
+                ring_id, submission->buffer_index,
+                user_address, data_length) < 0)
+            return -EDGE_LINUX_EFAULT;
+        data_pages = (data_length + 4095u) / 4096u;
+        data = (uint8_t *)arch_vm_alloc_pages(data_pages);
+        if (!data) return -EDGE_LINUX_ENOMEM;
+        if (!data_in) {
+            result = fixed ? kernel_io_uring_fixed_buffer_copy(
+                ring_id, submission->buffer_index,
+                user_address, data, data_length, 0) :
+                edge_linux_copy_from_user(
+                    context, data, user_address, data_length);
+            if (result < 0) {
+                result = -EDGE_LINUX_EFAULT;
+                goto finish;
+            }
+        }
+    }
+    memset(&scsi_result, 0, sizeof(scsi_result));
+    result = virtio_scsi_passthrough(
+        cdb, command.request_length, data, data_length, data_in,
+        command.timeout_milliseconds, &scsi_result);
+    if (result < 0) {
+        result = -EDGE_LINUX_EIO;
+        goto finish;
+    }
+    if (data_in && data_length) {
+        uint64_t user_address = command.data_in;
+        int copy_result = fixed ? kernel_io_uring_fixed_buffer_copy(
+            ring_id, submission->buffer_index,
+            user_address, data, data_length, 1) :
+            edge_linux_copy_to_user(
+                context, user_address, data, data_length);
+
+        if (copy_result < 0) {
+            result = -EDGE_LINUX_EFAULT;
+            goto finish;
+        }
+    }
+    if (scsi_result.sense_length) {
+        uint32_t sense_limit = command.maximum_response_length ?
+            command.maximum_response_length :
+            VIRTIO_SCSI_PASSTHROUGH_MAX_SENSE;
+        uint32_t sense_length = scsi_result.sense_length;
+
+        if (sense_limit > VIRTIO_SCSI_PASSTHROUGH_MAX_SENSE)
+            sense_limit = VIRTIO_SCSI_PASSTHROUGH_MAX_SENSE;
+        if (sense_length > sense_limit)
+            sense_length = sense_limit;
+        if (sense_length && command.response && edge_linux_copy_to_user(
+                context, command.response, scsi_result.sense,
+                sense_length) < 0) {
+            result = -EDGE_LINUX_EFAULT;
+            goto finish;
+        }
+        scsi_result.sense_length = (uint8_t)sense_length;
+    }
+    completion_result = (uint64_t)scsi_result.device_status |
+        ((uint64_t)scsi_result.driver_status << 8u) |
+        ((uint64_t)scsi_result.host_status << 16u) |
+        ((uint64_t)scsi_result.sense_length << 24u) |
+        ((uint64_t)scsi_result.residual_length << 32u);
+    completion->completion_extended = 1u;
+    completion->completion_extra1 = completion_result;
+    completion->completion_extra2 = 0u;
+    result = 0;
+
+finish:
+    edge_linux_io_uring_free_pages(data, data_pages);
+    return result;
+#else
+    (void)context;
+    (void)ring_id;
+    (void)submission;
+    (void)command_payload;
+    (void)completion;
+    return -EDGE_LINUX_EOPNOTSUPP;
+#endif
+}
+
 static int64_t edge_linux_io_uring_execute_uring_cmd(
         edge_linux_syscall_context_t *context, int32_t ring_id,
         const struct edge_linux_io_uring_sqe *submission,
@@ -12805,6 +12974,11 @@ static int64_t edge_linux_io_uring_execute_uring_cmd(
             return edge_linux_io_uring_nvme_cmd(
                 context, ring_id, submission, command_payload,
                 0, completion);
+        if (target.resolved_path &&
+            strcmp(target.resolved_path, "/dev/bsg/0:0:0:0") == 0)
+            return edge_linux_io_uring_bsg_cmd(
+                context, ring_id, submission, command_payload,
+                completion);
         if (target.resolved_path &&
             strcmp(target.resolved_path, "/dev/null") == 0)
             return 0;

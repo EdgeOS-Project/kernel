@@ -8,6 +8,7 @@
 #include "dev/alsa.h"
 #include "dev/devtmpfs.h"
 #include "drivers/nvme.h"
+#include "drivers/virtio_scsi.h"
 #include "fs/tmpfs.h"
 #include "fs/fuse.h"
 #include "fb_console.h"
@@ -533,6 +534,16 @@ int devtmpfs_populate_standard_nodes(const char *mountpoint) {
             if (devtmpfs_ensure_node(
                     mountpoint, &nvme_nodes[index], 0, 6u) < 0)
                 return -1;
+    }
+#endif
+#ifdef CONFIG_VIRTIO_SCSI
+    if (virtio_scsi_present()) {
+        static const devtmpfs_node_t bsg_node =
+            { "bsg/0:0:0:0", 0600u, VFS_INODE_CHR, 242u, 0u };
+
+        if (devtmpfs_ensure_directory(mountpoint, "bsg", 0755u) < 0 ||
+            devtmpfs_ensure_node(mountpoint, &bsg_node, 0, 6u) < 0)
+            return -1;
     }
 #endif
     if (kernel_arch_serial_console_device(&serial) == 0) {
