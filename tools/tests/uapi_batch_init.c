@@ -383,6 +383,11 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "socket_core_abi_probe",
         "socket_address_abi_probe",
         "socket_option_abi_probe",
+#elif defined(UAPI_BATCH_WAIT_SIGNAL_ONLY)
+        "poll_abi_probe",
+        "select_abi_probe",
+        "signal_altstack_abi_probe",
+        "signal_wait_mask_abi_probe",
 #elif defined(UAPI_BATCH_NATIVE_OPTIONAL_ONLY)
         "native_optional_syscalls_abi_probe",
 #else

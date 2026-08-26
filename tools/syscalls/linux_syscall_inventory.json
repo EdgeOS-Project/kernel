@@ -5540,13 +5540,13 @@
         "tools/tests/poll_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 7,
           "status": "implemented",
           "route": "shared:edge_linux_sys_poll",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": null
       }
@@ -5557,23 +5557,22 @@
       "shared_handler": "edge_linux_sys_poll",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/poll_abi_probe.c",
-        "tools/tests/signal_wait_mask_abi_probe.c"
+        "tools/tests/poll_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 271,
           "status": "implemented",
           "route": "shared:edge_linux_sys_poll",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 73,
           "status": "implemented",
           "route": "shared:edge_linux_sys_poll",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -5810,23 +5809,22 @@
       "shared_handler": "edge_linux_sys_select",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/select_abi_probe.c",
-        "tools/tests/signal_wait_mask_abi_probe.c"
+        "tools/tests/select_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 270,
           "status": "implemented",
           "route": "shared:edge_linux_sys_select",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 72,
           "status": "implemented",
           "route": "shared:edge_linux_sys_select",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -6618,19 +6616,19 @@
         "tools/tests/signal_wait_mask_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 15,
           "status": "implemented",
           "route": "do_sys_rt_sigreturn",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 139,
           "status": "implemented",
           "route": "inline:aarch64",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -7063,13 +7061,13 @@
         "tools/tests/select_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 23,
           "status": "implemented",
           "route": "shared:edge_linux_sys_select",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": null
       }
@@ -8055,19 +8053,19 @@
         "tools/tests/signal_altstack_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 131,
           "status": "implemented",
           "route": "shared:edge_linux_sys_signal_altstack",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 132,
           "status": "implemented",
           "route": "shared:edge_linux_sys_signal_altstack",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
