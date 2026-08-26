@@ -7,13 +7,7 @@
 #define KEYBOARD_STATUS_PORT    0x64
 #define KEYBOARD_COMMAND_PORT   0x64
 
-/*
- * EdgeOS exposes the x86_64 Linux evdev ABI.  On this ABI struct input_event is
- * two 64-bit timeval fields plus type/code/value, i.e. 24 bytes.  Keep reads
- * aligned to this size so Xorg/libinput-style consumers never receive partial
- * events.
- */
-#define EDGE_LINUX_INPUT_EVENT_SIZE 24u
+#include "kernel/linux_input.h"
 
 /* 
     scan codes in alphabetical order for QWERTY keyboard

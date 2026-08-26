@@ -63,7 +63,10 @@
 #define SOCK_STREAM 1
 #define AT_FDCWD -100
 #define O_RDWR 2
+#define O_NONBLOCK 0x800
 #define O_NOCTTY 0x100
+#define EAGAIN 11
+#define EEXIST 17
 #define S_IFCHR 0020000
 #define TIOCGPTN 0x80045430u
 #define TIOCSPTLCK 0x40045431u
@@ -197,7 +200,8 @@ static void append_decimal(char *text, uint32_t *length, uint32_t value) {
     text[*length] = '\0';
 }
 
-#ifdef IO_URING_FIXED_BUFFER_TTY_PROBE
+#if defined(IO_URING_FIXED_BUFFER_TTY_PROBE) || \
+    defined(IO_URING_FIXED_BUFFER_DEVICE_PROBE)
 static void report_long(const char *prefix, long value) {
     char message[96];
     uint32_t length = 0u;
@@ -364,6 +368,9 @@ static int run_probe(void) {
     int32_t pty[2] = {-1, -1};
     int32_t null_descriptor = -1;
     int32_t zero_descriptor = -1;
+#ifdef IO_URING_FIXED_BUFFER_DEVICE_PROBE
+    int32_t input_descriptor = -1;
+#endif
 #ifdef IO_URING_FIXED_BUFFER_TTY_PROBE
     int32_t tty_descriptor = -1;
 #endif
@@ -518,6 +525,75 @@ static int run_probe(void) {
             ++failures;
         }
     }
+#ifdef IO_URING_FIXED_BUFFER_DEVICE_PROBE
+    if (!failures) {
+        static const char device_directory[] = "/dev";
+        static const char input_directory[] = "/dev/input";
+        static const char input_path[] = "/dev/input/event0";
+        long directory_result;
+        long node_result;
+
+        directory_result = raw_syscall6(
+            SYS_mkdirat, AT_FDCWD, (long)device_directory,
+            0755, 0, 0, 0);
+        if (directory_result < 0 && directory_result != -EEXIST)
+            report_long(
+                "IO_URING_FIXED_BUFFER_PIN_DEV_MKDIR_RESULT=",
+                directory_result);
+        directory_result = raw_syscall6(
+            SYS_mkdirat, AT_FDCWD, (long)input_directory,
+            0755, 0, 0, 0);
+        if (directory_result < 0 && directory_result != -EEXIST)
+            report_long(
+                "IO_URING_FIXED_BUFFER_PIN_INPUT_MKDIR_RESULT=",
+                directory_result);
+        result = raw_syscall6(
+            SYS_openat, AT_FDCWD, (long)input_path,
+            O_NONBLOCK, 0, 0, 0);
+        if (result_is_error(result)) {
+            node_result = raw_syscall6(
+                SYS_mknodat, AT_FDCWD, (long)input_path,
+                S_IFCHR | 0666, 0x0d40u, 0, 0);
+            if (node_result < 0 && node_result != -EEXIST)
+                report_long(
+                    "IO_URING_FIXED_BUFFER_PIN_INPUT_MKNOD_RESULT=",
+                    node_result);
+            result = raw_syscall6(
+                SYS_openat, AT_FDCWD, (long)input_path,
+                O_NONBLOCK, 0, 0, 0);
+        }
+        if (!result_is_error(result)) input_descriptor = (int32_t)result;
+        if (result_is_error(result))
+            report_long("IO_URING_FIXED_BUFFER_PIN_INPUT_OPEN_RESULT=",
+                        result);
+        failures += require_result(
+            result_is_error(result), 0,
+            "IO_URING_FIXED_BUFFER_PIN_INPUT_OPEN_FAIL\n");
+        while (!failures && (result = raw_syscall6(
+                   SYS_read, input_descriptor, (long)observed,
+                   24, 0, 0, 0)) > 0) { }
+        if (!failures && result != -EAGAIN)
+            report_long("IO_URING_FIXED_BUFFER_PIN_INPUT_DRAIN_RESULT=",
+                        result);
+        if (!failures)
+            failures += require_result(
+                result, -EAGAIN,
+                "IO_URING_FIXED_BUFFER_PIN_INPUT_DRAIN_FAIL\n");
+        if (!failures) {
+            result = submit(
+                ring, &parameters, sq_ring, cq_ring, sqes,
+                IORING_OP_READ_FIXED, input_descriptor,
+                buffer.base + FIRST_OFFSET, 24u,
+                0x494e505554524541ull);
+            if (result != -EAGAIN)
+                report_long(
+                    "IO_URING_FIXED_BUFFER_PIN_INPUT_RESULT=", result);
+            failures += require_result(
+                result, -EAGAIN,
+                "IO_URING_FIXED_BUFFER_PIN_INPUT_READ_FAIL\n");
+        }
+    }
+#endif
     result = open_character_device("/dev/null", 0x103u, O_RDWR);
     if (!result_is_error(result)) null_descriptor = (int32_t)result;
     failures += require_result(
@@ -741,6 +817,11 @@ cleanup:
     if (zero_descriptor >= 0)
         (void)raw_syscall6(
             SYS_close, zero_descriptor, 0, 0, 0, 0, 0);
+#ifdef IO_URING_FIXED_BUFFER_DEVICE_PROBE
+    if (input_descriptor >= 0)
+        (void)raw_syscall6(
+            SYS_close, input_descriptor, 0, 0, 0, 0, 0);
+#endif
 #ifdef IO_URING_FIXED_BUFFER_TTY_PROBE
     if (tty_descriptor >= 0)
         (void)raw_syscall6(

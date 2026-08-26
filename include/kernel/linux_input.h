@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include "kernel/file_description_runtime.h"
 
+#define EDGE_LINUX_INPUT_EVENT_SIZE 24u
 #define EDGE_LINUX_INPUT_IOCTL_BUFFER_SIZE 128u
 
 typedef enum {

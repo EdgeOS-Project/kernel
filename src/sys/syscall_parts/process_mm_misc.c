@@ -11299,6 +11299,51 @@ static int64_t fd_read_kernel(uint64_t fd_u, void *buf, uint32_t len) {
             len, 1);
     if (e->kind == FD_PTY_MASTER || e->kind == FD_PTY_SLAVE)
         return fd_pty_read_kernel(e, buf, len);
+    if (e->kind == FD_VFS && path_is_mouse_input(e->path)) {
+        r = keyboard_mouse_read(buf, len, 0);
+        return r > 0 ? r : -EAGAIN;
+    }
+    if (e->kind == FD_VFS && path_is_event_input(e->path)) {
+        int event_id = path_input_event_index(e->path);
+
+        if (len < EDGE_LINUX_INPUT_EVENT_SIZE) return -EINVAL;
+        len -= len % EDGE_LINUX_INPUT_EVENT_SIZE;
+        r = fd_description_read_input(e, event_id, buf, len);
+        return r > 0 ? r : (r < 0 ? r : -EAGAIN);
+    }
+    if (e->kind == FD_VFS && edge_drm_path_is_card(e->path))
+        return edge_drm_read(
+            file_ref_identity(e->file_ref), buf, len);
+    if (e->kind == FD_VFS && path_is_dri_device(e->path))
+        return -EINVAL;
+    if (e->kind == FD_VFS && path_is_uinput_device(e->path))
+        return 0;
+    if (e->kind == FD_VFS && path_is_kmsg_device(e->path)) {
+        uint64_t position = fd_description_offset(e);
+
+        r = bootlog_kmsg_read_from(&position, buf, len);
+        if (r >= 0) fd_description_set_offset(e, position);
+        return r > 0 ? r : (r < 0 ? r : -EAGAIN);
+    }
+    if (e->kind == FD_VFS && strcmp(e->path, "/dev/fb0") == 0) {
+        uint64_t size;
+        uint64_t position;
+        uint32_t count;
+        const uint8_t *source;
+
+        if (!fb.addr || !fb.pitch || !fb.height) return -ENODEV;
+        size = (uint64_t)fb.pitch * fb.height;
+        position = fd_description_offset(e);
+        if (position >= size) return 0;
+        count = len;
+        if ((uint64_t)count > size - position)
+            count = (uint32_t)(size - position);
+        source = fb_user_mmap_active() ? fb.addr : fb_get_draw_buffer();
+        if (!source) source = fb.addr;
+        memcpy(buf, source + position, count);
+        fd_description_advance(e, count);
+        return count;
+    }
     if (e->kind == FD_PIPE_R || e->kind == FD_PIPE_RW) {
         edge_pipe_t *pp;
         kernel_pipe_io_decision_t decision;
@@ -11329,7 +11374,9 @@ static int64_t fd_read_kernel(uint64_t fd_u, void *buf, uint32_t len) {
     if ((e->inode.mode & 0xF000) == VFS_INODE_CHR) {
         r = edge_memdev_read_description(
             e->inode.rdev, file_ref_identity(e->file_ref), buf, len);
-        return r == EDGE_MEMDEV_NOT_HANDLED ? -ESPIPE : r;
+        if (r != EDGE_MEMDEV_NOT_HANDLED) return r;
+        r = vfs_read_file(e->path, buf, len);
+        return r < 0 ? -EINVAL : r;
     }
     if ((e->inode.mode & 0xF000) == VFS_INODE_BLK) return -ESPIPE;
     if (!e->sb || !e->sb->ops || !e->sb->ops->read) return -EINVAL;

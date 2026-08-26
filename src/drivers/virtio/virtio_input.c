@@ -247,6 +247,7 @@ static int virtio_input_publish_device(virtio_input_dev_t *device) {
     };
     input_device_description_t *description;
     uint32_t event_index;
+    int result;
     if (!device) return -22;
     description = &device->input_description;
     if (device->has_key && !device->has_rel && !device->has_abs) {
@@ -286,7 +287,16 @@ static int virtio_input_publish_device(virtio_input_dev_t *device) {
         virtio_input_bitmap_set(description->event_bits, LINUX_EV_REL);
     if (device->has_abs)
         virtio_input_bitmap_set(description->event_bits, LINUX_EV_ABS);
-    return input_device_register(event_index, description, device);
+    result = input_device_register(event_index, description, device);
+    if (result == -16 && input_device_present(event_index)) {
+        /*
+         * The x86 input path exposes one aggregate evdev stream per role.
+         * A PS/2 producer may already own that stream before PCI probing, but
+         * VirtIO events are deliberately routed into the same role stream.
+         */
+        return 0;
+    }
+    return result;
 }
 
 static uint64_t pci_bar_base(uint8_t bus, uint8_t slot, uint8_t func, uint8_t bar, int *is_io) {

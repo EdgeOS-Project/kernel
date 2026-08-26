@@ -10,6 +10,7 @@
 #include "kernel/eventfd.h"
 #include "kernel/fd_runtime.h"
 #include "kernel/futex_runtime.h"
+#include "kernel/io_buffer.h"
 #include "kernel/io_runtime.h"
 #include "kernel/linux_errno.h"
 #include "kernel/linux_time.h"
@@ -2614,6 +2615,89 @@ unlock_snapshot:
         goto release_snapshot;
     }
     current_offset = positional ? offset : information.offset;
+    if (information.kind != KERNEL_IO_FILE_REGULAR) {
+        kernel_io_buffer_t bounce;
+
+        if (kernel_io_buffer_acquire(&bounce) == 0) {
+            while (transferred < length) {
+                uint32_t chunk = (uint32_t)(
+                    length - transferred > KERNEL_IO_BUFFER_SIZE ?
+                    KERNEL_IO_BUFFER_SIZE : length - transferred);
+                uint32_t copied = 0u;
+                int64_t completed;
+
+                while (copied < chunk) {
+                    uint64_t absolute = first_page_offset + buffer_offset +
+                        transferred + copied;
+                    uint32_t page = (uint32_t)(
+                        absolute / KERNEL_IO_URING_PAGE_SIZE);
+                    uint32_t within = (uint32_t)(
+                        absolute % KERNEL_IO_URING_PAGE_SIZE);
+                    uint32_t part = KERNEL_IO_URING_PAGE_SIZE - within;
+                    kernel_io_uring_page_t *entry =
+                        io_uring_fixed_buffer_page(&snapshot, page);
+
+                    if (!entry || !entry->address) {
+                        result = transferred ? (int)transferred :
+                            -EDGE_LINUX_EFAULT;
+                        goto release_bounce;
+                    }
+                    if (part > chunk - copied) part = chunk - copied;
+                    if (writing)
+                        memcpy(bounce.data + copied,
+                               (uint8_t *)entry->address + within, part);
+                    copied += part;
+                }
+                completed = writing ?
+                    kernel_io_kernel_write_current(
+                        descriptor, bounce.data, chunk, user_registers) :
+                    kernel_io_kernel_read_current(
+                        descriptor, bounce.data, chunk, user_registers);
+                if (completed < 0) {
+                    result = transferred ? (int)transferred : (int)completed;
+                    goto release_bounce;
+                }
+                if ((uint64_t)completed > chunk) {
+                    result = transferred ? (int)transferred :
+                        -EDGE_LINUX_EIO;
+                    goto release_bounce;
+                }
+                if (!writing) {
+                    copied = 0u;
+                    while (copied < (uint32_t)completed) {
+                        uint64_t absolute = first_page_offset +
+                            buffer_offset + transferred + copied;
+                        uint32_t page = (uint32_t)(
+                            absolute / KERNEL_IO_URING_PAGE_SIZE);
+                        uint32_t within = (uint32_t)(
+                            absolute % KERNEL_IO_URING_PAGE_SIZE);
+                        uint32_t part =
+                            KERNEL_IO_URING_PAGE_SIZE - within;
+                        kernel_io_uring_page_t *entry =
+                            io_uring_fixed_buffer_page(&snapshot, page);
+
+                        if (!entry || !entry->address) {
+                            result = transferred ? (int)transferred :
+                                -EDGE_LINUX_EFAULT;
+                            goto release_bounce;
+                        }
+                        if (part > (uint32_t)completed - copied)
+                            part = (uint32_t)completed - copied;
+                        memcpy((uint8_t *)entry->address + within,
+                               bounce.data + copied, part);
+                        copied += part;
+                    }
+                }
+                transferred += (uint64_t)completed;
+                current_offset += (uint64_t)completed;
+                if ((uint32_t)completed != chunk) break;
+            }
+            result = (int)transferred;
+release_bounce:
+            kernel_io_buffer_release(&bounce);
+            goto complete_transfer;
+        }
+    }
     while (transferred < length) {
         uint64_t absolute = first_page_offset +
             buffer_offset + transferred;

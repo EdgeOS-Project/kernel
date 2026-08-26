@@ -199,12 +199,12 @@
         "user-provided pinned parameter regions with writable-page validation, retained lifetime and registered wait arguments",
         "IORING_SETUP_NO_MMAP user-backed shared SQ/CQ storage and SQE storage with retained page lifetime",
         "dynamically sized fixed-buffer page lists with retained transfer after the original mapping is removed",
+        "single-backend pinned fixed-buffer transfers for supported device-specific character descriptors",
         "RECV_ZC for TCP sockets with nodev ZCRX areas, retained descriptions, CQE32 offsets, refill control and copy fallback",
         "SQPOLL setup, affinity validation, non-fixed descriptor feature reporting and SQ_WAKEUP or SQ_WAIT enter control"
       ],
       "missing": [
         "asynchronous worker execution",
-        "pinned reads from device-specific character descriptors without kernel-buffer backends",
         "device-backed ZCRX registration and ZCRX import/export sharing",
         "remaining URING_CMD socket and device command consumers",
         "remaining ia32 and x32 semantic coverage across supported operations"

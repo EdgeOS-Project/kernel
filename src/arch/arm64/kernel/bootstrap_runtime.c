@@ -26325,6 +26325,61 @@ int64_t arch_io_kernel_read_current(int32_t descriptor,
     if (!length) return 0;
     file = &task->fds[descriptor];
     if (file->kind == KERNEL_FD_NULL) return 0;
+    if (file->kind == KERNEL_FD_FBDEV) {
+        uint64_t size = (uint64_t)fb.pitch * fb.height;
+        uint64_t offset = fd_description_offset(file);
+        uint32_t count = length;
+        const uint8_t *source;
+
+        if (!fb.addr || !fb.pitch || !fb.height) return -LINUX_ENODEV;
+        if (offset >= size) return 0;
+        if ((uint64_t)count > size - offset)
+            count = (uint32_t)(size - offset);
+        source = fb_user_mmap_active() ? fb.addr : fb_get_draw_buffer();
+        if (!source) source = fb.addr;
+        bytes_copy(buffer, source + offset, count);
+        fd_description_advance(file, count);
+        return count;
+    }
+    if (file->kind == KERNEL_FD_INPUT) {
+        uint64_t done = 0;
+        int access;
+
+        if (length < EDGE_LINUX_INPUT_EVENT_SIZE) return -LINUX_EINVAL;
+        access = edge_linux_input_description_may_read(
+            file->event_index,
+            arm64_description_locator(file->open_description_id));
+        if (access < 0) return access;
+        if (!access) return -LINUX_EAGAIN;
+        while (done + EDGE_LINUX_INPUT_EVENT_SIZE <= length) {
+            uint64_t cursor;
+            uint64_t next_cursor;
+            uint64_t expected;
+            int32_t clock_id;
+            int exchange_status;
+            int received;
+
+            if (kernel_file_description_input_state_load(
+                    arm64_description_locator(file->open_description_id),
+                    &cursor, &clock_id) < 0)
+                return done ? (int64_t)done : -LINUX_EBADF;
+            next_cursor = cursor;
+            received = input_read_event_from(
+                file->event_index, &next_cursor, clock_id,
+                (uint8_t *)buffer + done, EDGE_LINUX_INPUT_EVENT_SIZE);
+            if (received <= 0) break;
+            expected = cursor;
+            exchange_status =
+                kernel_file_description_input_cursor_compare_exchange(
+                    arm64_description_locator(file->open_description_id),
+                    &expected, next_cursor);
+            if (exchange_status < 0)
+                return done ? (int64_t)done : -LINUX_EBADF;
+            if (exchange_status == 0) continue;
+            done += (uint32_t)received;
+        }
+        return done ? (int64_t)done : -LINUX_EAGAIN;
+    }
     if (file->kind == KERNEL_FD_PIPE_WRITE) return -LINUX_EBADF;
     if (file->kind == KERNEL_FD_PIPE_READ ||
         file->kind == KERNEL_FD_PIPE_RW) {
@@ -26356,6 +26411,21 @@ int64_t arch_io_kernel_read_current(int32_t descriptor,
             task, file->pipe_index,
             file->kind == KERNEL_FD_PTY_MASTER,
             buffer, length);
+    if (file->kind == KERNEL_FD_FILE &&
+        edge_drm_path_is_card(file->path))
+        return edge_drm_read(
+            file->open_description_id, buffer, length);
+    if (file->kind == KERNEL_FD_FILE &&
+        alsa_path_kind(file->path) != EDGE_ALSA_NODE_NONE)
+        return alsa_read(file->path, buffer, length);
+    if (file->kind == KERNEL_FD_FILE && path_is_kmsg(file->path)) {
+        uint64_t position = fd_description_offset(file);
+
+        result = bootlog_kmsg_read_from(&position, buffer, length);
+        if (result >= 0) fd_description_set_offset(file, position);
+        return result > 0 ? result :
+            (result < 0 ? result : -LINUX_EAGAIN);
+    }
     if (file->kind == KERNEL_FD_TTY) {
         uint8_t identity = task_tty_identity(task, file);
 

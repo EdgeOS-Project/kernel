@@ -4946,6 +4946,44 @@ int64_t arch_vfs_open_special(
     if (strcmp(path, EDGE_LINUX_TUN_PATH) == 0)
         return (int64_t)open_tun_fd(p, request);
 
+    if (path_is_event_input(path)) {
+        int event_index = path_input_event_index(path);
+        int descriptor;
+        edge_fd_t *entry;
+
+        if (event_index < 0 ||
+            !input_device_present((uint32_t)event_index))
+            return (uint64_t)-ENOENT;
+        descriptor = fd_alloc(p, 0);
+        if (descriptor < 0) return (uint64_t)-EMFILE;
+        entry = &p->fds[descriptor];
+        entry->file_ref = file_ref_alloc((uint32_t)flags);
+        if (!entry->file_ref) {
+            fd_abort_reserved(p, descriptor);
+            return (uint64_t)-ENFILE;
+        }
+        entry->kind = FD_VFS;
+        entry->flags = flags;
+        entry->fd_flags =
+            (request->flags & KERNEL_VFS_OPEN_CLOEXEC) ?
+                LINUX_FD_CLOEXEC : 0;
+        entry->pipe_id = -1;
+        entry->inode.mode = (uint16_t)(VFS_INODE_CHR | 0660u);
+        entry->inode.rdev = linux_graphics_input_rdev_from_path(path);
+        entry->sb = 0;
+        fd_description_set_offset(entry, 0);
+        fd_description_set_input_tail(
+            entry, keyboard_event_cursor_init(event_index));
+        strncpy(entry->path, path, sizeof(entry->path) - 1u);
+        entry->path[sizeof(entry->path) - 1u] = 0;
+        if (fd_publish(p, descriptor) < 0) {
+            (void)file_ref_put(entry->file_ref);
+            fd_abort_reserved(p, descriptor);
+            return (uint64_t)-EBADF;
+        }
+        return (uint64_t)descriptor;
+    }
+
     {
         const task_t *namespace_target = 0;
         edge_namespace_kind_t namespace_kind;

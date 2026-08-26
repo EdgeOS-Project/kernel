@@ -11,6 +11,7 @@
 #include "kernel/anonymous_fd.h"
 #include "kernel/fd_runtime.h"
 #include "kernel/event_runtime.h"
+#include "kernel/io_buffer.h"
 #include "kernel/io_runtime.h"
 #include "kernel/linux_errno.h"
 #include "kernel/mm_runtime.h"
@@ -44,6 +45,24 @@ static int32_t g_multishot_read_result;
 static uint8_t g_file_data[8192];
 static uint64_t g_file_offset;
 static uint32_t g_file_write_completions;
+static uint32_t g_kernel_read_calls;
+static uint32_t g_kernel_read_length;
+static uint32_t g_kernel_write_calls;
+static uint32_t g_kernel_write_length;
+static uint8_t g_io_bounce[KERNEL_IO_BUFFER_SIZE];
+
+int kernel_io_buffer_acquire(kernel_io_buffer_t *buffer) {
+    assert(buffer);
+    buffer->data = g_io_bounce;
+    buffer->slot = 0u;
+    return 0;
+}
+
+void kernel_io_buffer_release(kernel_io_buffer_t *buffer) {
+    assert(buffer && buffer->data == g_io_bounce && buffer->slot == 0u);
+    buffer->data = 0;
+    buffer->slot = UINT32_MAX;
+}
 
 uint64_t arch_mm_current_address_space(void) {
     return 0xabc000u;
@@ -295,6 +314,8 @@ int64_t kernel_io_kernel_write_current(
     (void)user_registers;
     if ((descriptor != 71 && descriptor != 72) || !buffer)
         return -EDGE_LINUX_EBADF;
+    ++g_kernel_write_calls;
+    g_kernel_write_length = length;
     if (length > sizeof(g_file_data)) length = sizeof(g_file_data);
     memcpy(g_file_data, buffer, length);
     return length;
@@ -305,6 +326,8 @@ int64_t kernel_io_kernel_read_current(
         uint32_t length, void *user_registers) {
     (void)user_registers;
     if (descriptor != 72 || !buffer) return -EDGE_LINUX_EBADF;
+    ++g_kernel_read_calls;
+    g_kernel_read_length = length;
     if (length > sizeof(g_file_data)) length = sizeof(g_file_data);
     memcpy(buffer, g_file_data, length);
     return length;
@@ -2176,6 +2199,7 @@ int main(void) {
         const char input[] = "fixed-buffer-read";
         const uint64_t output_address = 0x700080u;
         const uint64_t input_address = 0x700180u;
+        const uint64_t crossing_address = 0x700ff8u;
 
         assert(g_references[first_page] == 0u);
         assert(g_references[first_page + 1u] == 0u);
@@ -2216,13 +2240,19 @@ int main(void) {
                    input, sizeof(input)) == 0);
 
         memset(g_file_data, 0, sizeof(g_file_data));
+        g_kernel_write_calls = 0u;
+        g_kernel_write_length = 0u;
         assert(kernel_io_uring_fixed_buffer_transfer(
                    second_ring_id, 0u, output_address,
                    sizeof(output), 72, 0u,
                    KERNEL_IO_WRITE_CURRENT, 0u, 0) ==
                (int64_t)sizeof(output));
         assert(memcmp(g_file_data, output, sizeof(output)) == 0);
+        assert(g_kernel_write_calls == 1u);
+        assert(g_kernel_write_length == sizeof(output));
         memcpy(g_file_data, input, sizeof(input));
+        g_kernel_read_calls = 0u;
+        g_kernel_read_length = 0u;
         assert(kernel_io_uring_fixed_buffer_transfer(
                    second_ring_id, 0u, input_address,
                    sizeof(input), 72, 0u,
@@ -2231,6 +2261,36 @@ int main(void) {
         assert(memcmp(
                    &g_pages[first_page][0x180u],
                    input, sizeof(input)) == 0);
+        assert(g_kernel_read_calls == 1u);
+        assert(g_kernel_read_length == sizeof(input));
+
+        memcpy(&g_pages[first_page][0xff8u], output, 8u);
+        memcpy(&g_pages[first_page + 1u][0], output + 8u,
+               sizeof(output) - 8u);
+        memset(g_file_data, 0, sizeof(g_file_data));
+        g_kernel_write_calls = 0u;
+        assert(kernel_io_uring_fixed_buffer_transfer(
+                   second_ring_id, 0u, crossing_address,
+                   sizeof(output), 72, 0u,
+                   KERNEL_IO_WRITE_CURRENT, 0u, 0) ==
+               (int64_t)sizeof(output));
+        assert(memcmp(g_file_data, output, sizeof(output)) == 0);
+        assert(g_kernel_write_calls == 1u);
+        assert(g_kernel_write_length == sizeof(output));
+        memcpy(g_file_data, input, sizeof(input));
+        memset(&g_pages[first_page][0xff8u], 0, 8u);
+        memset(&g_pages[first_page + 1u][0], 0, sizeof(input) - 8u);
+        g_kernel_read_calls = 0u;
+        assert(kernel_io_uring_fixed_buffer_transfer(
+                   second_ring_id, 0u, crossing_address,
+                   sizeof(input), 72, 0u,
+                   KERNEL_IO_READ_CURRENT, 0u, 0) ==
+               (int64_t)sizeof(input));
+        assert(memcmp(&g_pages[first_page][0xff8u], input, 8u) == 0);
+        assert(memcmp(&g_pages[first_page + 1u][0], input + 8u,
+                      sizeof(input) - 8u) == 0);
+        assert(g_kernel_read_calls == 1u);
+        assert(g_kernel_read_length == sizeof(input));
 
         assert(kernel_io_uring_create(
                    4u, &clone_parameters, &clone_ring_id) == 0);
