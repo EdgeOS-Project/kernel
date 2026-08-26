@@ -4619,19 +4619,19 @@
         "tools/tests/posix_mq_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 245,
           "status": "implemented",
           "route": "shared:edge_linux_sys_posix_mq",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 185,
           "status": "implemented",
           "route": "shared:edge_linux_sys_posix_mq",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -4644,19 +4644,19 @@
         "tools/tests/posix_mq_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 244,
           "status": "implemented",
           "route": "shared:edge_linux_sys_posix_mq",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 184,
           "status": "implemented",
           "route": "shared:edge_linux_sys_posix_mq",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -4669,19 +4669,19 @@
         "tools/tests/posix_mq_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 240,
           "status": "implemented",
           "route": "shared:edge_linux_sys_posix_mq",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 180,
           "status": "implemented",
           "route": "shared:edge_linux_sys_posix_mq",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -4694,19 +4694,19 @@
         "tools/tests/posix_mq_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 243,
           "status": "implemented",
           "route": "shared:edge_linux_sys_posix_mq",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 183,
           "status": "implemented",
           "route": "shared:edge_linux_sys_posix_mq",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -4719,19 +4719,19 @@
         "tools/tests/posix_mq_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 242,
           "status": "implemented",
           "route": "shared:edge_linux_sys_posix_mq",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 182,
           "status": "implemented",
           "route": "shared:edge_linux_sys_posix_mq",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -4744,19 +4744,19 @@
         "tools/tests/posix_mq_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 241,
           "status": "implemented",
           "route": "shared:edge_linux_sys_posix_mq",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 181,
           "status": "implemented",
           "route": "shared:edge_linux_sys_posix_mq",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },

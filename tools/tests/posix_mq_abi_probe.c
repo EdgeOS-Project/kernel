@@ -179,6 +179,8 @@ static int run_tests(void) {
         0600, (long)&create, 0, 0);
     failures += expect_true("create queue", descriptor >= 0);
     if (descriptor < 0) return failures;
+    failures += expect_result("unlink open queue",
+        raw_syscall6(SYS_mq_unlink, (long)name, 0, 0, 0, 0, 0), 0);
     failures += expect_result("notify none",
         raw_syscall6(SYS_mq_notify, descriptor, (long)&event,
                      0, 0, 0, 0), 0);
@@ -212,8 +214,6 @@ static int run_tests(void) {
     failures += expect_result("small buffer",
         raw_syscall6(SYS_mq_timedreceive, descriptor, (long)receive,
                      8, 0, 0, 0), -EMSGSIZE);
-    failures += expect_result("unlink",
-        raw_syscall6(SYS_mq_unlink, (long)name, 0, 0, 0, 0, 0), 0);
     failures += expect_result("close",
         raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0), 0);
     failures += expect_result("closed descriptor",
