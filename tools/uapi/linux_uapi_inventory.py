@@ -653,6 +653,8 @@ COVERAGE_ASSESSMENTS = [
             "tools/tests/x32_time_abi_probe.c",
             "tools/tests/x32_basic_io_abi_probe.c",
             "tools/tests/x32_common_entry_abi_probe.c",
+            "tools/tests/x32_disabled_syscalls_uapi_probe.c",
+            "tools/tests/x32_kexec_load_uapi_probe.c",
             "tools/tests/compat_io_uring_iovec_uapi_probe.c",
             "tools/tests/compat_userfaultfd_uapi_probe.c",
             "tools/tests/compat_bpf_uapi_probe.c",
@@ -681,7 +683,8 @@ COVERAGE_ASSESSMENTS = [
             "data queries, and "
             "Linux-designated common syscall entries including memory, "
             "resource limits, futex, poll and packed epoll layouts, and "
-            "unassigned-number ENOSYS behavior"
+            "unassigned-number and reserved common-slot ENOSYS behavior, "
+            "and kexec segment conversion"
         )),
     coverage_assessment(
         "ioctl-tty", "partial", NATIVE_ARCHITECTURES,

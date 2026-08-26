@@ -6,8 +6,6 @@
 #define SYS_exit 1
 #define SYS_write 4
 #define SYS_kexec_load 283
-#define EFAULT 14
-#define EINVAL 22
 #define EADDRNOTAVAIL 99
 #define KEXEC_ARCH_I386 (3u << 16)
 
@@ -70,12 +68,13 @@ __attribute__((noreturn, force_align_arg_pointer)) void _start(void) {
     };
     int failures = 0;
 
-    failures += expect("invalid architecture",
+    failures += expect("nondefault compat architecture",
                        raw_call6(SYS_kexec_load, 0, 0, 0,
-                                 62u << 16, 0, 0), -EINVAL);
-    failures += expect("segment fault",
+                                 62u << 16, 0, 0), 0);
+    failures += expect("segment copy remainder",
                        raw_call6(SYS_kexec_load, 0, 1, 0,
-                                 KEXEC_ARCH_I386, 0, 0), -EFAULT);
+                                 KEXEC_ARCH_I386, 0, 0),
+                       sizeof(struct kexec_segment32));
     failures += expect("stage compat segment",
                        raw_call6(SYS_kexec_load, segment.memory, 1,
                                  (long)&segment, KEXEC_ARCH_I386, 0, 0), 0);

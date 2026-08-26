@@ -56,7 +56,6 @@ __attribute__((noreturn)) void _start(void) {
         { 189, "putpmsg" },
         { 253, "lookup_dcookie" },
         { 273, "vserver" },
-        { 283, "kexec_load" },
         { 453, "map_shadow_stack" },
     };
     unsigned long index;

@@ -3486,16 +3486,23 @@ static int64_t edge_linux_sys_kexec(
         if ((flags & ~(EDGE_LINUX_KEXEC_ARCH_MASK | allowed_flags)) != 0 ||
             count > KERNEL_KEXEC_SEGMENT_MAX)
             return -EDGE_LINUX_EINVAL;
-        if (architecture != 0 && architecture != expected_architecture)
+        if (edge_linux_architecture_is_compat32(context->architecture)) {
+            /* Linux compat kexec rejects only the default architecture. */
+            if (architecture == 0) return -EDGE_LINUX_EINVAL;
+        } else if (architecture != 0 &&
+                   architecture != expected_architecture) {
             return -EDGE_LINUX_EINVAL;
+        }
         if (count && edge_linux_architecture_is_compat32(
                          context->architecture)) {
             edge_linux_kexec_segment32_t compat[KERNEL_KEXEC_SEGMENT_MAX];
-            if (edge_linux_copy_from_user(
-                    context, compat, context->arguments[2],
-                    count * sizeof(compat[0])) < 0)
-                return -EDGE_LINUX_EFAULT;
             for (uint32_t index = 0; index < count; ++index) {
+                uint64_t source = context->arguments[2] +
+                    index * sizeof(compat[index]);
+                if (edge_linux_copy_from_user(
+                        context, &compat[index], source,
+                        sizeof(compat[index])) < 0)
+                    return sizeof(compat[index]);
                 segments[index].buffer = compat[index].buffer;
                 segments[index].buffer_size = compat[index].buffer_size;
                 segments[index].memory = compat[index].memory;

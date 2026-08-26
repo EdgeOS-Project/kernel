@@ -450,6 +450,8 @@
         "tools/tests/x32_time_abi_probe.c",
         "tools/tests/x32_basic_io_abi_probe.c",
         "tools/tests/x32_common_entry_abi_probe.c",
+        "tools/tests/x32_disabled_syscalls_uapi_probe.c",
+        "tools/tests/x32_kexec_load_uapi_probe.c",
         "tools/tests/compat_io_uring_iovec_uapi_probe.c",
         "tools/tests/compat_userfaultfd_uapi_probe.c",
         "tools/tests/compat_bpf_uapi_probe.c"
@@ -457,7 +459,7 @@
       "linux_oracle": {
         "status": "partial",
         "reference": "a13c140cc289c0b7b3770bce5b3ad42ab35074aa",
-        "scope": "x32 syscall-number mask, scalar identity calls, scheduler yield, high-bit pointer rejection, descriptor creation and lifetime, x32 iovec conversion for vector, positioned and cross-process I/O, sendmsg and recvmsg compat-header conversion, x32 control message alignment, SCM_RIGHTS and SCM_CREDENTIALS delivery, sendmmsg and recvmmsg arrays with time64 timeout writeback, and old and time64 socket timeouts, scalar socket options and compat socket-filter programs, compat robust-list registration and query layouts, compat signal-action and alternate-stack registration, signal-mask and pending-set semantics, tagged compat siginfo conversion for queued process and thread signals, timed-wait delivery, and pidfd signal metadata, and compat waitid child information with native x32 wait4 and getrusage layouts, and native x32 64-bit time, interval-timer and timerfd layouts, and keyctl, io_uring, userfaultfd and BPF compat layouts, including native x32 KDF parameter layout, and basic file, path, offset, stat, pipe and UNIX socket I/O, and UTS data, CPU placement, affinity and random data queries, and Linux-designated common syscall entries including memory, resource limits, futex, poll and packed epoll layouts, and unassigned-number ENOSYS behavior"
+        "scope": "x32 syscall-number mask, scalar identity calls, scheduler yield, high-bit pointer rejection, descriptor creation and lifetime, x32 iovec conversion for vector, positioned and cross-process I/O, sendmsg and recvmsg compat-header conversion, x32 control message alignment, SCM_RIGHTS and SCM_CREDENTIALS delivery, sendmmsg and recvmmsg arrays with time64 timeout writeback, and old and time64 socket timeouts, scalar socket options and compat socket-filter programs, compat robust-list registration and query layouts, compat signal-action and alternate-stack registration, signal-mask and pending-set semantics, tagged compat siginfo conversion for queued process and thread signals, timed-wait delivery, and pidfd signal metadata, and compat waitid child information with native x32 wait4 and getrusage layouts, and native x32 64-bit time, interval-timer and timerfd layouts, and keyctl, io_uring, userfaultfd and BPF compat layouts, including native x32 KDF parameter layout, and basic file, path, offset, stat, pipe and UNIX socket I/O, and UTS data, CPU placement, affinity and random data queries, and Linux-designated common syscall entries including memory, resource limits, futex, poll and packed epoll layouts, and unassigned-number and reserved common-slot ENOSYS behavior, and kexec segment conversion"
       }
     },
     {
