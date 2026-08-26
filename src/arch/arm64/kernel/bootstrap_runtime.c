@@ -8347,6 +8347,37 @@ int arch_mm_address_space_shmem_range_supported(
     return 0;
 }
 
+int arch_mm_address_space_shmem_page_size(
+        uint64_t address_space, uint64_t address, uint64_t length,
+        uint64_t *page_size) {
+    uint64_t detected = 0u;
+    uint64_t end;
+    uint64_t cursor;
+
+    if (!address_space || !page_size || !length ||
+        length > UINT64_MAX - address)
+        return -LINUX_EINVAL;
+    end = address + length;
+    for (cursor = address; cursor < end;) {
+        kernel_tmpfs_mapping_t mapping;
+        uint64_t current;
+        uint64_t next;
+
+        if (!tmpfs_mapping_page_snapshot(
+                address_space, cursor, &mapping))
+            return -LINUX_EINVAL;
+        current = mapping.inode.fs_private[0] ?
+            UINT64_C(1) << mapping.inode.fs_private[0] : PAGE_SIZE;
+        if (detected && detected != current) return -LINUX_EINVAL;
+        detected = current;
+        next = mapping.end < end ? mapping.end : end;
+        if (next <= cursor) return -LINUX_EINVAL;
+        cursor = next;
+    }
+    *page_size = detected;
+    return 0;
+}
+
 int arch_mm_address_space_shmem_page_state(
         uint64_t address_space, uint64_t address) {
     kernel_tmpfs_mapping_t mapping;
@@ -8771,12 +8802,19 @@ int64_t arch_memfd_create_descriptor(const char *name, uint32_t flags) {
     static const char prefix[] = "/memfd:";
     static const char suffix[] = " (deleted)";
     int descriptor;
+    uint8_t huge_shift = 0u;
 
     if (!task) return -LINUX_EINVAL;
-    if (tmpfs_create_anonymous(
+    if (flags & KERNEL_MEMFD_HUGETLB)
+        huge_shift = (uint8_t)((flags & KERNEL_MEMFD_HUGE_MASK) ?
+            (flags & KERNEL_MEMFD_HUGE_MASK) >>
+                KERNEL_MEMFD_HUGE_SHIFT :
+            KERNEL_MEMFD_DEFAULT_HUGE_SHIFT);
+    if (tmpfs_create_anonymous_huge(
             0777u,
             (flags & KERNEL_MEMFD_ALLOW_SEALING) ?
                 0u : KERNEL_VFS_SEAL_SEAL,
+            huge_shift,
             &inode, &superblock) < 0)
         return -LINUX_ENOSPC;
     for (uint32_t index = 0; prefix[index]; ++index)
@@ -33513,6 +33551,8 @@ int64_t arch_mm_map(const kernel_mm_map_request_t *request) {
     uint64_t address;
     uint64_t length;
     uint64_t mapping_type;
+    uint64_t mapping_alignment = PAGE_SIZE;
+    bootstrap_fd_t *mapping_fd = 0;
     int map_result;
 
     if (!request) return -LINUX_EIO;
@@ -33530,15 +33570,38 @@ int64_t arch_mm_map(const kernel_mm_map_request_t *request) {
          mapping_type != KERNEL_MM_MAP_PRIVATE &&
          mapping_type != KERNEL_MM_MAP_SHARED_VALIDATE))
         return -LINUX_EINVAL;
+    if (!(a3 & LINUX_MAP_ANONYMOUS)) {
+        if (a4 >= KERNEL_BOOTSTRAP_FD_MAX ||
+            !fd_slot_is_open(task, (uint32_t)a4))
+            return -LINUX_EBADF;
+        mapping_fd = &task->fds[a4];
+        if (mapping_fd->kind == KERNEL_FD_FILE && mapping_fd->sb &&
+            tmpfs_memfd_huge_page_size(
+                mapping_fd->sb, &mapping_fd->inode,
+                &mapping_alignment) < 0)
+            mapping_alignment = PAGE_SIZE;
+        if ((a1 | a5) & (mapping_alignment - 1u))
+            return -LINUX_EINVAL;
+    }
     if (a3 & (LINUX_MAP_FIXED | LINUX_MAP_FIXED_NOREPLACE)) {
         address = a0;
     } else {
         if (find_user_unmapped_area(task, a0 ? page_up(a0) : 0,
                                     length, &address) < 0)
             return -LINUX_ENOMEM;
+        if (mapping_alignment > PAGE_SIZE) {
+            uint64_t aligned =
+                (address + mapping_alignment - 1u) &
+                ~(mapping_alignment - 1u);
+            if (aligned < address ||
+                !user_range_unmapped(task->ttbr0, aligned, length))
+                return -LINUX_ENOMEM;
+            address = aligned;
+        }
     }
     if ((a3 & (LINUX_MAP_FIXED | LINUX_MAP_FIXED_NOREPLACE)) &&
-        ((address & (PAGE_SIZE - 1u)) || address < USER_MMAP_MIN ||
+        ((address & (mapping_alignment - 1u)) ||
+         address < USER_MMAP_MIN ||
          address + length < address || address + length > USER_MMAP_LIMIT))
         return -LINUX_EINVAL;
     if (a3 & LINUX_MAP_FIXED_NOREPLACE) {
@@ -33565,11 +33628,7 @@ int64_t arch_mm_map(const kernel_mm_map_request_t *request) {
             address, length, a2,
             mapping_type != KERNEL_MM_MAP_PRIVATE);
     } else {
-        bootstrap_fd_t *fd;
-        if (a4 >= KERNEL_BOOTSTRAP_FD_MAX ||
-            !fd_slot_is_open(task, (uint32_t)a4))
-            return -LINUX_EBADF;
-        fd = &task->fds[a4];
+        bootstrap_fd_t *fd = mapping_fd;
         if (fd->kind == KERNEL_FD_IO_URING) {
             uint32_t page_count = 0;
             int result;

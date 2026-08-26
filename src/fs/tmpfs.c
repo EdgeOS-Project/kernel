@@ -63,6 +63,7 @@ typedef struct {
     uint32_t seals;
     uint32_t file_xflags;
     uint8_t is_memfd;
+    uint8_t huge_shift;
     tmpfs_xattr_t *xattrs;
     /* Nonzero directory-entry nodes reference the canonical inode index + 1. */
     uint32_t hardlink_target;
@@ -421,6 +422,7 @@ static void tmpfs_fill_inode(tmpfs_state_t *st, uint32_t idx, vfs_inode_t *out) 
     out->mtime = n->mtime;
     out->ctime = n->ctime;
     out->rdev = n->rdev;
+    out->fs_private[0] = n->huge_shift;
 }
 
 static int tmpfs_inode_index(const tmpfs_state_t *st,
@@ -774,6 +776,9 @@ static int tmpfs_truncate(vfs_superblock_t *sb, vfs_inode_t *inode,
         st->nodes[index].is_dir)
         return -1;
     node = &st->nodes[index];
+    if (node->huge_shift &&
+        (length & ((UINT32_C(1) << node->huge_shift) - 1u)))
+        return VFS_TRUNCATE_ERR_INVALID;
     if (node->file_xflags &
         (VFS_FILE_XFLAG_IMMUTABLE | VFS_FILE_XFLAG_APPEND))
         return VFS_TRUNCATE_ERR_PERMISSION;
@@ -997,9 +1002,12 @@ int tmpfs_shared_page(vfs_superblock_t *sb, vfs_inode_t *inode,
                       uint32_t offset, int create, uint64_t *physical_out) {
     tmpfs_state_t *st = tmpfs_state(sb);
     int index = tmpfs_inode_index(st, inode);
+    uint8_t allocated_bitmap[64];
     uint32_t block;
+    uint32_t group_blocks = 1u;
+    uint32_t group_start;
     uint32_t id;
-    int allocated;
+    int allocated_block_index;
     if (!st || !physical_out || index < 0 || !st->nodes[index].used ||
         st->nodes[index].is_dir || (offset & (TMPFS_BLOCK_SIZE - 1u)))
         return -1;
@@ -1007,13 +1015,48 @@ int tmpfs_shared_page(vfs_superblock_t *sb, vfs_inode_t *inode,
     if (offset >= st->nodes[index].size) return -1;
     tmpfs_blocks_lock();
     id = tmpfs_find_block_locked(&st->nodes[index], block);
-    if (!id && create) {
-        allocated = tmpfs_alloc_block_locked(st, &st->nodes[index], block);
-        if (allocated < 0) {
+    if (!id && create && st->nodes[index].huge_shift) {
+        group_blocks = 1u <<
+            (st->nodes[index].huge_shift - 12u);
+        group_start = block & ~(group_blocks - 1u);
+        if (group_blocks > sizeof(allocated_bitmap) * 8u ||
+            (uint64_t)(group_start + group_blocks) * TMPFS_BLOCK_SIZE >
+                st->nodes[index].size) {
             tmpfs_blocks_unlock();
             return -1;
         }
-        id = (uint32_t)allocated + 1u;
+        memset(allocated_bitmap, 0, sizeof(allocated_bitmap));
+        for (uint32_t current = 0; current < group_blocks; ++current) {
+            uint32_t file_block = group_start + current;
+            if (tmpfs_find_block_locked(
+                    &st->nodes[index], file_block))
+                continue;
+            int allocated_block = tmpfs_alloc_block_locked(
+                st, &st->nodes[index], file_block);
+            if (allocated_block < 0) {
+                for (uint32_t rollback = 0;
+                     rollback < current; ++rollback) {
+                    uint32_t rollback_id;
+                    if (!(allocated_bitmap[rollback / 8u] &
+                          (uint8_t)(1u << (rollback & 7u))))
+                        continue;
+                    rollback_id = tmpfs_find_block_locked(
+                        &st->nodes[index], group_start + rollback);
+                    if (rollback_id)
+                        tmpfs_free_block_locked(rollback_id - 1u);
+                }
+                tmpfs_blocks_unlock();
+                return -1;
+            }
+            allocated_bitmap[current / 8u] |=
+                (uint8_t)(1u << (current & 7u));
+        }
+        id = tmpfs_find_block_locked(&st->nodes[index], block);
+    } else if (!id && create) {
+        allocated_block_index = tmpfs_alloc_block_locked(
+            st, &st->nodes[index], block);
+        if (allocated_block_index >= 0)
+            id = (uint32_t)allocated_block_index + 1u;
     }
     if (!id || id > TMPFS_MAX_BLOCKS) {
         tmpfs_blocks_unlock();
@@ -2127,9 +2170,10 @@ static int tmpfs_initialize_superblock(tmpfs_state_t *st, vfs_superblock_t *sb,
     return 0;
 }
 
-int tmpfs_create_anonymous(uint16_t mode, uint32_t initial_seals,
-                           vfs_inode_t *out_inode,
-                           vfs_superblock_t **out_sb) {
+int tmpfs_create_anonymous_huge(uint16_t mode, uint32_t initial_seals,
+                                uint8_t huge_shift,
+                                vfs_inode_t *out_inode,
+                                vfs_superblock_t **out_sb) {
     tmpfs_state_t *st = &g_tmpfs_anonymous_state;
     vfs_superblock_t *sb = &g_tmpfs_anonymous_sb;
     int index;
@@ -2153,6 +2197,7 @@ int tmpfs_create_anonymous(uint16_t mode, uint32_t initial_seals,
     st->nodes[index].anonymous_references = 1u;
     st->nodes[index].seals = initial_seals;
     st->nodes[index].is_memfd = 1u;
+    st->nodes[index].huge_shift = huge_shift;
     st->nodes[index].atime = st->nodes[index].mtime =
         st->nodes[index].ctime = tmpfs_now_sec();
     {
@@ -2168,6 +2213,33 @@ int tmpfs_create_anonymous(uint16_t mode, uint32_t initial_seals,
     *out_sb = sb;
     tmpfs_states_unlock();
     return 0;
+}
+
+int tmpfs_create_anonymous(uint16_t mode, uint32_t initial_seals,
+                           vfs_inode_t *out_inode,
+                           vfs_superblock_t **out_sb) {
+    return tmpfs_create_anonymous_huge(
+        mode, initial_seals, 0u, out_inode, out_sb);
+}
+
+int tmpfs_memfd_huge_page_size(vfs_superblock_t *sb,
+                               const vfs_inode_t *inode,
+                               uint64_t *page_size) {
+    tmpfs_state_t *state = tmpfs_state(vfs_superblock_stable(sb));
+    int index;
+    int result = -1;
+
+    if (!state || !inode || !page_size) return -1;
+    tmpfs_states_lock();
+    index = tmpfs_inode_index(state, inode);
+    if (index > 0 && state->nodes[index].used &&
+        state->nodes[index].is_memfd &&
+        state->nodes[index].huge_shift) {
+        *page_size = UINT64_C(1) << state->nodes[index].huge_shift;
+        result = 0;
+    }
+    tmpfs_states_unlock();
+    return result;
 }
 
 int tmpfs_memfd_get_seals(vfs_superblock_t *sb,

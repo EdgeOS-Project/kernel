@@ -1975,7 +1975,8 @@ typedef struct {
 typedef struct {
     int used;
     uint8_t secret;
-    uint8_t reserved[3];
+    uint8_t huge_shift;
+    uint8_t reserved[2];
     uint32_t descriptor_refs;
     uint32_t mapping_refs;
     int id;

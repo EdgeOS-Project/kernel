@@ -116,6 +116,10 @@ int64_t kernel_userfaultfd_ioctl(const kernel_ioctl_request_t *request) {
     if (!state.api_ready) return -EDGE_LINUX_EINVAL;
     if (request->command == KERNEL_UFFDIO_REGISTER) {
         kernel_uffdio_register_t registration;
+        uint64_t backing_page_size;
+        uint8_t backing_page_shift = 0u;
+        int huge_backing;
+        int shmem_backing;
         memset(&registration, 0, sizeof(registration));
         status = userfaultfd_copy_from_user(
             request, &registration, request->argument,
@@ -125,14 +129,49 @@ int64_t kernel_userfaultfd_ioctl(const kernel_ioctl_request_t *request) {
             state.address_space,
             registration.range.start, registration.range.length);
         if (status < 0) return status;
-        if (registration.mode & KERNEL_UFFD_REGISTER_MODE_MINOR) {
-            status = arch_mm_address_space_shmem_range_supported(
-                state.address_space, registration.range.start,
-                registration.range.length);
-            if (status < 0) return status;
+        status = arch_mm_address_space_shmem_page_size(
+            state.address_space, registration.range.start,
+            registration.range.length, &backing_page_size);
+        shmem_backing = status == 0;
+        if (status < 0) {
+            if (registration.mode & KERNEL_UFFD_REGISTER_MODE_MINOR)
+                return status;
+            backing_page_size = KERNEL_UFFD_PAGE_SIZE;
         }
-        status = kernel_userfaultfd_register(context_id, &registration);
+        if (!backing_page_size ||
+            (backing_page_size & (backing_page_size - 1u)))
+            return -EDGE_LINUX_EINVAL;
+        while ((UINT64_C(1) << backing_page_shift) < backing_page_size)
+            ++backing_page_shift;
+        if ((registration.range.start | registration.range.length) &
+            (backing_page_size - 1u))
+            return -EDGE_LINUX_EINVAL;
+        huge_backing = backing_page_size > KERNEL_UFFD_PAGE_SIZE;
+        if ((registration.mode & KERNEL_UFFD_REGISTER_MODE_MISSING) &&
+            shmem_backing &&
+            !(state.features & (huge_backing ?
+              KERNEL_UFFD_FEATURE_MISSING_HUGETLBFS :
+              KERNEL_UFFD_FEATURE_MISSING_SHMEM)))
+            return -EDGE_LINUX_EINVAL;
+        if ((registration.mode & KERNEL_UFFD_REGISTER_MODE_MINOR) &&
+            !(state.features & (huge_backing ?
+              KERNEL_UFFD_FEATURE_MINOR_HUGETLBFS :
+              KERNEL_UFFD_FEATURE_MINOR_SHMEM)))
+            return -EDGE_LINUX_EINVAL;
+        if (huge_backing &&
+            (registration.mode & KERNEL_UFFD_REGISTER_MODE_WP))
+            return -EDGE_LINUX_EINVAL;
+        status = kernel_userfaultfd_register_backing(
+            context_id, &registration, backing_page_shift);
         if (status < 0) return status;
+        if (huge_backing) {
+            registration.ioctls &=
+                ~(UINT64_C(1) << KERNEL_UFFDIO_ZEROPAGE_NUMBER);
+            registration.ioctls &=
+                ~(UINT64_C(1) << KERNEL_UFFDIO_MOVE_NUMBER);
+            registration.ioctls &=
+                ~(UINT64_C(1) << KERNEL_UFFDIO_POISON_NUMBER);
+        }
         status = userfaultfd_copy_to_user(
             request, request->argument, &registration,
             sizeof(registration));
@@ -298,6 +337,7 @@ int64_t kernel_userfaultfd_ioctl(const kernel_ioctl_request_t *request) {
     if (request->command == KERNEL_UFFDIO_CONTINUE) {
         kernel_uffdio_continue_t continuation;
         uint64_t completed = 0;
+        uint64_t backing_page_size;
 
         memset(&continuation, 0, sizeof(continuation));
         status = userfaultfd_copy_from_user(
@@ -305,8 +345,6 @@ int64_t kernel_userfaultfd_ioctl(const kernel_ioctl_request_t *request) {
             sizeof(continuation) - sizeof(continuation.mapped));
         if (status < 0) return status;
         if (!continuation.range.length ||
-            ((continuation.range.start | continuation.range.length) &
-             (KERNEL_UFFD_PAGE_SIZE - 1u)) ||
             continuation.range.start >
                 UINT64_MAX - continuation.range.length ||
             (continuation.mode &
@@ -321,6 +359,13 @@ int64_t kernel_userfaultfd_ioctl(const kernel_ioctl_request_t *request) {
             state.address_space, continuation.range.start,
             continuation.range.length);
         if (status < 0) return status;
+        status = arch_mm_address_space_shmem_page_size(
+            state.address_space, continuation.range.start,
+            continuation.range.length, &backing_page_size);
+        if (status < 0) return status;
+        if ((continuation.range.start | continuation.range.length) &
+            (backing_page_size - 1u))
+            return -EDGE_LINUX_EINVAL;
         status = kernel_userfaultfd_continue_validate(
             context_id, &continuation.range, continuation.mode,
             &state.address_space);

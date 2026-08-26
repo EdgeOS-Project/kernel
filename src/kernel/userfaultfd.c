@@ -36,7 +36,8 @@ typedef struct kernel_userfaultfd_context {
 
 typedef struct kernel_userfaultfd_range {
     uint8_t used;
-    uint8_t padding[3];
+    uint8_t page_shift;
+    uint8_t padding[2];
     int32_t context_id;
     uint64_t start;
     uint64_t end;
@@ -625,6 +626,7 @@ int kernel_userfaultfd_query(int context_id,
     state->api_ready = context->api_ready;
     state->readiness_sequence = context->readiness_sequence;
     state->address_space = context->address_space;
+    state->features = context->features;
     state->owner_pid = context->owner_pid;
     userfaultfd_unlock();
     return 0;
@@ -657,14 +659,18 @@ int kernel_userfaultfd_negotiate(int context_id,
     return result;
 }
 
-int kernel_userfaultfd_register(int context_id,
-                                kernel_uffdio_register_t *registration) {
+int kernel_userfaultfd_register_backing(
+        int context_id, kernel_uffdio_register_t *registration,
+        uint8_t page_shift) {
     kernel_userfaultfd_context_t *context;
     kernel_userfaultfd_range_t *free_range = 0;
     uint64_t end;
     int result = 0;
 
-    if (!registration || !userfaultfd_range_valid(&registration->range) ||
+    if (!registration || page_shift < 12u || page_shift > 30u ||
+        !userfaultfd_range_valid(&registration->range) ||
+        ((registration->range.start | registration->range.length) &
+         ((UINT64_C(1) << page_shift) - 1u)) ||
         !registration->mode ||
         (registration->mode &
          ~(KERNEL_UFFD_REGISTER_MODE_MISSING |
@@ -705,6 +711,7 @@ int kernel_userfaultfd_register(int context_id,
     memset(free_range, 0, sizeof(*free_range));
     free_range->used = 1;
     free_range->context_id = context_id;
+    free_range->page_shift = page_shift;
     free_range->start = registration->range.start;
     free_range->end = end;
     free_range->mode = registration->mode;
@@ -720,6 +727,12 @@ int kernel_userfaultfd_register(int context_id,
 out:
     userfaultfd_unlock();
     return result;
+}
+
+int kernel_userfaultfd_register(int context_id,
+                                kernel_uffdio_register_t *registration) {
+    return kernel_userfaultfd_register_backing(
+        context_id, registration, 12u);
 }
 
 int kernel_userfaultfd_unregister(int context_id,
@@ -1905,6 +1918,7 @@ int kernel_userfaultfd_page_fault(
     uint32_t thread_id, int *context_id, uint64_t *ticket) {
     kernel_userfaultfd_context_t *context = 0;
     uint64_t page = address & ~(uint64_t)(KERNEL_UFFD_PAGE_SIZE - 1u);
+    uint64_t resolution_size = KERNEL_UFFD_PAGE_SIZE;
     uint16_t event_index;
     int found_context = -1;
     int writeprotect_fault = 0;
@@ -1939,6 +1953,8 @@ int kernel_userfaultfd_page_fault(
         if (context && context->api_ready &&
             context->address_space == address_space) {
             found_context = range->context_id;
+            resolution_size = UINT64_C(1) << range->page_shift;
+            page = address & ~(resolution_size - 1u);
             writeprotect_fault = protected_write;
             minor_fault = backed_minor_fault;
             break;
@@ -1951,19 +1967,19 @@ int kernel_userfaultfd_page_fault(
     if (writeprotect_fault &&
         (context->features & KERNEL_UFFD_FEATURE_WP_ASYNC)) {
         int result = userfaultfd_wp_remove_locked(
-            found_context, page, page + KERNEL_UFFD_PAGE_SIZE);
+            found_context, page, page + resolution_size);
         if (result == 0) userfaultfd_sequence_advance(context);
         userfaultfd_unlock();
         if (result == 0)
             result = arch_mm_address_space_write_protect(
-                address_space, page, KERNEL_UFFD_PAGE_SIZE, 0);
+                address_space, page, resolution_size, 0);
         if (result < 0) {
             userfaultfd_lock();
             context = userfaultfd_context_locked(found_context);
             if (context)
                 (void)userfaultfd_wp_add_locked(
                     found_context, page,
-                    page + KERNEL_UFFD_PAGE_SIZE);
+                    page + resolution_size);
             userfaultfd_unlock();
         } else {
             kernel_userfaultfd_state_changed(found_context);
@@ -2092,7 +2108,6 @@ int kernel_userfaultfd_fault_pending(int context_id, uint64_t ticket) {
 
 int kernel_userfaultfd_resolution_bypasses_fault(
     uint64_t address_space, uint64_t address) {
-    uint64_t page = address & ~(uint64_t)(KERNEL_UFFD_PAGE_SIZE - 1u);
     int bypass = 0;
 
     userfaultfd_lock();
@@ -2100,12 +2115,29 @@ int kernel_userfaultfd_resolution_bypasses_fault(
          index < EDGE_RUNTIME_USERFAULTFD_EVENT_POOL; ++index) {
         kernel_userfaultfd_event_t *event = &g_userfaultfd_events[index];
         kernel_userfaultfd_context_t *context;
+        uint64_t page = address &
+            ~(uint64_t)(KERNEL_UFFD_PAGE_SIZE - 1u);
         if (!event->used ||
             event->event_type != KERNEL_UFFD_EVENT_PAGEFAULT ||
-            !event->resolving || event->page != page)
+            !event->resolving)
             continue;
         context = userfaultfd_context_locked(event->context_id);
-        if (context && context->address_space == address_space) {
+        if (!context || context->address_space != address_space)
+            continue;
+        for (uint16_t range_index = 0;
+             range_index < EDGE_RUNTIME_MAX_USERFAULTFD_RANGES;
+             ++range_index) {
+            kernel_userfaultfd_range_t *range =
+                &g_userfaultfd_ranges[range_index];
+            if (!range->used ||
+                range->context_id != event->context_id ||
+                address < range->start || address >= range->end)
+                continue;
+            page = address &
+                ~((UINT64_C(1) << range->page_shift) - 1u);
+            break;
+        }
+        if (event->page == page) {
             bypass = 1;
             break;
         }

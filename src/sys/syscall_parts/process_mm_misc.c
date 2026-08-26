@@ -7098,6 +7098,7 @@ static int64_t arch_mm_map_locked(
     uint64_t top;
     uint64_t floor;
     uint64_t gap_align;
+    uint64_t mapping_alignment = PAGE_SIZE;
     static uint8_t mmap_kbuf[131072];
     task_t *cur = process_current_task();
     task_t *mm = 0;
@@ -7122,13 +7123,28 @@ static int64_t arch_mm_map_locked(
     if (!cur) return (uint64_t)-EINVAL;
     mm = process_vm_task(cur);
     if (!mm) return (uint64_t)-EINVAL;
+    if ((flags & LINUX_MAP_ANON) == 0) {
+        edge_fd_proc_t *process =
+            fd_proc_for_pid(fd_owner_pid_current(), 0);
+        edge_fd_t *entry = fd_get(process, (int)fd);
+
+        if (entry && entry->kind == FD_MEMFD) {
+            edge_memfd_t *memory = memfd_get(entry->pipe_id);
+
+            if (memory && memory->huge_shift)
+                mapping_alignment = UINT64_C(1) << memory->huge_shift;
+        }
+    }
+    if ((len | off) & (mapping_alignment - 1u))
+        return (uint64_t)-EINVAL;
     tname = cur->name[0] ? cur->name : "?";
     trace_py = 0 && (strcmp(tname, "python3") == 0);
     need = page_align_up(len);
     if (need == 0) return (uint64_t)-EINVAL;
 
     if ((flags & (LINUX_MAP_FIXED | LINUX_MAP_FIXED_NOREPLACE)) != 0) {
-        if ((addr & (PAGE_SIZE - 1)) != 0) return (uint64_t)-EINVAL;
+        if ((addr & (mapping_alignment - 1u)) != 0)
+            return (uint64_t)-EINVAL;
         base = addr;
     } else {
         /* Anonymous userspace allocators such as Go's runtime reserve large
@@ -7143,14 +7159,14 @@ static int64_t arch_mm_map_locked(
             floor = USER_MMAP_HIGH_BASE_ADDR;
             top = USER_MMAP_HIGH_LIMIT_ADDR;
         }
-        gap_align = PAGE_SIZE;
+        gap_align = mapping_alignment;
         if ((flags & LINUX_MAP_ANON) != 0 && need >= (64ULL * 1024ULL * 1024ULL) &&
             (need & (need - 1ULL)) == 0) {
             gap_align = need;
         }
         base = 0;
         if (addr != 0) {
-            uint64_t hint = page_align_down(addr);
+            uint64_t hint = addr & ~(mapping_alignment - 1u);
             if (hint >= floor &&
                 hint + need >= hint &&
                 hint + need <= top &&
@@ -8819,6 +8835,45 @@ int arch_mm_address_space_shmem_range_supported(
         if (next <= cursor) return -EINVAL;
         cursor = next;
     }
+    return 0;
+}
+
+int arch_mm_address_space_shmem_page_size(
+        uint64_t address_space, uint64_t address, uint64_t length,
+        uint64_t *page_size) {
+    task_t *memory = x86_mm_task_for_address_space(address_space);
+    uint64_t detected = 0u;
+    uint64_t end;
+    uint64_t cursor;
+
+    if (!memory || !page_size || !length ||
+        length > UINT64_MAX - address)
+        return -EINVAL;
+    end = address + length;
+    for (cursor = address; cursor < end;) {
+        edge_user_vma_t mapping;
+        const char *path;
+        uint64_t current = PAGE_SIZE;
+        uint64_t next;
+        int memfd_id;
+
+        if (!x86_user_vma_shmem_snapshot(memory, cursor, &mapping))
+            return -EINVAL;
+        path = user_mmap_file_path(mapping.file_slot);
+        memfd_id = memfd_id_from_path(path);
+        if (memfd_id > 0) {
+            edge_memfd_t *memfd = memfd_get(memfd_id);
+            if (!memfd) return -EINVAL;
+            if (memfd->huge_shift)
+                current = UINT64_C(1) << memfd->huge_shift;
+        }
+        if (detected && current != detected) return -EINVAL;
+        detected = current;
+        next = mapping.end < end ? mapping.end : end;
+        if (next <= cursor) return -EINVAL;
+        cursor = next;
+    }
+    *page_size = detected;
     return 0;
 }
 

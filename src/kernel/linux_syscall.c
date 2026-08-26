@@ -5139,13 +5139,13 @@ static int64_t edge_linux_sys_memfd_create(
     if (flags & ~(KERNEL_MEMFD_CLOEXEC | KERNEL_MEMFD_ALLOW_SEALING |
                   KERNEL_MEMFD_HUGETLB | KERNEL_MEMFD_HUGE_MASK))
         return -EDGE_LINUX_EINVAL;
-    /*
-     * Huge-page memfds require a hugetlb-backed allocator and reservation
-     * accounting.  Reject them until that real backing exists instead of
-     * exposing ordinary tmpfs pages under huge-page flags.
-     */
-    if (flags & (KERNEL_MEMFD_HUGETLB | KERNEL_MEMFD_HUGE_MASK))
+    if ((flags & KERNEL_MEMFD_HUGE_MASK) &&
+        !(flags & KERNEL_MEMFD_HUGETLB))
         return -EDGE_LINUX_EINVAL;
+    if ((flags & KERNEL_MEMFD_HUGETLB) &&
+        (flags & KERNEL_MEMFD_HUGE_MASK) != 0u &&
+        (flags & KERNEL_MEMFD_HUGE_MASK) != KERNEL_MEMFD_HUGE_2MB)
+        return -EDGE_LINUX_ENODEV;
     result = edge_linux_copy_user_string(
         context, context->arguments[0], name, sizeof(name),
         EDGE_LINUX_EINVAL);

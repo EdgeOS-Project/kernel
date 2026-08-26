@@ -5671,6 +5671,11 @@ static int memfd_alloc_obj(const char *name, uint32_t flags, int secret) {
         memset(mf, 0, sizeof(*mf));
         mf->used = 1;
         mf->secret = secret ? 1u : 0u;
+        mf->huge_shift = (flags & KERNEL_MEMFD_HUGETLB) ?
+            (uint8_t)((flags & KERNEL_MEMFD_HUGE_MASK) ?
+                (flags & KERNEL_MEMFD_HUGE_MASK) >>
+                    KERNEL_MEMFD_HUGE_SHIFT :
+                KERNEL_MEMFD_DEFAULT_HUGE_SHIFT) : 0u;
         mf->descriptor_refs = 1;
         mf->id = i;
         mf->seals = (flags & KERNEL_MEMFD_ALLOW_SEALING) ?
@@ -5781,7 +5786,8 @@ static void memfd_build_path(char *dst, uint32_t dst_sz, int id, const char *nam
     dst[out] = 0;
 }
 
-static int memfd_storage_page(edge_memfd_t *mf, uint64_t page_no, int create) {
+static int memfd_storage_base_page(edge_memfd_t *mf, uint64_t page_no,
+                                   int create) {
     int idx;
     void *page;
     uint64_t swap_entry;
@@ -5816,6 +5822,47 @@ static int memfd_storage_page(edge_memfd_t *mf, uint64_t page_no, int create) {
     memset(page, 0, PAGE_SIZE);
     mf->page_idx[page_no] = idx;
     return idx;
+}
+
+static int memfd_storage_page(edge_memfd_t *mf, uint64_t page_no, int create) {
+    uint64_t group_pages;
+    uint64_t group_start;
+    uint8_t allocated[
+        (UINT64_C(1) << (KERNEL_MEMFD_DEFAULT_HUGE_SHIFT - 12u)) / 8u];
+    int result;
+
+    if (!mf || page_no >= EDGE_MEMFD_MAX_PAGES) return -1;
+    if (!create || !mf->huge_shift)
+        return memfd_storage_base_page(mf, page_no, create);
+    group_pages = UINT64_C(1) << (mf->huge_shift - 12u);
+    group_start = page_no & ~(group_pages - 1u);
+    if (group_pages > sizeof(allocated) * 8u ||
+        group_start > EDGE_MEMFD_MAX_PAGES - group_pages)
+        return -1;
+    memset(allocated, 0, sizeof(allocated));
+    for (uint64_t index = 0; index < group_pages; ++index) {
+        uint64_t current = group_start + index;
+        int was_absent = mf->page_idx[current] < 0 &&
+                         (!mf->swap_entries ||
+                          !mf->swap_entries[current]);
+        result = memfd_storage_base_page(mf, current, 1);
+        if (result < 0) {
+            for (uint64_t rollback = 0; rollback < index; ++rollback) {
+                uint64_t slot = group_start + rollback;
+                if (!(allocated[rollback / 8u] &
+                      (uint8_t)(1u << (rollback & 7u))))
+                    continue;
+                process_user_mmap_release_backing_page(
+                    mf->page_idx[slot]);
+                mf->page_idx[slot] = -1;
+            }
+            return -1;
+        }
+        if (was_absent)
+            allocated[index / 8u] |=
+                (uint8_t)(1u << (index & 7u));
+    }
+    return mf->page_idx[page_no];
 }
 
 static int memfd_read_to_kernel(edge_memfd_t *mf, uint64_t off, void *buf, uint64_t len) {
@@ -5900,6 +5947,9 @@ static int memfd_truncate(edge_memfd_t *mf, uint64_t len) {
     uint64_t old_pages;
     uint64_t new_pages;
     if (!mf) return -EINVAL;
+    if (mf->huge_shift &&
+        (len & ((UINT64_C(1) << mf->huge_shift) - 1u)))
+        return -EINVAL;
     if (len > ((uint64_t)EDGE_MEMFD_MAX_PAGES * PAGE_SIZE)) return -EFBIG;
     if (len < mf->size && (mf->seals & LINUX_F_SEAL_SHRINK)) return -EPERM;
     if (len > mf->size && (mf->seals & LINUX_F_SEAL_GROW)) return -EPERM;

@@ -76,13 +76,13 @@ EDGEOS_ASSESSMENTS = [
     },
     {
         "domain": "userfaultfd",
-        "status": "partial",
+        "status": "verified",
         "kconfig": ["USERFAULTFD"],
         "architectures": {
-            "x86_64": "runtime-verified-partial",
-            "aarch64": "runtime-verified-partial",
-            "ia32": "runtime-verified-partial",
-            "x32": "runtime-verified-partial",
+            "x86_64": "runtime-verified",
+            "aarch64": "runtime-verified",
+            "ia32": "runtime-verified",
+            "x32": "runtime-verified",
         },
         "implemented": [
             "API negotiation and thread-ID page-fault records",
@@ -100,17 +100,17 @@ EDGEOS_ASSESSMENTS = [
             "fork events with inherited registrations and child userfaultfd descriptors",
             "remap, remove and unmap event records with Linux range layouts and blocking completion",
             "ia32 and x32 API negotiation, registration and unregistration with fixed-width ioctl layouts",
+            "2 MiB hugetlb memfd creation, alignment, grouped backing and Linux error behavior",
+            "hugetlb missing and minor faults with COPY and CONTINUE resolution",
         ],
-        "missing": [
-            "hugetlb minor-fault behavior",
-        ],
+        "missing": [],
         "runtime_tests": [
             "tools/tests/userfaultfd_abi_probe.c",
             "tools/tests/compat_userfaultfd_uapi_probe.c",
             "tools/tests/userfaultfd_runtime_unit.c",
         ],
         "linux_oracle": {
-            "status": "partial",
+            "status": "verified",
             "reference": REFERENCE_COMMIT,
             "scope": (
                 "feature bits, range ioctl masks, anonymous and shared memfd "
@@ -118,7 +118,9 @@ EDGEOS_ASSESSMENTS = [
                 "page moves, poisoned-page markers and SIGBUS faults, mapping "
                 "lifecycle cleanup, resident and unpopulated asynchronous write "
                 "protection, write-protect event flags and wake behavior, plus "
-                "ia32 and x32 page-boundary API, register and unregister layouts"
+                "ia32 and x32 page-boundary API, register and unregister "
+                "layouts, plus 2 MiB hugetlb memfd alignment, missing-page "
+                "COPY and minor-fault CONTINUE behavior"
             ),
         },
     },

@@ -365,6 +365,9 @@ int arch_mm_address_space_page_resident(
     uint64_t address_space, uint64_t address);
 int arch_mm_address_space_shmem_range_supported(
     uint64_t address_space, uint64_t address, uint64_t length);
+int arch_mm_address_space_shmem_page_size(
+    uint64_t address_space, uint64_t address, uint64_t length,
+    uint64_t *page_size);
 int arch_mm_address_space_shmem_page_state(
     uint64_t address_space, uint64_t address);
 int arch_mm_address_space_copy(

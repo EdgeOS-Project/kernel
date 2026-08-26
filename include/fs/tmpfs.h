@@ -21,6 +21,13 @@ int tmpfs_mount_type_options(const char *dev, const char *target,
 int tmpfs_create_anonymous(uint16_t mode, uint32_t initial_seals,
                            vfs_inode_t *out_inode,
                            vfs_superblock_t **out_sb);
+int tmpfs_create_anonymous_huge(uint16_t mode, uint32_t initial_seals,
+                                uint8_t huge_shift,
+                                vfs_inode_t *out_inode,
+                                vfs_superblock_t **out_sb);
+int tmpfs_memfd_huge_page_size(vfs_superblock_t *sb,
+                               const vfs_inode_t *inode,
+                               uint64_t *page_size);
 int tmpfs_memfd_get_seals(vfs_superblock_t *sb,
                           const vfs_inode_t *inode,
                           uint32_t *seals);

@@ -32,10 +32,12 @@
 #define KERNEL_UFFD_FEATURE_EVENT_FORK   (1ULL << 1)
 #define KERNEL_UFFD_FEATURE_EVENT_REMAP  (1ULL << 2)
 #define KERNEL_UFFD_FEATURE_EVENT_REMOVE (1ULL << 3)
+#define KERNEL_UFFD_FEATURE_MISSING_HUGETLBFS (1ULL << 4)
 #define KERNEL_UFFD_FEATURE_MISSING_SHMEM (1ULL << 5)
 #define KERNEL_UFFD_FEATURE_EVENT_UNMAP  (1ULL << 6)
 #define KERNEL_UFFD_FEATURE_SIGBUS      (1ULL << 7)
 #define KERNEL_UFFD_FEATURE_THREAD_ID (1ULL << 8)
+#define KERNEL_UFFD_FEATURE_MINOR_HUGETLBFS (1ULL << 9)
 #define KERNEL_UFFD_FEATURE_MINOR_SHMEM (1ULL << 10)
 #define KERNEL_UFFD_FEATURE_EXACT_ADDRESS (1ULL << 11)
 #define KERNEL_UFFD_FEATURE_WP_UNPOPULATED (1ULL << 13)
@@ -47,9 +49,11 @@
      KERNEL_UFFD_FEATURE_EVENT_FORK | \
      KERNEL_UFFD_FEATURE_EVENT_REMAP | \
      KERNEL_UFFD_FEATURE_EVENT_REMOVE | \
+     KERNEL_UFFD_FEATURE_MISSING_HUGETLBFS | \
      KERNEL_UFFD_FEATURE_MISSING_SHMEM | \
      KERNEL_UFFD_FEATURE_EVENT_UNMAP | \
      KERNEL_UFFD_FEATURE_SIGBUS | KERNEL_UFFD_FEATURE_THREAD_ID | \
+     KERNEL_UFFD_FEATURE_MINOR_HUGETLBFS | \
      KERNEL_UFFD_FEATURE_MINOR_SHMEM | \
      KERNEL_UFFD_FEATURE_EXACT_ADDRESS | \
      KERNEL_UFFD_FEATURE_WP_UNPOPULATED | KERNEL_UFFD_FEATURE_POISON | \
@@ -184,6 +188,7 @@ typedef struct kernel_userfaultfd_state {
     uint8_t padding[3];
     uint64_t readiness_sequence;
     uint64_t address_space;
+    uint64_t features;
     int32_t owner_pid;
 } kernel_userfaultfd_state_t;
 
@@ -200,6 +205,9 @@ int kernel_userfaultfd_negotiate(int context_id,
                                  kernel_uffdio_api_t *api);
 int kernel_userfaultfd_register(int context_id,
                                 kernel_uffdio_register_t *registration);
+int kernel_userfaultfd_register_backing(
+    int context_id, kernel_uffdio_register_t *registration,
+    uint8_t page_shift);
 int kernel_userfaultfd_unregister(int context_id,
                                   const kernel_uffdio_range_t *range);
 int kernel_userfaultfd_unregister_validate(

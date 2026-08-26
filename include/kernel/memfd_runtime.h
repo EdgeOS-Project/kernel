@@ -14,6 +14,9 @@
 #define KERNEL_MEMFD_ALLOW_SEALING  0x0002u
 #define KERNEL_MEMFD_HUGETLB        0x0004u
 #define KERNEL_MEMFD_HUGE_MASK      0xfc000000u
+#define KERNEL_MEMFD_HUGE_SHIFT     26u
+#define KERNEL_MEMFD_HUGE_2MB       (21u << KERNEL_MEMFD_HUGE_SHIFT)
+#define KERNEL_MEMFD_DEFAULT_HUGE_SHIFT 21u
 
 int64_t kernel_memfd_create_descriptor(const char *name, uint32_t flags);
 int64_t kernel_memfd_secret_descriptor(uint32_t descriptor_flags);

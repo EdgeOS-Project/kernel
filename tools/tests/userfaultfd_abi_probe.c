@@ -42,6 +42,7 @@
 #endif
 
 #define PAGE_SIZE 4096u
+#define HUGE_PAGE_SIZE (2u * 1024u * 1024u)
 #define PROT_READ 0x1
 #define PROT_WRITE 0x2
 #define MAP_PRIVATE 0x2
@@ -50,6 +51,11 @@
 #define MAP_ANONYMOUS 0x20
 #define MREMAP_MAYMOVE 0x1
 #define MREMAP_FIXED 0x2
+#define MFD_CLOEXEC 0x0001u
+#define MFD_ALLOW_SEALING 0x0002u
+#define MFD_HUGETLB 0x0004u
+#define MFD_HUGE_SHIFT 26u
+#define MFD_HUGE_2MB (21u << MFD_HUGE_SHIFT)
 #define O_NONBLOCK 0x800
 #define O_CLOEXEC 0x80000
 #define UFFD_USER_MODE_ONLY 0x1
@@ -58,10 +64,12 @@
 #define UFFD_FEATURE_EVENT_FORK (1ULL << 1)
 #define UFFD_FEATURE_EVENT_REMAP (1ULL << 2)
 #define UFFD_FEATURE_EVENT_REMOVE (1ULL << 3)
+#define UFFD_FEATURE_MISSING_HUGETLBFS (1ULL << 4)
 #define UFFD_FEATURE_MISSING_SHMEM (1ULL << 5)
 #define UFFD_FEATURE_EVENT_UNMAP (1ULL << 6)
 #define UFFD_FEATURE_SIGBUS (1ULL << 7)
 #define UFFD_FEATURE_THREAD_ID (1ULL << 8)
+#define UFFD_FEATURE_MINOR_HUGETLBFS (1ULL << 9)
 #define UFFD_FEATURE_MINOR_SHMEM (1ULL << 10)
 #define UFFD_FEATURE_EXACT_ADDRESS (1ULL << 11)
 #define UFFD_FEATURE_WP_UNPOPULATED (1ULL << 13)
@@ -499,7 +507,9 @@ START_ATTRIBUTES void _start(void) {
         .api = UFFD_API,
         .features = UFFD_FEATURE_THREAD_ID |
                     UFFD_FEATURE_PAGEFAULT_FLAG_WP |
+                    UFFD_FEATURE_MISSING_HUGETLBFS |
                     UFFD_FEATURE_MISSING_SHMEM |
+                    UFFD_FEATURE_MINOR_HUGETLBFS |
                     UFFD_FEATURE_MINOR_SHMEM |
                     UFFD_FEATURE_EXACT_ADDRESS |
                     UFFD_FEATURE_POISON |
@@ -559,7 +569,9 @@ START_ATTRIBUTES void _start(void) {
             SYS_ioctl, descriptor, UFFDIO_API, (long)&api, 0, 0, 0), 0);
     if (api.api != UFFD_API || !api.ioctls ||
         !(api.features & UFFD_FEATURE_THREAD_ID) ||
+        !(api.features & UFFD_FEATURE_MISSING_HUGETLBFS) ||
         !(api.features & UFFD_FEATURE_MISSING_SHMEM) ||
+        !(api.features & UFFD_FEATURE_MINOR_HUGETLBFS) ||
         !(api.features & UFFD_FEATURE_MINOR_SHMEM) ||
         !(api.features & UFFD_FEATURE_SIGBUS) ||
         !(api.features & UFFD_FEATURE_EXACT_ADDRESS) ||
@@ -898,6 +910,303 @@ START_ATTRIBUTES void _start(void) {
         if (shmem_descriptor >= 0)
             (void)raw_syscall6(
                 SYS_close, shmem_descriptor, 0, 0, 0, 0, 0);
+    }
+
+    {
+        static const char huge_name[] = "uffd-hugetlb";
+        long huge_descriptor;
+        unsigned char *huge_source =
+            (unsigned char *)(uintptr_t)-1;
+        unsigned char *huge_minor =
+            (unsigned char *)(uintptr_t)-1;
+        unsigned char *huge_copy_source =
+            (unsigned char *)(uintptr_t)-1;
+
+        failures += expect_result(
+            "hugetlb-selector-without-flag",
+            raw_syscall6(
+                SYS_memfd_create, (long)huge_name,
+                MFD_HUGE_2MB, 0, 0, 0, 0),
+            -EINVAL);
+        huge_descriptor = raw_syscall6(
+            SYS_memfd_create, (long)huge_name,
+            MFD_CLOEXEC | MFD_ALLOW_SEALING |
+                MFD_HUGETLB | MFD_HUGE_2MB,
+            0, 0, 0, 0);
+        failures += expect_result(
+            "hugetlb-create",
+            huge_descriptor < 0 ? huge_descriptor : 0, 0);
+        if (huge_descriptor >= 0) {
+            failures += expect_result(
+                "hugetlb-unaligned-size", raw_syscall6(
+                    SYS_ftruncate, huge_descriptor, PAGE_SIZE,
+                    0, 0, 0, 0), -EINVAL);
+            failures += expect_result(
+                "hugetlb-size", raw_syscall6(
+                    SYS_ftruncate, huge_descriptor, HUGE_PAGE_SIZE,
+                    0, 0, 0, 0), 0);
+            huge_source = (unsigned char *)raw_syscall6(
+                SYS_mmap, 0, HUGE_PAGE_SIZE,
+                PROT_READ | PROT_WRITE, MAP_SHARED,
+                huge_descriptor, 0);
+            failures += expect_result(
+                "hugetlb-source-map",
+                (long)huge_source < 0 ? (long)huge_source : 0, 0);
+            huge_minor = (unsigned char *)raw_syscall6(
+                SYS_mmap, 0, HUGE_PAGE_SIZE,
+                PROT_READ | PROT_WRITE, MAP_SHARED,
+                huge_descriptor, 0);
+            failures += expect_result(
+                "hugetlb-minor-map",
+                (long)huge_minor < 0 ? (long)huge_minor : 0, 0);
+        }
+        if ((long)huge_source >= 0 && (long)huge_minor >= 0) {
+            struct uffdio_continue continuation;
+
+            if (((uintptr_t)huge_source | (uintptr_t)huge_minor) &
+                (HUGE_PAGE_SIZE - 1u)) {
+                print_text("FAIL hugetlb-map-alignment\n");
+                ++failures;
+            }
+            huge_source[83] = 0x7bu;
+            registration.range.start =
+                (uint64_t)(uintptr_t)huge_minor;
+            registration.range.len = HUGE_PAGE_SIZE;
+            registration.mode = UFFDIO_REGISTER_MODE_MINOR;
+            registration.ioctls = 0;
+            failures += expect_result(
+                "hugetlb-minor-register", raw_syscall6(
+                    SYS_ioctl, descriptor, UFFDIO_REGISTER,
+                    (long)&registration, 0, 0, 0), 0);
+            if (!(registration.ioctls & (1ULL << 7)) ||
+                (registration.ioctls & (1ULL << 4))) {
+                print_text("FAIL hugetlb-minor-register-ioctls\n");
+                ++failures;
+            }
+            g_fault_address = huge_minor + 83u;
+            g_fault_value = 0;
+            {
+                long child = spawn_fault_child(
+                    CLONE_VM | SIGCHLD,
+                    &g_fault_stack[sizeof(g_fault_stack)]);
+                long received = -EAGAIN;
+                int child_status = -1;
+
+                failures += expect_result(
+                    "hugetlb-minor-child", child < 0 ? child : 0, 0);
+                if (child >= 0) {
+                    for (unsigned long attempt = 0;
+                         attempt < 100000u; ++attempt) {
+                        received = raw_syscall6(
+                            SYS_read, descriptor, (long)&message,
+                            sizeof(message), 0, 0, 0);
+                        if (received != -EAGAIN) break;
+                        (void)raw_syscall6(
+                            SYS_sched_yield, 0, 0, 0, 0, 0, 0);
+                    }
+                    failures += expect_result(
+                        "hugetlb-minor-event-size", received,
+                        sizeof(message));
+                    if (received == (long)sizeof(message) &&
+                        (message.event != UFFD_EVENT_PAGEFAULT ||
+                         message.flags != UFFD_PAGEFAULT_FLAG_MINOR ||
+                         message.thread_id != (uint32_t)child ||
+                         message.address !=
+                            (uint64_t)(uintptr_t)g_fault_address)) {
+                        print_text("FAIL hugetlb-minor-event-data\n");
+                        ++failures;
+                    }
+                    if (received == (long)sizeof(message)) {
+                        continuation.range = registration.range;
+                        continuation.mode = 0;
+                        continuation.mapped = 0;
+                        failures += expect_result(
+                            "hugetlb-minor-continue", raw_syscall6(
+                                SYS_ioctl, descriptor, UFFDIO_CONTINUE,
+                                (long)&continuation, 0, 0, 0), 0);
+                        failures += expect_result(
+                            "hugetlb-minor-continue-count",
+                            continuation.mapped, HUGE_PAGE_SIZE);
+                        continuation.mapped = 0;
+                        failures += expect_result(
+                            "hugetlb-minor-continue-existing",
+                            raw_syscall6(
+                                SYS_ioctl, descriptor, UFFDIO_CONTINUE,
+                                (long)&continuation, 0, 0, 0),
+                            -EEXIST);
+                        failures += expect_result(
+                            "hugetlb-minor-continue-existing-count",
+                            continuation.mapped, -EEXIST);
+                    } else {
+                        (void)raw_syscall6(
+                            SYS_kill, child, SIGKILL, 0, 0, 0, 0);
+                    }
+                    failures += expect_result(
+                        "hugetlb-minor-wait", raw_syscall6(
+                            SYS_wait4, child, (long)&child_status,
+                            0, 0, 0, 0), child);
+                    failures += expect_result(
+                        "hugetlb-minor-child-status", child_status, 0);
+                    failures += expect_result(
+                        "hugetlb-minor-child-value",
+                        g_fault_value, 0x7b);
+                }
+            }
+            failures += expect_result(
+                "hugetlb-minor-unregister", raw_syscall6(
+                    SYS_ioctl, descriptor, UFFDIO_UNREGISTER,
+                    (long)&registration.range, 0, 0, 0), 0);
+        }
+        if (huge_descriptor >= 0) {
+            static const char huge_missing_name[] =
+                "uffd-hugetlb-missing";
+            long missing_descriptor = raw_syscall6(
+                SYS_memfd_create, (long)huge_missing_name,
+                MFD_CLOEXEC | MFD_HUGETLB | MFD_HUGE_2MB,
+                0, 0, 0, 0);
+            unsigned char *huge_missing =
+                (unsigned char *)(uintptr_t)-1;
+
+            failures += expect_result(
+                "hugetlb-missing-create",
+                missing_descriptor < 0 ? missing_descriptor : 0, 0);
+            if (missing_descriptor >= 0) {
+                failures += expect_result(
+                    "hugetlb-missing-size", raw_syscall6(
+                        SYS_ftruncate, missing_descriptor,
+                        HUGE_PAGE_SIZE, 0, 0, 0, 0), 0);
+                huge_missing = (unsigned char *)raw_syscall6(
+                    SYS_mmap, 0, HUGE_PAGE_SIZE,
+                    PROT_READ | PROT_WRITE, MAP_SHARED,
+                    missing_descriptor, 0);
+                failures += expect_result(
+                    "hugetlb-missing-map",
+                    (long)huge_missing < 0 ?
+                        (long)huge_missing : 0, 0);
+            }
+            huge_copy_source = (unsigned char *)raw_syscall6(
+                SYS_mmap, 0, HUGE_PAGE_SIZE,
+                PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            failures += expect_result(
+                "hugetlb-copy-source-map",
+                (long)huge_copy_source < 0 ?
+                    (long)huge_copy_source : 0, 0);
+            if ((long)huge_missing >= 0 &&
+                (long)huge_copy_source >= 0) {
+                huge_copy_source[91] = 0x5au;
+                registration.range.start =
+                    (uint64_t)(uintptr_t)huge_missing;
+                registration.range.len = HUGE_PAGE_SIZE;
+                registration.mode = UFFDIO_REGISTER_MODE_MISSING;
+                registration.ioctls = 0;
+                failures += expect_result(
+                    "hugetlb-missing-register", raw_syscall6(
+                        SYS_ioctl, descriptor, UFFDIO_REGISTER,
+                        (long)&registration, 0, 0, 0), 0);
+                if (!(registration.ioctls & (1ULL << 3)) ||
+                    (registration.ioctls & (1ULL << 4))) {
+                    print_text(
+                        "FAIL hugetlb-missing-register-ioctls\n");
+                    ++failures;
+                }
+                g_fault_address = huge_missing + 91u;
+                g_fault_value = 0;
+                {
+                    long child = spawn_fault_child(
+                        CLONE_VM | SIGCHLD,
+                        &g_fault_stack[sizeof(g_fault_stack)]);
+                    long received = -EAGAIN;
+                    int child_status = -1;
+
+                    failures += expect_result(
+                        "hugetlb-missing-child",
+                        child < 0 ? child : 0, 0);
+                    if (child >= 0) {
+                        for (unsigned long attempt = 0;
+                             attempt < 100000u; ++attempt) {
+                            received = raw_syscall6(
+                                SYS_read, descriptor, (long)&message,
+                                sizeof(message), 0, 0, 0);
+                            if (received != -EAGAIN) break;
+                            (void)raw_syscall6(
+                                SYS_sched_yield,
+                                0, 0, 0, 0, 0, 0);
+                        }
+                        failures += expect_result(
+                            "hugetlb-missing-event-size", received,
+                            sizeof(message));
+                        if (received == (long)sizeof(message) &&
+                            (message.event != UFFD_EVENT_PAGEFAULT ||
+                             message.flags != 0 ||
+                             message.thread_id != (uint32_t)child ||
+                             message.address !=
+                                (uint64_t)(uintptr_t)g_fault_address)) {
+                            print_text(
+                                "FAIL hugetlb-missing-event-data\n");
+                            ++failures;
+                        }
+                        if (received == (long)sizeof(message)) {
+                            copy.dst = registration.range.start;
+                            copy.src =
+                                (uint64_t)(uintptr_t)huge_copy_source;
+                            copy.len = HUGE_PAGE_SIZE;
+                            copy.mode = 0;
+                            copy.copy = 0;
+                            failures += expect_result(
+                                "hugetlb-missing-copy", raw_syscall6(
+                                    SYS_ioctl, descriptor, UFFDIO_COPY,
+                                    (long)&copy, 0, 0, 0), 0);
+                            failures += expect_result(
+                                "hugetlb-missing-copy-count",
+                                copy.copy, HUGE_PAGE_SIZE);
+                        } else {
+                            (void)raw_syscall6(
+                                SYS_kill, child, SIGKILL,
+                                0, 0, 0, 0);
+                        }
+                        failures += expect_result(
+                            "hugetlb-missing-wait", raw_syscall6(
+                                SYS_wait4, child,
+                                (long)&child_status,
+                                0, 0, 0, 0), child);
+                        failures += expect_result(
+                            "hugetlb-missing-child-status",
+                            child_status, 0);
+                        failures += expect_result(
+                            "hugetlb-missing-child-value",
+                            g_fault_value, 0x5a);
+                    }
+                }
+                failures += expect_result(
+                    "hugetlb-missing-unregister", raw_syscall6(
+                        SYS_ioctl, descriptor, UFFDIO_UNREGISTER,
+                        (long)&registration.range, 0, 0, 0), 0);
+            }
+            if ((long)huge_missing >= 0)
+                (void)raw_syscall6(
+                    SYS_munmap, (long)huge_missing,
+                    HUGE_PAGE_SIZE, 0, 0, 0, 0);
+            if (missing_descriptor >= 0)
+                (void)raw_syscall6(
+                    SYS_close, missing_descriptor,
+                    0, 0, 0, 0, 0);
+        }
+        if ((long)huge_source >= 0)
+            (void)raw_syscall6(
+                SYS_munmap, (long)huge_source, HUGE_PAGE_SIZE,
+                0, 0, 0, 0);
+        if ((long)huge_minor >= 0)
+            (void)raw_syscall6(
+                SYS_munmap, (long)huge_minor, HUGE_PAGE_SIZE,
+                0, 0, 0, 0);
+        if ((long)huge_copy_source >= 0)
+            (void)raw_syscall6(
+                SYS_munmap, (long)huge_copy_source,
+                HUGE_PAGE_SIZE, 0, 0, 0, 0);
+        if (huge_descriptor >= 0)
+            (void)raw_syscall6(
+                SYS_close, huge_descriptor, 0, 0, 0, 0, 0);
     }
 
     registration.range.start =
