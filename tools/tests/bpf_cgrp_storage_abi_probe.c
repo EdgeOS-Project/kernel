@@ -111,6 +111,14 @@ void *memset(void *destination, int value, unsigned long length) {
     return destination;
 }
 
+void *memcpy(void *destination, const void *source, unsigned long length) {
+    volatile unsigned char *output = destination;
+    const volatile unsigned char *input = source;
+
+    while (length--) *output++ = *input++;
+    return destination;
+}
+
 static unsigned long text_length(const char *text) {
     unsigned long length = 0;
 
@@ -323,15 +331,20 @@ static int test_cgroup_storage(void) {
             BPF_MAP_UPDATE_ELEM, (int)map_fd, &cgroup_fd,
             &replacement, BPF_EXIST), 0);
     failures += expect_result(
+        "cgrp-remove-owner", raw_syscall6(
+            SYS_unlinkat, AT_FDCWD,
+            (long)"/sys/fs/cgroup/edge-cgrp-storage",
+            AT_REMOVEDIR, 0, 0, 0), 0);
+    failures += expect_result(
+        "cgrp-owner-cleanup", map_element(
+            BPF_MAP_LOOKUP_ELEM, (int)map_fd, &cgroup_fd,
+            &output, 0), -ENOENT);
+    failures += expect_result(
         "cgrp-next-unsupported", map_element(
             BPF_MAP_GET_NEXT_KEY, (int)map_fd, 0,
             &bad_fd, 0), -ENOTSUPP);
     failures += expect_result(
-        "cgrp-delete", map_element(
-            BPF_MAP_DELETE_ELEM, (int)map_fd, &cgroup_fd,
-            0, 0), 0);
-    failures += expect_result(
-        "cgrp-delete-empty", map_element(
+        "cgrp-delete-cleaned", map_element(
             BPF_MAP_DELETE_ELEM, (int)map_fd, &cgroup_fd,
             0, 0), -ENOENT);
     (void)raw_syscall6(SYS_close, cgroup_fd, 0, 0, 0, 0, 0);

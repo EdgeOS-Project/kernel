@@ -2477,18 +2477,24 @@ static void test_cgroup_local_storage(void) {
     assert(kernel_bpf_cgrp_storage_lookup(
                map, first_reference, &output, 0u) == 0);
     assert(output == replacement);
+    assert(kernel_bpf_cgrp_storage_update(
+               map, second_reference, &value, KERNEL_BPF_ANY) == 0);
+    assert(kernel_bpf_cgroup_storage_owner_release(first_reference) == 1u);
+    assert(kernel_bpf_cgroup_storage_owner_release(first_reference) == 0u);
+    assert(kernel_bpf_cgrp_storage_lookup(
+               map, first_reference, &output, 0u) ==
+           -EDGE_LINUX_ENOENT);
+    assert(kernel_bpf_cgrp_storage_lookup(
+               map, second_reference, &output, 0u) == 0);
+    assert(output == value);
     assert(kernel_bpf_map_next_key(map, 0, &next_key) ==
            -EDGE_LINUX_ENOTSUPP);
     assert(kernel_bpf_cgrp_storage_delete(
-               map, first_reference) == 0);
-    assert(kernel_bpf_cgrp_storage_delete(
                map, first_reference) == -EDGE_LINUX_ENOENT);
-    assert(kernel_bpf_cgrp_storage_update(
-               map, second_reference, &value, KERNEL_BPF_ANY) == 0);
     kernel_bpf_object_release(btf);
     kernel_bpf_object_release(map);
-    assert(g_cgroup_reference_release_count == 5u);
-    assert(g_cgroup_references_released[4] == second_reference);
+    assert(g_cgroup_reference_release_count == 4u);
+    assert(g_cgroup_references_released[3] == second_reference);
 
     request.btf_present = 0u;
     request.btf_key_type_id = 0u;

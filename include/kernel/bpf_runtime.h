@@ -326,6 +326,8 @@ int kernel_bpf_cgroup_device_run(
     const kernel_bpf_cgroup_device_context_t *context,
     uint32_t *result);
 void kernel_bpf_cgroup_release(uint32_t cgroup_id);
+uint32_t kernel_bpf_cgroup_storage_owner_release(
+    uint64_t cgroup_reference);
 
 int kernel_bpf_create_descriptor(int object_id);
 int kernel_bpf_create_descriptor_flags(int object_id, uint32_t status_flags);

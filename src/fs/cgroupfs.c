@@ -153,6 +153,7 @@ typedef struct {
     uint32_t gid;
     uint32_t generation;
     uint32_t bpf_reference_count;
+    uint32_t inode_open_count;
     uint32_t parent;
     uint32_t max_depth;
     uint32_t max_descendants;
@@ -3538,6 +3539,8 @@ static int cgroupfs_node_has_tasks(uint32_t node) {
 static int cgroupfs_rmdir(vfs_superblock_t *sb, vfs_inode_t *dir,
                           const char *name) {
     uint32_t parent;
+    uint32_t released_storage;
+    uint64_t child_reference;
     uint64_t memory_flags;
     int child;
     (void)sb;
@@ -3570,8 +3573,20 @@ static int cgroupfs_rmdir(vfs_superblock_t *sb, vfs_inode_t *dir,
         cgroupfs_unlock(&g_cgroupfs_lock);
         return VFS_PATH_ERR_BUSY;
     }
+    child_reference =
+        ((uint64_t)g_cgroupfs.nodes[child].generation << 32u) |
+        (uint32_t)child;
+    released_storage = kernel_bpf_cgroup_storage_owner_release(
+        child_reference);
     kernel_bpf_cgroup_release((uint32_t)child);
-    if (g_cgroupfs.nodes[child].bpf_reference_count) {
+    if (released_storage >=
+        g_cgroupfs.nodes[child].bpf_reference_count) {
+        g_cgroupfs.nodes[child].bpf_reference_count = 0u;
+    } else {
+        g_cgroupfs.nodes[child].bpf_reference_count -= released_storage;
+    }
+    if (g_cgroupfs.nodes[child].bpf_reference_count ||
+        g_cgroupfs.nodes[child].inode_open_count) {
         g_cgroupfs.nodes[child].linked = 0;
         g_cgroupfs.nodes[child].name[0] = 0;
     } else {
@@ -3808,6 +3823,44 @@ static int cgroupfs_setattr(vfs_superblock_t *sb, const vfs_inode_t *inode,
     return 0;
 }
 
+static int cgroupfs_inode_open(vfs_superblock_t *sb,
+                               const vfs_inode_t *inode) {
+    uint32_t node;
+    int result = -1;
+    (void)sb;
+
+    if (!inode) return -1;
+    cgroupfs_initialize();
+    cgroupfs_lock(&g_cgroupfs_lock);
+    if (cgroupfs_inode_node(inode, &node) == 0 &&
+        g_cgroupfs.nodes[node].inode_open_count != UINT32_MAX) {
+        ++g_cgroupfs.nodes[node].inode_open_count;
+        result = 0;
+    }
+    cgroupfs_unlock(&g_cgroupfs_lock);
+    return result;
+}
+
+static void cgroupfs_inode_close(vfs_superblock_t *sb,
+                                 const vfs_inode_t *inode) {
+    uint32_t node;
+    (void)sb;
+
+    if (!inode) return;
+    cgroupfs_initialize();
+    cgroupfs_lock(&g_cgroupfs_lock);
+    if (cgroupfs_inode_node(inode, &node) == 0 &&
+        g_cgroupfs.nodes[node].inode_open_count) {
+        --g_cgroupfs.nodes[node].inode_open_count;
+        if (!g_cgroupfs.nodes[node].inode_open_count &&
+            !g_cgroupfs.nodes[node].bpf_reference_count &&
+            !g_cgroupfs.nodes[node].linked && node != 0u)
+            memset(&g_cgroupfs.nodes[node], 0,
+                   sizeof(g_cgroupfs.nodes[node]));
+    }
+    cgroupfs_unlock(&g_cgroupfs_lock);
+}
+
 static filesystem_ops_t g_cgroupfs_ops = {
     .lookup = cgroupfs_lookup,
     .read = cgroupfs_read,
@@ -3818,6 +3871,8 @@ static filesystem_ops_t g_cgroupfs_ops = {
     .statfs = cgroupfs_statfs,
     .rmdir = cgroupfs_rmdir,
     .truncate = cgroupfs_truncate,
+    .inode_open = cgroupfs_inode_open,
+    .inode_close = cgroupfs_inode_close,
     .getattr = cgroupfs_getattr,
     .setattr = cgroupfs_setattr
 };
@@ -3913,6 +3968,7 @@ void cgroupfs_reference_put(uint64_t reference) {
     if (cgroupfs_node_valid(node, generation) &&
         g_cgroupfs.nodes[node].bpf_reference_count) {
         if (!--g_cgroupfs.nodes[node].bpf_reference_count &&
+            !g_cgroupfs.nodes[node].inode_open_count &&
             !g_cgroupfs.nodes[node].linked && node != 0u)
             memset(&g_cgroupfs.nodes[node], 0,
                    sizeof(g_cgroupfs.nodes[node]));

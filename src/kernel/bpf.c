@@ -6197,3 +6197,37 @@ void kernel_bpf_cgroup_release(uint32_t cgroup_id) {
     bpf_legacy_cgroup_storage_release_locked(cgroup_id);
     bpf_unlock();
 }
+
+uint32_t kernel_bpf_cgroup_storage_owner_release(
+        uint64_t cgroup_reference) {
+    uint32_t released = 0u;
+
+    if (!cgroup_reference) return 0u;
+    bpf_lock();
+    for (uint32_t object_index = 0;
+         object_index < BPF_OBJECT_CAPACITY; ++object_index) {
+        kernel_bpf_object_t *object = &g_bpf_objects[object_index];
+        kernel_bpf_map_t *map;
+
+        if (!object->used || object->kind != KERNEL_BPF_OBJECT_MAP)
+            continue;
+        map = &object->value.map;
+        if (map->type != KERNEL_BPF_MAP_TYPE_CGRP_STORAGE)
+            continue;
+        for (uint32_t entry_index = 0;
+             entry_index < map->storage_entries; ++entry_index) {
+            uint8_t *entry = bpf_map_entry(map, entry_index);
+            bpf_local_storage_owner_t owner = {0};
+
+            if (!entry[0]) continue;
+            memcpy(&owner, entry + 1u,
+                   bpf_local_storage_owner_size(map));
+            if (owner.primary != cgroup_reference) continue;
+            memset(entry, 0, map->entry_stride);
+            if (map->entry_count) --map->entry_count;
+            ++released;
+        }
+    }
+    bpf_unlock();
+    return released;
+}
