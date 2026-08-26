@@ -7674,6 +7674,7 @@ int kernel_io_uring_take_submission(
         int32_t ring_id, uint32_t submission_offset,
         uint32_t submission_limit,
         struct edge_linux_io_uring_sqe *submission,
+        uint8_t command[80],
         uint32_t *entries_consumed, int32_t *layout_result) {
     kernel_io_uring_t *ring;
     volatile uint32_t *head_pointer;
@@ -7746,6 +7747,19 @@ int kernel_io_uring_take_submission(
         sqe_index * ((ring->setup_flags & IORING_SETUP_SQE128) ?
                      128u : 64u));
     memcpy(submission, source, sizeof(*submission));
+    if (command) {
+        uint32_t command_bytes = 16u;
+
+        memset(command, 0, 80u);
+        if (ring->setup_flags & IORING_SETUP_SQE128)
+            command_bytes = 80u;
+        else if (submission->opcode == IORING_OP_URING_CMD128 &&
+                 (ring->setup_flags & IORING_SETUP_SQE_MIXED) &&
+                 submission_limit >= 2u && tail - head >= 2u &&
+                 sqe_index < ring->sq_entries - 1u)
+            command_bytes = 80u;
+        memcpy(command, (const uint8_t *)source + 48u, command_bytes);
+    }
     if (ring->submission_restricted) {
         uint32_t operation_word = submission->opcode >> 6u;
         uint64_t operation_bit =

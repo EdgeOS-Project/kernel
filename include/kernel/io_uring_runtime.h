@@ -409,6 +409,7 @@ int kernel_io_uring_take_submission(
     int32_t ring_id, uint32_t submission_offset,
     uint32_t submission_limit,
     struct edge_linux_io_uring_sqe *submission,
+    uint8_t command[80],
     uint32_t *entries_consumed, int32_t *layout_result);
 int kernel_io_uring_completion_add(int32_t ring_id, uint64_t user_data,
                                    int32_t result, uint32_t flags);

@@ -12489,7 +12489,8 @@ static int64_t edge_linux_io_uring_execute_send_zc(
 
 static int64_t edge_linux_io_uring_execute_uring_cmd(
         edge_linux_syscall_context_t *context, int32_t ring_id,
-        const struct edge_linux_io_uring_sqe *submission) {
+        const struct edge_linux_io_uring_sqe *submission,
+        const uint8_t command_payload[80]) {
     edge_linux_syscall_context_t nested = *context;
     kernel_socket_descriptor_info_t descriptor_info;
     uint32_t command = (uint32_t)submission->offset;
@@ -12499,6 +12500,8 @@ static int64_t edge_linux_io_uring_execute_uring_cmd(
     uint32_t option_length = (uint32_t)submission->splice_descriptor;
     uint32_t actual_length = 0u;
     int result;
+
+    (void)command_payload;
 
     if ((submission->offset >> 32u) != 0u ||
         (command_flags & ~EDGE_LINUX_IORING_URING_CMD_MASK) != 0u ||
@@ -12711,6 +12714,7 @@ static int32_t edge_linux_io_uring_execute_descriptor(
         edge_linux_syscall_context_t *context,
         int32_t ring_id,
         const struct edge_linux_io_uring_sqe *submission,
+        const uint8_t command_payload[80],
         uint32_t *completion_flags,
         edge_linux_io_uring_notification_t *notification) {
     int64_t result;
@@ -13030,7 +13034,7 @@ static int32_t edge_linux_io_uring_execute_descriptor(
     case EDGE_LINUX_IORING_OP_URING_CMD:
     case EDGE_LINUX_IORING_OP_URING_CMD128:
         result = edge_linux_io_uring_execute_uring_cmd(
-            context, ring_id, submission);
+            context, ring_id, submission, command_payload);
         break;
     case EDGE_LINUX_IORING_OP_RECV_ZC:
         result = edge_linux_io_uring_recv_zc(
@@ -13324,6 +13328,7 @@ static int32_t edge_linux_io_uring_execute_current(
         edge_linux_syscall_context_t *context,
         int32_t ring_id,
         const struct edge_linux_io_uring_sqe *submission,
+        const uint8_t command_payload[80],
         uint32_t *completion_flags,
         edge_linux_io_uring_notification_t *notification) {
     struct edge_linux_io_uring_sqe resolved;
@@ -13393,7 +13398,7 @@ static int32_t edge_linux_io_uring_execute_current(
             &provided_ring_head, &provided_ring);
         if (result < 0) return result;
         result = edge_linux_io_uring_execute_descriptor(
-            context, ring_id, &resolved, completion_flags,
+            context, ring_id, &resolved, command_payload, completion_flags,
             notification);
         edge_linux_io_uring_finish_buffer_selection(
             ring_id, result, &selected, provided_ring_head,
@@ -13417,7 +13422,7 @@ static int32_t edge_linux_io_uring_execute_current(
         return result;
     }
     result = edge_linux_io_uring_execute_descriptor(
-        context, ring_id, &resolved, completion_flags,
+        context, ring_id, &resolved, command_payload, completion_flags,
         notification);
     edge_linux_io_uring_finish_buffer_selection(
         ring_id, result, &selected, provided_ring_head,
@@ -13430,6 +13435,7 @@ static int32_t edge_linux_io_uring_execute(
         edge_linux_syscall_context_t *context,
         int32_t ring_id,
         const struct edge_linux_io_uring_sqe *submission,
+        const uint8_t command_payload[80],
         uint32_t *completion_flags,
         edge_linux_io_uring_notification_t *notification) {
     struct edge_linux_io_uring_sqe resolved;
@@ -13439,7 +13445,7 @@ static int32_t edge_linux_io_uring_execute(
 
     if (!submission->personality)
         return edge_linux_io_uring_execute_current(
-            context, ring_id, submission, completion_flags,
+            context, ring_id, submission, command_payload, completion_flags,
             notification);
     result = kernel_io_uring_personality_get(
         ring_id, submission->personality, &personality);
@@ -13450,7 +13456,8 @@ static int32_t edge_linux_io_uring_execute(
     resolved = *submission;
     resolved.personality = 0u;
     result = edge_linux_io_uring_execute_current(
-        context, ring_id, &resolved, completion_flags, notification);
+        context, ring_id, &resolved, command_payload, completion_flags,
+        notification);
     if (kernel_arch_current_credentials_commit(&original, 0) < 0)
         return -EDGE_LINUX_EIO;
     return result;
@@ -13581,7 +13588,7 @@ static uint32_t edge_linux_io_uring_worker_service(
         }
         operation_result = edge_linux_io_uring_execute_current(
             context, request.ring_id, &request.submission,
-            &completion_flags, &notification);
+            0, &completion_flags, &notification);
         (void)kernel_fd_close(request.descriptor);
         (void)kernel_io_uring_worker_finish(
             request.ring_id, request.sequence,
@@ -13710,6 +13717,7 @@ static int64_t edge_linux_sys_io_uring_enter(
         edge_linux_syscall_context_t *context) {
     kernel_signal_runtime_state_t signal_state;
     struct edge_linux_io_uring_sqe submission;
+    uint8_t command_payload[80];
     struct edge_linux_io_uring_getevents_arg extended_argument = {0};
     struct edge_linux_io_uring_reg_wait registered_wait;
     linux_timespec64_t wait_timeout;
@@ -13886,7 +13894,7 @@ static int64_t edge_linux_sys_io_uring_enter(
         int32_t layout_result = 0;
         int take_result = kernel_io_uring_take_submission(
             ring_id, submitted, to_submit - submitted, &submission,
-            &entries_consumed, &layout_result);
+            command_payload, &entries_consumed, &layout_result);
         int32_t operation_result;
         uint32_t completion_flags = 0u;
         edge_linux_io_uring_notification_t notification = {0};
@@ -13920,7 +13928,7 @@ static int64_t edge_linux_sys_io_uring_enter(
                     operation_result = EDGE_LINUX_IORING_PENDING_RESULT;
             } else {
                 operation_result = edge_linux_io_uring_execute(
-                    context, ring_id, &submission,
+                    context, ring_id, &submission, command_payload,
                     &completion_flags, &notification);
                 if (operation_result == -EDGE_LINUX_EAGAIN &&
                     edge_linux_io_uring_worker_eligible(&submission)) {
