@@ -2511,8 +2511,18 @@ int arch_socket_accept_prepare(
 }
 
 static int socket_filter_accepts(const edge_socket_t *s, const uint8_t *pkt, uint32_t len) {
+    kernel_bpf_socket_filter_context_t context;
     uint32_t keep;
-    if (!s || s->filter_len == 0) return 1;
+    if (!s) return 1;
+    if (s->bpf_filter_object_id >= 0) {
+        memset(&context, 0, sizeof(context));
+        context.length = len;
+        if (kernel_bpf_program_run_socket_filter(
+                s->bpf_filter_object_id, &context, &keep) < 0)
+            return 0;
+        return keep != 0;
+    }
+    if (s->filter_len == 0) return 1;
     keep = edge_linux_bpf_run(s->filter, s->filter_len, pkt, len);
     return keep != 0;
 }
@@ -2586,6 +2596,7 @@ int edge_socket_runtime_option_view(
     view->pending_error = &socket->connect_error;
     view->filter = socket->filter;
     view->filter_length = &socket->filter_len;
+    view->bpf_filter_object_id = &socket->bpf_filter_object_id;
     view->context = socket;
     view->apply_effects = x86_socket_option_apply_effects;
     view->prepare_error_take = x86_socket_option_prepare_error_take;
@@ -4306,7 +4317,8 @@ socket_recv_need_data:
         }
     }
 
-    if (s->domain != LINUX_AF_UNIX && s->filter_len != 0 &&
+    if (s->domain != LINUX_AF_UNIX &&
+        (s->filter_len != 0 || s->bpf_filter_object_id >= 0) &&
         !socket_filter_accepts(
             s, s->rx_buf,
             ((s->domain == LINUX_AF_INET ||

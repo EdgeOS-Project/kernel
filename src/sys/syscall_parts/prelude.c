@@ -1848,6 +1848,7 @@ typedef struct {
     int ifindex;
     uint16_t filter_len;
     struct edge_linux_sock_filter filter[EDGE_SOCKET_FILTER_MAX];
+    int32_t bpf_filter_object_id;
     int listening;
     int backlog;
     kernel_socket_accept_queue_t accept_queue;

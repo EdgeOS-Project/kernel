@@ -1938,6 +1938,7 @@ static int socket_alloc(void) {
             g_sockets[i].used = 1;
             g_sockets[i].refs = 1;
             g_sockets[i].packet_handle = -1;
+            g_sockets[i].bpf_filter_object_id = -1;
             if (socket_alloc_trace_budget > 0 && socket_pending_trace_task(cur)) {
                 printf("[sock-life] alloc pid=%d cmd=%s sid=%d budget=%d\n",
                        cur ? cur->pid : -1,
@@ -3806,6 +3807,20 @@ static err_t edge_tcp_accept_cb(void *arg, struct tcp_pcb *newpcb, err_t err) {
     child->type = listener->type;
     child->protocol = listener->protocol;
     child->option_state = listener->option_state;
+    child->filter_len = listener->filter_len;
+    if (child->filter_len)
+        memcpy(child->filter, listener->filter,
+               (uint64_t)child->filter_len * sizeof(child->filter[0]));
+    if (listener->bpf_filter_object_id >= 0) {
+        if (kernel_bpf_object_retain(
+                listener->bpf_filter_object_id) < 0) {
+            socket_drop_ref(sid);
+            tcp_abort(newpcb);
+            return ERR_ABRT;
+        }
+        child->bpf_filter_object_id =
+            listener->bpf_filter_object_id;
+    }
     child->ip_ttl = listener->ip_ttl ? listener->ip_ttl : 64;
     child->ip_tos = listener->ip_tos;
     child->ip_pktinfo = listener->ip_pktinfo;
@@ -4132,6 +4147,9 @@ static void socket_drop_ref_locked(int sock_id, int acceptq_release) {
     unix_binding_unregister_sock(sock_id);
     if (g_sockets[sock_id].packet_handle >= 0)
         edge_linux_packet_socket_release(g_sockets[sock_id].packet_handle);
+    if (g_sockets[sock_id].bpf_filter_object_id >= 0)
+        kernel_bpf_object_release(
+            g_sockets[sock_id].bpf_filter_object_id);
     kernel_socket_multicast_state_release(
         &g_sockets[sock_id].option_state);
     if ((g_sockets[sock_id].domain == LINUX_AF_UNIX ||

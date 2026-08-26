@@ -5,6 +5,7 @@
  */
 
 #include "kernel/socket_runtime.h"
+#include "kernel/bpf_runtime.h"
 #include "kernel/fs_context.h"
 #include "kernel/linux_errno.h"
 #include "kernel/linux_netlink.h"
@@ -602,7 +603,41 @@ int kernel_socket_option_attach_filter(
             view.packet_handle, view.filter, program_length);
         if (status < 0) return status;
     }
+    if (view.bpf_filter_object_id && *view.bpf_filter_object_id >= 0) {
+        kernel_bpf_object_release(*view.bpf_filter_object_id);
+        *view.bpf_filter_object_id = -1;
+    }
     *view.filter_length = (uint16_t)program_length;
+    return 0;
+}
+
+int kernel_socket_option_attach_bpf_filter(
+    int32_t descriptor, int32_t object_id) {
+    kernel_socket_option_runtime_view_t view;
+    kernel_bpf_program_info_t info;
+    int32_t previous = -1;
+    int status = edge_socket_runtime_option_view(descriptor, &view);
+
+    if (status < 0) return status;
+    if (!view.bpf_filter_object_id || !view.filter_length)
+        return -EDGE_LINUX_EIO;
+    status = kernel_bpf_program_info(object_id, &info);
+    if (status < 0) return status;
+    if (info.type != KERNEL_BPF_PROG_TYPE_SOCKET_FILTER)
+        return -EDGE_LINUX_EINVAL;
+    status = kernel_bpf_object_retain(object_id);
+    if (status < 0) return status;
+    if (view.packet_handle >= 0 && *view.filter_length) {
+        status = edge_linux_packet_detach_filter(view.packet_handle);
+        if (status < 0) {
+            kernel_bpf_object_release(object_id);
+            return status;
+        }
+    }
+    previous = *view.bpf_filter_object_id;
+    *view.filter_length = 0;
+    *view.bpf_filter_object_id = object_id;
+    if (previous >= 0) kernel_bpf_object_release(previous);
     return 0;
 }
 
@@ -611,13 +646,20 @@ int kernel_socket_option_detach_filter(int32_t descriptor) {
     int status = edge_socket_runtime_option_view(descriptor, &view);
 
     if (status < 0) return status;
-    if (!view.filter_length) return -EDGE_LINUX_EIO;
-    if (!*view.filter_length) return -EDGE_LINUX_ENOENT;
-    if (view.packet_handle >= 0) {
+    if (!view.filter_length || !view.bpf_filter_object_id)
+        return -EDGE_LINUX_EIO;
+    if (!*view.filter_length && *view.bpf_filter_object_id < 0)
+        return -EDGE_LINUX_ENOENT;
+    if (view.packet_handle >= 0 && *view.filter_length) {
         status = edge_linux_packet_detach_filter(view.packet_handle);
         if (status < 0) return status;
     }
     *view.filter_length = 0;
+    if (*view.bpf_filter_object_id >= 0) {
+        int32_t object_id = *view.bpf_filter_object_id;
+        *view.bpf_filter_object_id = -1;
+        kernel_bpf_object_release(object_id);
+    }
     return 0;
 }
 

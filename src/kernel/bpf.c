@@ -1782,7 +1782,8 @@ static int bpf_program_validate(
     uint32_t pc;
 
     if (!request || !instructions ||
-        (request->type != KERNEL_BPF_PROG_TYPE_CGROUP_DEVICE &&
+        (request->type != KERNEL_BPF_PROG_TYPE_SOCKET_FILTER &&
+         request->type != KERNEL_BPF_PROG_TYPE_CGROUP_DEVICE &&
          request->type != KERNEL_BPF_PROG_TYPE_RAW_TRACEPOINT) ||
         !request->instruction_count ||
         request->instruction_count > KERNEL_BPF_MAX_INSTRUCTIONS ||
@@ -1791,6 +1792,8 @@ static int bpf_program_validate(
          request->expected_attach_type &&
          request->expected_attach_type != KERNEL_BPF_CGROUP_DEVICE) ||
         (request->type == KERNEL_BPF_PROG_TYPE_RAW_TRACEPOINT &&
+         request->expected_attach_type) ||
+        (request->type == KERNEL_BPF_PROG_TYPE_SOCKET_FILTER &&
          request->expected_attach_type) ||
         !bpf_name_valid(request->name))
         return -EDGE_LINUX_EINVAL;
@@ -6551,6 +6554,24 @@ int kernel_bpf_program_run_cgroup_device(
     uint32_t *result) {
     return kernel_bpf_program_run_cgroup_device_at(
         object_id, 0u, context, result);
+}
+
+int kernel_bpf_program_run_socket_filter(
+    int object_id, const kernel_bpf_socket_filter_context_t *context,
+    uint32_t *result) {
+    kernel_bpf_object_t *object;
+    int notify_waiters = 0;
+    int status;
+
+    if (!context || !result) return -EDGE_LINUX_EINVAL;
+    bpf_lock();
+    object = bpf_object_locked(object_id);
+    status = bpf_program_run_cgroup_device_locked(
+        object, context, sizeof(*context), result, &notify_waiters,
+        0u, 0u, KERNEL_BPF_PROG_TYPE_SOCKET_FILTER);
+    bpf_unlock();
+    if (notify_waiters) kernel_bpf_ringbuf_state_changed();
+    return status;
 }
 
 int kernel_bpf_program_run_cgroup_device_at(

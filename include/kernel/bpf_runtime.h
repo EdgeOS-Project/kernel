@@ -74,6 +74,7 @@
 #define KERNEL_BPF_F_CPU   8u
 #define KERNEL_BPF_F_ALL_CPUS 16u
 
+#define KERNEL_BPF_PROG_TYPE_SOCKET_FILTER 1u
 #define KERNEL_BPF_PROG_TYPE_CGROUP_DEVICE 15u
 #define KERNEL_BPF_PROG_TYPE_RAW_TRACEPOINT 17u
 #define KERNEL_BPF_CGROUP_DEVICE 6u
@@ -107,6 +108,12 @@ typedef struct kernel_bpf_instruction {
     int16_t offset;
     int32_t immediate;
 } kernel_bpf_instruction_t;
+
+typedef struct kernel_bpf_socket_filter_context {
+    uint32_t length;
+    uint32_t packet_type;
+    uint32_t mark;
+} kernel_bpf_socket_filter_context_t;
 
 typedef struct kernel_bpf_map_create_request {
     uint32_t type;
@@ -320,6 +327,9 @@ int kernel_bpf_program_run_cgroup_device(
 int kernel_bpf_program_run_cgroup_device_at(
     int object_id, uint32_t cgroup_id,
     const kernel_bpf_cgroup_device_context_t *context,
+    uint32_t *result);
+int kernel_bpf_program_run_socket_filter(
+    int object_id, const kernel_bpf_socket_filter_context_t *context,
     uint32_t *result);
 int kernel_bpf_raw_tracepoint_open(const char *name, int object_id);
 void kernel_bpf_raw_tracepoint_sys_enter(void *user_registers,

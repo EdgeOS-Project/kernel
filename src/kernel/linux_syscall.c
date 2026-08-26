@@ -17437,6 +17437,25 @@ static int64_t edge_linux_socket_option_set(
             context, descriptor, value_length);
 
     if (level == EDGE_LINUX_SOL_SOCKET &&
+        name == EDGE_LINUX_SO_ATTACH_BPF) {
+        int32_t program_descriptor;
+        int32_t program_object_id;
+
+        if (value_length < sizeof(program_descriptor))
+            return -EDGE_LINUX_EINVAL;
+        if (!context->arguments[3] ||
+            edge_linux_copy_from_user(
+                context, &program_descriptor, context->arguments[3],
+                sizeof(program_descriptor)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        program_object_id = kernel_bpf_descriptor_object(
+            program_descriptor, KERNEL_BPF_OBJECT_PROGRAM);
+        if (program_object_id < 0) return program_object_id;
+        return kernel_socket_option_attach_bpf_filter(
+            descriptor, program_object_id);
+    }
+
+    if (level == EDGE_LINUX_SOL_SOCKET &&
         (name == EDGE_LINUX_SO_RCVTIMEO ||
          name == EDGE_LINUX_SO_SNDTIMEO ||
          name == EDGE_LINUX_SO_RCVTIMEO_NEW ||

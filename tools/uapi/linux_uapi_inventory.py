@@ -370,6 +370,7 @@ EDGEOS_ASSESSMENTS = [
             "runtime statistics enable descriptors with close-time disable semantics",
             "program test-run and unknown-command error ordering for the supported program family",
             "stack-trace map creation, build-ID value layouts, rounded bucket addressing, raw sys_enter tracepoint attachment and get_stackid helper population",
+            "socket-filter program loading, SO_ATTACH_BPF replacement, receive-path execution, descriptor-independent attachment lifetime and SO_DETACH_FILTER release",
             "CPU-map creation, CPU and queue validation, entry lifecycle, optional program descriptor rejection and Linux unsupported-operation behavior",
             "device-map and device-hash creation, network-interface validation, entry lifecycle, capacity, iteration and program descriptor behavior",
             "XSK-map creation, syscall lookup rejection, socket descriptor and family error behavior, deletion, key iteration and unsupported batch behavior",
@@ -409,6 +410,7 @@ EDGEOS_ASSESSMENTS = [
             "tools/tests/bpf_rhash_abi_probe.c",
             "tools/tests/bpf_stack_trace_abi_probe.c",
             "tools/tests/bpf_btf_graph_abi_probe.c",
+            "tools/tests/bpf_socket_filter_abi_probe.c",
             "tools/tests/bpf_runtime_unit.c",
         ],
         "linux_oracle": {
@@ -430,8 +432,11 @@ EDGEOS_ASSESSMENTS = [
                 "runtime statistics descriptors and supported program-test "
                 "error behavior, stack-trace map creation, value-depth limits, "
                 "rounded bucket addressing, raw sys_enter tracepoint attachment "
-                "and get_stackid helper population, CPU-map "
-                "creation, qsize state, CPU bounds, program descriptor errors "
+                "and get_stackid helper population, socket-filter loading, "
+                "SO_ATTACH_BPF replacement, "
+                "receive-path accept and reject behavior, attachment lifetime "
+                "after program descriptor close and detach behavior, CPU-map "
+                "qsize state, CPU bounds, program descriptor errors "
                 "and unsupported operations, device-map and device-hash "
                 "interface validation, lifecycle, capacity and iteration, "
                 "XSK-map creation, syscall lookup rejection, socket "

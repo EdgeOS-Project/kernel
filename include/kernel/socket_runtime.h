@@ -397,6 +397,7 @@ typedef struct kernel_socket_option_runtime_view {
     int32_t *pending_error;
     struct edge_linux_sock_filter *filter;
     uint16_t *filter_length;
+    int32_t *bpf_filter_object_id;
     void *context;
     void (*apply_effects)(void *context, uint32_t effects);
     void (*prepare_error_take)(void *context);
@@ -570,6 +571,8 @@ int kernel_socket_option_get_peer_group(
 int kernel_socket_option_attach_filter(
     int32_t descriptor, uint64_t user_program, uint32_t program_length,
     void *copy_context, edge_linux_copy_from_user_fn copy_from_user);
+int kernel_socket_option_attach_bpf_filter(
+    int32_t descriptor, int32_t object_id);
 int kernel_socket_option_detach_filter(int32_t descriptor);
 int kernel_socket_packet_set_option(
     int32_t descriptor, uint32_t option, const void *value,

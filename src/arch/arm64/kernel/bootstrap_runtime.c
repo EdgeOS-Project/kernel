@@ -1635,6 +1635,7 @@ typedef struct {
     uint16_t filter_length;
     struct edge_linux_sock_filter
         filter[EDGE_LINUX_PACKET_FILTER_MAX];
+    int32_t bpf_filter_object_id;
     uint16_t dgram_head;
     uint16_t dgram_tail;
     uint16_t dgram_count;
@@ -11295,8 +11296,18 @@ static int socket_filter_pbuf_load(void *context, uint32_t offset,
 
 static uint32_t socket_filter_pbuf_length(const kernel_socket_t *socket,
                                           const struct pbuf *packet) {
+    kernel_bpf_socket_filter_context_t context;
     uint32_t accepted;
-    if (!socket || !packet || !socket->filter_length) return packet->tot_len;
+    if (!socket || !packet) return packet ? packet->tot_len : 0u;
+    if (socket->bpf_filter_object_id >= 0) {
+        bytes_zero(&context, sizeof(context));
+        context.length = packet->tot_len;
+        if (kernel_bpf_program_run_socket_filter(
+                socket->bpf_filter_object_id, &context, &accepted) < 0)
+            return 0u;
+        return accepted < packet->tot_len ? accepted : packet->tot_len;
+    }
+    if (!socket->filter_length) return packet->tot_len;
     accepted = edge_linux_bpf_run_reader(
         socket->filter, socket->filter_length, packet->tot_len,
         socket_filter_pbuf_load, (void *)(uintptr_t)packet);
@@ -11627,6 +11638,7 @@ static int socket_allocate_slot(uint32_t domain, uint32_t type, uint32_t protoco
         socket->references = 1;
         socket->unix_peer = -1;
         socket->packet_handle = -1;
+        socket->bpf_filter_object_id = -1;
         if (current_task()) {
             socket->peer_pid = current_task()->pid;
             socket->peer_uid = current_task()->euid;
@@ -11867,6 +11879,21 @@ static err_t socket_tcp_accept(void *argument, struct tcp_pcb *new_pcb, err_t er
     }
     child = &g_sockets[child_index];
     child->option_state = listener->option_state;
+    child->filter_length = listener->filter_length;
+    if (child->filter_length)
+        bytes_copy(child->filter, listener->filter,
+                   (uint64_t)child->filter_length *
+                       sizeof(child->filter[0]));
+    if (listener->bpf_filter_object_id >= 0) {
+        if (kernel_bpf_object_retain(
+                listener->bpf_filter_object_id) < 0) {
+            socket_release(child);
+            tcp_abort(new_pcb);
+            return ERR_ABRT;
+        }
+        child->bpf_filter_object_id =
+            listener->bpf_filter_object_id;
+    }
     child->network_namespace = listener->network_namespace;
     child->tcp = new_pcb;
     child->connected = 1;
@@ -12064,6 +12091,8 @@ static void socket_release(kernel_socket_t *socket) {
     }
     if (socket->packet_handle >= 0)
         edge_linux_packet_socket_release(socket->packet_handle);
+    if (socket->bpf_filter_object_id >= 0)
+        kernel_bpf_object_release(socket->bpf_filter_object_id);
     kernel_socket_multicast_state_release(&socket->option_state);
     if (socket->udp) udp_remove(socket->udp);
     if (socket->tcp) {
@@ -18519,6 +18548,7 @@ int edge_socket_runtime_option_view(
     view->pending_error = &socket->error;
     view->filter = socket->filter;
     view->filter_length = &socket->filter_length;
+    view->bpf_filter_object_id = &socket->bpf_filter_object_id;
     view->context = socket;
     view->apply_effects = arm64_socket_option_apply_effects;
     view->peer_credentials = arm64_socket_option_peer_credentials;

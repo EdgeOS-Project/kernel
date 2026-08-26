@@ -3147,6 +3147,32 @@ static void test_arena_map(void) {
     assert(kernel_bpf_map_create(&request) == -EDGE_LINUX_EINVAL);
 }
 
+static void test_socket_filter_program(void) {
+    const kernel_bpf_instruction_t instructions[] = {
+        { .code = 0x61u, .registers = 0x10u,
+          .offset = 0, .immediate = 0 },
+        { .code = 0x95u, .registers = 0u,
+          .offset = 0, .immediate = 0 },
+    };
+    kernel_bpf_program_create_request_t request = {
+        .type = KERNEL_BPF_PROG_TYPE_SOCKET_FILTER,
+        .instruction_count = 2u,
+    };
+    kernel_bpf_socket_filter_context_t context = {
+        .length = 123u,
+    };
+    uint32_t result = 0u;
+    int program;
+
+    strcpy(request.name, "socket_len");
+    program = kernel_bpf_program_create(&request, instructions);
+    assert(program >= 0);
+    assert(kernel_bpf_program_run_socket_filter(
+               program, &context, &result) == 0);
+    assert(result == context.length);
+    kernel_bpf_object_release(program);
+}
+
 int main(void) {
     test_array_map();
     test_cgroup_array();
@@ -3184,6 +3210,7 @@ int main(void) {
     test_inode_local_storage();
     test_task_local_storage();
     test_arena_map();
+    test_socket_filter_program();
     puts("bpf_runtime_unit: PASS");
     return 0;
 }
