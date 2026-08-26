@@ -70,8 +70,12 @@
 #define BPF_LINK_GET_FD_BY_ID 30u
 #define BPF_LINK_GET_NEXT_ID 31u
 #define BPF_ENABLE_STATS 32u
+#define BPF_ITER_CREATE 33u
 #define BPF_LINK_DETACH 34u
 #define BPF_PROG_BIND_MAP 35u
+#define BPF_TOKEN_CREATE 36u
+#define BPF_PROG_STREAM_READ_BY_FD 37u
+#define BPF_PROG_ASSOC_STRUCT_OPS 38u
 
 #define BPF_MAP_TYPE_HASH 1u
 #define BPF_MAP_TYPE_ARRAY 2u
@@ -317,6 +321,25 @@ union bpf_attr {
     struct {
         uint32_t type;
     } enable_stats;
+    struct {
+        uint32_t link_fd;
+        uint32_t flags;
+    } iter_create;
+    struct {
+        uint32_t flags;
+        uint32_t bpffs_fd;
+    } token_create;
+    struct {
+        uint64_t stream_buf;
+        uint32_t stream_buf_len;
+        uint32_t stream_id;
+        uint32_t prog_fd;
+    } prog_stream_read;
+    struct {
+        uint32_t map_fd;
+        uint32_t prog_fd;
+        uint32_t flags;
+    } prog_assoc_struct_ops;
     uint8_t padding[144];
 };
 
@@ -1870,8 +1893,8 @@ static int test_program_array(void) {
     uint32_t key = 0u;
     uint32_t value = 0u;
     uint32_t program_id = 0u;
-    long map_descriptor;
-    long program_descriptor;
+    long map_descriptor = -1;
+    long program_descriptor = -1;
     long caller_descriptor;
     int failures = 0;
 
@@ -3654,8 +3677,87 @@ static int test_attribute_tail(void) {
                BPF_MAP_CREATE, &attribute, 4097u), -E2BIG);
 }
 
+static int test_unsupported_extension_errors(void) {
+    union bpf_attr attribute;
+    long map_descriptor;
+    long program_descriptor;
+    int failures = 0;
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.iter_create.link_fd = UINT32_MAX;
+    attribute.iter_create.flags = 1u;
+    failures += expect("iterator flags first", bpf_call(
+        BPF_ITER_CREATE, &attribute), -EINVAL);
+    attribute.iter_create.flags = 0u;
+    failures += expect("iterator bad link", bpf_call(
+        BPF_ITER_CREATE, &attribute), -EBADF);
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.token_create.flags = 1u;
+    attribute.token_create.bpffs_fd = UINT32_MAX;
+    failures += expect("token flags first", bpf_call(
+        BPF_TOKEN_CREATE, &attribute), -EINVAL);
+    attribute.token_create.flags = 0u;
+    failures += expect("token bad bpffs", bpf_call(
+        BPF_TOKEN_CREATE, &attribute), -EBADF);
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.prog_stream_read.prog_fd = UINT32_MAX;
+    failures += expect("program stream bad program", bpf_call(
+        BPF_PROG_STREAM_READ_BY_FD, &attribute), -EBADF);
+
+    clear_bytes(&attribute, sizeof(attribute));
+    attribute.prog_assoc_struct_ops.map_fd = UINT32_MAX;
+    attribute.prog_assoc_struct_ops.prog_fd = UINT32_MAX;
+    attribute.prog_assoc_struct_ops.flags = 1u;
+    failures += expect("struct ops flags first", bpf_call(
+        BPF_PROG_ASSOC_STRUCT_OPS, &attribute), -EINVAL);
+    attribute.prog_assoc_struct_ops.flags = 0u;
+    failures += expect("struct ops bad program", bpf_call(
+        BPF_PROG_ASSOC_STRUCT_OPS, &attribute), -EBADF);
+
+#ifndef BPF_EXTENSIONS_INVALID_ONLY
+    map_descriptor = create_map(BPF_MAP_TYPE_ARRAY, 1u, "ext_map");
+    program_descriptor = load_allow_device_program("ext_prog");
+    failures += expect_true("extension map", map_descriptor >= 0);
+    failures += expect_true("extension program", program_descriptor >= 0);
+    if (map_descriptor >= 0 && program_descriptor >= 0) {
+        clear_bytes(&attribute, sizeof(attribute));
+        attribute.prog_stream_read.prog_fd =
+            (uint32_t)program_descriptor;
+        failures += expect("program stream unavailable", bpf_call(
+            BPF_PROG_STREAM_READ_BY_FD, &attribute), -ENOENT);
+
+        clear_bytes(&attribute, sizeof(attribute));
+        attribute.prog_assoc_struct_ops.map_fd =
+            (uint32_t)map_descriptor;
+        attribute.prog_assoc_struct_ops.prog_fd =
+            (uint32_t)program_descriptor;
+        failures += expect("struct ops map type", bpf_call(
+            BPF_PROG_ASSOC_STRUCT_OPS, &attribute), -EINVAL);
+    }
+    if (map_descriptor >= 0)
+        (void)raw_syscall6(
+            SYS_close, map_descriptor, 0, 0, 0, 0, 0);
+    if (program_descriptor >= 0)
+        (void)raw_syscall6(
+            SYS_close, program_descriptor, 0, 0, 0, 0, 0);
+#else
+    (void)map_descriptor;
+    (void)program_descriptor;
+#endif
+    return failures;
+}
+
 START_ATTRIBUTES void _start(void) {
-#ifdef BPF_ARENA_ONLY
+#ifdef BPF_EXTENSIONS_ONLY
+    int failures = test_unsupported_extension_errors();
+
+    print_text(failures ? "BPF_EXTENSIONS_ABI_FAIL\n" :
+                          "BPF_EXTENSIONS_ABI_PASS\n");
+    (void)raw_syscall6(SYS_exit, failures ? 1 : 0, 0, 0, 0, 0, 0);
+    for (;;) { }
+#elif defined(BPF_ARENA_ONLY)
     int failures = test_arena_map();
 
     print_text(failures ? "BPF_ARENA_ABI_FAIL\n" :
@@ -3698,6 +3800,7 @@ START_ATTRIBUTES void _start(void) {
     failures += test_arena_map();
     failures += test_btf_objects();
     failures += test_attribute_tail();
+    failures += test_unsupported_extension_errors();
     print_text(failures ? "BPF_ABI_PROBE_FAIL\n" :
                           "BPF_ABI_PROBE_PASS\n");
     (void)raw_syscall6(SYS_exit, failures ? 1 : 0, 0, 0, 0, 0, 0);

@@ -5680,6 +5680,30 @@ typedef struct edge_linux_bpf_enable_stats_attribute {
     uint32_t type;
 } edge_linux_bpf_enable_stats_attribute_t;
 
+typedef struct edge_linux_bpf_iter_create_attribute {
+    uint32_t link_descriptor;
+    uint32_t flags;
+} edge_linux_bpf_iter_create_attribute_t;
+
+typedef struct edge_linux_bpf_token_create_attribute {
+    uint32_t flags;
+    uint32_t bpffs_descriptor;
+} edge_linux_bpf_token_create_attribute_t;
+
+typedef struct edge_linux_bpf_program_stream_attribute {
+    uint64_t buffer;
+    uint32_t buffer_length;
+    uint32_t stream_id;
+    uint32_t program_descriptor;
+    uint32_t padding;
+} edge_linux_bpf_program_stream_attribute_t;
+
+typedef struct edge_linux_bpf_program_struct_ops_attribute {
+    uint32_t map_descriptor;
+    uint32_t program_descriptor;
+    uint32_t flags;
+} edge_linux_bpf_program_struct_ops_attribute_t;
+
 _Static_assert(sizeof(edge_linux_bpf_program_attach_attribute_t) == 32u,
                "Linux BPF attach attribute layout changed");
 _Static_assert(sizeof(edge_linux_bpf_program_test_attribute_t) == 76u,
@@ -5694,6 +5718,14 @@ _Static_assert(sizeof(edge_linux_bpf_program_bind_map_attribute_t) == 12u,
                "Linux BPF program bind-map attribute layout changed");
 _Static_assert(sizeof(edge_linux_bpf_enable_stats_attribute_t) == 4u,
                "Linux BPF enable-stats attribute layout changed");
+_Static_assert(sizeof(edge_linux_bpf_iter_create_attribute_t) == 8u,
+               "Linux BPF iterator attribute layout changed");
+_Static_assert(sizeof(edge_linux_bpf_token_create_attribute_t) == 8u,
+               "Linux BPF token attribute layout changed");
+_Static_assert(sizeof(edge_linux_bpf_program_stream_attribute_t) == 24u,
+               "Linux BPF program-stream attribute layout changed");
+_Static_assert(sizeof(edge_linux_bpf_program_struct_ops_attribute_t) == 12u,
+               "Linux BPF struct-ops association layout changed");
 
 typedef struct edge_linux_bpf_map_info {
     uint32_t type;
@@ -7306,6 +7338,85 @@ static int64_t edge_linux_bpf_program_bind_map(
         program_object_id, map_object_id);
 }
 
+static int64_t edge_linux_bpf_unsupported_extension(
+        edge_linux_syscall_context_t *context, uint32_t command,
+        uint64_t user_attribute, uint32_t attribute_size) {
+    int status;
+
+    if (command == EDGE_LINUX_BPF_ITER_CREATE) {
+        edge_linux_bpf_iter_create_attribute_t attribute;
+
+        status = edge_linux_bpf_copy_attribute(
+            context, &attribute, sizeof(attribute), sizeof(attribute),
+            user_attribute, attribute_size);
+        if (status < 0) return status;
+        if (attribute.flags) return -EDGE_LINUX_EINVAL;
+        status = kernel_bpf_descriptor_object(
+            (int32_t)attribute.link_descriptor,
+            KERNEL_BPF_OBJECT_LINK);
+        if (status < 0) return status;
+        /* EdgeOS currently creates cgroup links, not iterator links. */
+        return -EDGE_LINUX_EINVAL;
+    }
+    if (command == EDGE_LINUX_BPF_TOKEN_CREATE) {
+        edge_linux_bpf_token_create_attribute_t attribute;
+        kernel_vfs_descriptor_t target;
+
+        status = edge_linux_bpf_copy_attribute(
+            context, &attribute, sizeof(attribute), sizeof(attribute),
+            user_attribute, attribute_size);
+        if (status < 0) return status;
+        if (attribute.flags) return -EDGE_LINUX_EINVAL;
+        status = edge_linux_bpf_target_description(
+            attribute.bpffs_descriptor, &target);
+        if (status < 0) return status;
+        if (!target.superblock || !target.inode ||
+            target.inode != &target.superblock->root ||
+            strcmp(target.superblock->fs_name, "bpf") != 0)
+            return -EDGE_LINUX_EINVAL;
+        /* Linux does not create tokens from its initial user namespace. */
+        return -EDGE_LINUX_EOPNOTSUPP;
+    }
+    if (command == EDGE_LINUX_BPF_PROG_STREAM_READ_BY_FD) {
+        edge_linux_bpf_program_stream_attribute_t attribute;
+
+        status = edge_linux_bpf_copy_attribute(
+            context, &attribute, sizeof(attribute),
+            offsetof(edge_linux_bpf_program_stream_attribute_t,
+                     program_descriptor) +
+                sizeof(attribute.program_descriptor),
+            user_attribute, attribute_size);
+        if (status < 0) return status;
+        status = kernel_bpf_descriptor_object(
+            (int32_t)attribute.program_descriptor,
+            KERNEL_BPF_OBJECT_PROGRAM);
+        if (status < 0) return status;
+        /* Supported EdgeOS program types do not expose program streams. */
+        return -EDGE_LINUX_ENOENT;
+    }
+    if (command == EDGE_LINUX_BPF_PROG_ASSOC_STRUCT_OPS) {
+        edge_linux_bpf_program_struct_ops_attribute_t attribute;
+        int map_object_id;
+
+        status = edge_linux_bpf_copy_attribute(
+            context, &attribute, sizeof(attribute), sizeof(attribute),
+            user_attribute, attribute_size);
+        if (status < 0) return status;
+        if (attribute.flags) return -EDGE_LINUX_EINVAL;
+        status = kernel_bpf_descriptor_object(
+            (int32_t)attribute.program_descriptor,
+            KERNEL_BPF_OBJECT_PROGRAM);
+        if (status < 0) return status;
+        map_object_id = kernel_bpf_descriptor_object(
+            (int32_t)attribute.map_descriptor,
+            KERNEL_BPF_OBJECT_MAP);
+        if (map_object_id < 0) return map_object_id;
+        /* No supported map type is a struct-ops map. */
+        return -EDGE_LINUX_EINVAL;
+    }
+    return -EDGE_LINUX_EINVAL;
+}
+
 static int64_t edge_linux_bpf_program_test_run(
         edge_linux_syscall_context_t *context, uint64_t user_attribute,
         uint32_t attribute_size) {
@@ -7648,6 +7759,12 @@ static int64_t edge_linux_sys_bpf(
     if (command == EDGE_LINUX_BPF_ENABLE_STATS)
         return edge_linux_bpf_enable_stats(
             context, user_attribute, attribute_size, privileged);
+    if (command == EDGE_LINUX_BPF_ITER_CREATE ||
+        command == EDGE_LINUX_BPF_TOKEN_CREATE ||
+        command == EDGE_LINUX_BPF_PROG_STREAM_READ_BY_FD ||
+        command == EDGE_LINUX_BPF_PROG_ASSOC_STRUCT_OPS)
+        return edge_linux_bpf_unsupported_extension(
+            context, command, user_attribute, attribute_size);
     return -EDGE_LINUX_EINVAL;
 }
 

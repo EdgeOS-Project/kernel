@@ -414,6 +414,7 @@ EDGEOS_ASSESSMENTS = [
             "explicit map binding to program lifetime with program map-ID reporting",
             "runtime statistics enable descriptors with close-time disable semantics",
             "program test-run and unknown-command error ordering for the supported program family",
+            "Linux-order attribute and descriptor validation for iterator creation, delegated token creation, program stream reads and struct-ops association when no supported backend object exists",
             "stack-trace map creation, build-ID value layouts, rounded bucket addressing, raw sys_enter tracepoint attachment and get_stackid helper population",
             "socket-filter program loading, SO_ATTACH_BPF replacement, receive-path execution, descriptor-independent attachment lifetime and SO_DETACH_FILTER release",
             "socket-filter helper execution for socket cookies, socket owner UIDs and network-namespace cookies",
@@ -532,6 +533,9 @@ EDGEOS_ASSESSMENTS = [
                 "storage growth, Linux key and value size limits, multi-page "
                 "element copies, element and batch operations, iteration, "
                 "lookup-and-delete and freeze behavior, "
+                "iterator-create, token-create, program-stream-read and "
+                "struct-ops-association attribute and descriptor error "
+                "ordering when no supported backend object exists, "
                 "plus ia32 "
                 "and x32 page-boundary map-create, "
                 "map-update and map-lookup attribute layouts"
