@@ -96,11 +96,11 @@ static void test_regular_file(int descriptor) {
     expect_seek("regular_large", descriptor, INT64_C(1) << 40,
                 SEEK_SET, INT64_C(1) << 40, 0);
     expect_seek("regular_max", descriptor, INT64_MAX, SEEK_SET,
-                -1, EINVAL);
+                INT64_MAX, 0);
     expect_seek("regular_overflow", descriptor, INT64_MAX, SEEK_CUR,
                 -1, EINVAL);
     expect_seek("regular_after_overflow", descriptor, 0, SEEK_CUR,
-                INT64_C(1) << 40, 0);
+                INT64_MAX, 0);
 }
 
 static void test_shared_descriptions(int descriptor) {
@@ -196,15 +196,15 @@ static void test_directory(void) {
     }
     expect_seek("directory_set", descriptor, 0, SEEK_SET, 0, 0);
     expect_seek("directory_cur", descriptor, 0, SEEK_CUR, 0, 0);
-    expect_seek("directory_end", descriptor, 0, SEEK_END, INT64_MAX, 0);
-    expect_seek("directory_data", descriptor, 0, SEEK_DATA, 0, 0);
-    expect_seek("directory_hole", descriptor, 0, SEEK_HOLE, INT64_MAX, 0);
+    expect_seek("directory_end", descriptor, 0, SEEK_END, -1, EINVAL);
+    expect_seek("directory_data", descriptor, 0, SEEK_DATA, -1, EINVAL);
+    expect_seek("directory_hole", descriptor, 0, SEEK_HOLE, -1, EINVAL);
     close(descriptor);
 }
 
 static void test_special_descriptors(void) {
     int pipe_descriptors[2];
-    int socket_descriptor;
+    int socket_descriptors[2];
     int event_descriptor;
     int path_descriptor;
     int null_descriptor;
@@ -214,11 +214,12 @@ static void test_special_descriptors(void) {
         ++g_failures;
         return;
     }
-    socket_descriptor = socket(AF_INET, SOCK_STREAM, 0);
+    socket_descriptors[0] = socket_descriptors[1] = -1;
+    (void)socketpair(AF_UNIX, SOCK_STREAM, 0, socket_descriptors);
     event_descriptor = eventfd(0, EFD_CLOEXEC);
     path_descriptor = open(g_path, O_PATH | O_CLOEXEC);
     null_descriptor = open("/dev/null", O_RDWR | O_CLOEXEC);
-    if (socket_descriptor < 0 || event_descriptor < 0 ||
+    if (socket_descriptors[0] < 0 || event_descriptor < 0 ||
         path_descriptor < 0 || null_descriptor < 0) {
         dprintf(STDOUT_FILENO, "special_setup_errno:%d\n", errno);
         ++g_failures;
@@ -227,7 +228,7 @@ static void test_special_descriptors(void) {
 
     expect_seek("bad_descriptor", -1, 0, SEEK_SET, -1, EBADF);
     expect_seek("pipe", pipe_descriptors[0], 0, SEEK_SET, -1, ESPIPE);
-    expect_seek("socket", socket_descriptor, 0, SEEK_SET, -1, ESPIPE);
+    expect_seek("socket", socket_descriptors[0], 0, SEEK_SET, -1, ESPIPE);
     expect_seek("opath", path_descriptor, 0, SEEK_SET, -1, EBADF);
     expect_seek("eventfd_set", event_descriptor, 7, SEEK_SET, 0, 0);
     expect_seek("eventfd_cur", event_descriptor, 4, SEEK_CUR, 0, 0);
@@ -238,7 +239,8 @@ static void test_special_descriptors(void) {
     close(null_descriptor);
     close(path_descriptor);
     close(event_descriptor);
-    close(socket_descriptor);
+    close(socket_descriptors[0]);
+    close(socket_descriptors[1]);
     close(pipe_descriptors[0]);
     close(pipe_descriptors[1]);
 }

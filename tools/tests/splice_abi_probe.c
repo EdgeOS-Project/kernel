@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #if defined(__x86_64__)
+#define START_ATTRIBUTES __attribute__((noreturn, force_align_arg_pointer))
 #define SYS_read 0
 #define SYS_write 1
 #define SYS_close 3
@@ -20,6 +21,7 @@
 #define SYS_splice 275
 #define SYS_pipe2 293
 #elif defined(__aarch64__)
+#define START_ATTRIBUTES __attribute__((noreturn))
 #define SYS_unlinkat 35
 #define SYS_openat 56
 #define SYS_close 57
@@ -337,7 +339,7 @@ static int run_tests(void) {
     return failures ? 1 : 0;
 }
 
-__attribute__((noreturn)) void _start(void) {
+START_ATTRIBUTES void _start(void) {
     raw_syscall6(SYS_exit, run_tests(), 0, 0, 0, 0, 0);
     __builtin_unreachable();
 }

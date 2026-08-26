@@ -10686,6 +10686,7 @@ static int64_t edge_linux_sys_file_advice(
                 ((uint64_t)(uint32_t)context->arguments[2] << 32);
             length = (uint32_t)context->arguments[3];
         }
+        if ((int64_t)offset < 0) return -EDGE_LINUX_EINVAL;
         if (!descriptor.readable) return -EDGE_LINUX_EBADF;
         if (descriptor.kind == KERNEL_VFS_DESCRIPTOR_MEMORY) return 0;
         if (descriptor.kind != KERNEL_VFS_DESCRIPTOR_REGULAR)
@@ -10717,7 +10718,7 @@ static int64_t edge_linux_sys_file_advice(
             ((uint64_t)(uint32_t)context->arguments[4] << 32);
         advice = (uint32_t)context->arguments[5];
     }
-    if ((int64_t)length < 0 || advice > 5u)
+    if ((int64_t)offset < 0 || (int64_t)length < 0 || advice > 5u)
         return -EDGE_LINUX_EINVAL;
     if (descriptor.kind == KERNEL_VFS_DESCRIPTOR_PIPE ||
         descriptor.kind == KERNEL_VFS_DESCRIPTOR_TERMINAL ||

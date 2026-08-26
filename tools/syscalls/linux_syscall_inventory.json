@@ -774,13 +774,13 @@
         "tools/tests/openat2_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 85,
           "status": "implemented",
           "route": "shared:edge_linux_sys_open",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": null
       }
@@ -1284,19 +1284,19 @@
         "tools/tests/file_advice_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 221,
           "status": "implemented",
           "route": "shared:edge_linux_sys_file_advice",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 223,
           "status": "implemented",
           "route": "shared:edge_linux_sys_file_advice",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -1309,19 +1309,19 @@
         "tools/tests/fallocate_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 285,
           "status": "implemented",
           "route": "shared:edge_linux_sys_fallocate",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 47,
           "status": "implemented",
           "route": "shared:edge_linux_sys_fallocate",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -3921,19 +3921,19 @@
         "tools/tests/lseek_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 8,
           "status": "implemented",
           "route": "shared:edge_linux_sys_lseek",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 62,
           "status": "implemented",
           "route": "shared:edge_linux_sys_lseek",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -5105,13 +5105,13 @@
         "tools/tests/openat2_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 2,
           "status": "implemented",
           "route": "shared:edge_linux_sys_open",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": null
       }
@@ -5200,19 +5200,19 @@
         "tools/tests/openat2_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 257,
           "status": "implemented",
           "route": "shared:edge_linux_sys_open",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 56,
           "status": "implemented",
           "route": "shared:edge_linux_sys_open",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -5225,19 +5225,19 @@
         "tools/tests/openat2_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 437,
           "status": "implemented",
           "route": "shared:edge_linux_sys_open",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 437,
           "status": "implemented",
           "route": "shared:edge_linux_sys_open",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -6055,19 +6055,19 @@
         "tools/tests/file_advice_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 187,
           "status": "implemented",
           "route": "shared:edge_linux_sys_file_advice",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 213,
           "status": "implemented",
           "route": "shared:edge_linux_sys_file_advice",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -7183,19 +7183,19 @@
         "tools/tests/sendfile_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 40,
           "status": "implemented",
           "route": "shared:edge_linux_sys_sendfile",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 71,
           "status": "implemented",
           "route": "shared:edge_linux_sys_sendfile",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -8190,19 +8190,19 @@
         "tools/tests/splice_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 275,
           "status": "implemented",
           "route": "shared:edge_linux_sys_splice",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 76,
           "status": "implemented",
           "route": "shared:edge_linux_sys_splice",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -8550,19 +8550,19 @@
         "tools/tests/tee_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 276,
           "status": "implemented",
           "route": "shared:edge_linux_sys_tee",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 77,
           "status": "implemented",
           "route": "shared:edge_linux_sys_tee",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -9275,19 +9275,19 @@
         "tools/tests/vmsplice_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 278,
           "status": "implemented",
           "route": "shared:edge_linux_sys_vmsplice",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 75,
           "status": "implemented",
           "route": "shared:edge_linux_sys_vmsplice",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },

@@ -18,6 +18,7 @@
 #define EDGE_LINUX_SEEK_POSITIONAL 0x01u
 #define EDGE_LINUX_SEEK_DATA_HOLE  0x02u
 #define EDGE_LINUX_SEEK_NOOP       0x04u
+#define EDGE_LINUX_SEEK_DIRECTORY  0x08u
 
 typedef struct edge_linux_seek_state {
     uint64_t offset;

@@ -66,6 +66,9 @@ edge_linux_seek_result_t edge_linux_seek_calculate(
     }
     if (!(state->capabilities & EDGE_LINUX_SEEK_POSITIONAL))
         return EDGE_LINUX_SEEK_ILLEGAL;
+    if ((state->capabilities & EDGE_LINUX_SEEK_DIRECTORY) &&
+        whence != EDGE_LINUX_SEEK_SET && whence != EDGE_LINUX_SEEK_CUR)
+        return EDGE_LINUX_SEEK_INVALID;
 
     if (whence == EDGE_LINUX_SEEK_DATA ||
         whence == EDGE_LINUX_SEEK_HOLE) {

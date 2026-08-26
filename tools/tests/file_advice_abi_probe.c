@@ -125,13 +125,13 @@ static void test_descriptor_kinds(int directory_descriptor,
 static void test_errors(int descriptor) {
     expect_readahead("readahead_badfd", -1, 0, 1, -1, EBADF);
     expect_readahead("readahead_negative_offset", descriptor, -1, 1,
-                     0, 0);
+                     -1, EINVAL);
     expect_readahead("readahead_zero_count", descriptor, 0, 0, 0, 0);
 
     expect_fadvise("fadvise_badfd", -1, 0, 1, EDGE_FADV_NORMAL,
                    -1, EBADF);
     expect_fadvise("fadvise_negative_offset", descriptor, -1, 1,
-                   EDGE_FADV_NORMAL, 0, 0);
+                   EDGE_FADV_NORMAL, -1, EINVAL);
     expect_fadvise("fadvise_negative_length", descriptor, 0, -1,
                    EDGE_FADV_NORMAL, -1, EINVAL);
     expect_fadvise("fadvise_invalid_advice", descriptor, 0, 1, 6,
@@ -144,7 +144,7 @@ int main(void) {
     int directory_descriptor;
     int pipe_descriptors[2];
     int memory_descriptor;
-    int socket_descriptor;
+    int socket_descriptors[2];
 
     unlink(g_path);
     write_descriptor = open(g_path, O_CREAT | O_EXCL | O_WRONLY, 0600);
@@ -162,18 +162,20 @@ int main(void) {
     }
     memory_descriptor = (int)syscall(SYS_memfd_create,
                                      "edgeos-file-advice", 0);
-    socket_descriptor = socket(AF_INET, SOCK_STREAM, 0);
-    if (memory_descriptor < 0 || socket_descriptor < 0) {
+    socket_descriptors[0] = socket_descriptors[1] = -1;
+    (void)socketpair(AF_UNIX, SOCK_STREAM, 0, socket_descriptors);
+    if (memory_descriptor < 0 || socket_descriptors[0] < 0) {
         dprintf(STDOUT_FILENO, "file_advice_special_fd_errno:%d\n", errno);
         return 1;
     }
 
     test_regular_files(read_descriptor, write_descriptor);
     test_descriptor_kinds(directory_descriptor, pipe_descriptors[0],
-                          memory_descriptor, socket_descriptor);
+                          memory_descriptor, socket_descriptors[0]);
     test_errors(read_descriptor);
 
-    close(socket_descriptor);
+    close(socket_descriptors[0]);
+    close(socket_descriptors[1]);
     close(memory_descriptor);
     close(pipe_descriptors[0]);
     close(pipe_descriptors[1]);

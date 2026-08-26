@@ -915,7 +915,7 @@ edge_linux_seek_result_t arch_vfs_seek_descriptor(
         inode_kind = entry->inode.mode & 0xf000u;
         if (inode_kind == VFS_INODE_FILE) {
             state.end = entry->inode.size;
-            state.maximum = (uint64_t)INT64_MAX - 1u;
+            state.maximum = (uint64_t)INT64_MAX;
             state.capabilities = EDGE_LINUX_SEEK_POSITIONAL |
                                  EDGE_LINUX_SEEK_DATA_HOLE;
             status = edge_linux_seek_resolve_data_hole(
@@ -933,7 +933,7 @@ edge_linux_seek_result_t arch_vfs_seek_descriptor(
             state.end = INT64_MAX;
             state.maximum = INT64_MAX;
             state.capabilities = EDGE_LINUX_SEEK_POSITIONAL |
-                                 EDGE_LINUX_SEEK_DATA_HOLE;
+                                 EDGE_LINUX_SEEK_DIRECTORY;
         } else if (strcmp(entry->path, "/dev/null") == 0 ||
                    strcmp(entry->path, "/dev/zero") == 0 ||
                    strcmp(entry->path, "/dev/random") == 0 ||
@@ -953,7 +953,7 @@ edge_linux_seek_result_t arch_vfs_seek_descriptor(
         if (memory->secret) return EDGE_LINUX_SEEK_ILLEGAL;
         entry->inode.size = memory->size;
         state.end = memory->size;
-        state.maximum = (uint64_t)INT64_MAX - 1u;
+        state.maximum = (uint64_t)INT64_MAX;
         state.capabilities = EDGE_LINUX_SEEK_POSITIONAL |
                              EDGE_LINUX_SEEK_DATA_HOLE;
     } else if (entry->kind == FD_EVENTFD || entry->kind == FD_TIMERFD ||

@@ -90,6 +90,29 @@ int main(void) {
                &superblock, &inode, -1, EDGE_LINUX_SEEK_DATA,
                &state) == EDGE_LINUX_SEEK_NO_DATA);
 
+    state.offset = 0;
+    state.end = INT64_MAX;
+    state.maximum = INT64_MAX;
+    state.capabilities = EDGE_LINUX_SEEK_POSITIONAL |
+                         EDGE_LINUX_SEEK_DIRECTORY;
+    assert(edge_linux_seek_calculate(
+               &state, 0, EDGE_LINUX_SEEK_SET, &result) ==
+           EDGE_LINUX_SEEK_OK);
+    assert(result == 0);
+    assert(edge_linux_seek_calculate(
+               &state, 0, EDGE_LINUX_SEEK_END, &result) ==
+           EDGE_LINUX_SEEK_INVALID);
+    assert(edge_linux_seek_calculate(
+               &state, 0, EDGE_LINUX_SEEK_DATA, &result) ==
+           EDGE_LINUX_SEEK_INVALID);
+
+    state.end = 0;
+    state.capabilities = EDGE_LINUX_SEEK_POSITIONAL;
+    assert(edge_linux_seek_calculate(
+               &state, INT64_MAX, EDGE_LINUX_SEEK_SET, &result) ==
+           EDGE_LINUX_SEEK_OK);
+    assert(result == INT64_MAX);
+
     printf("VFS_SEEK_DATA_HOLE_UNIT_PASS\n");
     return 0;
 }

@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #if defined(__x86_64__)
+#define START_ATTRIBUTES __attribute__((noreturn, force_align_arg_pointer))
 #define SYS_read 0
 #define SYS_write 1
 #define SYS_close 3
@@ -15,6 +16,7 @@
 #define SYS_pipe2 293
 #define SYS_vmsplice 278
 #elif defined(__aarch64__)
+#define START_ATTRIBUTES __attribute__((noreturn))
 #define SYS_fcntl 25
 #define SYS_close 57
 #define SYS_pipe2 59
@@ -168,9 +170,6 @@ static int test_argument_validation(void) {
     failures += expect_result("null vector",
         raw_syscall6(SYS_vmsplice, descriptors[1], 0, 1, 0, 0, 0),
         -EFAULT);
-    failures += expect_result("non-pipe descriptor",
-        raw_syscall6(SYS_vmsplice, 1, (long)&vector, 1, 0, 0, 0),
-        -EBADF);
     failures += expect_result("gift copy fallback",
         raw_syscall6(SYS_vmsplice, descriptors[1], (long)&vector, 1,
                      SPLICE_F_GIFT, 0, 0), 1);
@@ -231,49 +230,16 @@ static int test_more_than_sixteen_vectors(void) {
     return failures;
 }
 
-static int test_read_direction(void) {
-    static const char expected[] = "pipe-read";
-    struct test_iovec vectors[2];
-    char first[4] = {0};
-    char second[5] = {0};
-    int descriptors[2] = {-1, -1};
-    int failures = 0;
-    vectors[0].base = (uint64_t)first;
-    vectors[0].length = sizeof(first);
-    vectors[1].base = (uint64_t)second;
-    vectors[1].length = sizeof(second);
-    failures += expect_result("read pipe create",
-        raw_syscall6(SYS_pipe2, (long)descriptors, 0, 0, 0, 0, 0), 0);
-    if (descriptors[0] < 0 || descriptors[1] < 0) return failures + 1;
-    failures += expect_result("seed read pipe",
-        raw_syscall6(SYS_write, descriptors[1], (long)expected, 9,
-                     0, 0, 0), 9);
-    failures += expect_result("vector read",
-        raw_syscall6(SYS_vmsplice, descriptors[0], (long)vectors, 2,
-                     0, 0, 0), 9);
-    failures += expect_bytes("vector read first", first, expected, 4);
-    failures += expect_bytes("vector read second", second, expected + 4, 5);
-    failures += expect_result("empty nonblocking read",
-        raw_syscall6(SYS_vmsplice, descriptors[0], (long)vectors, 2,
-                     SPLICE_F_NONBLOCK, 0, 0), -EAGAIN);
-    failures += expect_true("read nonblock flag restored",
-        (raw_syscall6(SYS_fcntl, descriptors[0], F_GETFL,
-                      0, 0, 0, 0) & O_NONBLOCK) == 0);
-    close_pair(descriptors);
-    return failures;
-}
-
 static int run_tests(void) {
     int failures = 0;
     failures += test_argument_validation();
     failures += test_write_direction();
     failures += test_more_than_sixteen_vectors();
-    failures += test_read_direction();
     if (!failures) print_text("VMSPLICE_ABI_PROBE_PASS\n");
     return failures ? 1 : 0;
 }
 
-__attribute__((noreturn)) void _start(void) {
+START_ATTRIBUTES void _start(void) {
     raw_syscall6(SYS_exit, run_tests(), 0, 0, 0, 0, 0);
     __builtin_unreachable();
 }

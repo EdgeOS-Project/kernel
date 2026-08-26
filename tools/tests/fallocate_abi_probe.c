@@ -106,18 +106,29 @@ static void test_regular_file(int descriptor) {
     dprintf(STDOUT_FILENO, "regular_keep_size_value:%lld\n",
             (long long)status.st_size);
 
-    expect_fallocate("regular_zero_range", descriptor,
-                     EDGE_FALLOC_FL_ZERO_RANGE, 2, 3, 0, 0);
-    memset(bytes, 0, sizeof(bytes));
-    count = pread(descriptor, bytes, 6, 0);
-    dprintf(STDOUT_FILENO, "regular_zero_bytes:%d\n",
-            count == 6 && bytes[0] == 'a' && bytes[1] == 'b' &&
-                bytes[2] == 0 && bytes[3] == 0 && bytes[4] == 0 &&
-                bytes[5] == 'f');
-    if (count != 6 || bytes[0] != 'a' || bytes[1] != 'b' ||
-        bytes[2] != 0 || bytes[3] != 0 || bytes[4] != 0 ||
-        bytes[5] != 'f')
-        ++g_failures;
+    errno = 0;
+    {
+        long zero_result = call_fallocate(
+            descriptor, EDGE_FALLOC_FL_ZERO_RANGE, 2, 3);
+        int zero_errno = errno;
+
+        dprintf(STDOUT_FILENO, "regular_zero_range_rc:%ld errno:%d\n",
+                zero_result, zero_errno);
+        if (zero_result == 0) {
+            memset(bytes, 0, sizeof(bytes));
+            count = pread(descriptor, bytes, 6, 0);
+            dprintf(STDOUT_FILENO, "regular_zero_bytes:%d\n",
+                    count == 6 && bytes[0] == 'a' && bytes[1] == 'b' &&
+                        bytes[2] == 0 && bytes[3] == 0 && bytes[4] == 0 &&
+                        bytes[5] == 'f');
+            if (count != 6 || bytes[0] != 'a' || bytes[1] != 'b' ||
+                bytes[2] != 0 || bytes[3] != 0 || bytes[4] != 0 ||
+                bytes[5] != 'f')
+                ++g_failures;
+        } else if (zero_result != -1 || zero_errno != EOPNOTSUPP) {
+            ++g_failures;
+        }
+    }
 }
 
 static void test_memory_file(int descriptor) {
@@ -221,7 +232,7 @@ int main(void) {
     int readonly_descriptor;
     int directory_descriptor;
     int pipe_descriptors[2];
-    int socket_descriptor;
+    int socket_descriptors[2];
     int memory_descriptor;
 
     unlink(g_path);
@@ -233,10 +244,11 @@ int main(void) {
     readonly_descriptor = open(g_path, O_RDONLY);
     directory_descriptor = open("/tmp", O_RDONLY | O_DIRECTORY);
     memory_descriptor = (int)syscall(SYS_memfd_create, "fallocate-data", 0);
-    socket_descriptor = socket(AF_INET, SOCK_STREAM, 0);
+    socket_descriptors[0] = socket_descriptors[1] = -1;
+    (void)socketpair(AF_UNIX, SOCK_STREAM, 0, socket_descriptors);
     if (readonly_descriptor < 0 || directory_descriptor < 0 ||
         pipe(pipe_descriptors) < 0 || memory_descriptor < 0 ||
-        socket_descriptor < 0) {
+        socket_descriptors[0] < 0) {
         dprintf(STDOUT_FILENO, "fallocate_descriptor_setup_errno:%d\n",
                 errno);
         return 1;
@@ -247,9 +259,10 @@ int main(void) {
     test_seals();
     test_errors(writable_descriptor, readonly_descriptor,
                 directory_descriptor, pipe_descriptors[1],
-                socket_descriptor);
+                socket_descriptors[0]);
 
-    close(socket_descriptor);
+    close(socket_descriptors[0]);
+    close(socket_descriptors[1]);
     close(memory_descriptor);
     close(pipe_descriptors[0]);
     close(pipe_descriptors[1]);

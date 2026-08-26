@@ -117,7 +117,8 @@ static long raw_syscall4(long number, long a0, long a1, long a2, long a3) {
     defined(UAPI_BATCH_PROCESS_EVENT_ONLY) || \
     defined(UAPI_BATCH_PROCESS_MISC_ORACLE_ONLY) || \
     defined(UAPI_BATCH_PROCESS_LIFECYCLE_ONLY) || \
-    defined(UAPI_BATCH_MEMORY_ONLY)
+    defined(UAPI_BATCH_MEMORY_ONLY) || \
+    defined(UAPI_BATCH_FILE_IO_ONLY)
 static long raw_syscall5(long number, long a0, long a1, long a2, long a3,
                          long a4) {
 #if defined(__x86_64__)
@@ -369,6 +370,15 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "mseal_abi_probe",
         "memfd_create_abi_probe",
         "pkey_abi_probe",
+#elif defined(UAPI_BATCH_FILE_IO_ONLY)
+        "openat2_abi_probe",
+        "lseek_abi_probe",
+        "fallocate_abi_probe",
+        "file_advice_abi_probe",
+        "sendfile_abi_probe",
+        "splice_abi_probe",
+        "tee_abi_probe",
+        "vmsplice_abi_probe",
 #elif defined(UAPI_BATCH_NATIVE_OPTIONAL_ONLY)
         "native_optional_syscalls_abi_probe",
 #else
@@ -440,6 +450,16 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
 #if defined(UAPI_BATCH_MEMORY_ONLY)
     (void)raw_syscall4(SYS_mkdirat, -100, (long)"/dev", 0755, 0);
     (void)raw_syscall4(SYS_mkdirat, -100, (long)"/proc", 0555, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/tmp", 01777, 0);
+    (void)raw_syscall5(SYS_mount, (long)"devtmpfs", (long)"/dev",
+                       (long)"devtmpfs", 0, 0);
+    (void)raw_syscall5(SYS_mount, (long)"proc", (long)"/proc",
+                       (long)"proc", 0, 0);
+#endif
+#if defined(UAPI_BATCH_FILE_IO_ONLY)
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/dev", 0755, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/proc", 0555, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/root", 0700, 0);
     (void)raw_syscall4(SYS_mkdirat, -100, (long)"/tmp", 01777, 0);
     (void)raw_syscall5(SYS_mount, (long)"devtmpfs", (long)"/dev",
                        (long)"devtmpfs", 0, 0);
