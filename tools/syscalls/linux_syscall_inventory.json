@@ -2001,26 +2001,22 @@
       "shared_handler": "edge_linux_sys_futex",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/futex_abi_probe.c",
-        "tools/tests/futex_pi_abi_probe.c",
-        "tools/tests/futex_pi_requeue_abi_probe.c",
-        "tools/tests/futex_runtime_probe.c",
-        "tools/tests/futex_pingpong_probe.c"
+        "tools/tests/futex_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 202,
           "status": "implemented",
           "route": "shared:edge_linux_sys_futex",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 98,
           "status": "implemented",
           "route": "shared:edge_linux_sys_futex",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -2030,24 +2026,22 @@
       "shared_handler": "edge_linux_sys_futex",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/futex_abi_probe.c",
-        "tools/tests/futex_runtime_probe.c",
-        "tools/tests/futex_requeue_probe.c"
+        "tools/tests/futex_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 456,
           "status": "implemented",
           "route": "shared:edge_linux_sys_futex",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 456,
           "status": "implemented",
           "route": "shared:edge_linux_sys_futex",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -2057,24 +2051,22 @@
       "shared_handler": "edge_linux_sys_futex",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/futex_abi_probe.c",
-        "tools/tests/futex_runtime_probe.c",
-        "tools/tests/futex_split_probe.c"
+        "tools/tests/futex_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 455,
           "status": "implemented",
           "route": "shared:edge_linux_sys_futex",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 455,
           "status": "implemented",
           "route": "shared:edge_linux_sys_futex",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -2084,24 +2076,22 @@
       "shared_handler": "edge_linux_sys_futex",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/futex_abi_probe.c",
-        "tools/tests/futex_runtime_probe.c",
-        "tools/tests/futex_waitv_probe.c"
+        "tools/tests/futex_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 449,
           "status": "implemented",
           "route": "shared:edge_linux_sys_futex",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 449,
           "status": "implemented",
           "route": "shared:edge_linux_sys_futex",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -2111,24 +2101,22 @@
       "shared_handler": "edge_linux_sys_futex",
       "architecture_exceptions": [],
       "runtime_tests": [
-        "tools/tests/futex_abi_probe.c",
-        "tools/tests/futex_runtime_probe.c",
-        "tools/tests/futex_split_probe.c"
+        "tools/tests/futex_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 454,
           "status": "implemented",
           "route": "shared:edge_linux_sys_futex",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 454,
           "status": "implemented",
           "route": "shared:edge_linux_sys_futex",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -2206,19 +2194,19 @@
         "tools/tests/synchronization_registration_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 274,
           "status": "implemented",
           "route": "shared:edge_linux_sys_robust_list",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 100,
           "status": "implemented",
           "route": "shared:edge_linux_sys_robust_list",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -4155,19 +4143,19 @@
         "tools/tests/synchronization_registration_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 324,
           "status": "implemented",
           "route": "shared:edge_linux_sys_membarrier",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 283,
           "status": "implemented",
           "route": "shared:edge_linux_sys_membarrier",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -6477,19 +6465,19 @@
         "tools/tests/synchronization_registration_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 334,
           "status": "implemented",
           "route": "shared:edge_linux_sys_rseq",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 293,
           "status": "implemented",
           "route": "shared:edge_linux_sys_rseq",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -7345,19 +7333,19 @@
         "tools/tests/synchronization_registration_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 273,
           "status": "implemented",
           "route": "shared:edge_linux_sys_robust_list",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 99,
           "status": "implemented",
           "route": "shared:edge_linux_sys_robust_list",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },

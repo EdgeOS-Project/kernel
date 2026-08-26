@@ -325,6 +325,9 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
 #elif defined(UAPI_BATCH_SOCKET_TRANSFER_ONLY)
         "socket_accept_abi_probe",
         "socket_message_abi_probe",
+#elif defined(UAPI_BATCH_SYNC_REGISTRATION_ONLY)
+        "futex_abi_probe",
+        "synchronization_registration_abi_probe",
 #elif defined(UAPI_BATCH_NATIVE_OPTIONAL_ONLY)
         "native_optional_syscalls_abi_probe",
 #else
