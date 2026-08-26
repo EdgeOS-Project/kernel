@@ -109,7 +109,8 @@ static long raw_syscall4(long number, long a0, long a1, long a2, long a3) {
     defined(UAPI_BATCH_IO_URING_BSG_CMD_ONLY) || \
     defined(UAPI_BATCH_IO_URING_FUSE_CMD_ONLY) || \
     defined(UAPI_BATCH_EVENT_CORE_ONLY) || \
-    defined(UAPI_BATCH_FILESYSTEM_CORE_ONLY)
+    defined(UAPI_BATCH_FILESYSTEM_CORE_ONLY) || \
+    defined(UAPI_BATCH_FILESYSTEM_FD_ONLY)
 static long raw_syscall5(long number, long a0, long a1, long a2, long a3,
                          long a4) {
 #if defined(__x86_64__)
@@ -300,6 +301,18 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "path_mutation_abi_probe",
         "xattr_abi_probe",
         "vector_io_abi_probe",
+#elif defined(UAPI_BATCH_FILESYSTEM_FD_ONLY)
+        "fd_control_abi_probe",
+        "fs_context_abi_probe",
+        "stat_metadata_abi_probe",
+        "sync_abi_probe",
+        "statfs_abi_probe",
+        "truncate_abi_probe",
+        "file_lock_abi_probe",
+        "copy_file_range_abi_probe",
+        "file_handle_abi_probe",
+        "mknod_abi_probe",
+        "pipe_abi_probe",
 #elif defined(UAPI_BATCH_NATIVE_OPTIONAL_ONLY)
         "native_optional_syscalls_abi_probe",
 #else
@@ -342,10 +355,12 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
     (void)raw_syscall5(SYS_mount, (long)"proc", (long)"/proc",
                        (long)"proc", 0, 0);
 #endif
-#if defined(UAPI_BATCH_FILESYSTEM_CORE_ONLY)
+#if defined(UAPI_BATCH_FILESYSTEM_CORE_ONLY) || \
+    defined(UAPI_BATCH_FILESYSTEM_FD_ONLY)
     (void)raw_syscall5(SYS_mount, (long)"devtmpfs", (long)"/dev",
                        (long)"devtmpfs", 0, 0);
     (void)raw_syscall4(SYS_mkdirat, -100, (long)"/dev/pts", 0755, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/root", 0700, 0);
     (void)raw_syscall5(SYS_mount, (long)"devpts", (long)"/dev/pts",
                        (long)"devpts", 0, 0);
     (void)raw_syscall5(SYS_mount, (long)"proc", (long)"/proc",

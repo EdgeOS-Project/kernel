@@ -1021,11 +1021,18 @@ static int fanotify_permission_check_internal(
 
     if (arch_fanotify_consume_completed_permission(&replay_ticket))
         return fanotify_permission_complete(replay_ticket);
-    if (!canonical_path || canonical_path[0] != '/' ||
+    if (!canonical_path ||
         !(mask & KERNEL_FANOTIFY_PERMISSION_MASK) ||
         (mask & ~((uint64_t)KERNEL_FANOTIFY_PERMISSION_MASK |
                   KERNEL_FAN_ONDIR)))
         return -EDGE_LINUX_EINVAL;
+    /*
+     * Descriptors opened from a persistent file handle have an inode and
+     * superblock but no canonical pathname.  Path marks cannot match such an
+     * access, so it proceeds until inode-based fanotify marks are available.
+     */
+    if (!canonical_path[0]) return 0;
+    if (canonical_path[0] != '/') return -EDGE_LINUX_EINVAL;
     if (kernel_current_linux_identity(&identity) == 0) {
         tid = identity.tid;
         tgid = identity.tgid;

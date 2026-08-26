@@ -494,6 +494,9 @@ int main(void) {
     g_permission_expected_range_count = 4096u;
     assert(kernel_fanotify_pre_access_permission_check(
                "/watched/access", 8193u, 0u) == 0);
+    assert(kernel_fanotify_access_permission_check("", 0u, 1u) == 0);
+    assert(kernel_fanotify_access_permission_check(0, 0u, 1u) ==
+           -EDGE_LINUX_EINVAL);
     kernel_fanotify_release(access_group);
 
     directory_group = kernel_fanotify_create(
