@@ -10,6 +10,7 @@
 
 #include "kernel/linux_errno.h"
 #include "kernel/mm_runtime.h"
+#include "kernel/userfaultfd.h"
 #include "kernel/vfs_runtime.h"
 
 static int g_failures;
@@ -74,6 +75,58 @@ void arch_vm_free_page(void *page) {
         ++g_vm_page_free_calls;
         return;
     }
+}
+
+int arch_userfaultfd_consume_completed_event(int64_t *completion_result) {
+    (void)completion_result;
+    return 0;
+}
+
+void kernel_userfaultfd_mapping_unmap(
+        uint64_t address_space, const kernel_uffdio_range_t *range,
+        int64_t completion_result) {
+    (void)address_space;
+    (void)range;
+    (void)completion_result;
+}
+
+void kernel_userfaultfd_mapping_remap(
+        uint64_t address_space, uint64_t from, uint64_t old_length,
+        uint64_t to, uint64_t new_length, int64_t completion_result) {
+    (void)address_space;
+    (void)from;
+    (void)old_length;
+    (void)to;
+    (void)new_length;
+    (void)completion_result;
+}
+
+void kernel_userfaultfd_mapping_expand(
+        uint64_t address_space, uint64_t address,
+        uint64_t old_length, uint64_t new_length) {
+    (void)address_space;
+    (void)address;
+    (void)old_length;
+    (void)new_length;
+}
+
+int kernel_fanotify_pre_access_permission_check(
+        const char *canonical_path, uint64_t offset, uint64_t count) {
+    (void)canonical_path;
+    (void)offset;
+    (void)count;
+    return 0;
+}
+
+int arch_mm_address_space_copy(
+        uint64_t address_space, uint64_t address, void *buffer,
+        uint64_t size, kernel_mm_process_vm_operation_t operation) {
+    (void)address_space;
+    (void)address;
+    (void)buffer;
+    (void)size;
+    (void)operation;
+    return 0;
 }
 
 static void expect_true(const char *name, int condition) {
@@ -498,9 +551,9 @@ static void test_map_and_remap_policy(void) {
                 kernel_mm_map(&map) == -EDGE_LINUX_EINVAL);
     map.flags = KERNEL_MM_MAP_PRIVATE | KERNEL_MM_MAP_ANONYMOUS;
     map.descriptor = -1;
-    expect_true("anonymous map backend",
+    expect_true("map rounds backend length",
                 kernel_mm_map(&map) == 23 &&
-                g_last_length == 1u &&
+                g_last_length == 0x1000u &&
                 g_last_map_flags ==
                     (KERNEL_MM_MAP_PRIVATE | KERNEL_MM_MAP_ANONYMOUS));
     map.flags = KERNEL_MM_MAP_PRIVATE;

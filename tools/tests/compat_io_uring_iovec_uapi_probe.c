@@ -6,6 +6,7 @@
 #if defined(__i386__)
 #define PROBE_NAME "IA32_IO_URING_IOVEC_UAPI_PROBE"
 #define SYS_exit 1
+#define SYS_read 3
 #define SYS_write 4
 #define SYS_close 6
 #define SYS_mprotect 125
@@ -14,6 +15,7 @@
 #elif defined(__x86_64__) && defined(__ILP32__)
 #define PROBE_NAME "X32_IO_URING_IOVEC_UAPI_PROBE"
 #define X32_SYSCALL_BIT UINT32_C(0x40000000)
+#define SYS_read 0
 #define SYS_write 1
 #define SYS_close 3
 #define SYS_mmap 9
@@ -119,6 +121,8 @@ static struct io_uring_params ring_parameters;
 static unsigned char fixed_buffer;
 static unsigned char read_buffer;
 static unsigned char source_buffer = 0x5au;
+static unsigned char write_buffer = 0xa5u;
+static unsigned char verify_buffer;
 static int32_t pipe_descriptors[2];
 
 #if defined(__i386__)
@@ -181,9 +185,37 @@ static void print_text(const char *text) {
     call6(SYS_write, 1, text, text_length(text), 0, 0, 0);
 }
 
+static void print_number(long value) {
+    char buffer[24];
+    uint32_t position = sizeof(buffer);
+    unsigned long magnitude;
+
+    if (value < 0) {
+        print_text("-");
+        magnitude = (unsigned long)(-(value + 1)) + 1u;
+    } else {
+        magnitude = (unsigned long)value;
+    }
+    do {
+        buffer[--position] = (char)('0' + magnitude % 10u);
+        magnitude /= 10u;
+    } while (magnitude);
+    call6(SYS_write, 1, buffer + position, sizeof(buffer) - position,
+          0, 0, 0);
+}
+
 static void fail(const char *reason) {
     print_text(PROBE_NAME "_FAIL ");
     print_text(reason);
+    print_text("\n");
+    call6(SYS_exit, 1, 0, 0, 0, 0, 0);
+}
+
+static void fail_result(const char *reason, long result) {
+    print_text(PROBE_NAME "_FAIL ");
+    print_text(reason);
+    print_text(" result=");
+    print_number(result);
     print_text("\n");
     call6(SYS_exit, 1, 0, 0, 0, 0, 0);
 }
@@ -249,18 +281,18 @@ __attribute__((noreturn)) void _start(void) {
     result = call6(SYS_mmap, 0, sq_ring_size,
                    PROT_READ | PROT_WRITE, MAP_SHARED, ring,
                    mmap_offset(IORING_OFF_SQ_RING));
-    if (syscall_failed(result)) fail("mmap-sq-ring");
+    if (syscall_failed(result)) fail_result("mmap-sq-ring", result);
     sq_ring = (unsigned char *)(uintptr_t)(uint32_t)result;
     result = call6(SYS_mmap, 0, cq_ring_size,
                    PROT_READ | PROT_WRITE, MAP_SHARED, ring,
                    mmap_offset(IORING_OFF_CQ_RING));
-    if (syscall_failed(result)) fail("mmap-cq-ring");
+    if (syscall_failed(result)) fail_result("mmap-cq-ring", result);
     cq_ring = (unsigned char *)(uintptr_t)(uint32_t)result;
     result = call6(SYS_mmap, 0,
                    ring_parameters.sq_entries * sizeof(*sqes),
                    PROT_READ | PROT_WRITE, MAP_SHARED, ring,
                    mmap_offset(IORING_OFF_SQES));
-    if (syscall_failed(result)) fail("mmap-sqes");
+    if (syscall_failed(result)) fail_result("mmap-sqes", result);
     sqes = (struct io_uring_sqe *)(uintptr_t)(uint32_t)result;
 
     sq_tail = (volatile uint32_t *)(
@@ -312,6 +344,30 @@ __attribute__((noreturn)) void _start(void) {
         read_buffer != source_buffer)
         fail("readv-iovec-layout");
     *cq_head += 1u;
+
+    vector->base = (uint32_t)(uintptr_t)&write_buffer;
+    vector->length = 1;
+    sqes[0].opcode = 2;
+    sqes[0].descriptor = pipe_descriptors[1];
+    sqes[0].offset = UINT64_MAX;
+    sqes[0].address = (uint32_t)(uintptr_t)vector;
+    sqes[0].length = 1;
+    sqes[0].user_data = UINT64_C(0x55aa55aa55aa55aa);
+    sq_array[0] = 0;
+    *sq_tail = 3;
+    require_result(call6(SYS_io_uring_enter, ring, 1, 1,
+                         IORING_ENTER_GETEVENTS, 0, 0),
+                   1, "enter-writev");
+    if (*cq_tail - *cq_head != 1u ||
+        cqes[*cq_head & (ring_parameters.cq_entries - 1u)].result != 1 ||
+        cqes[*cq_head & (ring_parameters.cq_entries - 1u)].user_data !=
+            UINT64_C(0x55aa55aa55aa55aa))
+        fail("writev-iovec-layout");
+    *cq_head += 1u;
+    require_result(call6(SYS_read, pipe_descriptors[0],
+                         &verify_buffer, 1, 0, 0, 0),
+                   1, "pipe-read-after-writev");
+    if (verify_buffer != write_buffer) fail("writev-payload");
     require_result(call6(SYS_close, pipe_descriptors[0], 0, 0, 0, 0, 0),
                    0, "close-pipe-read");
     require_result(call6(SYS_close, pipe_descriptors[1], 0, 0, 0, 0, 0),

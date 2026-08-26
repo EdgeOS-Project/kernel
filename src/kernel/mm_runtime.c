@@ -2025,6 +2025,7 @@ int64_t kernel_mm_map(const kernel_mm_map_request_t *request) {
     rounded_length =
         (request->length + KERNEL_MM_USER_PAGE_SIZE - 1u) &
         ~(uint64_t)(KERNEL_MM_USER_PAGE_SIZE - 1u);
+    effective_request.length = rounded_length;
     address_space = arch_mm_current_address_space();
     if ((request->flags & KERNEL_MM_MAP_FIXED) &&
         !(request->flags & KERNEL_MM_MAP_FIXED_NOREPLACE) &&
