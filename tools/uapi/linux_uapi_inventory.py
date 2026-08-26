@@ -214,11 +214,11 @@ EDGEOS_ASSESSMENTS = [
             "independent READ_FIXED and WRITE_FIXED worker progression with pinned buffers, retained file descriptions and supported RWF_APPEND, RWF_NOAPPEND, RWF_DSYNC and RWF_SYNC semantics while the owner executes no syscall",
             "independent READV_FIXED and WRITEV_FIXED worker progression with captured vector metadata and retained pinned buffers after the vector table is unmapped",
             "independent READ and WRITE worker progression with pinned ordinary buffers while the owner executes no syscall",
+            "independent READV and WRITEV worker progression with captured vector metadata and pinned ordinary buffers while the owner executes no syscall",
             "RECV_ZC for TCP sockets with nodev ZCRX areas, retained descriptions, CQE32 offsets, refill control and copy fallback",
             "SQPOLL setup, affinity validation, non-fixed descriptor feature reporting and SQ_WAKEUP or SQ_WAIT enter control",
         ],
         "missing": [
-            "independent worker progression for ordinary vectors while the owner executes no syscall",
             "device-backed ZCRX registration and ZCRX import/export sharing",
             "remaining URING_CMD socket and device command consumers",
             "remaining ia32 and x32 semantic coverage across supported operations",
@@ -343,6 +343,9 @@ EDGEOS_ASSESSMENTS = [
                 "plus IOSQE_ASYNC fixed-buffer pipe reads with deferred "
                 "readiness, retained file descriptions and completion after "
                 "the producer writes, "
+                "plus IOSQE_ASYNC ordinary READ, WRITE, READV and WRITEV "
+                "progression with pinned buffers and captured vector metadata "
+                "while the owner executes no syscall, "
                 "plus ia32 and x32 fixed-buffer registration, setup and mapped "
                 "ring layouts, NOP SQE/CQE completion and READV iovec boundary "
                 "handling"

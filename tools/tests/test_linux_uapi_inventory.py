@@ -107,14 +107,18 @@ class LinuxUapiInventoryTests(unittest.TestCase):
             ],
         )
 
-    def test_io_uring_is_not_overclaimed(self) -> None:
+    def test_io_uring_remaining_gaps_are_not_overclaimed(self) -> None:
         assessment = next(
             item for item in EDGEOS_ASSESSMENTS
             if item["domain"] == "io_uring"
         )
         self.assertEqual(assessment["status"], "partial")
-        self.assertIn(
+        self.assertNotIn(
             "independent worker progression for ordinary vectors while the owner executes no syscall",
+            assessment["missing"],
+        )
+        self.assertIn(
+            "device-backed ZCRX registration and ZCRX import/export sharing",
             assessment["missing"],
         )
 
