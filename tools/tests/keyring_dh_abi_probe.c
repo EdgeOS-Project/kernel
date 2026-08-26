@@ -122,6 +122,8 @@ static int expect_result(const char *name, long actual, long expected) {
 START_ATTRIBUTES void _start(void) {
     static const unsigned char private_value[] = {1u};
     static const unsigned char base_value[] = {2u};
+    static unsigned char extended_prime[1025];
+    static unsigned char extended_output[1032];
     static const unsigned char kdf_expected[48] = {
         0xdau, 0x8eu, 0xc1u, 0x67u, 0x48u, 0x77u, 0x1eu, 0x2eu,
         0x90u, 0x3du, 0x58u, 0x15u, 0xc9u, 0xf7u, 0x86u, 0x73u,
@@ -162,6 +164,7 @@ START_ATTRIBUTES void _start(void) {
     unsigned char derived[sizeof(kdf_expected)];
     unsigned char capabilities[2] = {0};
     long session;
+    struct keyctl_dh_params extended_parameters;
     int failures = 0;
 
     session = raw_syscall6(
@@ -279,6 +282,53 @@ START_ATTRIBUTES void _start(void) {
                 1025, (long)&kdf, 0),
             -EMSGSIZE);
     }
+
+    for (unsigned long index = 0; index < sizeof(extended_prime); ++index)
+        extended_prime[index] = 0xffu;
+    extended_parameters.private_key = parameters.private_key;
+    extended_parameters.base = parameters.base;
+    extended_parameters.prime = (int32_t)raw_syscall6(
+        SYS_add_key, (long)"user", (long)"edge-dh-extended-prime",
+        (long)extended_prime, sizeof(extended_prime),
+        KEY_SPEC_SESSION_KEYRING, 0);
+    if (extended_parameters.private_key > 0 &&
+        extended_parameters.base > 0 &&
+        extended_parameters.prime > 0) {
+        failures += expect_result(
+            "extended-size",
+            raw_syscall6(
+                SYS_keyctl, KEYCTL_DH_COMPUTE,
+                (long)&extended_parameters, 0, 0, 0, 0),
+            sizeof(extended_output));
+        failures += expect_result(
+            "extended-short-output",
+            raw_syscall6(
+                SYS_keyctl, KEYCTL_DH_COMPUTE,
+                (long)&extended_parameters, (long)extended_output,
+                sizeof(extended_output) - 1u, 0, 0),
+            -EOVERFLOW);
+        failures += expect_result(
+            "extended-compute",
+            raw_syscall6(
+                SYS_keyctl, KEYCTL_DH_COMPUTE,
+                (long)&extended_parameters, (long)extended_output,
+                sizeof(extended_output), 0, 0),
+            sizeof(extended_output));
+        for (unsigned long index = 0;
+             index + 1u < sizeof(extended_output); ++index) {
+            if (extended_output[index] == 0u) continue;
+            print_text("FAIL extended-leading-zero\n");
+            ++failures;
+            break;
+        }
+        if (extended_output[sizeof(extended_output) - 1u] != 2u) {
+            print_text("FAIL extended-value\n");
+            ++failures;
+        }
+    } else {
+        print_text("FAIL extended-add-keys\n");
+        ++failures;
+    }
     failures += expect_result(
         "capabilities",
         raw_syscall6(
@@ -292,6 +342,7 @@ START_ATTRIBUTES void _start(void) {
 
     print_text(failures ? "KEYRING_DH_ABI_PROBE_FAIL\n" :
                           "KEYRING_DH_ABI_PROBE_PASS\n");
+    for (volatile unsigned long delay = 0; delay < 10000000u; ++delay) { }
     (void)raw_syscall6(SYS_exit, failures ? 1 : 0, 0, 0, 0, 0, 0);
     for (;;) { }
 }
