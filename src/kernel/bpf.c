@@ -849,6 +849,10 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
                 value_stride * possible_cpu_count :
             bpf_align8(1u + request->key_size + request->value_size);
     } else if (request->type == KERNEL_BPF_MAP_TYPE_RHASH) {
+        if (request->max_entries > (1u << 31u)) {
+            status = -EDGE_LINUX_E2BIG;
+            goto fail_btf;
+        }
         if (!(validation_flags & KERNEL_BPF_MAP_NO_PREALLOC) ||
             (validation_flags & KERNEL_BPF_MAP_ZERO_SEED) ||
             (validation_flags & ~(KERNEL_BPF_MAP_NO_PREALLOC |
@@ -862,6 +866,10 @@ int kernel_bpf_map_create(const kernel_bpf_map_create_request_t *request) {
         }
         if ((uint32_t)request->map_extra > request->max_entries)
             goto invalid_btf;
+        storage_entries = (uint32_t)request->map_extra;
+        if (!storage_entries)
+            storage_entries = request->max_entries < 4u ?
+                request->max_entries : 4u;
         stride = bpf_align8(
             1u + request->key_size + request->value_size);
     } else if (request->type == KERNEL_BPF_MAP_TYPE_LRU_HASH ||
@@ -3495,7 +3503,7 @@ static int bpf_map_hash_find(kernel_bpf_map_t *map, const void *key,
 
     *found = UINT32_MAX;
     *free_slot = UINT32_MAX;
-    for (index = 0; index < map->max_entries; ++index) {
+    for (index = 0; index < map->storage_entries; ++index) {
         uint8_t *entry = bpf_map_entry(map, index);
         if (!entry[0]) {
             if (*free_slot == UINT32_MAX) *free_slot = index;
@@ -3506,6 +3514,42 @@ static int bpf_map_hash_find(kernel_bpf_map_t *map, const void *key,
             break;
         }
     }
+    return 0;
+}
+
+static int bpf_rhash_grow_locked(kernel_bpf_map_t *map) {
+    uint8_t *replacement;
+    uint8_t *previous;
+    uint32_t replacement_entries;
+    uint32_t replacement_pages;
+    uint32_t previous_pages;
+    uint64_t replacement_bytes;
+
+    if (!map || map->type != KERNEL_BPF_MAP_TYPE_RHASH)
+        return -EDGE_LINUX_EINVAL;
+    if (map->storage_entries >= map->max_entries)
+        return -EDGE_LINUX_E2BIG;
+    replacement_entries = map->storage_entries < 4u ?
+        4u : map->storage_entries * 2u;
+    if (replacement_entries < map->storage_entries ||
+        replacement_entries > map->max_entries)
+        replacement_entries = map->max_entries;
+    replacement_bytes =
+        (uint64_t)replacement_entries * map->entry_stride;
+    if (bpf_allocation_size(replacement_bytes, &replacement_pages) < 0)
+        return -EDGE_LINUX_E2BIG;
+    replacement = (uint8_t *)arch_vm_alloc_pages(replacement_pages);
+    if (!replacement) return -EDGE_LINUX_ENOMEM;
+    memset(replacement, 0,
+           (uint64_t)replacement_pages * BPF_PAGE_SIZE);
+    memcpy(replacement, map->storage,
+           (uint64_t)map->storage_entries * map->entry_stride);
+    previous = map->storage;
+    previous_pages = map->storage_pages;
+    map->storage = replacement;
+    map->storage_entries = replacement_entries;
+    map->storage_pages = replacement_pages;
+    bpf_free_pages(previous, previous_pages);
     return 0;
 }
 
@@ -4730,6 +4774,13 @@ int kernel_bpf_map_update(int object_id, const void *key, const void *value,
         if (index == UINT32_MAX) {
             if (bpf_map_has_percpu_lru(map))
                 free_slot = bpf_map_lru_free_slot(map);
+            if (free_slot == UINT32_MAX &&
+                map->type == KERNEL_BPF_MAP_TYPE_RHASH &&
+                map->entry_count < map->max_entries) {
+                status = bpf_rhash_grow_locked(map);
+                if (status < 0) goto out;
+                bpf_map_hash_find(map, key, &index, &free_slot);
+            }
             if (free_slot == UINT32_MAX) {
                 if (!bpf_map_is_lru_hash(map)) {
                     status = -EDGE_LINUX_E2BIG;
@@ -5933,8 +5984,10 @@ int kernel_bpf_map_next_key(int object_id, const void *key, void *next_key) {
         bpf_map_hash_find(map, key, &index, &free_slot);
     }
     next = index == UINT32_MAX ? 0u : index + 1u;
-    while (next < map->max_entries && !bpf_map_entry(map, next)[0]) ++next;
-    if (next >= map->max_entries) {
+    while (next < map->storage_entries &&
+           !bpf_map_entry(map, next)[0])
+        ++next;
+    if (next >= map->storage_entries) {
         status = -EDGE_LINUX_ENOENT;
         goto out;
     }
@@ -6055,9 +6108,10 @@ int kernel_bpf_map_batch_next_flags(int object_id, uint32_t *cursor,
         *has_more = map->entry_count > *cursor;
         goto out;
     } else {
-        while (index < map->max_entries && !bpf_map_entry(map, index)[0])
+        while (index < map->storage_entries &&
+               !bpf_map_entry(map, index)[0])
             ++index;
-        if (index >= map->max_entries) {
+        if (index >= map->storage_entries) {
             status = -EDGE_LINUX_ENOENT;
             goto out;
         }
@@ -6094,9 +6148,10 @@ int kernel_bpf_map_batch_next_flags(int object_id, uint32_t *cursor,
         *has_more = index < map->max_entries;
     } else {
         index = *cursor;
-        while (index < map->max_entries && !bpf_map_entry(map, index)[0])
+        while (index < map->storage_entries &&
+               !bpf_map_entry(map, index)[0])
             ++index;
-        *has_more = index < map->max_entries;
+        *has_more = index < map->storage_entries;
     }
 out:
     bpf_unlock();

@@ -248,6 +248,9 @@ static int test_resizable_hash(void) {
     failures += expect_result(
         "hint-high-bits", create_map(
             2u, BPF_F_NO_PREALLOC, 1ull << 32u), -EINVAL);
+    failures += expect_result(
+        "max-entries-overflow", create_map(
+            (1u << 31u) + 1u, BPF_F_NO_PREALLOC, 0u), -E2BIG);
     descriptor = create_map(2u, BPF_F_NO_PREALLOC, 1u);
     if (descriptor < 0)
         return failures + expect_result("create", descriptor, 0);
@@ -300,6 +303,31 @@ static int test_resizable_hash(void) {
         "frozen-update", map_element(BPF_MAP_UPDATE_ELEM, descriptor,
                                       &keys[0], &values[0], BPF_ANY),
         -EPERM);
+    (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+
+    descriptor = create_map(1024u, BPF_F_NO_PREALLOC, 1u);
+    if (descriptor < 0)
+        return failures + expect_result("growth-create", descriptor, 0);
+    for (uint32_t index = 0; index < 257u; ++index) {
+        uint32_t key = index + 1u;
+        uint64_t value = (uint64_t)key * 17u;
+
+        failures += expect_result(
+            "growth-insert", map_element(
+                BPF_MAP_UPDATE_ELEM, descriptor, &key, &value,
+                BPF_NOEXIST), 0);
+    }
+    for (uint32_t index = 0; index < 257u; ++index) {
+        uint32_t key = index + 1u;
+        uint64_t expected = (uint64_t)key * 17u;
+
+        output = 0u;
+        failures += expect_result(
+            "growth-lookup", map_element(
+                BPF_MAP_LOOKUP_ELEM, descriptor, &key, &output, 0u),
+            0);
+        failures += expect_result("growth-value", output, expected);
+    }
     (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
     return failures;
 }
