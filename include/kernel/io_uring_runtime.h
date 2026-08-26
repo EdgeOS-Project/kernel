@@ -325,6 +325,13 @@ int kernel_io_uring_timeout_update(int32_t ring_id, uint64_t user_data,
 int kernel_io_uring_poll_add(int32_t ring_id, uint64_t user_data,
                              int32_t descriptor, uint32_t events,
                              int multishot);
+int kernel_io_uring_tx_timestamp_add(
+    int32_t ring_id, uint64_t user_data, int32_t descriptor,
+    uint8_t opcode);
+int kernel_io_uring_tx_timestamp_complete(
+    uint64_t file_description_id, uint32_t timestamp_key,
+    uint32_t timestamp_type, uint64_t seconds,
+    uint64_t nanoseconds, int hardware);
 int kernel_io_uring_epoll_wait_add(int32_t ring_id, uint64_t user_data,
                                    int32_t descriptor,
                                    uint64_t user_events,

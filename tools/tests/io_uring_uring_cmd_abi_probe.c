@@ -14,6 +14,7 @@
 #define SYS_sendto 44
 #define SYS_bind 49
 #define SYS_socketpair 53
+#define SYS_setsockopt 54
 #define SYS_exit 60
 #elif defined(__aarch64__)
 #define SYS_close 57
@@ -24,6 +25,7 @@
 #define SYS_socketpair 199
 #define SYS_bind 200
 #define SYS_sendto 206
+#define SYS_setsockopt 208
 #define SYS_ioctl 29
 #define SYS_munmap 215
 #define SYS_mmap 222
@@ -44,6 +46,7 @@
 #define SOL_SOCKET 1u
 #define SO_TYPE 3u
 #define SO_REUSEADDR 2u
+#define SO_TIMESTAMPING 37u
 #define EINVAL 22
 #define EOPNOTSUPP 95
 #define SIOCGIFFLAGS 0x8913u
@@ -54,13 +57,21 @@
 #define IORING_OFF_CQ_RING 0x08000000ull
 #define IORING_OFF_SQES 0x10000000ull
 #define IORING_SETUP_SQE128 (1u << 10)
+#define IORING_SETUP_CQE32 (1u << 11)
+#define IORING_ENTER_GETEVENTS 1u
 #define IORING_OP_URING_CMD 46u
 #define IORING_OP_URING_CMD128 64u
 #define SOCKET_URING_OP_SIOCINQ 0u
 #define SOCKET_URING_OP_SIOCOUTQ 1u
 #define SOCKET_URING_OP_GETSOCKOPT 2u
 #define SOCKET_URING_OP_SETSOCKOPT 3u
+#define SOCKET_URING_OP_TX_TIMESTAMP 4u
 #define SOCKET_URING_OP_GETSOCKNAME 5u
+#define IORING_CQE_F_MORE (1u << 1)
+#define SOF_TIMESTAMPING_TX_SOFTWARE (1u << 1)
+#define SOF_TIMESTAMPING_SOFTWARE (1u << 4)
+#define SOF_TIMESTAMPING_OPT_ID (1u << 7)
+#define SOF_TIMESTAMPING_OPT_TSONLY (1u << 11)
 
 struct user_sockaddr {
     uint16_t family;
@@ -387,6 +398,116 @@ static int run_ring(long socket_descriptor, long queue_descriptor,
     return failures;
 }
 
+static int run_timestamp_ring(
+        long sender, long receiver,
+        const struct user_sockaddr_in *receiver_address,
+        uint32_t setup_flags, uint8_t opcode) {
+    static const uint8_t payload[] = {'t', 'i', 'm', 'e'};
+    struct io_uring_params parameters;
+    struct io_uring_sqe request;
+    struct io_uring_cqe *completion;
+    uint64_t *extra;
+    void *sq_ring;
+    void *cq_ring;
+    void *sqes;
+    uint32_t timestamping =
+        SOF_TIMESTAMPING_TX_SOFTWARE |
+        SOF_TIMESTAMPING_SOFTWARE |
+        SOF_TIMESTAMPING_OPT_ID |
+        SOF_TIMESTAMPING_OPT_TSONLY;
+    uint32_t stride = setup_flags & IORING_SETUP_SQE128 ? 128u : 64u;
+    volatile uint32_t *sq_tail;
+    volatile uint32_t *sq_mask;
+    volatile uint32_t *sq_array;
+    volatile uint32_t *cq_head;
+    volatile uint32_t *cq_tail;
+    uint8_t receive_buffer[sizeof(payload)];
+    long descriptor;
+    int failures = 0;
+
+    failures += record_failure(raw_syscall6(
+        SYS_setsockopt, sender, SOL_SOCKET, SO_TIMESTAMPING,
+        (long)&timestamping, sizeof(timestamping), 0) != 0,
+        "TX_TIMESTAMP_OPTION_FAIL\n");
+    if (failures) return failures;
+    memset(&parameters, 0, sizeof(parameters));
+    parameters.flags = setup_flags | IORING_SETUP_CQE32;
+    descriptor = raw_syscall6(
+        SYS_io_uring_setup, 8, (long)&parameters, 0, 0, 0, 0);
+    if (descriptor < 0) {
+        print_text("TX_TIMESTAMP_SETUP_FAIL\n");
+        return 1;
+    }
+    sq_ring = map_ring(descriptor, IORING_OFF_SQ_RING);
+    cq_ring = map_ring(descriptor, IORING_OFF_CQ_RING);
+    sqes = map_ring(descriptor, IORING_OFF_SQES);
+    if (!sq_ring || !cq_ring || !sqes) {
+        print_text("TX_TIMESTAMP_MMAP_FAIL\n");
+        return 1;
+    }
+
+    sq_tail = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters.sq_off.tail);
+    sq_mask = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters.sq_off.ring_mask);
+    sq_array = (volatile uint32_t *)(
+        (uint8_t *)sq_ring + parameters.sq_off.array);
+    cq_head = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters.cq_off.head);
+    cq_tail = (volatile uint32_t *)(
+        (uint8_t *)cq_ring + parameters.cq_off.tail);
+    memset(&request, 0, sizeof(request));
+    request.opcode = opcode;
+    request.descriptor = (int32_t)sender;
+    request.offset = SOCKET_URING_OP_TX_TIMESTAMP;
+    request.user_data = 0x545354414d50ull;
+    memset(sqes, 0, stride);
+    *(struct io_uring_sqe *)sqes = request;
+    sq_array[*sq_tail & *sq_mask] = *sq_tail & *sq_mask;
+    __atomic_store_n(sq_tail, *sq_tail + 1u, __ATOMIC_RELEASE);
+    failures += record_failure(raw_syscall6(
+        SYS_io_uring_enter, descriptor, 1, 0, 0, 0, 0) != 1,
+        "TX_TIMESTAMP_SUBMIT_FAIL\n");
+    failures += record_failure(*cq_head != *cq_tail,
+                               "TX_TIMESTAMP_EARLY_CQE_FAIL\n");
+    failures += record_failure(raw_syscall6(
+        SYS_sendto, sender, (long)payload, sizeof(payload), 0,
+        (long)receiver_address, sizeof(*receiver_address)) !=
+        (long)sizeof(payload), "TX_TIMESTAMP_SEND_FAIL\n");
+    if (!failures)
+        failures += record_failure(raw_syscall6(
+            SYS_io_uring_enter, descriptor, 0, 1,
+            IORING_ENTER_GETEVENTS, 0, 0) < 0,
+            "TX_TIMESTAMP_WAIT_FAIL\n");
+    failures += record_failure(*cq_head == *cq_tail,
+                               "TX_TIMESTAMP_CQE_MISSING\n");
+    if (*cq_head != *cq_tail) {
+        completion = (struct io_uring_cqe *)(void *)(
+            (uint8_t *)cq_ring + parameters.cq_off.cqes +
+            (uint64_t)(*cq_head & (parameters.cq_entries - 1u)) * 32u);
+        extra = (uint64_t *)(void *)(completion + 1);
+        failures += record_failure(
+            completion->user_data != request.user_data ||
+            completion->result < 0 ||
+            !(completion->flags & IORING_CQE_F_MORE),
+            "TX_TIMESTAMP_CQE_VALUE_FAIL\n");
+        failures += record_failure(
+            !extra[0] || extra[1] >= 1000000000u,
+            "TX_TIMESTAMP_TIME_FAIL\n");
+        __atomic_store_n(cq_head, *cq_head + 1u, __ATOMIC_RELEASE);
+    }
+    failures += record_failure(raw_syscall6(
+        SYS_read, receiver, (long)receive_buffer,
+        sizeof(receive_buffer), 0, 0, 0) != (long)sizeof(payload),
+        "TX_TIMESTAMP_RECEIVE_FAIL\n");
+
+    (void)raw_syscall6(SYS_munmap, (long)sqes, PAGE_SIZE, 0, 0, 0, 0);
+    (void)raw_syscall6(SYS_munmap, (long)cq_ring, PAGE_SIZE, 0, 0, 0, 0);
+    (void)raw_syscall6(SYS_munmap, (long)sq_ring, PAGE_SIZE, 0, 0, 0, 0);
+    (void)raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0);
+    return failures;
+}
+
 void _start(void) {
     int32_t sockets[2] = {-1, -1};
     struct user_sockaddr_in queue_address;
@@ -434,6 +555,14 @@ void _start(void) {
             socket_descriptor, queue_receiver, queue_sender,
             &queue_address, IORING_SETUP_SQE128,
             IORING_OP_URING_CMD128);
+    if (!failures)
+        failures += run_timestamp_ring(
+            queue_sender, queue_receiver, &queue_address,
+            0u, IORING_OP_URING_CMD);
+    if (!failures)
+        failures += run_timestamp_ring(
+            queue_sender, queue_receiver, &queue_address,
+            IORING_SETUP_SQE128, IORING_OP_URING_CMD128);
     if (socket_descriptor >= 0)
         (void)raw_syscall6(SYS_close, socket_descriptor, 0, 0, 0, 0, 0);
     if (sockets[1] >= 0)

@@ -7,10 +7,12 @@
 #include "kernel/socket_runtime.h"
 #include "kernel/bpf_runtime.h"
 #include "kernel/fs_context.h"
+#include "kernel/io_uring_runtime.h"
 #include "kernel/linux_errno.h"
 #include "kernel/linux_netlink.h"
 #include "kernel/linux_packet.h"
 #include "kernel/process_runtime.h"
+#include "sys/boottime.h"
 #include "vfs/vfs.h"
 
 #include <string.h>
@@ -316,6 +318,85 @@ int kernel_socket_option_get_integer(
     if (status < 0) return status;
     if (!view.state) return -EDGE_LINUX_EIO;
     return kernel_socket_option_state_get_integer(view.state, option, value);
+}
+
+int kernel_socket_option_set_timestamping(
+        int32_t descriptor, uint32_t flags, int32_t bind_phc,
+        int new_layout) {
+    kernel_socket_option_runtime_view_t view;
+    uint32_t previous;
+    int status;
+
+    (void)bind_phc;
+    if (flags & ~EDGE_LINUX_SOF_TIMESTAMPING_MASK)
+        return -EDGE_LINUX_EINVAL;
+    if ((flags & EDGE_LINUX_SOF_TIMESTAMPING_OPT_ID_TCP) &&
+        !(flags & EDGE_LINUX_SOF_TIMESTAMPING_OPT_ID))
+        return -EDGE_LINUX_EINVAL;
+    if ((flags & EDGE_LINUX_SOF_TIMESTAMPING_OPT_STATS) &&
+        !(flags & EDGE_LINUX_SOF_TIMESTAMPING_OPT_TSONLY))
+        return -EDGE_LINUX_EINVAL;
+    status = edge_socket_runtime_option_view(descriptor, &view);
+    if (status < 0) return status;
+    if (!view.state) return -EDGE_LINUX_EIO;
+    if (flags & EDGE_LINUX_SOF_TIMESTAMPING_BIND_PHC) {
+        if (!view.bound_interface_index ||
+            *view.bound_interface_index <= 0)
+            return -EDGE_LINUX_EOPNOTSUPP;
+        /* No EdgeOS network device currently exports PHC virtual clocks. */
+        return -EDGE_LINUX_EINVAL;
+    }
+    previous = view.state->timestamping_flags;
+    if ((flags & EDGE_LINUX_SOF_TIMESTAMPING_OPT_ID) &&
+        !(previous & EDGE_LINUX_SOF_TIMESTAMPING_OPT_ID))
+        view.state->tx_timestamp_key = 0u;
+    view.state->timestamping_flags = flags;
+    view.state->timestamping_new = new_layout ? 1u : 0u;
+    return 0;
+}
+
+int kernel_socket_option_get_timestamping(
+        int32_t descriptor, int new_layout,
+        struct edge_linux_so_timestamping *timestamping) {
+    kernel_socket_option_runtime_view_t view;
+    int status;
+
+    if (!timestamping) return -EDGE_LINUX_EINVAL;
+    memset(timestamping, 0, sizeof(*timestamping));
+    status = edge_socket_runtime_option_view(descriptor, &view);
+    if (status < 0) return status;
+    if (!view.state) return -EDGE_LINUX_EIO;
+    if (!new_layout || view.state->timestamping_new) {
+        timestamping->flags =
+            (int32_t)view.state->timestamping_flags;
+        timestamping->bind_phc =
+            view.state->timestamping_bind_phc;
+    }
+    return 0;
+}
+
+void kernel_socket_tx_timestamp_notify(int32_t descriptor) {
+    kernel_socket_option_runtime_view_t view;
+    uint64_t realtime_us;
+    uint32_t key;
+
+    if (edge_socket_runtime_option_view(descriptor, &view) < 0 ||
+        !view.state || !view.open_description_identity)
+        return;
+    if ((view.state->timestamping_flags &
+         (EDGE_LINUX_SOF_TIMESTAMPING_TX_SOFTWARE |
+          EDGE_LINUX_SOF_TIMESTAMPING_SOFTWARE)) !=
+        (EDGE_LINUX_SOF_TIMESTAMPING_TX_SOFTWARE |
+         EDGE_LINUX_SOF_TIMESTAMPING_SOFTWARE))
+        return;
+    key = (view.state->timestamping_flags &
+           EDGE_LINUX_SOF_TIMESTAMPING_OPT_ID) ?
+        view.state->tx_timestamp_key++ : 0u;
+    realtime_us = boottime_realtime_us();
+    (void)kernel_io_uring_tx_timestamp_complete(
+        view.open_description_identity, key, 0u,
+        realtime_us / 1000000u,
+        (realtime_us % 1000000u) * 1000u, 0);
 }
 
 static int kernel_socket_icmp6_filter_view(

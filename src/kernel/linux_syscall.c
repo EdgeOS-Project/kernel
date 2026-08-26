@@ -12476,11 +12476,17 @@ static int64_t edge_linux_io_uring_execute_send_zc(
     message_request.copy_from_user = context->arch_ops->copy_from_user;
     message_request.copy_to_user = context->arch_ops->copy_to_user;
     message_request.user_registers = context->user_registers;
-    return kernel_socket_message_execute(&message_request);
+    {
+        int64_t sent = kernel_socket_message_execute(&message_request);
+        if (sent >= 0)
+            kernel_socket_tx_timestamp_notify(
+                submission->descriptor);
+        return sent;
+    }
 }
 
 static int64_t edge_linux_io_uring_execute_uring_cmd(
-        edge_linux_syscall_context_t *context,
+        edge_linux_syscall_context_t *context, int32_t ring_id,
         const struct edge_linux_io_uring_sqe *submission) {
     edge_linux_syscall_context_t nested = *context;
     kernel_socket_descriptor_info_t descriptor_info;
@@ -12555,6 +12561,11 @@ static int64_t edge_linux_io_uring_execute_uring_cmd(
         return descriptor_info.send_queue_bytes > INT32_MAX ?
             INT32_MAX : (int64_t)descriptor_info.send_queue_bytes;
     case EDGE_LINUX_SOCKET_URING_OP_TX_TIMESTAMP:
+        result = kernel_io_uring_tx_timestamp_add(
+            ring_id, submission->user_data,
+            submission->descriptor, submission->opcode);
+        return result < 0 ? result :
+            EDGE_LINUX_IORING_PENDING_RESULT;
     default:
         return -EDGE_LINUX_EOPNOTSUPP;
     }
@@ -12984,7 +12995,7 @@ static int32_t edge_linux_io_uring_execute_descriptor(
     case EDGE_LINUX_IORING_OP_URING_CMD:
     case EDGE_LINUX_IORING_OP_URING_CMD128:
         result = edge_linux_io_uring_execute_uring_cmd(
-            context, submission);
+            context, ring_id, submission);
         break;
     case EDGE_LINUX_IORING_OP_RECV_ZC:
         result = edge_linux_io_uring_recv_zc(
@@ -17276,7 +17287,12 @@ static int64_t edge_linux_sys_socket_buffer(
         edge_linux_socket_address_normalize_destination(&request.address);
         request.has_address = 1;
     }
-    return kernel_socket_buffer_execute(&request);
+    {
+        int64_t result = kernel_socket_buffer_execute(&request);
+        if (result >= 0 && !request.receiving)
+            kernel_socket_tx_timestamp_notify(descriptor);
+        return result;
+    }
 }
 
 static int64_t edge_linux_sys_socket_message(
@@ -17286,7 +17302,8 @@ static int64_t edge_linux_sys_socket_message(
 
     status = edge_linux_fd_number(context->arguments[0], &descriptor);
     if (status < 0) return status;
-    return kernel_socket_message_invoke_abi(
+    {
+        int64_t result = kernel_socket_message_invoke_abi(
         descriptor, context->arguments[1],
         (uint32_t)context->arguments[2],
         context->id == EDGE_LINUX_SYS_recvmsg,
@@ -17296,6 +17313,10 @@ static int64_t edge_linux_sys_socket_message(
         edge_linux_architecture_is_compat32(context->architecture) ?
             KERNEL_SOCKET_MESSAGE_ABI_X32 :
             KERNEL_SOCKET_MESSAGE_ABI_NATIVE);
+        if (result >= 0 && context->id == EDGE_LINUX_SYS_sendmsg)
+            kernel_socket_tx_timestamp_notify(descriptor);
+        return result;
+    }
 }
 
 static int64_t edge_linux_sys_socket_mmsg(
@@ -17365,7 +17386,14 @@ static int64_t edge_linux_sys_socket_mmsg(
     request.copy_context = context->current_task;
     request.copy_from_user = context->arch_ops->copy_from_user;
     request.copy_to_user = context->arch_ops->copy_to_user;
-    return kernel_socket_message_batch(&request);
+    {
+        int64_t result = kernel_socket_message_batch(&request);
+        if (result > 0 && !request.receiving) {
+            for (int64_t index = 0; index < result; ++index)
+                kernel_socket_tx_timestamp_notify(descriptor);
+        }
+        return result;
+    }
 }
 
 #define EDGE_SOCKET_OPTION_BOOLEAN       0x0001u
@@ -17754,6 +17782,31 @@ static int64_t edge_linux_socket_option_set(
             return -EDGE_LINUX_EFAULT;
         return kernel_socket_option_set_bound_device(
             descriptor, device, copied);
+    }
+
+    if (level == EDGE_LINUX_SOL_SOCKET &&
+        (name == EDGE_LINUX_SO_TIMESTAMPING ||
+         name == EDGE_LINUX_SO_TIMESTAMPING_NEW)) {
+        struct edge_linux_so_timestamping timestamping;
+
+        memset(&timestamping, 0, sizeof(timestamping));
+        if (value_length < sizeof(timestamping.flags))
+            return -EDGE_LINUX_EINVAL;
+        if (!context->arguments[3] ||
+            edge_linux_copy_from_user(
+                context, &timestamping.flags,
+                context->arguments[3],
+                sizeof(timestamping.flags)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        if (value_length == sizeof(timestamping) &&
+            edge_linux_copy_from_user(
+                context, &timestamping,
+                context->arguments[3], sizeof(timestamping)) < 0)
+            return -EDGE_LINUX_EFAULT;
+        return kernel_socket_option_set_timestamping(
+            descriptor, (uint32_t)timestamping.flags,
+            timestamping.bind_phc,
+            name == EDGE_LINUX_SO_TIMESTAMPING_NEW);
     }
 
     if (level == EDGE_LINUX_SOL_SOCKET &&
@@ -18166,6 +18219,18 @@ static int64_t edge_linux_socket_option_get(
             if (status < 0) return status;
             return edge_linux_socket_option_copy_out(
                 context, device, actual, capacity, direct_length);
+        } else if (name == EDGE_LINUX_SO_TIMESTAMPING ||
+                   name == EDGE_LINUX_SO_TIMESTAMPING_NEW) {
+            struct edge_linux_so_timestamping timestamping;
+
+            status = kernel_socket_option_get_timestamping(
+                descriptor,
+                name == EDGE_LINUX_SO_TIMESTAMPING_NEW,
+                &timestamping);
+            if (status < 0) return status;
+            return edge_linux_socket_option_copy_out(
+                context, &timestamping, sizeof(timestamping),
+                capacity, direct_length);
         } else if (name == EDGE_LINUX_SO_RCVTIMEO ||
                    name == EDGE_LINUX_SO_SNDTIMEO ||
                    name == EDGE_LINUX_SO_RCVTIMEO_NEW ||

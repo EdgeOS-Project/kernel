@@ -401,6 +401,7 @@ static int32_t io_uring_event_retain_locked(
 #define IO_URING_PENDING_READ_MULTISHOT 7u
 #define IO_URING_PENDING_RECV_ZC 8u
 #define IO_URING_PENDING_WORKER 9u
+#define IO_URING_PENDING_TX_TIMESTAMP 10u
 #define IO_URING_WORKER_FIXED_FILE (1u << 0)
 #define IO_URING_WORKER_CQE_SKIP_SUCCESS (1u << 6)
 #define IO_URING_OP_READV 1u
@@ -432,6 +433,14 @@ static spinlock_t g_io_uring_zcrx_provider_lock;
 #define IO_URING_NAPI_TRACKING_STATIC 1u
 #define IO_URING_NAPI_TRACKING_INACTIVE 255u
 #define IO_URING_NAPI_BUSY_POLL_MAX 10000u
+
+static int io_uring_pending_owns_descriptor(uint8_t kind) {
+    return kind == IO_URING_PENDING_POLL ||
+           kind == IO_URING_PENDING_READ_MULTISHOT ||
+           kind == IO_URING_PENDING_RECV_ZC ||
+           kind == IO_URING_PENDING_WORKER ||
+           kind == IO_URING_PENDING_TX_TIMESTAMP;
+}
 
 static int io_uring_napi_id_valid_locked(uint32_t napi_id) {
     for (uint32_t index = 0; index < KERNEL_IO_URING_MAX_NAPI_IDS;
@@ -1262,10 +1271,7 @@ static void io_uring_release_storage(kernel_io_uring_t *ring) {
          slot < KERNEL_IO_URING_MAX_PENDING; ++slot) {
         kernel_io_uring_pending_t *pending = &ring->pending[slot];
         if (pending->used &&
-            (pending->kind == IO_URING_PENDING_POLL ||
-             pending->kind == IO_URING_PENDING_READ_MULTISHOT ||
-             pending->kind == IO_URING_PENDING_RECV_ZC ||
-             pending->kind == IO_URING_PENDING_WORKER) &&
+            io_uring_pending_owns_descriptor(pending->kind) &&
             kernel_fd_operation_view(&pending->descriptor_lease))
             (void)kernel_fd_operation_release(
                 &pending->descriptor_lease);
@@ -4726,7 +4732,7 @@ static int io_uring_pending_add(int32_t ring_id, uint8_t kind,
     int lease_transferred = 0;
     uint64_t file_description_id = 0u;
 
-    if (kind == IO_URING_PENDING_POLL) {
+    if (io_uring_pending_owns_descriptor(kind)) {
         result = kernel_fd_operation_acquire(
             descriptor, &descriptor_lease);
         if (result < 0) return result;
@@ -4748,7 +4754,7 @@ static int io_uring_pending_add(int32_t ring_id, uint8_t kind,
             result = -EDGE_LINUX_EAGAIN;
         } else {
             memset(&ring->pending[slot], 0, sizeof(ring->pending[slot]));
-            if (kind == IO_URING_PENDING_POLL) {
+            if (io_uring_pending_owns_descriptor(kind)) {
                 result = kernel_fd_operation_move(
                     &ring->pending[slot].descriptor_lease,
                     &descriptor_lease);
@@ -4778,7 +4784,7 @@ static int io_uring_pending_add(int32_t ring_id, uint8_t kind,
     }
 pending_add_done:
     spin_unlock_irqrestore(&g_io_uring_lock, flags);
-    if (kind == IO_URING_PENDING_POLL && !lease_transferred)
+    if (io_uring_pending_owns_descriptor(kind) && !lease_transferred)
         (void)kernel_fd_operation_release(&descriptor_lease);
     return result;
 }
@@ -4939,6 +4945,75 @@ int kernel_io_uring_poll_add(int32_t ring_id, uint64_t user_data,
     return io_uring_pending_add(
         ring_id, IO_URING_PENDING_POLL, 6u, user_data, descriptor,
         events, UINT64_MAX, 0, 0, 0, 0, 0, multishot);
+}
+
+int kernel_io_uring_tx_timestamp_add(
+        int32_t ring_id, uint64_t user_data, int32_t descriptor,
+        uint8_t opcode) {
+    kernel_io_uring_t *ring;
+    uint64_t flags;
+    int result = 0;
+
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    ring = io_uring_lookup_locked(ring_id);
+    if (!ring)
+        result = -EDGE_LINUX_EBADF;
+    else if (!(ring->setup_flags &
+               (IORING_SETUP_CQE32 | IORING_SETUP_CQE_MIXED)))
+        result = -EDGE_LINUX_EINVAL;
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (result < 0) return result;
+    return io_uring_pending_add(
+        ring_id, IO_URING_PENDING_TX_TIMESTAMP, opcode,
+        user_data, descriptor, 0u, 0u, 0u, 0,
+        0, 0u, 0u, 1);
+}
+
+int kernel_io_uring_tx_timestamp_complete(
+        uint64_t file_description_id, uint32_t timestamp_key,
+        uint32_t timestamp_type, uint64_t seconds,
+        uint64_t nanoseconds, int hardware) {
+    int32_t event_id = -1;
+    uint64_t flags;
+    int result = -EDGE_LINUX_ENOENT;
+
+    if (!file_description_id || timestamp_type > 0x7fffu ||
+        nanoseconds >= 1000000000u)
+        return -EDGE_LINUX_EINVAL;
+    flags = spin_lock_irqsave(&g_io_uring_lock);
+    for (uint32_t ring_index = 0;
+         ring_index < KERNEL_IO_URING_MAX_RINGS; ++ring_index) {
+        kernel_io_uring_t *ring = &g_io_urings[ring_index];
+        uint32_t cqe_flags;
+
+        if (!ring->used) continue;
+        for (uint32_t slot = 0;
+             slot < KERNEL_IO_URING_MAX_PENDING; ++slot) {
+            kernel_io_uring_pending_t *pending = &ring->pending[slot];
+
+            if (!pending->used ||
+                pending->kind != IO_URING_PENDING_TX_TIMESTAMP ||
+                pending->file_description_id != file_description_id)
+                continue;
+            cqe_flags = (1u << 1) | (timestamp_type << 17u);
+            if (hardware) cqe_flags |= 1u << 16;
+            if (ring->setup_flags & IORING_SETUP_CQE_MIXED)
+                cqe_flags |= IORING_CQE_F_32;
+            result = io_uring_completion_add_extended_locked(
+                ring, pending->user_data, (int32_t)timestamp_key,
+                cqe_flags, seconds, nanoseconds);
+            if (result == 0)
+                event_id = io_uring_event_retain_locked(ring, 1);
+            goto timestamp_complete_done;
+        }
+    }
+timestamp_complete_done:
+    spin_unlock_irqrestore(&g_io_uring_lock, flags);
+    if (event_id >= 0) {
+        (void)kernel_eventfd_write_value(event_id, 1, 1u);
+        kernel_eventfd_release(event_id);
+    }
+    return result;
 }
 
 int kernel_io_uring_epoll_wait_add(int32_t ring_id, uint64_t user_data,
@@ -5390,6 +5465,8 @@ int kernel_io_uring_pending_cancel_match(
                     IO_URING_PENDING_READ_MULTISHOT ||
                 ring->pending[slot].kind ==
                     IO_URING_PENDING_RECV_ZC ||
+                ring->pending[slot].kind ==
+                    IO_URING_PENDING_TX_TIMESTAMP ||
                 ring->pending[slot].kind ==
                     IO_URING_PENDING_WORKER) {
                 result = kernel_fd_operation_move(
@@ -6390,10 +6467,7 @@ static int io_uring_pending_remove_locked(
         return -EDGE_LINUX_EINVAL;
     memset(release, 0, sizeof(*release));
     release->epoll_index = -1;
-    if ((pending->kind == IO_URING_PENDING_POLL ||
-         pending->kind == IO_URING_PENDING_READ_MULTISHOT ||
-         pending->kind == IO_URING_PENDING_RECV_ZC ||
-         pending->kind == IO_URING_PENDING_WORKER) &&
+    if (io_uring_pending_owns_descriptor(pending->kind) &&
         kernel_fd_operation_view(&pending->descriptor_lease) &&
         kernel_fd_operation_move(
             &release->descriptor_lease,

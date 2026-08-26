@@ -17,6 +17,7 @@ void kernel_socket_option_state_initialize(
     state->receive_buffer = buffer_capacity;
     state->send_low_water = 1;
     state->receive_low_water = 1;
+    state->timestamping_bind_phc = -1;
     state->ip_ttl = 64;
     state->ip_multicast_ttl = 1;
     state->ip_multicast_loop = 1;

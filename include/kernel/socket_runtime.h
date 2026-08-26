@@ -39,6 +39,7 @@ int edge_linux_socket_address_copy_to_user(
     uint32_t flags);
 
 typedef struct kernel_socket_descriptor_info {
+    uint64_t open_description_identity;
     uint32_t domain;
     uint32_t type;
     uint32_t protocol;
@@ -349,8 +350,12 @@ typedef struct kernel_socket_option_state {
     uint32_t receive_buffer;
     uint32_t send_low_water;
     uint32_t receive_low_water;
+    uint32_t timestamping_flags;
+    int32_t timestamping_bind_phc;
+    uint32_t tx_timestamp_key;
     uint8_t pass_credentials;
     uint8_t timestamp_mode;
+    uint8_t timestamping_new;
     uint8_t reuse_address;
     uint8_t reuse_port;
     uint8_t broadcast;
@@ -418,6 +423,7 @@ typedef struct kernel_socket_option_runtime_view {
     uint32_t *netlink_groups;
     int32_t packet_handle;
     const struct edge_linux_packet_page_allocator *packet_page_allocator;
+    uint64_t open_description_identity;
 } kernel_socket_option_runtime_view_t;
 
 void kernel_socket_option_state_initialize(
@@ -428,6 +434,13 @@ int kernel_socket_option_state_set_integer(
 int kernel_socket_option_state_get_integer(
     const kernel_socket_option_state_t *state,
     kernel_socket_option_id_t option, int64_t *value);
+int kernel_socket_option_set_timestamping(
+    int32_t descriptor, uint32_t flags, int32_t bind_phc,
+    int new_layout);
+int kernel_socket_option_get_timestamping(
+    int32_t descriptor, int new_layout,
+    struct edge_linux_so_timestamping *timestamping);
+void kernel_socket_tx_timestamp_notify(int32_t descriptor);
 int kernel_socket_bound_device_parse(
     const char *name, uint32_t length, int32_t *interface_index);
 int kernel_socket_bound_device_format(

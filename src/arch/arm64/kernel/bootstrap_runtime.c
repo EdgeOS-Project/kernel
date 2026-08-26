@@ -18380,6 +18380,8 @@ static int socket_describe_retained(
     if (!fd || !socket) return -LINUX_ENOTSOCK;
     bytes_zero(info, sizeof(*info));
     info->domain = socket->domain;
+    info->open_description_identity =
+        socket->open_description_identity;
     info->type = socket->type;
     info->protocol = socket->protocol;
     if (socket->domain == LINUX_AF_UNIX || socket->local_stream) {
@@ -18661,6 +18663,8 @@ int edge_socket_runtime_option_view(
     view->netlink_groups = &socket->netlink_groups;
     view->packet_handle = socket->packet_handle;
     view->packet_page_allocator = &g_arm64_packet_page_allocator;
+    view->open_description_identity =
+        socket->open_description_identity;
     return 0;
 }
 

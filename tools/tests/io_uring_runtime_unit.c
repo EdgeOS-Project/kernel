@@ -976,6 +976,39 @@ int main(void) {
         assert(extended_completion->flags == 3u);
         assert(completion_extra[0] == 0x1111222233334444ull);
         assert(completion_extra[1] == 0x5555666677778888ull);
+        {
+            struct edge_linux_io_uring_cqe *timestamp_completion;
+            uint64_t *timestamp_extra;
+            uint64_t description_id;
+            uint32_t references_before = g_fixed_file_references;
+
+            g_descriptor_generation[21] = 9u;
+            description_id = ((uint64_t)22u << 32u) | 9u;
+            assert(kernel_io_uring_tx_timestamp_add(
+                       second_ring_id, 0x545354414d50ull,
+                       21, 46u) == 0);
+            assert(g_fixed_file_references == references_before + 1u);
+            assert(kernel_io_uring_tx_timestamp_complete(
+                       description_id + 1u, 3u, 0u,
+                       100u, 200u, 0) == -EDGE_LINUX_ENOENT);
+            assert(kernel_io_uring_tx_timestamp_complete(
+                       description_id, 3u, 0u,
+                       100u, 200u, 0) == 0);
+            timestamp_completion =
+                (struct edge_linux_io_uring_cqe *)(void *)(
+                    (uint8_t *)extended_cq_ring.address + 96u);
+            timestamp_extra = (uint64_t *)(void *)(
+                timestamp_completion + 1);
+            assert(timestamp_completion->user_data ==
+                   0x545354414d50ull);
+            assert(timestamp_completion->result == 3);
+            assert(timestamp_completion->flags == (1u << 1));
+            assert(timestamp_extra[0] == 100u);
+            assert(timestamp_extra[1] == 200u);
+            assert(kernel_io_uring_pending_cancel(
+                       second_ring_id, 0x545354414d50ull) == 0);
+            assert(g_fixed_file_references == references_before);
+        }
         test_page_release(0, &extended_sq_ring);
         test_page_release(0, &extended_cq_ring);
         test_page_release(0, &extended_sqes);

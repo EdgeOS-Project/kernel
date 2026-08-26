@@ -1283,6 +1283,8 @@ static int x86_socket_describe_entry(
     if (!socket) return -ENOTSOCK;
     memset(info, 0, sizeof(*info));
     info->domain = (uint32_t)socket->domain;
+    info->open_description_identity =
+        socket->open_description_identity;
     info->type = (uint32_t)socket->type;
     info->protocol = (uint32_t)socket->protocol;
     if ((socket->type == LINUX_SOCK_DGRAM ||
@@ -2638,6 +2640,8 @@ int edge_socket_runtime_option_view(
     view->netlink_groups = &socket->netlink_groups;
     view->packet_handle = socket->packet_handle;
     view->packet_page_allocator = &g_x86_packet_page_allocator;
+    view->open_description_identity =
+        socket->open_description_identity;
     return 0;
 }
 
