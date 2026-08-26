@@ -84,6 +84,7 @@ EDGE_SHARED_SRCS := \
 	$(SRC)/kernel/io_dispatch_policy.c \
 	$(SRC)/kernel/input_device.c \
 	$(SRC)/kernel/itimer_runtime.c \
+	$(SRC)/kernel/kexec_runtime.c \
 	$(SRC)/kernel/linux_abi.c \
 	$(SRC)/kernel/linux_input.c \
 	$(SRC)/kernel/linux_vdso.c \

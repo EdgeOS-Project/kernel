@@ -52,6 +52,18 @@ seccomp-notify-runtime-unit: tools/tests/seccomp_notify_runtime_unit.c \
 		$(SRC)/kernel/seccomp.c \
 		-o $(OUT)/tests/seccomp_notify_runtime_unit
 	@$(OUT)/tests/seccomp_notify_runtime_unit
+
+.PHONY: kexec-runtime-unit
+
+kexec-runtime-unit: tools/tests/kexec_runtime_unit.c \
+		$(SRC)/kernel/kexec_runtime.c include/kernel/kexec_runtime.h
+	@mkdir -p $(OUT)/tests
+	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fno-builtin \
+		-DEDGEOS_HOST_TEST -iquote $(INC) \
+		tools/tests/kexec_runtime_unit.c \
+		$(SRC)/kernel/kexec_runtime.c \
+		-o $(OUT)/tests/kexec_runtime_unit
+	@$(OUT)/tests/kexec_runtime_unit
 AUTOCONF_H := $(INC)/generated/autoconf.h
 VDSO_OUT := $(OUT)/vdso
 VDSO_GENERATED := $(OUT)/generated

@@ -37,6 +37,7 @@
 #include "kernel/inotify_runtime.h"
 #include "kernel/ioctl_runtime.h"
 #include "kernel/itimer_runtime.h"
+#include "kernel/kexec_runtime.h"
 #include "kernel/linux_errno.h"
 #include "kernel/linux_abi.h"
 #include "kernel/linux_mount.h"
@@ -3356,20 +3357,36 @@ static int64_t edge_linux_sys_reboot(
 }
 
 #define EDGE_LINUX_KEXEC_ON_CRASH 0x00000001u
+#define EDGE_LINUX_KEXEC_PRESERVE_CONTEXT 0x00000002u
 #define EDGE_LINUX_KEXEC_UPDATE_ELFCOREHDR 0x00000004u
 #define EDGE_LINUX_KEXEC_CRASH_HOTPLUG_SUPPORT 0x00000008u
 #define EDGE_LINUX_KEXEC_ARCH_MASK 0xffff0000u
 #define EDGE_LINUX_KEXEC_ARCH_X86_64 (62u << 16)
 #define EDGE_LINUX_KEXEC_ARCH_AARCH64 (183u << 16)
-#define EDGE_LINUX_KEXEC_SEGMENT_MAX 16u
 #define EDGE_LINUX_KEXEC_FILE_FLAGS 0x0000003fu
 
-typedef struct edge_linux_kexec_segment {
-    uint64_t buffer;
-    uint64_t buffer_size;
-    uint64_t memory;
-    uint64_t memory_size;
-} edge_linux_kexec_segment_t;
+static int edge_linux_kexec_copy_from_user(void *opaque, void *destination,
+                                           uint64_t source,
+                                           uint64_t length) {
+    return edge_linux_copy_from_user(
+        (edge_linux_syscall_context_t *)opaque, destination, source, length);
+}
+
+static void *edge_linux_kexec_allocate_pages(void *opaque,
+                                              uint32_t page_count) {
+    (void)opaque;
+    return arch_vm_alloc_pages(page_count);
+}
+
+static void edge_linux_kexec_free_page(void *opaque, void *page) {
+    (void)opaque;
+    arch_vm_free_page(page);
+}
+
+static uint64_t edge_linux_kexec_memory_total(void *opaque) {
+    (void)opaque;
+    return arch_vm_memory_total_bytes();
+}
 
 static int64_t edge_linux_sys_kexec(
     edge_linux_syscall_context_t *context) {
@@ -3382,10 +3399,18 @@ static int64_t edge_linux_sys_kexec(
         return -EDGE_LINUX_EPERM;
 
     if (context->id == EDGE_LINUX_SYS_kexec_load) {
-        edge_linux_kexec_segment_t segments[EDGE_LINUX_KEXEC_SEGMENT_MAX];
+        kernel_kexec_segment_t segments[KERNEL_KEXEC_SEGMENT_MAX];
+        kernel_kexec_access_t access = {
+            .context = context,
+            .copy_from_user = edge_linux_kexec_copy_from_user,
+            .allocate_pages = edge_linux_kexec_allocate_pages,
+            .free_page = edge_linux_kexec_free_page,
+            .memory_total_bytes = edge_linux_kexec_memory_total,
+        };
         uint64_t count = context->arguments[1];
         uint64_t flags = context->arguments[3];
         uint64_t allowed_flags = EDGE_LINUX_KEXEC_ON_CRASH |
+            EDGE_LINUX_KEXEC_PRESERVE_CONTEXT |
             EDGE_LINUX_KEXEC_UPDATE_ELFCOREHDR |
             EDGE_LINUX_KEXEC_CRASH_HOTPLUG_SUPPORT;
         uint64_t expected_architecture =
@@ -3395,7 +3420,7 @@ static int64_t edge_linux_sys_kexec(
         uint64_t architecture = flags & EDGE_LINUX_KEXEC_ARCH_MASK;
 
         if ((flags & ~(EDGE_LINUX_KEXEC_ARCH_MASK | allowed_flags)) != 0 ||
-            count > EDGE_LINUX_KEXEC_SEGMENT_MAX)
+            count > KERNEL_KEXEC_SEGMENT_MAX)
             return -EDGE_LINUX_EINVAL;
         if (architecture != 0 && architecture != expected_architecture)
             return -EDGE_LINUX_EINVAL;
@@ -3403,14 +3428,12 @@ static int64_t edge_linux_sys_kexec(
                 context, segments, context->arguments[2],
                 count * sizeof(segments[0])) < 0)
             return -EDGE_LINUX_EFAULT;
+        if (count && (flags & EDGE_LINUX_KEXEC_ON_CRASH))
+            return -EDGE_LINUX_EADDRNOTAVAIL;
 
-        /*
-         * Segment validation is complete before the architecture handoff.
-         * The machine transition backend is deliberately not represented as
-         * loaded until it can preserve firmware, interrupt-controller, and
-         * secondary-CPU state on both supported architectures.
-         */
-        return -EDGE_LINUX_EOPNOTSUPP;
+        return kernel_kexec_stage(
+            context->arguments[0], (uint32_t)count, segments,
+            flags & ~EDGE_LINUX_KEXEC_ARCH_MASK, &access);
     }
 
     if (context->arguments[4] & ~EDGE_LINUX_KEXEC_FILE_FLAGS)

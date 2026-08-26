@@ -6,6 +6,7 @@
 #endif
 
 #if defined(__x86_64__)
+#define ENTRY_ALIGNMENT __attribute__((force_align_arg_pointer))
 #define SYS_write 1
 #define SYS_clone 56
 #define SYS_exit 60
@@ -17,6 +18,7 @@
 #define SYS_uprobe 336
 #define SYS_map_shadow_stack 453
 #else
+#define ENTRY_ALIGNMENT
 #define SYS_write 64
 #define SYS_exit 93
 #define SYS_setuid 146
@@ -33,9 +35,20 @@
 #define EINVAL 22
 #define ENOSYS 38
 #define ENOTSUP 95
+#define EADDRNOTAVAIL 99
 
 #define KEXEC_ARCH_X86_64 (62UL << 16)
 #define KEXEC_ARCH_AARCH64 (183UL << 16)
+
+struct kexec_segment {
+    unsigned long buffer;
+    unsigned long buffer_size;
+    unsigned long memory;
+    unsigned long memory_size;
+};
+
+static unsigned char kexec_payload[4096]
+    __attribute__((aligned(4096)));
 
 static long raw_syscall6(long number, long a0, long a1, long a2,
                          long a3, long a4, long a5) {
@@ -159,6 +172,12 @@ static int test_kexec_permissions(void) {
 
 static int test_optional_calls(void) {
     int failures = 0;
+    struct kexec_segment segment = {
+        .buffer = (unsigned long)kexec_payload,
+        .buffer_size = sizeof(kexec_payload),
+        .memory = 0x02000000,
+        .memory_size = sizeof(kexec_payload),
+    };
     long architecture =
 #if defined(__x86_64__)
         KEXEC_ARCH_X86_64;
@@ -187,6 +206,20 @@ static int test_optional_calls(void) {
         "kexec_load backend",
         raw_syscall6(SYS_kexec_load, 0, 0, 0, architecture, 0, 0),
         0, -ENOTSUP);
+    failures += expect_result(
+        "kexec_load stage",
+        raw_syscall6(SYS_kexec_load, segment.memory, 1,
+                     (long)&segment, architecture, 0, 0),
+        0);
+    failures += expect_result(
+        "kexec_load unload",
+        raw_syscall6(SYS_kexec_load, 0, 0, 0, architecture, 0, 0),
+        0);
+    failures += expect_result(
+        "kexec_load crash reservation",
+        raw_syscall6(SYS_kexec_load, segment.memory, 1,
+                     (long)&segment, architecture | 1, 0, 0),
+        -EADDRNOTAVAIL);
     failures += expect_one_of(
         "kexec_file_load invalid flags",
         raw_syscall6(SYS_kexec_file_load, -1, -1, 0, 0, 0x40, 0),
@@ -206,7 +239,7 @@ static int test_optional_calls(void) {
     return failures;
 }
 
-__attribute__((noreturn)) void _start(void) {
+__attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
     int failures = 0;
 
     failures += test_kexec_permissions();
