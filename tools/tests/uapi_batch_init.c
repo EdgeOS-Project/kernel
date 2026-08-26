@@ -105,7 +105,8 @@ static long raw_syscall4(long number, long a0, long a1, long a2, long a3) {
 
 #if defined(UAPI_BATCH_IO_URING_NVME_CMD_ONLY) || \
     defined(UAPI_BATCH_IO_URING_BSG_CMD_ONLY) || \
-    defined(UAPI_BATCH_IO_URING_FUSE_CMD_ONLY)
+    defined(UAPI_BATCH_IO_URING_FUSE_CMD_ONLY) || \
+    defined(UAPI_BATCH_EVENT_CORE_ONLY)
 static long raw_syscall5(long number, long a0, long a1, long a2, long a3,
                          long a4) {
 #if defined(__x86_64__)
@@ -285,6 +286,10 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "bpf_rhash_abi_probe",
 #elif defined(UAPI_BATCH_BPF_PROG_TEST_RUN_ONLY)
         "bpf_prog_test_run_abi_probe",
+#elif defined(UAPI_BATCH_EVENT_CORE_ONLY)
+        "eventfd_abi_probe",
+        "timerfd_abi_probe",
+        "inotify_abi_probe",
 #elif defined(UAPI_BATCH_NATIVE_OPTIONAL_ONLY)
         "native_optional_syscalls_abi_probe",
 #else
@@ -322,6 +327,10 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
     defined(UAPI_BATCH_IO_URING_FUSE_CMD_ONLY)
     (void)raw_syscall5(SYS_mount, (long)"devtmpfs", (long)"/dev",
                        (long)"devtmpfs", 0, 0);
+#endif
+#if defined(UAPI_BATCH_EVENT_CORE_ONLY)
+    (void)raw_syscall5(SYS_mount, (long)"proc", (long)"/proc",
+                       (long)"proc", 0, 0);
 #endif
 
     for (unsigned long index = 0;

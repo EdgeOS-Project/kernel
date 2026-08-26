@@ -646,7 +646,7 @@ int64_t kernel_vfs_open_at(const kernel_vfs_open_request_t *request) {
         status = kernel_fanotify_permission_check(path, fanotify_mask);
         if (status < 0) return status;
     }
-    if (!(request->flags & KERNEL_VFS_OPEN_PATH) &&
+    if (!created && !(request->flags & KERNEL_VFS_OPEN_PATH) &&
         (request->flags & KERNEL_VFS_OPEN_TRUNCATE) &&
         (target.inode->mode & 0xf000u) == VFS_INODE_FILE) {
         status = kernel_vfs_truncate_target(&target, 0);

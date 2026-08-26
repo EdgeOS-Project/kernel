@@ -24,6 +24,17 @@ void kernel_inotify_state_changed(int inotify_id) {
     ++g_wake_count;
 }
 
+void kernel_fanotify_notify_path(const char *canonical_path, uint32_t mask) {
+    (void)canonical_path;
+    (void)mask;
+}
+
+void kernel_fanotify_notify_move(const char *old_canonical_path,
+                                 const char *new_canonical_path) {
+    (void)old_canonical_path;
+    (void)new_canonical_path;
+}
+
 static int copy_record(void *context, uint64_t offset, const void *record,
                        uint32_t length) {
     uint32_t *records = context;

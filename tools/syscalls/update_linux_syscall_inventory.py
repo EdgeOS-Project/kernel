@@ -69,7 +69,13 @@ VERIFIED_SYSCALL_PROBES = {
     "epoll_pwait": "tools/tests/epoll_abi_probe.c",
     "epoll_pwait2": "tools/tests/epoll_abi_probe.c",
     "epoll_wait": "tools/tests/epoll_abi_probe.c",
+    "eventfd": "tools/tests/eventfd_abi_probe.c",
+    "eventfd2": "tools/tests/eventfd_abi_probe.c",
     "get_mempolicy": "tools/tests/numa_policy_abi_probe.c",
+    "inotify_add_watch": "tools/tests/inotify_abi_probe.c",
+    "inotify_init": "tools/tests/inotify_abi_probe.c",
+    "inotify_init1": "tools/tests/inotify_abi_probe.c",
+    "inotify_rm_watch": "tools/tests/inotify_abi_probe.c",
     "mbind": "tools/tests/numa_policy_abi_probe.c",
     "memfd_secret": "tools/tests/memfd_secret_abi_probe.c",
     "migrate_pages": "tools/tests/numa_policy_abi_probe.c",
@@ -114,6 +120,9 @@ VERIFIED_SYSCALL_PROBES = {
     "shmdt": "tools/tests/sysv_shm_abi_probe.c",
     "shmget": "tools/tests/sysv_shm_abi_probe.c",
     "sysfs": "tools/tests/sysfs_syscall_abi_probe.c",
+    "timerfd_create": "tools/tests/timerfd_abi_probe.c",
+    "timerfd_gettime": "tools/tests/timerfd_abi_probe.c",
+    "timerfd_settime": "tools/tests/timerfd_abi_probe.c",
 }
 PARTIAL_SYSCALL_PROBES = {
     "bpf": "tools/tests/bpf_abi_probe.c",

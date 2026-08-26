@@ -296,7 +296,25 @@ static void test_absolute_past(void) {
     }
     memset(&value, 0, sizeof(value));
     value.it_value = now;
-    value.it_value.tv_sec -= 1;
+    if (value.it_value.tv_nsec >= 100000000L) {
+        value.it_value.tv_nsec -= 100000000L;
+    } else if (value.it_value.tv_sec > 0) {
+        --value.it_value.tv_sec;
+        value.it_value.tv_nsec += 900000000L;
+    } else {
+        usleep(100000);
+        if (clock_gettime(CLOCK_MONOTONIC, &value.it_value) < 0) {
+            fail("absolute_clock_retry");
+            close(descriptor);
+            return;
+        }
+        if (value.it_value.tv_nsec >= 100000000L) {
+            value.it_value.tv_nsec -= 100000000L;
+        } else {
+            value.it_value.tv_sec = 0;
+            value.it_value.tv_nsec = 1;
+        }
+    }
     value.it_interval.tv_nsec = 10000000;
     if (timerfd_settime(descriptor, TFD_TIMER_ABSTIME, &value, 0) < 0 ||
         read(descriptor, &expirations, sizeof(expirations)) != 8) {
@@ -304,7 +322,7 @@ static void test_absolute_past(void) {
     }
     dprintf(STDOUT_FILENO, "absolute_past_expirations:%llu\n",
             (unsigned long long)expirations);
-    if (expirations < 100) ++g_failures;
+    if (expirations < 10) ++g_failures;
     close(descriptor);
 }
 

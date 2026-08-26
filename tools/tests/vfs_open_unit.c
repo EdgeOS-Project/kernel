@@ -8,6 +8,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "fs/cgroupfs.h"
+#include "kernel/fanotify.h"
+#include "kernel/file_metadata.h"
 #include "kernel/inotify.h"
 #include "kernel/linux_errno.h"
 #include "kernel/vfs_runtime.h"
@@ -253,6 +256,34 @@ int vfs_permission_check(const vfs_inode_t *inode, int access_mask) {
     ++g_permission_calls;
     g_permission_mask = access_mask;
     return g_permission_result;
+}
+
+int kernel_current_cgroup_id(uint32_t *cgroup_id) {
+    if (cgroup_id) *cgroup_id = 1u;
+    return 0;
+}
+
+int cgroupfs_bpf_device_allowed(
+    uint32_t cgroup_id,
+    const kernel_bpf_cgroup_device_context_t *context) {
+    (void)cgroup_id;
+    (void)context;
+    return 1;
+}
+
+uint32_t kernel_file_device_major(uint64_t device) {
+    return (uint32_t)(device >> 32);
+}
+
+uint32_t kernel_file_device_minor(uint64_t device) {
+    return (uint32_t)device;
+}
+
+int kernel_fanotify_permission_check(const char *canonical_path,
+                                     uint64_t mask) {
+    (void)canonical_path;
+    (void)mask;
+    return 0;
 }
 
 int vfs_sync_mutation_if_required(vfs_superblock_t *superblock,
@@ -586,6 +617,22 @@ static void test_create_and_exclusive(void) {
                 g_notify_masks[1] == KERNEL_INOTIFY_OPEN);
     expect_true("create cache invalidated",
                 g_cache_invalidations == 1);
+
+    reset_state();
+    request = request_make();
+    request.flags = KERNEL_VFS_OPEN_CREATE | KERNEL_VFS_OPEN_TRUNCATE;
+    request.access_mode = KERNEL_VFS_OPEN_WRITE_ONLY;
+    request.mode = 0600u;
+    g_target_present = 0;
+    memcpy(g_prepared_path, "/created", sizeof("/created"));
+    expect_true("create truncate open",
+                kernel_vfs_open_at(&request) == 17);
+    expect_true("create truncate skips empty truncate",
+                g_truncate_calls == 0);
+    expect_true("create truncate notification order",
+                g_notify_calls == 2 &&
+                g_notify_masks[0] == KERNEL_INOTIFY_CREATE &&
+                g_notify_masks[1] == KERNEL_INOTIFY_OPEN);
 
     reset_state();
     request = request_make();
