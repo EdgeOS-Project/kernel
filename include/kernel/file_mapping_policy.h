@@ -7,9 +7,9 @@
 
 /*
  * A page fault is synchronous until the task can return to the scheduler.
- * Bound one fault to 64 KiB so input and display work can run between batches
+ * Bound one fault to 16 KiB so input and display work can run between batches
  * while later faults continue filling the same shared file cache.
  */
-#define EDGE_FILE_MAPPING_FAULT_BATCH_PAGES 16u
+#define EDGE_FILE_MAPPING_FAULT_BATCH_PAGES 4u
 
 #endif
