@@ -29,7 +29,12 @@ ARCHITECTURE_EXCEPTIONS = {
     "ioperm": ["x86_64 I/O-port permission mechanism"],
     "iopl": ["x86_64 I/O privilege mechanism"],
     "map_shadow_stack": [
-        "x86_64 shadow-stack and AArch64 guarded-control-stack ABI"
+        "x86_64 shadow-stack and AArch64 guarded-control-stack ABI",
+        (
+            "The current supported CPU profiles expose neither CET shadow "
+            "stacks nor AArch64 GCS, so the oracle-verified behavior is "
+            "EOPNOTSUPP before argument validation."
+        ),
     ],
     "modify_ldt": ["x86_64 descriptor-table ABI"],
     "rt_sigreturn": ["Architecture-specific signal-frame restoration"],
@@ -203,6 +208,7 @@ VERIFIED_SYSCALL_PROBES = {
     "lremovexattr": "tools/tests/xattr_abi_probe.c",
     "lsetxattr": "tools/tests/xattr_abi_probe.c",
     "llistxattr": "tools/tests/xattr_abi_probe.c",
+    "map_shadow_stack": "tools/tests/native_optional_syscalls_abi_probe.c",
     "madvise": "tools/tests/madvise_abi_probe.c",
     "mbind": "tools/tests/numa_policy_abi_probe.c",
     "membarrier": "tools/tests/synchronization_registration_abi_probe.c",
@@ -405,9 +411,7 @@ VERIFIED_SYSCALL_PROBES = {
     "write": "tools/tests/vector_io_abi_probe.c",
     "writev": "tools/tests/vector_io_abi_probe.c",
 }
-PARTIAL_SYSCALL_PROBES = {
-    "map_shadow_stack": "tools/tests/native_optional_syscalls_abi_probe.c",
-}
+PARTIAL_SYSCALL_PROBES = {}
 
 
 def load_existing() -> dict[str, dict[str, Any]]:

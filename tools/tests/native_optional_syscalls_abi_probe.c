@@ -318,6 +318,18 @@ static int test_optional_calls(void) {
         "map_shadow_stack availability",
         raw_syscall6(SYS_map_shadow_stack, 0, 0, 0, 0, 0, 0),
         -ENOTSUP);
+    failures += expect_result(
+        "map_shadow_stack feature check before flags",
+        raw_syscall6(SYS_map_shadow_stack, 0, 4096, 4, 0, 0, 0),
+        -ENOTSUP);
+    failures += expect_result(
+        "map_shadow_stack feature check before size",
+        raw_syscall6(SYS_map_shadow_stack, 0, 8, 1, 0, 0, 0),
+        -ENOTSUP);
+    failures += expect_result(
+        "map_shadow_stack feature check before address",
+        raw_syscall6(SYS_map_shadow_stack, 4096, 4096, 0, 0, 0, 0),
+        -ENOTSUP);
 #endif
 #if defined(__x86_64__)
     failures += expect_result(

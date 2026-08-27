@@ -4085,25 +4085,26 @@
       "semantic_id": "map_shadow_stack",
       "shared_handler": "edge_linux_sys_map_shadow_stack",
       "architecture_exceptions": [
-        "x86_64 shadow-stack and AArch64 guarded-control-stack ABI"
+        "x86_64 shadow-stack and AArch64 guarded-control-stack ABI",
+        "The current supported CPU profiles expose neither CET shadow stacks nor AArch64 GCS, so the oracle-verified behavior is EOPNOTSUPP before argument validation."
       ],
       "runtime_tests": [
         "tools/tests/native_optional_syscalls_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "partial",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 453,
           "status": "implemented",
           "route": "shared:edge_linux_sys_map_shadow_stack",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 453,
           "status": "implemented",
           "route": "shared:edge_linux_sys_map_shadow_stack",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
