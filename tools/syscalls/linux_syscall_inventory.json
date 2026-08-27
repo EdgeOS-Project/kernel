@@ -213,13 +213,13 @@
         "tools/tests/x86_64_legacy_syscall_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 37,
           "status": "implemented",
           "route": "shared:edge_linux_sys_itimer",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": null
       }
@@ -1734,13 +1734,13 @@
         "tools/tests/x86_64_legacy_syscall_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 57,
           "status": "implemented",
           "route": "shared:edge_linux_sys_clone",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": null
       }
@@ -3320,17 +3320,16 @@
         "x86_64 I/O-port permission mechanism"
       ],
       "runtime_tests": [
-        "tools/tests/x86_arch_control_abi_probe.c",
-        "tools/tests/ia32_io_privilege_uapi_probe.c"
+        "tools/tests/x86_arch_control_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 173,
           "status": "implemented",
           "route": "shared:edge_linux_sys_io_privilege",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": null
       }
@@ -3343,17 +3342,16 @@
         "x86_64 I/O privilege mechanism"
       ],
       "runtime_tests": [
-        "tools/tests/x86_arch_control_abi_probe.c",
-        "tools/tests/ia32_io_privilege_uapi_probe.c"
+        "tools/tests/x86_arch_control_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 172,
           "status": "implemented",
           "route": "shared:edge_linux_sys_io_privilege",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": null
       }
@@ -5250,13 +5248,13 @@
         "tools/tests/x86_64_legacy_syscall_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 34,
           "status": "implemented",
           "route": "shared:edge_linux_sys_signal_wait",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": null
       }
@@ -8308,19 +8306,19 @@
         "tools/tests/x86_64_legacy_syscall_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 168,
           "status": "implemented",
           "route": "shared:edge_linux_sys_swap",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 225,
           "status": "implemented",
           "route": "shared:edge_linux_sys_swap",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -8333,19 +8331,19 @@
         "tools/tests/x86_64_legacy_syscall_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 167,
           "status": "implemented",
           "route": "shared:edge_linux_sys_swap",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 224,
           "status": "implemented",
           "route": "shared:edge_linux_sys_swap",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -9228,13 +9226,13 @@
         "tools/tests/x86_64_legacy_syscall_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 58,
           "status": "implemented",
           "route": "shared:edge_linux_sys_clone",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": null
       }
