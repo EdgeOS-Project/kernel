@@ -1701,8 +1701,7 @@ static void test_program(void) {
         assert(kernel_bpf_cgroup_device_run(
                    5u, &context, &result) == 0 && result == 0u);
         assert(kernel_bpf_link_detach(link_object) == 0);
-        assert(kernel_bpf_link_detach(link_object) ==
-               -EDGE_LINUX_ENOENT);
+        assert(kernel_bpf_link_detach(link_object) == 0);
         assert(kernel_bpf_link_info(link_object, &link_info) == 0 &&
                link_info.detached && link_info.program_id != 0u);
         kernel_bpf_object_release(link_object);

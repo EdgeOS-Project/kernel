@@ -6234,7 +6234,7 @@ int kernel_bpf_map_freeze(int object_id) {
     }
     map = &object->value.map;
     if (map->frozen) {
-        status = -EDGE_LINUX_EBUSY;
+        status = -EDGE_LINUX_EPERM;
         goto out;
     }
     map->frozen = 1u;
@@ -7114,7 +7114,7 @@ int kernel_bpf_link_detach(int link_object_id) {
     }
     if (link->value.link.detached) {
         bpf_unlock();
-        return -EDGE_LINUX_ENOENT;
+        return 0;
     }
     for (uint32_t index = 0;
          index < EDGE_RUNTIME_MAX_BPF_ATTACHMENTS; ++index) {

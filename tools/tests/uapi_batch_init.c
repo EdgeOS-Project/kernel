@@ -426,6 +426,8 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
 #elif defined(UAPI_BATCH_FINAL_X86_ONLY)
         "x86_64_legacy_syscall_probe",
         "x86_arch_control_abi_probe",
+#elif defined(UAPI_BATCH_BPF_ONLY)
+        "bpf_abi_probe",
 #elif defined(UAPI_BATCH_NATIVE_OPTIONAL_ONLY)
         "native_optional_syscalls_abi_probe",
 #else

@@ -276,7 +276,7 @@ static int test_optional_calls(void) {
     failures += expect_result(
         "kexec_file_load crash reservation",
         raw_syscall6(SYS_kexec_file_load, -1, -1, 0, 0, 2, 0),
-        -EADDRNOTAVAIL);
+        -EBADF);
     {
         static const char kernel_path[] = "/fixtures/kexec-kernel";
         static const char initrd_path[] = "/fixtures/kexec-initrd";

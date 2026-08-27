@@ -70,6 +70,7 @@ VERIFIED_SYSCALL_PROBES = {
     "adjtimex": "tools/tests/clock_adjust_abi_probe.c",
     "alarm": "tools/tests/x86_64_legacy_syscall_probe.c",
     "bind": "tools/tests/socket_address_abi_probe.c",
+    "bpf": "tools/tests/bpf_abi_probe.c",
     "brk": "tools/tests/brk_abi_probe.c",
     "cachestat": "tools/tests/cachestat_abi_probe.c",
     "clone": (
@@ -186,6 +187,8 @@ VERIFIED_SYSCALL_PROBES = {
     "kill": "tools/tests/signal_targeting_abi_probe.c",
     "keyctl": "tools/tests/keyring_abi_probe.c",
     "kcmp": "tools/tests/kcmp_abi_probe.c",
+    "kexec_file_load": "tools/tests/native_optional_syscalls_abi_probe.c",
+    "kexec_load": "tools/tests/native_optional_syscalls_abi_probe.c",
     "lchown": "tools/tests/metadata_mutation_abi_probe.c",
     "lgetxattr": "tools/tests/xattr_abi_probe.c",
     "link": "tools/tests/path_mutation_abi_probe.c",
@@ -388,6 +391,8 @@ VERIFIED_SYSCALL_PROBES = {
     "umount2": "tools/tests/mount_abi_probe.c",
     "umask": "tools/tests/shared_syscall_smoke.c",
     "uname": "tools/tests/shared_syscall_smoke.c",
+    "uprobe": "tools/tests/native_optional_syscalls_abi_probe.c",
+    "uretprobe": "tools/tests/native_optional_syscalls_abi_probe.c",
     "unlink": "tools/tests/path_mutation_abi_probe.c",
     "vhangup": "tools/tests/vhangup_abi_probe.c",
     "vfork": "tools/tests/x86_64_legacy_syscall_probe.c",
@@ -401,12 +406,7 @@ VERIFIED_SYSCALL_PROBES = {
     "writev": "tools/tests/vector_io_abi_probe.c",
 }
 PARTIAL_SYSCALL_PROBES = {
-    "bpf": "tools/tests/bpf_abi_probe.c",
-    "kexec_file_load": "tools/tests/native_optional_syscalls_abi_probe.c",
-    "kexec_load": "tools/tests/native_optional_syscalls_abi_probe.c",
     "map_shadow_stack": "tools/tests/native_optional_syscalls_abi_probe.c",
-    "uprobe": "tools/tests/native_optional_syscalls_abi_probe.c",
-    "uretprobe": "tools/tests/native_optional_syscalls_abi_probe.c",
 }
 
 

@@ -3543,8 +3543,6 @@ static int64_t edge_linux_sys_kexec(
 
         if (file_flags & EDGE_LINUX_KEXEC_FILE_UNLOAD)
             return kernel_kexec_stage(0, 0, 0, runtime_flags, &access);
-        if (file_flags & EDGE_LINUX_KEXEC_FILE_ON_CRASH)
-            return -EDGE_LINUX_EADDRNOTAVAIL;
         if (command_line_size > EDGE_LINUX_KEXEC_COMMAND_LINE_MAX)
             return -EDGE_LINUX_EINVAL;
         if (command_line_size) {
@@ -3571,6 +3569,10 @@ static int64_t edge_linux_sys_kexec(
                 (int32_t)context->arguments[1], &initrd, &initrd_size,
                 &initrd_pages);
             if (status < 0) goto file_out;
+        }
+        if (file_flags & EDGE_LINUX_KEXEC_FILE_ON_CRASH) {
+            status = -EDGE_LINUX_EADDRNOTAVAIL;
+            goto file_out;
         }
         status = kernel_kexec_stage_file(
             kernel, kernel_size, initrd, initrd_size, command_line,
@@ -6530,6 +6532,12 @@ static int64_t edge_linux_bpf_map_batch(
     if (status < 0) return status;
     status = kernel_bpf_map_info(object_id, &info);
     if (status < 0) return status;
+    if (command == EDGE_LINUX_BPF_MAP_DELETE_BATCH &&
+        (info.type == KERNEL_BPF_MAP_TYPE_ARRAY ||
+         info.type == KERNEL_BPF_MAP_TYPE_PERCPU_ARRAY ||
+         info.type == KERNEL_BPF_MAP_TYPE_PROG_ARRAY ||
+         info.type == KERNEL_BPF_MAP_TYPE_ARRAY_OF_MAPS))
+        return -EDGE_LINUX_ENOTSUPP;
     if (info.type == KERNEL_BPF_MAP_TYPE_PERF_EVENT_ARRAY ||
         info.type == KERNEL_BPF_MAP_TYPE_CGROUP_ARRAY ||
         info.type == KERNEL_BPF_MAP_TYPE_DEVMAP ||
@@ -6606,7 +6614,13 @@ static int64_t edge_linux_bpf_map_batch(
             }
             ++processed;
             if (!has_more) {
-                status = -EDGE_LINUX_ENOENT;
+                status =
+                    (info.type == KERNEL_BPF_MAP_TYPE_ARRAY ||
+                     info.type == KERNEL_BPF_MAP_TYPE_PERCPU_ARRAY ||
+                     info.type == KERNEL_BPF_MAP_TYPE_PROG_ARRAY ||
+                     info.type == KERNEL_BPF_MAP_TYPE_ARRAY_OF_MAPS) &&
+                    processed == requested ?
+                        0 : -EDGE_LINUX_ENOENT;
                 break;
             }
         } else {
