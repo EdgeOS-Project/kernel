@@ -7,7 +7,7 @@
 #include "kernel/linux_abi.h"
 
 #define EFAULT 14
-#define EOPNOTSUPP 95
+#define ENOTSUPP 524
 #define RSEQ_SIGNATURE 0x53053053u
 
 typedef struct test_memory {
@@ -67,7 +67,7 @@ int main(void) {
     assert(edge_linux_rseq_slice_prctl(
                &state, EDGE_LINUX_PR_RSEQ_SLICE_EXTENSION_SET,
                EDGE_LINUX_PR_RSEQ_SLICE_EXT_ENABLE,
-               copy_from_test, copy_to_test, &memory) == -EOPNOTSUPP);
+               copy_from_test, copy_to_test, &memory) == -ENOTSUPP);
     assert(edge_linux_rseq_register(
                &state, memory.base, EDGE_LINUX_RSEQ_LEGACY_SIZE,
                EDGE_LINUX_RSEQ_FLAG_UNREGISTER, RSEQ_SIGNATURE,

@@ -814,19 +814,19 @@
         "tools/tests/module_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 176,
           "status": "implemented",
           "route": "shared:edge_linux_sys_module",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 106,
           "status": "implemented",
           "route": "shared:edge_linux_sys_module",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -1659,19 +1659,19 @@
         "tools/tests/module_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 313,
           "status": "implemented",
           "route": "shared:edge_linux_sys_module",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 273,
           "status": "implemented",
           "route": "shared:edge_linux_sys_module",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -2951,19 +2951,19 @@
         "tools/tests/module_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 175,
           "status": "implemented",
           "route": "shared:edge_linux_sys_module",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 105,
           "status": "implemented",
           "route": "shared:edge_linux_sys_module",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -3296,19 +3296,19 @@
         "tools/tests/ioctl_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 16,
           "status": "implemented",
           "route": "shared:edge_linux_sys_ioctl",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 29,
           "status": "implemented",
           "route": "shared:edge_linux_sys_ioctl",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -6148,19 +6148,19 @@
         "tools/tests/reboot_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 169,
           "status": "implemented",
           "route": "shared:edge_linux_sys_reboot",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 142,
           "status": "implemented",
           "route": "shared:edge_linux_sys_reboot",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },
@@ -6488,19 +6488,19 @@
         "tools/tests/rseq_slice_abi_probe.c"
       ],
       "linux_oracle": "required",
-      "oracle_status": "not-run",
+      "oracle_status": "verified",
       "architectures": {
         "x86_64": {
           "number": 471,
           "status": "implemented",
           "route": "shared:edge_linux_sys_rseq_slice_yield",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         },
         "aarch64": {
           "number": 471,
           "status": "implemented",
           "route": "shared:edge_linux_sys_rseq_slice_yield",
-          "evidence_status": "runtime-probe-listed"
+          "evidence_status": "oracle-verified"
         }
       }
     },

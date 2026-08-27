@@ -5,6 +5,7 @@
  */
 
 #include "kernel/linux_abi.h"
+#include "kernel/linux_errno.h"
 #include "string.h"
 
 #define EDGE_LINUX_E2BIG 7
@@ -238,7 +239,7 @@ int edge_linux_rseq_slice_prctl(
     (void)copy_from_user;
     (void)copy_to_user;
     (void)copy_context;
-    return -EDGE_LINUX_EOPNOTSUPP;
+    return -EDGE_LINUX_ENOTSUPP;
 #else
     uint32_t user_flags;
     uint32_t expected_flags;
@@ -252,7 +253,7 @@ int edge_linux_rseq_slice_prctl(
     if (value & ~EDGE_LINUX_PR_RSEQ_SLICE_EXT_ENABLE)
         return -EDGE_LINUX_EINVAL;
     if (!state->address) return -EDGE_LINUX_ENXIO;
-    if (state->version < 2u) return -EDGE_LINUX_EOPNOTSUPP;
+    if (state->version < 2u) return -EDGE_LINUX_ENOTSUPP;
     enable = (value & EDGE_LINUX_PR_RSEQ_SLICE_EXT_ENABLE) != 0u;
     if (enable == !!state->slice_enabled) return 0;
     if (!copy_from_user || !copy_to_user)

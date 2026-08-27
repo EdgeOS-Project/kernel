@@ -418,6 +418,14 @@ __attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
         "seccomp_abi_probe",
         "syslog_abi_probe",
         "listns_abi_probe",
+#elif defined(UAPI_BATCH_FINAL_COMMON_ONLY)
+        "module_abi_probe",
+        "ioctl_abi_probe",
+        "reboot_abi_probe",
+        "rseq_slice_abi_probe",
+#elif defined(UAPI_BATCH_FINAL_X86_ONLY)
+        "x86_64_legacy_syscall_probe",
+        "x86_arch_control_abi_probe",
 #elif defined(UAPI_BATCH_NATIVE_OPTIONAL_ONLY)
         "native_optional_syscalls_abi_probe",
 #else

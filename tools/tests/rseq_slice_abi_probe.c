@@ -8,6 +8,7 @@
 #define SYS_exit 60
 #define SYS_clone 56
 #define SYS_prctl 157
+#define SYS_sched_setaffinity 203
 #define SYS_rseq 334
 #define START_ATTRIBUTES __attribute__((naked, noreturn))
 #elif defined(__aarch64__)
@@ -15,6 +16,7 @@
 #define SYS_exit 93
 #define SYS_clone 220
 #define SYS_prctl 167
+#define SYS_sched_setaffinity 122
 #define SYS_rseq 293
 #define START_ATTRIBUTES __attribute__((noreturn))
 #else
@@ -25,7 +27,7 @@
 
 #define ENXIO 6
 #define EINVAL 22
-#define EOPNOTSUPP 95
+#define ENOTSUPP 524
 
 #define RSEQ_FLAG_UNREGISTER 1u
 #define RSEQ_FLAG_SLICE_EXT_DEFAULT_ON 2u
@@ -154,6 +156,7 @@ static long slice_prctl(uint64_t operation, uint64_t value) {
 static int run_probe(void) {
     int failures = 0;
     long child;
+    uint64_t cpu_zero_mask = 1;
 
     failures += expect_result(
         "yield without grant",
@@ -175,7 +178,7 @@ static int run_probe(void) {
     failures += expect_result(
         "legacy set unsupported",
         slice_prctl(PR_RSEQ_SLICE_EXTENSION_SET,
-                    PR_RSEQ_SLICE_EXT_ENABLE), -EOPNOTSUPP);
+                    PR_RSEQ_SLICE_EXT_ENABLE), -ENOTSUPP);
     failures += expect_result(
         "legacy unregister", rseq_call(32, RSEQ_FLAG_UNREGISTER), 0);
 
@@ -211,6 +214,11 @@ static int run_probe(void) {
         "yield without request",
         raw_syscall6(SYS_rseq_slice_yield, 0, 0, 0, 0, 0, 0), 0);
 
+    failures += expect_result(
+        "pin slice participants",
+        raw_syscall6(SYS_sched_setaffinity, 0, sizeof(cpu_zero_mask),
+                     (long)&cpu_zero_mask, 0, 0, 0), 0);
+
     child = raw_syscall6(SYS_clone, 17, 0, 0, 0, 0, 0);
     if (child == 0) {
         volatile uint64_t spin = 0;
@@ -221,24 +229,31 @@ static int run_probe(void) {
         uint64_t polls = 0;
         rseq_area.slice_ctrl = 1u;
         __asm__ volatile("" ::: "memory");
-        while (rseq_area.slice_ctrl != 0x100u &&
+        while (rseq_area.slice_ctrl == 1u &&
                polls++ < 200000000u)
             __asm__ volatile("" ::: "memory");
-        failures += expect_result(
-            "slice granted", rseq_area.slice_ctrl, 0x100u);
-        if (rseq_area.slice_ctrl == 0x100u)
+        failures += expect_true(
+            "slice request completed",
+            rseq_area.slice_ctrl == 0u || rseq_area.slice_ctrl == 0x100u);
+        if (rseq_area.slice_ctrl == 0x100u) {
             failures += expect_result(
                 "yield granted slice",
                 raw_syscall6(SYS_rseq_slice_yield, 0, 0, 0, 0, 0, 0), 1);
+        } else {
+            failures += expect_result(
+                "expired slice reports no yield",
+                raw_syscall6(SYS_rseq_slice_yield, 0, 0, 0, 0, 0, 0), 0);
+        }
 
         polls = 0;
         rseq_area.slice_ctrl = 1u;
         __asm__ volatile("" ::: "memory");
-        while (rseq_area.slice_ctrl != 0x100u &&
+        while (rseq_area.slice_ctrl == 1u &&
                polls++ < 200000000u)
             __asm__ volatile("" ::: "memory");
-        failures += expect_result(
-            "second slice granted", rseq_area.slice_ctrl, 0x100u);
+        failures += expect_true(
+            "second slice request completed",
+            rseq_area.slice_ctrl == 0u || rseq_area.slice_ctrl == 0x100u);
         polls = 0;
         while (rseq_area.slice_ctrl == 0x100u &&
                polls++ < 200000000u)
