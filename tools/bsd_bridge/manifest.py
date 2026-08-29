@@ -27,7 +27,7 @@ SUPPORTED_KCONFIG_REQUIREMENTS = frozenset({
 })
 MODULE_BUILD_MODES = frozenset({"builtin", "module", "disabled"})
 SOURCE_POLICY_MODES = frozenset({"unmodified", "patched"})
-PACKAGE_TYPES = frozenset({"driver", "headers"})
+PACKAGE_TYPES = frozenset({"driver", "headers", "subsystem"})
 GENERATED_DATABASES = {
     "miidevs": (
         "sys/dev/mii/miidevs",
@@ -378,8 +378,8 @@ def load_manifest(path: Path) -> dict[str, Any]:
         raise ManifestError("modules must be an array")
     if package_type == "driver" and not modules:
         raise ManifestError("driver package modules must be a non-empty array")
-    if package_type == "headers" and modules:
-        raise ManifestError("headers package modules must be empty")
+    if package_type in {"headers", "subsystem"} and modules:
+        raise ManifestError(f"{package_type} package modules must be empty")
     module_ids: set[str] = set()
     source_owners: dict[str, str] = {}
     for index, raw_module in enumerate(modules):

@@ -206,7 +206,7 @@ def render_build_plan(manifest_dir: Path, capability_dir: Path) -> str:
                     include_groups
                 )
 
-        if manifest["package_type"] == "headers":
+        if manifest["package_type"] != "driver":
             continue
 
         package_id = manifest["id"]

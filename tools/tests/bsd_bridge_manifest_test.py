@@ -40,6 +40,7 @@ from verify_sources import (
 
 
 MANIFEST_DIR = REPO_ROOT / "config/bsd_drivers/manifests"
+VMM_MANIFEST_DIR = REPO_ROOT / "config/bsd_vmm/manifests"
 CAPABILITY_DIR = REPO_ROOT / "config/bsd_drivers/capabilities"
 MANIFEST_PATH = MANIFEST_DIR / "freebsd-virtio.json"
 BASE_HEADERS_MANIFEST_PATH = MANIFEST_DIR / "freebsd-base-headers.json"
@@ -1990,7 +1991,10 @@ class BsdBridgeManifestTest(unittest.TestCase):
         )
 
     def test_vendored_source_tree_is_fully_covered(self) -> None:
-        manifest_paths = sorted(MANIFEST_DIR.glob("*.json"))
+        manifest_paths = [
+            *sorted(MANIFEST_DIR.glob("*.json")),
+            *sorted(VMM_MANIFEST_DIR.glob("*.json")),
+        ]
         coverage = verify_vendored_source_coverage(
             manifest_paths, REPO_ROOT
         )

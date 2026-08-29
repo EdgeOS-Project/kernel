@@ -343,6 +343,16 @@ def main() -> int:
         type=Path,
         default=Path("config/bsd_drivers/manifests"),
     )
+    parser.add_argument(
+        "--coverage-manifest-dir",
+        type=Path,
+        action="append",
+        default=[],
+        help=(
+            "additional manifest directory whose source locks participate in "
+            "vendored-tree verification"
+        ),
+    )
     parser.add_argument("--repo-root", type=Path)
     arguments = parser.parse_args()
 
@@ -362,14 +372,25 @@ def main() -> int:
                 "manifest",
             )
         )
+        coverage_manifest_paths: list[Path] = []
+        for directory in arguments.coverage_manifest_dir:
+            resolved = (
+                (repo_root / directory).resolve()
+                if not directory.is_absolute()
+                else directory.resolve()
+            )
+            coverage_manifest_paths.extend(
+                discover_json_files(resolved, "coverage manifest")
+            )
+        all_manifest_paths = [*manifest_paths, *coverage_manifest_paths]
         results = [
             (path, *verify_manifest_sources(path, repo_root))
-            for path in manifest_paths
+            for path in all_manifest_paths
         ]
         coverage = (
             {}
             if arguments.manifest
-            else verify_vendored_source_coverage(manifest_paths, repo_root)
+            else verify_vendored_source_coverage(all_manifest_paths, repo_root)
         )
     except ManifestError as exc:
         print(f"bsd-source-check: FAIL: {exc}", file=sys.stderr)

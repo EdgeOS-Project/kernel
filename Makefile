@@ -64,6 +64,89 @@ kexec-runtime-unit: tools/tests/kexec_runtime_unit.c \
 		$(SRC)/kernel/kexec_runtime.c \
 		-o $(OUT)/tests/kexec_runtime_unit
 	@$(OUT)/tests/kexec_runtime_unit
+
+.PHONY: edge-kvm-object-unit
+
+edge-kvm-object-unit: tools/tests/edge_kvm_object_unit.c \
+		$(SRC)/kernel/edge_kvm_object.c include/kernel/edge_kvm_object.h
+	@mkdir -p $(OUT)/tests
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fno-builtin \
+		-DEDGEOS_HOST_TEST -iquote $(INC) \
+		tools/tests/edge_kvm_object_unit.c \
+		$(SRC)/kernel/edge_kvm_object.c \
+		-o $(OUT)/tests/edge_kvm_object_unit
+	@$(OUT)/tests/edge_kvm_object_unit
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fno-builtin \
+		-fsanitize=address,undefined -fno-omit-frame-pointer \
+		-DEDGEOS_HOST_TEST -iquote $(INC) \
+		tools/tests/edge_kvm_object_unit.c \
+		$(SRC)/kernel/edge_kvm_object.c \
+		-o $(OUT)/tests/edge_kvm_object_sanitize
+	@ASAN_OPTIONS=detect_leaks=0 $(OUT)/tests/edge_kvm_object_sanitize
+
+.PHONY: edge-kvm-object-cross-compile
+
+edge-kvm-object-cross-compile: syncconfig arm64-syncconfig
+	@mkdir -p $(OUT)/tests
+	@$(CC) -std=gnu11 -O2 -ffreestanding -fno-builtin \
+		-fno-stack-protector -Wall -Wextra -Werror \
+		-I$(INC) -I$(SRC) -include $(AUTOCONF_H) \
+		-c $(SRC)/kernel/edge_kvm_object.c \
+		-o $(OUT)/tests/edge_kvm_object_x86_64.o
+	@$(AARCH64_CC) -std=gnu11 -O2 -ffreestanding -fno-builtin \
+		-fno-stack-protector -mgeneral-regs-only -Wall -Wextra -Werror \
+		-I$(INC) -I$(SRC) -include $(ARM64_AUTOCONF_H) \
+		-c $(SRC)/kernel/edge_kvm_object.c \
+		-o $(OUT)/tests/edge_kvm_object_arm64.o
+	@printf 'edge_kvm_object_cross_compile: PASS\n'
+
+.PHONY: edge-kvm-abi-unit
+
+edge-kvm-abi-unit: tools/tests/edge_kvm_abi_unit.c \
+		$(SRC)/kernel/edge_kvm_capability.c \
+		include/kernel/edge_kvm_abi.h \
+		include/kernel/edge_kvm_capability.h
+	@mkdir -p $(OUT)/tests
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fno-builtin \
+		-iquote $(INC) tools/tests/edge_kvm_abi_unit.c \
+		$(SRC)/kernel/edge_kvm_capability.c \
+		-o $(OUT)/tests/edge_kvm_abi_unit
+	@$(OUT)/tests/edge_kvm_abi_unit
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fno-builtin \
+		-fsanitize=address,undefined -fno-omit-frame-pointer \
+		-iquote $(INC) tools/tests/edge_kvm_abi_unit.c \
+		$(SRC)/kernel/edge_kvm_capability.c \
+		-o $(OUT)/tests/edge_kvm_abi_sanitize
+	@ASAN_OPTIONS=detect_leaks=0 $(OUT)/tests/edge_kvm_abi_sanitize
+
+.PHONY: edge-kvm-facade-unit
+
+edge-kvm-facade-unit: tools/tests/edge_kvm_facade_unit.c \
+		$(SRC)/kernel/edge_kvm_capability.c \
+		$(SRC)/kernel/edge_kvm_facade.c \
+		$(SRC)/kernel/edge_kvm_object.c \
+		include/kernel/edge_kvm_abi.h \
+		include/kernel/edge_kvm_capability.h \
+		include/kernel/edge_kvm_facade.h \
+		include/kernel/edge_kvm_object.h
+	@mkdir -p $(OUT)/tests
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fno-builtin \
+		-DEDGEOS_HOST_TEST -iquote $(INC) \
+		tools/tests/edge_kvm_facade_unit.c \
+		$(SRC)/kernel/edge_kvm_capability.c \
+		$(SRC)/kernel/edge_kvm_facade.c \
+		$(SRC)/kernel/edge_kvm_object.c \
+		-o $(OUT)/tests/edge_kvm_facade_unit
+	@$(OUT)/tests/edge_kvm_facade_unit
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fno-builtin \
+		-fsanitize=address,undefined -fno-omit-frame-pointer \
+		-DEDGEOS_HOST_TEST -iquote $(INC) \
+		tools/tests/edge_kvm_facade_unit.c \
+		$(SRC)/kernel/edge_kvm_capability.c \
+		$(SRC)/kernel/edge_kvm_facade.c \
+		$(SRC)/kernel/edge_kvm_object.c \
+		-o $(OUT)/tests/edge_kvm_facade_sanitize
+	@ASAN_OPTIONS=detect_leaks=0 $(OUT)/tests/edge_kvm_facade_sanitize
 AUTOCONF_H := $(INC)/generated/autoconf.h
 VDSO_OUT := $(OUT)/vdso
 VDSO_GENERATED := $(OUT)/generated
@@ -389,6 +472,8 @@ CFLAGS += -I$(LWIP_DIR)/src/include
 BSD_DRIVER_MANIFEST_DIR := config/bsd_drivers/manifests
 BSD_DRIVER_CAPABILITY_DIR := config/bsd_drivers/capabilities
 BSD_DRIVER_MANIFESTS := $(sort $(wildcard $(BSD_DRIVER_MANIFEST_DIR)/*.json))
+BSD_VMM_MANIFEST_DIR := config/bsd_vmm/manifests
+BSD_VMM_MANIFESTS := $(sort $(wildcard $(BSD_VMM_MANIFEST_DIR)/*.json))
 BSD_DRIVER_CAPABILITY_REGISTRIES := \
 	$(sort $(wildcard $(BSD_DRIVER_CAPABILITY_DIR)/*.json))
 BSD_BRIDGE_GENERATED := $(OUT)/bsd_bridge/generated
@@ -1643,9 +1728,10 @@ bsd-bridge-block-unit: block-registry-unit tools/tests/bsd_bridge_block_unit.c $
 		-c $(SRC)/compat/freebsd/kern/block.c \
 		-o $(OUT)/tests/bsd_bridge_block_arm64.o
 
-bsd-bridge-source-gate: $(BSD_BRIDGE_BUILD_PLAN)
+bsd-bridge-source-gate: $(BSD_BRIDGE_BUILD_PLAN) $(BSD_VMM_MANIFESTS)
 	@python3 tools/bsd_bridge/verify_sources.py \
-		--manifest-dir $(BSD_DRIVER_MANIFEST_DIR)
+		--manifest-dir $(BSD_DRIVER_MANIFEST_DIR) \
+		--coverage-manifest-dir $(BSD_VMM_MANIFEST_DIR)
 
 bsd-driver-build-plan-check: $(BSD_BRIDGE_BUILD_PLAN)
 	python3 tools/bsd_bridge/generate_build_plan.py \
@@ -1662,7 +1748,8 @@ bsd-driver-package-registry-check: $(BSD_BRIDGE_GENERATED_STAMP)
 bsd-driver-manifest-check: bsd-driver-build-plan-check \
 		bsd-driver-package-registry-check
 	python3 tools/bsd_bridge/verify_sources.py \
-		--manifest-dir $(BSD_DRIVER_MANIFEST_DIR)
+		--manifest-dir $(BSD_DRIVER_MANIFEST_DIR) \
+		--coverage-manifest-dir $(BSD_VMM_MANIFEST_DIR)
 	python3 tools/tests/bsd_bridge_manifest_test.py
 
 bsd-driver-dependency-report:

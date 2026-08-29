@@ -260,6 +260,28 @@ config BSD_DRIVER_MODULE_CONFIG
 
 endmenu
 
+menu "Virtualization"
+
+config EDGE_KVM
+    bool "EdgeOS KVM compatibility layer"
+    depends on ARCH_X86_64 || ARCH_ARM64
+    default n
+    help
+      Expose an EdgeOS-owned Linux KVM ABI facade backed by the imported
+      FreeBSD vmm subsystem. The ABI layer advertises only capabilities that
+      the active hardware backend and translation layer implement.
+
+config EDGE_KVM_BHYVE
+    bool "FreeBSD vmm hardware backend"
+    depends on EDGE_KVM
+    default y
+    help
+      Build the FreeBSD vmm adaptation layer for AMD SVM, Intel VMX, and
+      ARM64 virtualization hardware. Vendored upstream files stay unmodified;
+      EdgeOS-specific integration belongs in separate adapter sources.
+
+endmenu
+
 menu "Boot options"
 
 config INITRAMFS

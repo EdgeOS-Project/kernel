@@ -37,7 +37,7 @@ def render_package_registry(
     ]
 
     for manifest in sorted(catalog["manifests"], key=lambda item: item["id"]):
-        if manifest["package_type"] == "headers":
+        if manifest["package_type"] != "driver":
             continue
         builtin_modules = sum(
             module["build"]["mode"] == "builtin"

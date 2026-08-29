@@ -196,6 +196,13 @@ EDGE_SHARED_SRCS += \
 	$(SRC)/fs/nfsd/nfsd_transport.c
 endif
 
+ifneq ($(filter y,$(CONFIG_EDGE_KVM) $(ARM64_CONFIG_EDGE_KVM)),)
+EDGE_SHARED_SRCS += \
+	$(SRC)/kernel/edge_kvm_capability.c \
+	$(SRC)/kernel/edge_kvm_facade.c \
+	$(SRC)/kernel/edge_kvm_object.c
+endif
+
 ifeq ($(CONFIG_FUSE_FS),y)
 EDGE_SHARED_SRCS += $(SRC)/fs/fuse/fuse.c
 endif

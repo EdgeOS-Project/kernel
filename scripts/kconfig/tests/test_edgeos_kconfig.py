@@ -48,6 +48,7 @@ class EdgeOSKconfigTests(unittest.TestCase):
             top_prompts,
             [
                 "General setup",
+                "Virtualization",
                 "Boot options",
                 "Processor type and features",
                 "Power management and ACPI options",

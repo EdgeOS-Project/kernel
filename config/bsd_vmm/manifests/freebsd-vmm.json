@@ -1,0 +1,47 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-vmm",
+  "provider": "freebsd",
+  "package_type": "subsystem",
+  "description": "Unmodified complete FreeBSD x86_64 and arm64 kernel vmm source baseline.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "VMM_KEEP_STATS"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/vmm",
+      "sys/amd64/vmm",
+      "sys/arm64/vmm"
+    ],
+    "file_count": 106,
+    "tree_sha256": "deb90563307f172e0e6a00265b4f47b49abbc5f648325a80cbc0a4fed10bfaea"
+  },
+  "generated_interfaces": [],
+  "modules": []
+}
