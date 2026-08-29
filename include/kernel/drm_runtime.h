@@ -11,13 +11,16 @@
 #define EDGE_DRM_CARD_PATH "/dev/dri/card0"
 
 #define EDGE_DRM_CAP_DUMB_BUFFER             0x01u
+#define EDGE_DRM_CAP_VBLANK_HIGH_CRTC        0x02u
 #define EDGE_DRM_CAP_DUMB_PREFERRED_DEPTH    0x03u
 #define EDGE_DRM_CAP_DUMB_PREFER_SHADOW      0x04u
 #define EDGE_DRM_CAP_PRIME                   0x05u
 #define EDGE_DRM_CAP_TIMESTAMP_MONOTONIC     0x06u
+#define EDGE_DRM_CAP_ASYNC_PAGE_FLIP         0x07u
 #define EDGE_DRM_CAP_CURSOR_WIDTH            0x08u
 #define EDGE_DRM_CAP_CURSOR_HEIGHT           0x09u
 #define EDGE_DRM_CAP_ADDFB2_MODIFIERS        0x10u
+#define EDGE_DRM_CAP_PAGE_FLIP_TARGET        0x11u
 #define EDGE_DRM_CAP_CRTC_IN_VBLANK_EVENT    0x12u
 #define EDGE_DRM_CAP_SYNCOBJ                 0x13u
 #define EDGE_DRM_CAP_SYNCOBJ_TIMELINE        0x14u

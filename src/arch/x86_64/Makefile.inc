@@ -6,6 +6,7 @@ X86_ARCH_SRCS := \
 	$(SRC)/arch/x86_64/kernel/pic.c \
 	$(SRC)/arch/x86_64/kernel/io_ports.c \
 	$(SRC)/arch/x86_64/kernel/cache.c \
+	$(SRC)/arch/x86_64/kernel/fpu.c \
 	$(SRC)/arch/x86_64/kernel/syscall.c \
 	$(SRC)/arch/x86_64/kernel/runtime.c \
 	$(SRC)/arch/x86_64/kernel/smp.c

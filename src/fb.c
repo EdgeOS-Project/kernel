@@ -1047,8 +1047,18 @@ void fb_user_mmap_tick(uint32_t ticks) {
      * shadow diff below covers the remaining case where a vCPU writes through a
      * stale writable TLB entry before EdgeOS grows Linux-grade remote shootdown.
      */
-    if (!arch_vm_write_notify_supported())
-        fb_user_mmap_shadow_scan(now_us);
+    /*
+     * Write notification is the primary damage source, but it cannot be the
+     * only source for a transferred framebuffer.  A userspace mapping can
+     * retain a writable translation across the write-protect boundary when a
+     * CPU races the broadcast invalidation.  Native scanout would still show
+     * those stores immediately; a resource-backed display would otherwise
+     * remain stale indefinitely.  Keep the bounded shadow verifier active on
+     * every architecture so the explicit-present backend has the same visible
+     * contract even when one notification is lost.  The verifier scans only a
+     * fixed row band per frame and submits nothing when the pixels are equal.
+     */
+    fb_user_mmap_shadow_scan(now_us);
 
     /*
      * Linux fbdev mmap exposes scanout memory: once userspace stores pixels,

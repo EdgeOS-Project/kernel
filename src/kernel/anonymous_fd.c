@@ -111,6 +111,8 @@ static int anonymous_fd_object_is_live(
         return kernel_bpf_ringbuf_poll_state(
                    object_id, &readable, &writable) == 0;
     }
+    if (kind == KERNEL_ANONYMOUS_FD_DRM_SYNC)
+        return object_id > 0;
     return 0;
 }
 
@@ -169,6 +171,10 @@ void kernel_bpf_ringbuf_state_changed(void) {
      */
     g_backend_ops->state_changed(
         g_backend_context, KERNEL_ANONYMOUS_FD_BPF, -1);
+}
+
+void kernel_drm_sync_state_changed(int32_t object_id) {
+    anonymous_fd_state_changed(KERNEL_ANONYMOUS_FD_DRM_SYNC, object_id);
 }
 
 int kernel_posix_mq_deliver_notification(int32_t target_tgid,

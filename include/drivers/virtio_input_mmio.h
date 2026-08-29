@@ -7,6 +7,7 @@
 
 int edgeos_arm64_virtio_input_init(const edgeos_arm64_bootinfo_t *bootinfo);
 int edgeos_arm64_virtio_input_enable_interrupts(void);
+int virtio_input_pending(void);
 void virtio_input_poll(void);
 int virtio_input_getchar(void);
 int virtio_input_haschar(void);

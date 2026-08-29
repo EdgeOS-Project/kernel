@@ -906,6 +906,7 @@ void syscall_init(void) {
     process_register_task_exit_hook(syscall_task_exit_cleanup);
     process_register_task_zombie_hook(syscall_task_zombie_cleanup);
     vfs_mount_namespace_set_change_notifier(fd_mount_event_notify);
+    console_active_vt_notifier_register(fd_console_active_event_notify);
     isr_register_interrupt_handler(128, edgeos_x86_64_syscall_dispatch);
     edgeos_x86_64_syscall_init();
 }

@@ -525,6 +525,9 @@ static void console_putchar_internal(int vt, char ch) {
 // ===== Backend selection =====
 void console_set_backend(const console_backend_t* be) { g_be = be; }
 
+static volatile uint32_t g_console_active_vt_generation = 1u;
+static console_active_vt_notifier_fn g_console_active_vt_notifier;
+
 // ===== Basic console control =====
 void console_init(uint32_t fore_color, uint32_t back_color) {
     if (g_be && g_be->init) g_be->init(fore_color, back_color);
@@ -553,12 +556,35 @@ void console_clear(uint32_t fore_color, uint32_t back_color) {
 }
 
 void console_activate_vt(int vt) {
+    int previous = console_current_vt();
+    uint32_t generation;
+
     vt = console_clamp_vt(vt);
     if (console_is_fb_backend()) fb_console_activate_vt(vt);
+    if (vt == previous) return;
+    generation = __atomic_add_fetch(
+        &g_console_active_vt_generation, 1u, __ATOMIC_RELEASE);
+    if (!generation) {
+        __atomic_store_n(&g_console_active_vt_generation, 1u,
+                         __ATOMIC_RELEASE);
+        generation = 1u;
+    }
+    if (g_console_active_vt_notifier)
+        g_console_active_vt_notifier(generation);
 }
 
 int console_get_active_vt(void) {
     return console_current_vt();
+}
+
+uint32_t console_active_vt_generation(void) {
+    return __atomic_load_n(&g_console_active_vt_generation,
+                           __ATOMIC_ACQUIRE);
+}
+
+void console_active_vt_notifier_register(
+        console_active_vt_notifier_fn notifier) {
+    g_console_active_vt_notifier = notifier;
 }
 
 void console_putchar_vt(int vt, char ch) {

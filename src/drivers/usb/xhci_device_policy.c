@@ -380,3 +380,14 @@ uint64_t xhci_device_retry_delay_us(uint8_t failure_count) {
 int xhci_device_retry_permitted(uint8_t failure_count) {
     return failure_count < XHCI_DEVICE_MAX_FAILURES;
 }
+
+int xhci_device_disconnect_update(uint8_t *observations, int connected) {
+    if (!observations) return 0;
+    if (connected) {
+        *observations = 0;
+        return 0;
+    }
+    if (*observations < XHCI_DEVICE_DISCONNECT_CONFIRMATIONS)
+        ++*observations;
+    return *observations >= XHCI_DEVICE_DISCONNECT_CONFIRMATIONS;
+}

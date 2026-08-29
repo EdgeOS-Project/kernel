@@ -31,6 +31,9 @@ void console_kernel_log_on(void);
 int console_kernel_log_set_level(int level);
 void console_activate_vt(int vt);
 int console_get_active_vt(void);
+uint32_t console_active_vt_generation(void);
+typedef void (*console_active_vt_notifier_fn)(uint32_t generation);
+void console_active_vt_notifier_register(console_active_vt_notifier_fn notifier);
 void console_set_kernel_log_timestamps(int enabled);
 
 void printf(const char *format, ...);

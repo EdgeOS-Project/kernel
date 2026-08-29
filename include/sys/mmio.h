@@ -42,9 +42,27 @@
 #define EDGE_PCI_MMIO_HIGH_BASE ((uint64_t)EDGE_PCI_MMIO_HIGH_PML4_INDEX << 39)
 #define EDGE_PCI_MMIO_HIGH_SIZE (512ULL * 1024ULL * 1024ULL * 1024ULL)
 
+/*
+ * SeaBIOS on the i440FX machine places 64-bit PCI BARs in the 14 TiB
+ * aperture.  That physical range overlaps the user sparse-mmap virtual
+ * window, so expose it through a separate supervisor-only alias instead of
+ * installing an identity mapping.
+ */
+#define EDGE_PCI_MMIO_I440FX_PHYS_BASE 0x00000E0000000000ULL
+#define EDGE_PCI_MMIO_I440FX_SIZE (512ULL * 1024ULL * 1024ULL * 1024ULL)
+#define EDGE_PCI_MMIO_I440FX_ALIAS_PML4_INDEX 0x73u
+#define EDGE_PCI_MMIO_I440FX_ALIAS_BASE \
+    ((uint64_t)EDGE_PCI_MMIO_I440FX_ALIAS_PML4_INDEX << 39)
+
 static inline uintptr_t edge_mmio_low_alias(uint64_t phys) {
     if (phys < EDGE_MMIO_LOW_ALIAS_SIZE) {
         return (uintptr_t)(EDGE_MMIO_LOW_ALIAS_BASE + phys);
+    }
+    if (phys >= EDGE_PCI_MMIO_I440FX_PHYS_BASE &&
+        phys < EDGE_PCI_MMIO_I440FX_PHYS_BASE +
+            EDGE_PCI_MMIO_I440FX_SIZE) {
+        return (uintptr_t)(EDGE_PCI_MMIO_I440FX_ALIAS_BASE +
+            (phys - EDGE_PCI_MMIO_I440FX_PHYS_BASE));
     }
     return (uintptr_t)phys;
 }
@@ -56,6 +74,11 @@ static inline int edge_mmio_phys_range_mapped(uint64_t phys, uint64_t size) {
     if (end < EDGE_MMIO_LOW_ALIAS_SIZE) return 1;
     if (phys >= EDGE_PCI_MMIO_HIGH_BASE &&
         end < EDGE_PCI_MMIO_HIGH_BASE + EDGE_PCI_MMIO_HIGH_SIZE) {
+        return 1;
+    }
+    if (phys >= EDGE_PCI_MMIO_I440FX_PHYS_BASE &&
+        end < EDGE_PCI_MMIO_I440FX_PHYS_BASE +
+            EDGE_PCI_MMIO_I440FX_SIZE) {
         return 1;
     }
     return 0;

@@ -42,6 +42,7 @@ int main(void) {
     int wheel;
     int wheel_present;
     uint8_t buttons;
+    uint8_t disconnect_observations = 0;
 
     set_interface(configuration, 9, 8, 6, 0x50);
     set_interface(configuration, 18, 3, 1, 2);
@@ -104,5 +105,22 @@ int main(void) {
     assert(xhci_device_retry_permitted(2));
     assert(!xhci_device_retry_permitted(3));
     assert(!xhci_device_retry_permitted(255));
+    assert(!xhci_device_disconnect_update(
+        &disconnect_observations, 0));
+    assert(disconnect_observations == 1);
+    assert(!xhci_device_disconnect_update(
+        &disconnect_observations, 1));
+    assert(disconnect_observations == 0);
+    assert(!xhci_device_disconnect_update(
+        &disconnect_observations, 0));
+    assert(!xhci_device_disconnect_update(
+        &disconnect_observations, 0));
+    assert(xhci_device_disconnect_update(
+        &disconnect_observations, 0));
+    assert(disconnect_observations ==
+           XHCI_DEVICE_DISCONNECT_CONFIRMATIONS);
+    assert(xhci_device_disconnect_update(
+        &disconnect_observations, 0));
+    assert(!xhci_device_disconnect_update(0, 0));
     return 0;
 }

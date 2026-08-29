@@ -17,6 +17,7 @@
 
 int virtio_input_init(void);
 int virtio_input_is_ready(void);
+int virtio_input_pending(void);
 void virtio_input_poll(void);
 
 #endif

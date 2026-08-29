@@ -294,26 +294,41 @@ static const cgroupfs_interface_t g_cgroup_interfaces[] = {
 
 static cgroupfs_state_t g_cgroupfs;
 static vfs_superblock_t g_cgroupfs_sb;
-static volatile uint32_t g_cgroupfs_lock;
+typedef struct {
+    spinlock_t spin;
+    uint64_t irq_flags;
+} cgroupfs_lock_t;
+
+static cgroupfs_lock_t g_cgroupfs_lock;
 static spinlock_t g_cgroupfs_memory_lock;
-static volatile uint32_t g_cgroupfs_snapshot_lock;
+static cgroupfs_lock_t g_cgroupfs_snapshot_lock;
 static char g_cgroupfs_snapshot[CGROUPFS_SNAPSHOT_CAPACITY];
 static char g_cgroupfs_event_path[VFS_PATH_MAX];
 
 static void cgroupfs_rebuild_task_counts_locked(void);
 
-static void cgroupfs_lock(volatile uint32_t *lock) {
-    while (__sync_lock_test_and_set(lock, 1u)) {
-        while (*lock) __asm__ __volatile__("" ::: "memory");
-    }
+static void cgroupfs_lock(cgroupfs_lock_t *lock) {
+    uint64_t flags;
+
+    if (!lock) return;
+    flags = spin_lock_irqsave(&lock->spin);
+    lock->irq_flags = flags;
 }
 
-static int cgroupfs_try_lock(volatile uint32_t *lock) {
-    return __sync_lock_test_and_set(lock, 1u) == 0u;
+static int cgroupfs_try_lock(cgroupfs_lock_t *lock) {
+    uint64_t flags;
+
+    if (!lock || !spin_trylock_irqsave(&lock->spin, &flags)) return 0;
+    lock->irq_flags = flags;
+    return 1;
 }
 
-static void cgroupfs_unlock(volatile uint32_t *lock) {
-    __sync_lock_release(lock);
+static void cgroupfs_unlock(cgroupfs_lock_t *lock) {
+    uint64_t flags;
+
+    if (!lock) return;
+    flags = lock->irq_flags;
+    spin_unlock_irqrestore(&lock->spin, flags);
 }
 
 static uint32_t cgroupfs_now(void) {

@@ -88,6 +88,7 @@
 #include "kernel/pipe_runtime.h"
 #include "kernel/pty_runtime.h"
 #include "kernel/process_runtime.h"
+#include "kernel/proc_maps.h"
 #include "kernel/clone_runtime.h"
 #include "kernel/aio_runtime.h"
 #include "kernel/io_uring_runtime.h"
@@ -1539,6 +1540,7 @@ typedef enum {
     FD_BPF,
     FD_SECCOMP,
     FD_ZCRX,
+    FD_DRM_SYNC,
 } edge_fd_kind_t;
 
 typedef struct {
@@ -2985,6 +2987,11 @@ static int fd_mount_monitor_pending(const edge_fd_t *e);
 static void fd_mount_monitor_acknowledge(edge_fd_t *e);
 static int fd_is_mount_event_source(const edge_fd_t *e);
 static void fd_mount_event_notify(uint32_t namespace_id);
+static void fd_console_active_monitor_initialize(edge_fd_t *e);
+static int fd_is_console_active_event_source(const edge_fd_t *e);
+static int fd_console_active_monitor_pending(const edge_fd_t *e);
+static void fd_console_active_monitor_acknowledge(edge_fd_t *e);
+static void fd_console_active_event_notify(uint32_t generation);
 static uint64_t fd_description_offset(const edge_fd_t *e);
 static void fd_description_set_offset(edge_fd_t *e, uint64_t offset);
 static void fd_description_advance(edge_fd_t *e, uint64_t amount);

@@ -33,6 +33,9 @@ void kernel_input_work_request(void);
 int kernel_input_work_pending(void);
 int kernel_input_work_take(void);
 
+/* Wake architecture scheduler context after an idle-to-pending transition. */
+void kernel_arch_input_work_request(void);
+
 /* General work remains on the bootstrap CPU; display and input do not. */
 int kernel_deferred_work_service_pending(uint32_t cpu_id);
 

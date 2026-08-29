@@ -148,6 +148,7 @@ typedef struct {
     uint8_t port_to_slot[256];
     uint64_t port_retry_after_us[256];
     uint8_t port_failure_count[256];
+    uint8_t port_disconnect_observations[256];
     xhci_slot_state_t slots[XHCI_MAX_TRACKED_SLOTS + 1u];
     input_device_description_t input_description[EDGE_INPUT_DEVICE_MAX];
     uint16_t port_poll_countdown;

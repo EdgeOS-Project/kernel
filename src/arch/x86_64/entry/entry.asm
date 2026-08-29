@@ -34,9 +34,11 @@ header_end:
 %define IA32_EFER_MSR      0xC0000080
 %define IA32_EFER_LME      (1 << 8)
 %define PAGE_PRESENT_WRITE 0x003
+%define PAGE_PCD           0x010
 %define PAGE_PS            0x080
 %define EDGE_MMIO_LOW_ALIAS_PML4_IDX 0x71
 %define EDGE_MMIO_LOW_ALIAS_PML4_COUNT 2
+%define EDGE_PCI_MMIO_I440FX_ALIAS_PML4_IDX 0x73
 
 
 section .bootstrap.text
@@ -51,6 +53,7 @@ global pd_table2
 global pd_table3
 global pd_table4
 global pdpt_table_pci_mmio
+global pdpt_table_pci_mmio_i440fx_alias
 global pdpt_table_mmio_low_alias
 extern kmain
 
@@ -78,6 +81,11 @@ _start:
     rep stosd
 
     mov edi, pdpt_table_pci_mmio
+    mov ecx, 4096/4
+    xor eax, eax
+    rep stosd
+
+    mov edi, pdpt_table_pci_mmio_i440fx_alias
     mov ecx, 4096/4
     xor eax, eax
     rep stosd
@@ -115,6 +123,14 @@ _start:
     or eax, PAGE_PRESENT_WRITE
     mov [pml4_table + 0x70*8], eax
     mov dword [pml4_table + 0x70*8 + 4], 0
+
+    ; SeaBIOS on i440FX places 64-bit PCI BARs at 14TiB.  That virtual
+    ; address belongs to userspace, so map the physical aperture through a
+    ; supervisor-only alias instead of an identity mapping.
+    mov eax, pdpt_table_pci_mmio_i440fx_alias
+    or eax, PAGE_PRESENT_WRITE
+    mov [pml4_table + EDGE_PCI_MMIO_I440FX_ALIAS_PML4_IDX*8], eax
+    mov dword [pml4_table + EDGE_PCI_MMIO_I440FX_ALIAS_PML4_IDX*8 + 4], 0
 
     ; Supervisor-only linear alias for the first 1TiB of physical MMIO.
     ; This avoids collisions with Linux userspace low mmap addresses once
@@ -254,7 +270,7 @@ _start:
     mov eax, ecx
     and eax, 3
     shl eax, 30
-    or eax, PAGE_PRESENT_WRITE | PAGE_PS
+    or eax, PAGE_PRESENT_WRITE | PAGE_PCD | PAGE_PS
     mov [pdpt_table_pci_mmio + ecx*8], eax
     mov edx, ecx
     shr edx, 2
@@ -263,6 +279,21 @@ _start:
     inc ecx
     cmp ecx, 512
     jne .map_pci_mmio_pdpt
+
+    xor ecx, ecx
+.map_pci_mmio_i440fx_alias_pdpt:
+    mov eax, ecx
+    and eax, 3
+    shl eax, 30
+    or eax, PAGE_PRESENT_WRITE | PAGE_PCD | PAGE_PS
+    mov [pdpt_table_pci_mmio_i440fx_alias + ecx*8], eax
+    mov edx, ecx
+    shr edx, 2
+    add edx, 0xe00
+    mov [pdpt_table_pci_mmio_i440fx_alias + ecx*8 + 4], edx
+    inc ecx
+    cmp ecx, 512
+    jne .map_pci_mmio_i440fx_alias_pdpt
 
     xor ecx, ecx
 .map_mmio_low_alias_pdpt:
@@ -369,6 +400,8 @@ align 4096
 pdpt_table_raw_high: resb 4096
 align 4096
 pdpt_table_pci_mmio: resb 4096
+align 4096
+pdpt_table_pci_mmio_i440fx_alias: resb 4096
 align 4096
 pdpt_table_mmio_low_alias: resb 4096*EDGE_MMIO_LOW_ALIAS_PML4_COUNT
 align 4096

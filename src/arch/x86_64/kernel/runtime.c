@@ -2,6 +2,7 @@
 /* x86-64 adapters for architecture-neutral kernel interfaces. */
 
 #include <stdint.h>
+#include "arch/x86_64/fpu.h"
 #include "arch/x86_64/page_table.h"
 #include "arch/x86_64/user_layout.h"
 #include "dev/alsa.h"
@@ -469,12 +470,7 @@ int arch_cpu_proc_info(char *buffer, uint32_t capacity) {
         cpuinfo_append(buffer, capacity, &length,
             "\nfpu\t\t: yes\nfpu_exception\t: yes\n"
             "flags\t\t: fpu tsc msr pae cx8 cmov pat clflush fxsr sse sse2") < 0 ||
-        /*
-         * FXSAVE/FXRSTOR preserve x87, MMX, and all x86-64 XMM registers, so
-         * these CPUID features are safe for userspace.  AVX-family features
-         * deliberately remain absent until the scheduler saves the extended
-         * XSAVE state and the kernel enables OSXSAVE/XCR0.
-         */
+        /* Report only state components enabled and preserved by the kernel. */
         cpuinfo_append_flag(buffer, capacity, &length,
                             basic_edx & (1u << 23), "mmx") < 0 ||
         cpuinfo_append_flag(buffer, capacity, &length,
@@ -497,6 +493,14 @@ int arch_cpu_proc_info(char *buffer, uint32_t capacity) {
                             basic_ecx & (1u << 25), "aes") < 0 ||
         cpuinfo_append_flag(buffer, capacity, &length,
                             basic_ecx & (1u << 30), "rdrand") < 0 ||
+        cpuinfo_append_flag(buffer, capacity, &length,
+                            x86_fpu_xsave_enabled(), "xsave") < 0 ||
+        cpuinfo_append_flag(buffer, capacity, &length,
+                            x86_fpu_xsave_enabled(), "osxsave") < 0 ||
+        cpuinfo_append_flag(buffer, capacity, &length,
+                            x86_fpu_xsave_enabled() &&
+                            (x86_fpu_enabled_features() & (1ull << 2)),
+                            "avx") < 0 ||
         cpuinfo_append(buffer, capacity, &length,
             " syscall nx lm\nphysical id\t: ") < 0 ||
         cpuinfo_append_u32(buffer, capacity, &length,

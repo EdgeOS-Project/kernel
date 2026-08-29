@@ -740,6 +740,7 @@ typedef enum {
     KERNEL_TASK_WAITING_VT,
     KERNEL_TASK_WAITING_FUSE,
     KERNEL_TASK_WAITING_FUSE_REPLY,
+    KERNEL_TASK_WAITING_RUNTIME_SEQUENCE,
     KERNEL_TASK_STOPPED,
     KERNEL_TASK_ZOMBIE,
 } arm64_task_state_t;
@@ -904,6 +905,7 @@ static uint32_t g_fd_table_reserve_count;
 #define KERNEL_FD_BPF 27u
 #define KERNEL_FD_SECCOMP 28u
 #define KERNEL_FD_ZCRX 29u
+#define KERNEL_FD_DRM_SYNC 30u
 
 #define ARM64_EPOLL_SOURCE_FILE_KMSG          0x00000001u
 #define ARM64_EPOLL_SOURCE_FILE_DRM_CARD      0x00000002u
@@ -1009,6 +1011,9 @@ typedef struct {
     uint64_t signalfd_read_buffer;
     uint64_t signalfd_read_length;
     uint64_t fuse_wait_identity;
+    volatile uint64_t *runtime_wait_sequence;
+    uint64_t runtime_wait_observed;
+    uint64_t runtime_wait_deadline_us;
     uint16_t fuse_client_target_plus_one;
     uint64_t futex_key;
     uint64_t futex_deadline_us;
@@ -2327,6 +2332,7 @@ static void arm64_description_detach(void *context, uint64_t identity) {
     (void)context;
     input_device_release_description(identity);
     kernel_epoll_detach_description(identity);
+    kernel_proc_maps_description_release(identity);
 }
 
 static void arm64_description_release_path(void *context, void *payload) {
@@ -2426,6 +2432,63 @@ static void fd_description_mount_initialize(bootstrap_fd_t *fd,
         arm64_description_locator(fd->open_description_id),
         namespace_id,
         vfs_mount_namespace_event_generation(namespace_id));
+}
+
+static int fd_is_console_active_event_path(const bootstrap_fd_t *fd) {
+    return fd && fd->kind == KERNEL_FD_FILE &&
+           strcmp(fd->path, "/sys/class/tty/tty0/active") == 0;
+}
+
+static void fd_description_notify_initialize(bootstrap_fd_t *fd) {
+    if (!fd_is_console_active_event_path(fd) ||
+        !fd->open_description_id)
+        return;
+    (void)kernel_file_description_notify_bind(
+        arm64_description_locator(fd->open_description_id),
+        KERNEL_FILE_DESCRIPTION_NOTIFY_CONSOLE_ACTIVE,
+        console_active_vt_generation());
+}
+
+static int fd_description_notify_snapshot(
+        const bootstrap_fd_t *fd, uint32_t *source,
+        uint32_t *observed_generation) {
+    uint32_t ignored_source;
+    uint32_t ignored_generation;
+
+    if (!fd || fd->kind != KERNEL_FD_FILE ||
+        !fd->open_description_id)
+        return 0;
+    if (!source) source = &ignored_source;
+    if (!observed_generation) observed_generation = &ignored_generation;
+    return kernel_file_description_notify_snapshot(
+               arm64_description_locator(fd->open_description_id),
+               source, observed_generation) == 0;
+}
+
+static int fd_notify_monitor_pending(const bootstrap_fd_t *fd) {
+    uint32_t source;
+    uint32_t observed_generation;
+
+    if (!fd_description_notify_snapshot(
+            fd, &source, &observed_generation))
+        return 0;
+    if (source != KERNEL_FILE_DESCRIPTION_NOTIFY_CONSOLE_ACTIVE)
+        return 0;
+    return observed_generation != console_active_vt_generation();
+}
+
+static void fd_notify_monitor_acknowledge(bootstrap_fd_t *fd) {
+    uint32_t source;
+    uint32_t observed_generation;
+
+    if (!fd_description_notify_snapshot(
+            fd, &source, &observed_generation))
+        return;
+    (void)observed_generation;
+    if (source == KERNEL_FILE_DESCRIPTION_NOTIFY_CONSOLE_ACTIVE)
+        (void)kernel_file_description_notify_acknowledge(
+            arm64_description_locator(fd->open_description_id), source,
+            console_active_vt_generation());
 }
 
 static int fd_description_mount_snapshot(
@@ -4531,8 +4594,36 @@ static void fbdev_refresh_mmap_ownership(void) {
     uint64_t physical_offset;
     uint64_t framebuffer_size;
     uint32_t physical_pages;
+    int fd_live = 0;
 
     if (!fb_user_mmap_active()) return;
+    /*
+     * A Linux fbdev owner may temporarily tear down and rebuild its mapping
+     * while retaining the open device.  Xorg does this while probing fbdev
+     * geometry and selecting its final screen layout.  Keep the deferred
+     * presenter alive until both the framebuffer mapping and every open fbdev
+     * descriptor are gone; otherwise the later ShadowFB stores remain in the
+     * VirtIO-GPU backing buffer and the host keeps displaying the text VT.
+     */
+    for (uint32_t task_index = 0;
+         task_index < g_task_high_water && !fd_live;
+         ++task_index) {
+        kernel_task_t *task = &g_tasks[task_index];
+
+        if (task->state == KERNEL_TASK_UNUSED ||
+            task->state == KERNEL_TASK_ZOMBIE || !task->fds)
+            continue;
+        for (uint32_t descriptor = 0;
+             descriptor < KERNEL_BOOTSTRAP_FD_MAX;
+             ++descriptor) {
+            if (fd_slot_is_open(task, descriptor) &&
+                task->fds[descriptor].kind == KERNEL_FD_FBDEV) {
+                fd_live = 1;
+                break;
+            }
+        }
+    }
+    if (fd_live) return;
     if (!fb_get_2m_phys_window(&physical_base, &physical_pages,
                                &physical_offset))
         return;
@@ -5319,6 +5410,15 @@ static void task_interrupt_wait_for_signal(kernel_task_t *task,
             task->frame.x[0] = (uint64_t)(int64_t)-LINUX_EINTR;
             task_state_set(task, KERNEL_TASK_RUNNABLE);
             return;
+        case KERNEL_TASK_WAITING_RUNTIME_SEQUENCE:
+            task->runtime_wait_sequence = 0;
+            task->runtime_wait_observed = 0;
+            task->runtime_wait_deadline_us = 0;
+            if (task->frame.elr <= UINT64_MAX - 4u)
+                task->frame.elr += 4u;
+            task->frame.x[0] = (uint64_t)(int64_t)-LINUX_EINTR;
+            task_state_set(task, KERNEL_TASK_RUNNABLE);
+            return;
         default:
             return;
     }
@@ -5572,6 +5672,45 @@ int arch_runtime_yield(void) {
         }
     }
     task_resume_next();
+}
+
+int arch_runtime_wait_sequence(volatile uint64_t *sequence,
+                               uint64_t observed,
+                               uint64_t deadline_microseconds) {
+    kernel_task_t *task = current_task();
+    arch_user_frame_t *frame = task ? task->active_syscall_frame : 0;
+
+    if (!sequence ||
+        __atomic_load_n(sequence, __ATOMIC_ACQUIRE) != observed)
+        return 1;
+    if (!task || !frame || frame->elr < 4u) return 0;
+    arch_copy_frame(&task->frame, frame);
+    task->frame.elr -= 4u;
+    task->runtime_wait_sequence = sequence;
+    task->runtime_wait_observed = observed;
+    task->runtime_wait_deadline_us = deadline_microseconds;
+    task_state_set(task, KERNEL_TASK_WAITING_RUNTIME_SEQUENCE);
+    if (__atomic_load_n(sequence, __ATOMIC_ACQUIRE) != observed)
+        task_state_set(task, KERNEL_TASK_RUNNABLE);
+    task_resume_next();
+}
+
+void arch_runtime_notify_sequence(volatile uint64_t *sequence) {
+    if (!g_tasks || !sequence) return;
+    for (uint32_t index = 0; index < g_task_high_water; ++index) {
+        kernel_task_t *task = &g_tasks[index];
+
+        if (task_state_shadow_at(index) !=
+                KERNEL_TASK_WAITING_RUNTIME_SEQUENCE ||
+            task->runtime_wait_sequence != sequence)
+            continue;
+        task->runtime_wait_sequence = 0;
+        task->runtime_wait_observed = 0;
+        task->runtime_wait_deadline_us = 0;
+        task_state_set(task, KERNEL_TASK_RUNNABLE);
+        if (!g_reschedule_target_plus_one)
+            g_reschedule_target_plus_one = (uint16_t)(index + 1u);
+    }
 }
 
 void scheduler_yield(void) {
@@ -6857,6 +6996,7 @@ static __attribute__((noreturn)) void task_resume_next(void) {
         if (logical_cpu == 0u && kernel_deferred_work_take())
             ready_work |= KERNEL_DEFERRED_WORK_GENERAL;
         if (ready_work & KERNEL_DEFERRED_WORK_INPUT) {
+            virtio_input_poll();
             if (input_events_changed()) {
                 input_wake_readers();
                 poll_wake_waiters();
@@ -8971,6 +9111,7 @@ static int fd_allocate_file_reserved(
             task->fds[fd].sb = vfs_superblock_stable(sb);
             task->fds[fd].mount_id = sb ? sb->mount_id : 0;
             fd_description_mount_initialize(&task->fds[fd], task->pid);
+            fd_description_notify_initialize(&task->fds[fd]);
             return fd;
         }
     }
@@ -9577,6 +9718,7 @@ int arch_vfs_describe_descriptor(int32_t descriptor,
         file->kind == KERNEL_FD_PERF_EVENT ||
         file->kind == KERNEL_FD_SIGNALFD ||
         file->kind == KERNEL_FD_DMA_BUF ||
+        file->kind == KERNEL_FD_DRM_SYNC ||
         file->kind == KERNEL_FD_MOUNT ||
         file->kind == KERNEL_FD_MQUEUE ||
         file->kind == KERNEL_FD_IO_URING ||
@@ -10444,6 +10586,9 @@ static int arm64_anonymous_fd_install(
     case KERNEL_ANONYMOUS_FD_ZCRX:
         local_kind = KERNEL_FD_ZCRX;
         break;
+    case KERNEL_ANONYMOUS_FD_DRM_SYNC:
+        local_kind = KERNEL_FD_DRM_SYNC;
+        break;
     default:
         return -LINUX_EINVAL;
     }
@@ -10461,6 +10606,8 @@ static int arm64_anonymous_fd_install(
         entry->timer_index = (uint8_t)object_id;
     else if (kind == KERNEL_ANONYMOUS_FD_PRIME)
         entry->pipe_index = (uint16_t)object_id;
+    else if (kind == KERNEL_ANONYMOUS_FD_DRM_SYNC)
+        entry->event_index = (uint16_t)object_id;
     else
         entry->event_index = (uint16_t)object_id;
     entry->status_flags = status_flags;
@@ -10535,6 +10682,9 @@ static int arm64_anonymous_fd_object_id(
     case KERNEL_ANONYMOUS_FD_ZCRX:
         expected = KERNEL_FD_ZCRX;
         break;
+    case KERNEL_ANONYMOUS_FD_DRM_SYNC:
+        expected = KERNEL_FD_DRM_SYNC;
+        break;
     default:
         return -LINUX_EINVAL;
     }
@@ -10548,6 +10698,8 @@ static int arm64_anonymous_fd_object_id(
         return entry->timer_index;
     if (kind == KERNEL_ANONYMOUS_FD_PRIME)
         return entry->pipe_index;
+    if (kind == KERNEL_ANONYMOUS_FD_DRM_SYNC)
+        return entry->event_index;
     return entry->event_index;
 }
 
@@ -10570,6 +10722,8 @@ static void anonymous_fd_runtime_state_changed(
         /* Queue transitions only need the common poll/select wake pass. */
     } else if (kind == KERNEL_ANONYMOUS_FD_BPF) {
         /* Readiness is re-evaluated by the common poll/select wake pass. */
+    } else if (kind == KERNEL_ANONYMOUS_FD_DRM_SYNC) {
+        /* Completed GPU fences must wake poll and epoll owners. */
     } else {
         return;
     }
@@ -10919,6 +11073,11 @@ static int fd_retain_backing_object(const bootstrap_fd_t *fd) {
     }
     if (fd->kind == KERNEL_FD_DMA_BUF) {
         result = edge_drm_prime_retain(fd->pipe_index);
+        return result < 0 ?
+            (result == -1 ? -LINUX_EBADF : result) : 0;
+    }
+    if (fd->kind == KERNEL_FD_DRM_SYNC) {
+        result = edge_virtgpu_sync_file_retain(fd->event_index);
         return result < 0 ?
             (result == -1 ? -LINUX_EBADF : result) : 0;
     }
@@ -15856,7 +16015,8 @@ static int64_t fd_splice_read_kernel(kernel_task_t *task,
         int received = EDGE_MEMDEV_NOT_HANDLED;
         if (fd->secret_memory) return -LINUX_EINVAL;
         if ((fd->status_flags & 3u) == 1u) return -LINUX_EBADF;
-        if (!fd->sb || !fd->sb->ops || !fd->sb->ops->read)
+        if (!fd->sb || !fd->sb->ops ||
+            (!fd->sb->ops->read && !fd->sb->ops->read_description))
             return -LINUX_EINVAL;
         if (position > UINT32_MAX) return -LINUX_EINVAL;
         if ((fd->inode.mode & 0xf000u) == VFS_INODE_CHR)
@@ -15864,15 +16024,17 @@ static int64_t fd_splice_read_kernel(kernel_task_t *task,
                 fd->inode.rdev, fd->open_description_id,
                 buffer, length);
         if (received == EDGE_MEMDEV_NOT_HANDLED)
-            received = fd->sb->ops->read(fd->sb, &fd->inode,
-                                         (uint32_t)position,
-                                         buffer, length);
+            received = vfs_read_description(
+                fd->sb, &fd->inode, fd->open_description_id,
+                (uint32_t)position, buffer, length);
         if (received < 0) return received;
         if ((fd->inode.mode & 0xf000u) == VFS_INODE_FILE)
             file_page_overlay_read(fd->sb, &fd->inode, position,
                                    buffer, (uint32_t)received);
         if (explicit_offset) *offset += (uint32_t)received;
         else fd_description_advance(fd, (uint32_t)received);
+        if (received > 0 && fd_description_notify_snapshot(fd, 0, 0))
+            fd_notify_monitor_acknowledge(fd);
         return received;
     }
     if (fd->kind == KERNEL_FD_SOCKET) {
@@ -16653,6 +16815,8 @@ static void fd_drop_backing_object(bootstrap_fd_t *fd) {
         kernel_timerfd_release(fd->timer_index);
     if (fd->kind == KERNEL_FD_DMA_BUF)
         edge_drm_prime_release(fd->pipe_index);
+    if (fd->kind == KERNEL_FD_DRM_SYNC)
+        edge_virtgpu_sync_file_release(fd->event_index);
     if (fd->kind == KERNEL_FD_MOUNT)
         kernel_mount_api_release((int)fd->mount_id);
     if (fd->kind == KERNEL_FD_MQUEUE)
@@ -16895,6 +17059,10 @@ static int fd_file_lock_information(kernel_task_t *task,
             case KERNEL_FD_DMA_BUF:
                 object_class = EDGE_FILE_LOCK_OBJECT_ANONYMOUS;
                 object_identity = fd->pipe_index;
+                break;
+            case KERNEL_FD_DRM_SYNC:
+                object_class = EDGE_FILE_LOCK_OBJECT_ANONYMOUS;
+                object_identity = fd->event_index;
                 break;
             case KERNEL_FD_NAMESPACE:
                 object_class = EDGE_FILE_LOCK_OBJECT_NAMESPACE;
@@ -17560,6 +17728,9 @@ static int arm64_epoll_source_encode(
         case KERNEL_FD_DMA_BUF:
             source->primary_object_id = fd->pipe_index;
             break;
+        case KERNEL_FD_DRM_SYNC:
+            source->primary_object_id = fd->event_index;
+            break;
         case KERNEL_FD_NAMESPACE:
             source->flags = fd->namespace_kind;
             source->primary_object_id =
@@ -17698,6 +17869,13 @@ static int arm64_epoll_source_materialize(
                 source->primary_object_id > UINT16_MAX)
                 return -LINUX_EBADF;
             fd->pipe_index =
+                (uint16_t)source->primary_object_id;
+            break;
+        case KERNEL_FD_DRM_SYNC:
+            if (source->primary_object_id <= 0 ||
+                source->primary_object_id > UINT16_MAX)
+                return -LINUX_EBADF;
+            fd->event_index =
                 (uint16_t)source->primary_object_id;
             break;
         case KERNEL_FD_NAMESPACE:
@@ -20117,6 +20295,10 @@ static uint32_t fd_anonymous_ready_mask(
         poll_state.kind = KERNEL_ANONYMOUS_FD_PERF_EVENT;
         if (kernel_perf_event_query(fd->event_index, &state) < 0)
             poll_state.valid = 0;
+    } else if (fd->kind == KERNEL_FD_DRM_SYNC) {
+        poll_state.kind = KERNEL_ANONYMOUS_FD_DRM_SYNC;
+        poll_state.pending =
+            edge_virtgpu_sync_file_ready(fd->event_index) > 0;
     } else if (fd->kind == KERNEL_FD_PIDFD) {
         int target = task_find_pid((int)fd->inode.ino);
         poll_state.kind = KERNEL_ANONYMOUS_FD_PID;
@@ -20174,6 +20356,10 @@ static uint32_t fd_anonymous_ready_mask(
 static uint32_t fd_ready_mask(kernel_task_t *task, bootstrap_fd_t *fd) {
     uint32_t ready = 0;
     if (!fd || !fd->used) return LINUX_POLLERR | LINUX_POLLHUP;
+    if (fd_description_notify_snapshot(fd, 0, 0)) {
+        return fd_notify_monitor_pending(fd) ?
+               LINUX_POLLPRI | LINUX_POLLERR : 0;
+    }
     if (fd_is_mount_event_source(fd)) {
         return fd_mount_monitor_pending(fd) ?
                LINUX_POLLPRI | LINUX_POLLERR : 0;
@@ -20215,6 +20401,7 @@ static uint32_t fd_ready_mask(kernel_task_t *task, bootstrap_fd_t *fd) {
                fd->kind == KERNEL_FD_FANOTIFY ||
                fd->kind == KERNEL_FD_USERFAULTFD ||
                fd->kind == KERNEL_FD_PERF_EVENT ||
+               fd->kind == KERNEL_FD_DRM_SYNC ||
                fd->kind == KERNEL_FD_PIDFD ||
                fd->kind == KERNEL_FD_SIGNALFD ||
                fd->kind == KERNEL_FD_MQUEUE ||
@@ -20482,6 +20669,11 @@ static void arm64_epoll_ready_sequences(
     if (fd->kind == KERNEL_FD_INPUT) {
         if (read_sequence)
             *read_sequence = input_event_sequence(fd->event_index);
+        return;
+    }
+    if (fd_description_notify_snapshot(fd, 0, 0)) {
+        if (read_sequence)
+            *read_sequence = console_active_vt_generation();
         return;
     }
     if (fd_is_mount_event_source(fd) && read_sequence) {
@@ -20825,7 +21017,8 @@ static int arm64_wait_source_from_fd(const bootstrap_fd_t *fd,
     bytes_zero(source, sizeof(*source));
     source->backend_token = fd;
 
-    if (fd_is_mount_event_source(fd)) {
+    if (fd_is_mount_event_source(fd) ||
+        fd_description_notify_snapshot(fd, 0, 0)) {
         source->kind = KERNEL_WAIT_SOURCE_OWNER_WAKE;
         return 0;
     }
@@ -20865,6 +21058,7 @@ static int arm64_wait_source_from_fd(const bootstrap_fd_t *fd,
         case KERNEL_FD_FANOTIFY:
         case KERNEL_FD_USERFAULTFD:
         case KERNEL_FD_PERF_EVENT:
+        case KERNEL_FD_DRM_SYNC:
             source->kind = KERNEL_WAIT_SOURCE_OWNER_WAKE;
             source->object_index = fd->event_index;
             break;
@@ -21725,6 +21919,11 @@ static void drm_wake_readers(void) {
 
 static void mount_namespace_change_notify(uint32_t namespace_id) {
     (void)namespace_id;
+    poll_wake_waiters();
+}
+
+static void console_active_vt_change_notify(uint32_t generation) {
+    (void)generation;
     poll_wake_waiters();
 }
 
@@ -22630,6 +22829,17 @@ static int input_events_changed(void) {
     return changed;
 }
 
+void kernel_arch_input_work_request(void) {
+    uint64_t online = edge_smp_online_mask64();
+
+    while (online) {
+        uint32_t cpu = (uint32_t)__builtin_ctzll(online);
+
+        online &= online - 1u;
+        (void)edge_smp_reschedule(cpu);
+    }
+}
+
 static void futex_timeout_waiters(void) {
     uint64_t now = boottime_monotonic_us();
     uint64_t irq_flags = spin_lock_irqsave(&g_futex_lock);
@@ -22664,6 +22874,24 @@ static void signal_wait_timeout_waiters(void) {
         waiter->signal_wait_info = 0;
         waiter->signal_wait_deadline_us = 0;
         waiter->frame.x[0] = (uint64_t)(int64_t)-LINUX_EAGAIN;
+        task_state_set(waiter, KERNEL_TASK_RUNNABLE);
+    }
+}
+
+static void runtime_sequence_timeout_waiters(void) {
+    uint64_t now = boottime_monotonic_us();
+
+    for (uint32_t index = 0; index < g_task_high_water; ++index) {
+        kernel_task_t *waiter = &g_tasks[index];
+
+        if (task_state_shadow_at(index) !=
+                KERNEL_TASK_WAITING_RUNTIME_SEQUENCE ||
+            waiter->runtime_wait_deadline_us == UINT64_MAX ||
+            now < waiter->runtime_wait_deadline_us)
+            continue;
+        waiter->runtime_wait_sequence = 0;
+        waiter->runtime_wait_observed = 0;
+        waiter->runtime_wait_deadline_us = 0;
         task_state_set(waiter, KERNEL_TASK_RUNNABLE);
     }
 }
@@ -22749,7 +22977,21 @@ void kernel_timer_tick(int poll_network, int user_mode) {
         socket_expire_connect_timeouts();
     }
     pl011_rx_poll();
-    virtio_input_poll();
+    /*
+     * VirtIO input normally reaches the process-context deferred path from
+     * its device interrupt.  A level transition can still be lost while the
+     * serialized ARM64 runtime changes owners.  Inspect the shared used-ring
+     * index on the scheduler tick and drain only when the device has actually
+     * completed buffers.  This avoids idle MMIO traffic while guaranteeing
+     * that blocking evdev readers cannot sleep past an input event.
+     */
+    if (virtio_input_pending()) {
+        virtio_input_poll();
+        if (input_events_changed()) {
+            input_wake_readers();
+            poll_wake_waiters();
+        }
+    }
     ++display_ticks;
     /*
      * Match the shared x86 cadence and publish display work on every 100 Hz
@@ -22808,6 +23050,7 @@ void kernel_timer_tick(int poll_network, int user_mode) {
         socket_mmsg_timeout_wake();
         futex_timeout_waiters();
         signal_wait_timeout_waiters();
+        runtime_sequence_timeout_waiters();
         kernel_itimer_real_poll();
         kernel_posix_timer_poll();
     }
@@ -23534,6 +23777,7 @@ int arch_vfs_metadata_fd(int32_t descriptor,
                file->kind == KERNEL_FD_PERF_EVENT ||
                file->kind == KERNEL_FD_SIGNALFD ||
                file->kind == KERNEL_FD_DMA_BUF ||
+               file->kind == KERNEL_FD_DRM_SYNC ||
                file->kind == KERNEL_FD_MOUNT ||
                file->kind == KERNEL_FD_MQUEUE ||
                file->kind == KERNEL_FD_IO_URING ||
@@ -25298,7 +25542,8 @@ static int64_t fd_read_user_internal(
         }
         return (int64_t)done;
     }
-    if (!fd->sb || !fd->sb->ops || !fd->sb->ops->read)
+    if (!fd->sb || !fd->sb->ops ||
+        (!fd->sb->ops->read && !fd->sb->ops->read_description))
         return -LINUX_EINVAL;
     if ((fd->inode.mode & 0xf000u) == VFS_INODE_FILE) {
         int permission_status = kernel_fanotify_access_permission_check(
@@ -25324,8 +25569,9 @@ static int64_t fd_read_user_internal(
             uint32_t count = (uint32_t)(length - done > capacity ?
                                          capacity : length - done);
             if (position > UINT32_MAX) break;
-            n = fd->sb->ops->read(fd->sb, &fd->inode,
-                                  (uint32_t)position, chunk, count);
+            n = vfs_read_description(
+                fd->sb, &fd->inode, fd->open_description_id,
+                (uint32_t)position, chunk, count);
             if (n < 0) {
                 result = done ? (int64_t)done : -LINUX_EINVAL;
                 goto regular_read_out;
@@ -25351,6 +25597,8 @@ static int64_t fd_read_user_internal(
         result = (int64_t)done;
 regular_read_out:
         if (pooled) kernel_io_buffer_release(&io_buffer);
+        if (result > 0 && fd_description_notify_snapshot(fd, 0, 0))
+            fd_notify_monitor_acknowledge(fd);
         return result;
     }
 }
@@ -25422,7 +25670,8 @@ static int64_t fd_positioned_user_retained(
         int pooled = 0;
         int64_t result;
 
-        if (!fd->sb->ops->read || (fd->status_flags & 3u) == 1u)
+        if ((!fd->sb->ops->read && !fd->sb->ops->read_description) ||
+            (fd->status_flags & 3u) == 1u)
             return -LINUX_EBADF;
         if ((fd->inode.mode & 0xf000u) == VFS_INODE_FILE) {
             int permission_status = kernel_fanotify_access_permission_check(
@@ -25447,9 +25696,9 @@ static int64_t fd_positioned_user_retained(
                     fd->inode.rdev, fd->open_description_id,
                     read_chunk, count);
             if (received == EDGE_MEMDEV_NOT_HANDLED)
-                received = fd->sb->ops->read(
-                    fd->sb, &fd->inode, (uint32_t)(offset + done),
-                    read_chunk, count);
+                received = vfs_read_description(
+                    fd->sb, &fd->inode, fd->open_description_id,
+                    (uint32_t)(offset + done), read_chunk, count);
             if (received < 0) {
                 result = done ? (int64_t)done : received;
                 goto positioned_read_out;
@@ -26729,14 +26978,16 @@ static int64_t arm64_fd_operation_file_range(
                 return (int64_t)read;
             }
             if (file->kind != KERNEL_FD_FILE || !file->sb ||
-                !file->sb->ops || !file->sb->ops->read)
+                !file->sb->ops ||
+                (!file->sb->ops->read &&
+                 !file->sb->ops->read_description))
                 return -LINUX_EINVAL;
             if (offset >= UINT32_MAX) return 0;
             if (length > UINT32_MAX - (uint32_t)offset)
                 length = UINT32_MAX - (uint32_t)offset;
-            result = file->sb->ops->read(
-                file->sb, &file->inode, (uint32_t)offset,
-                request->buffer, length);
+            result = vfs_read_description(
+                file->sb, &file->inode, file->open_description_id,
+                (uint32_t)offset, request->buffer, length);
             if (result > 0 &&
                 (file->inode.mode & 0xf000u) == VFS_INODE_FILE)
                 file_page_overlay_read(
@@ -37314,6 +37565,8 @@ int kernel_process_runtime_init(const char *init_path, uint64_t ttbr0,
     }
     vfs_mount_namespace_set_change_notifier(
         mount_namespace_change_notify);
+    console_active_vt_notifier_register(
+        console_active_vt_change_notify);
     arch_syscall_register(bootstrap_syscall);
     __atomic_store_n(&g_scheduler_runtime_ready, 1u, __ATOMIC_RELEASE);
     __asm__ __volatile__("dsb ishst\n\tsev" ::: "memory");

@@ -1044,12 +1044,13 @@ static int x86_fd_publication_acquire(
         snapshot->used = 1;
         if (file_ref_get(snapshot->file_ref) < 0) {
             result = -ENOMEM;
-        } else if (fd_add_backing_object(snapshot) < 0) {
-            (void)file_ref_put(snapshot->file_ref);
-            result = -EBADF;
         }
     }
     kernel_fd_table_unlock(&process->table_runtime, irq_flags);
+    if (result == 0 && fd_add_backing_object(snapshot) < 0) {
+        (void)file_ref_put(snapshot->file_ref);
+        result = -EBADF;
+    }
     if (result < 0) memset(snapshot, 0, sizeof(*snapshot));
     return result;
 }

@@ -574,6 +574,10 @@ int kernel_process_groups_snapshot(int32_t pid, linux_group_list_t *groups);
 int kernel_current_groups_snapshot(linux_group_list_t *groups);
 int kernel_current_groups_replace(linux_group_list_t *groups);
 int kernel_runtime_yield(void);
+int kernel_runtime_wait_sequence(volatile uint64_t *sequence,
+                                 uint64_t observed,
+                                 uint64_t deadline_microseconds);
+void kernel_runtime_notify_sequence(volatile uint64_t *sequence);
 int kernel_runtime_contention_begin(void);
 void kernel_runtime_contention_end(int released);
 void kernel_runtime_fuse_notify(uint64_t description_identity);
@@ -587,6 +591,10 @@ int64_t arch_current_sleep_until(uint64_t deadline_microseconds,
                                  int remaining_time32,
                                  void *user_registers);
 int arch_runtime_yield(void);
+int arch_runtime_wait_sequence(volatile uint64_t *sequence,
+                               uint64_t observed,
+                               uint64_t deadline_microseconds);
+void arch_runtime_notify_sequence(volatile uint64_t *sequence);
 int arch_runtime_contention_begin(void);
 void arch_runtime_contention_end(int released);
 void arch_runtime_fuse_notify(uint64_t description_identity);

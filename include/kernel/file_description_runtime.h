@@ -23,6 +23,8 @@
 #define KERNEL_FILE_DESCRIPTION_INVALID_ID 0u
 #define KERNEL_FILE_DESCRIPTION_TOMBSTONE_ID UINT64_MAX
 #define KERNEL_FILE_DESCRIPTION_NO_MOUNT_NAMESPACE UINT32_MAX
+#define KERNEL_FILE_DESCRIPTION_NOTIFY_NONE 0u
+#define KERNEL_FILE_DESCRIPTION_NOTIFY_CONSOLE_ACTIVE 1u
 
 typedef enum kernel_file_description_locator_kind {
     KERNEL_FILE_DESCRIPTION_BY_HANDLE = 1,
@@ -72,14 +74,17 @@ typedef struct kernel_file_description_snapshot {
     uint32_t epoll_pins;
     uint32_t mount_namespace;
     uint32_t mount_generation;
+    uint32_t notify_source;
+    uint32_t notify_generation;
     uint32_t status_flags;
     int32_t input_clock;
     int32_t async_owner;
     int32_t async_signal;
     uint8_t mount_monitor_configured;
+    uint8_t notify_monitor_configured;
     uint8_t position_busy;
     uint8_t input_revoked;
-    uint8_t reserved;
+    uint8_t reserved[4];
 } kernel_file_description_snapshot_t;
 
 static inline kernel_file_description_locator_t
@@ -233,6 +238,16 @@ int kernel_file_description_mount_acknowledge(
     kernel_file_description_locator_t locator,
     uint32_t expected_namespace,
     uint32_t new_generation);
+
+int kernel_file_description_notify_bind(
+    kernel_file_description_locator_t locator,
+    uint32_t source, uint32_t observed_generation);
+int kernel_file_description_notify_snapshot(
+    kernel_file_description_locator_t locator,
+    uint32_t *source, uint32_t *observed_generation);
+int kernel_file_description_notify_acknowledge(
+    kernel_file_description_locator_t locator,
+    uint32_t expected_source, uint32_t new_generation);
 
 int kernel_file_description_status_load(
     kernel_file_description_locator_t locator,

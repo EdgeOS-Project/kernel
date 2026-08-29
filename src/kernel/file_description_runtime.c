@@ -42,6 +42,8 @@ typedef struct kernel_file_description_entry {
     uint32_t close_holds;
     uint32_t mount_namespace;
     uint32_t mount_generation;
+    uint32_t notify_source;
+    uint32_t notify_generation;
     uint32_t status_flags;
     int32_t input_clock;
     int32_t async_owner;
@@ -50,7 +52,7 @@ typedef struct kernel_file_description_entry {
     uint16_t lifecycle_flags;
 } kernel_file_description_entry_t;
 
-_Static_assert(sizeof(kernel_file_description_entry_t) == 104u,
+_Static_assert(sizeof(kernel_file_description_entry_t) == 112u,
                "file-description entry size");
 
 static kernel_file_description_entry_t
@@ -589,6 +591,8 @@ int kernel_file_description_snapshot(
         snapshot->epoll_pins = entry->epoll_pins;
         snapshot->mount_namespace = entry->mount_namespace;
         snapshot->mount_generation = entry->mount_generation;
+        snapshot->notify_source = entry->notify_source;
+        snapshot->notify_generation = entry->notify_generation;
         snapshot->status_flags = entry->status_flags;
         snapshot->input_clock = entry->input_clock;
         snapshot->input_revoked =
@@ -600,6 +604,8 @@ int kernel_file_description_snapshot(
         snapshot->mount_monitor_configured =
             entry->mount_namespace !=
                 KERNEL_FILE_DESCRIPTION_NO_MOUNT_NAMESPACE;
+        snapshot->notify_monitor_configured =
+            entry->notify_source != KERNEL_FILE_DESCRIPTION_NOTIFY_NONE;
     }
     spin_unlock_irqrestore(&g_file_description_lock, irq_flags);
     return result;
@@ -1127,6 +1133,77 @@ int kernel_file_description_mount_acknowledge(
         result = -EDGE_LINUX_EAGAIN;
     else
         entry->mount_generation = new_generation;
+    spin_unlock_irqrestore(&g_file_description_lock, irq_flags);
+    return result;
+}
+
+int kernel_file_description_notify_bind(
+    kernel_file_description_locator_t locator,
+    uint32_t source, uint32_t observed_generation) {
+    kernel_file_description_entry_t *entry;
+    uint64_t irq_flags;
+    int result = 0;
+
+    if (!file_description_runtime_ready())
+        return -EDGE_LINUX_ENODEV;
+    irq_flags = spin_lock_irqsave(&g_file_description_lock);
+    entry = file_description_entry_from_locator_locked(locator, 0, 1);
+    if (!entry)
+        result = -EDGE_LINUX_EBADF;
+    else {
+        entry->notify_source = source;
+        entry->notify_generation =
+            source == KERNEL_FILE_DESCRIPTION_NOTIFY_NONE ?
+                0u : observed_generation;
+    }
+    spin_unlock_irqrestore(&g_file_description_lock, irq_flags);
+    return result;
+}
+
+int kernel_file_description_notify_snapshot(
+    kernel_file_description_locator_t locator,
+    uint32_t *source, uint32_t *observed_generation) {
+    kernel_file_description_entry_t *entry;
+    uint64_t irq_flags;
+    int result = 0;
+
+    if (!source || !observed_generation)
+        return -EDGE_LINUX_EINVAL;
+    if (!file_description_runtime_ready())
+        return -EDGE_LINUX_ENODEV;
+    irq_flags = spin_lock_irqsave(&g_file_description_lock);
+    entry = file_description_entry_from_locator_locked(locator, 0, 1);
+    if (!entry)
+        result = -EDGE_LINUX_EBADF;
+    else if (entry->notify_source == KERNEL_FILE_DESCRIPTION_NOTIFY_NONE)
+        result = -EDGE_LINUX_ENODATA;
+    else {
+        *source = entry->notify_source;
+        *observed_generation = entry->notify_generation;
+    }
+    spin_unlock_irqrestore(&g_file_description_lock, irq_flags);
+    return result;
+}
+
+int kernel_file_description_notify_acknowledge(
+    kernel_file_description_locator_t locator,
+    uint32_t expected_source, uint32_t new_generation) {
+    kernel_file_description_entry_t *entry;
+    uint64_t irq_flags;
+    int result = 0;
+
+    if (!file_description_runtime_ready())
+        return -EDGE_LINUX_ENODEV;
+    irq_flags = spin_lock_irqsave(&g_file_description_lock);
+    entry = file_description_entry_from_locator_locked(locator, 0, 1);
+    if (!entry)
+        result = -EDGE_LINUX_EBADF;
+    else if (entry->notify_source == KERNEL_FILE_DESCRIPTION_NOTIFY_NONE)
+        result = -EDGE_LINUX_ENODATA;
+    else if (entry->notify_source != expected_source)
+        result = -EDGE_LINUX_EAGAIN;
+    else
+        entry->notify_generation = new_generation;
     spin_unlock_irqrestore(&g_file_description_lock, irq_flags);
     return result;
 }

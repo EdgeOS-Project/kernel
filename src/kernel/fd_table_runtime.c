@@ -80,6 +80,7 @@ int kernel_fd_table_runtime_initialize(
     if (!runtime || !states || !limit)
         return -EDGE_LINUX_EINVAL;
     spinlock_init(&runtime->lock);
+    runtime->owner_site = 0u;
     runtime->states = states;
     runtime->limit = limit;
     runtime->allocated_limit =
@@ -115,13 +116,20 @@ int kernel_fd_table_inherit_allocated_limit_locked(
 }
 
 uint64_t kernel_fd_table_lock(kernel_fd_table_runtime_t *runtime) {
+    uint64_t irq_flags;
+
     if (!fd_table_runtime_valid(runtime)) return 0;
-    return spin_lock_irqsave(&runtime->lock);
+    irq_flags = spin_lock_irqsave(&runtime->lock);
+    __atomic_store_n(
+        &runtime->owner_site,
+        (uintptr_t)__builtin_return_address(0), __ATOMIC_RELEASE);
+    return irq_flags;
 }
 
 void kernel_fd_table_unlock(kernel_fd_table_runtime_t *runtime,
                             uint64_t irq_flags) {
     if (!fd_table_runtime_valid(runtime)) return;
+    __atomic_store_n(&runtime->owner_site, 0u, __ATOMIC_RELEASE);
     spin_unlock_irqrestore(&runtime->lock, irq_flags);
 }
 

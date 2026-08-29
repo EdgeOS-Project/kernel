@@ -28,13 +28,13 @@
   <script>
     const result = document.getElementById("result");
     const canvas = document.getElementById("canvas");
-    const gl = canvas.getContext("webgl2") || canvas.getContext("webgl");
+    const gl = canvas.getContext("webgl2", { antialias: true });
 
     function fail(message) {
       result.className = "fail";
       result.textContent = `FAIL: ${message}`;
       document.body.dataset.edgeosWebgl = "fail";
-      document.title = "EDGEOS_WEBGL_FAIL";
+      document.title = `EDGEOS_WEBGL_FAIL:${message}`;
     }
 
     function compileShader(type, source) {
@@ -47,20 +47,38 @@
       return shader;
     }
 
+    function requireNoError(stage) {
+      const error = gl.getError();
+      if (error !== gl.NO_ERROR) {
+        throw new Error(`${stage} failed with GL error 0x${error.toString(16)}`);
+      }
+    }
+
+    function progress(stage) {
+      document.title = `EDGEOS_WEBGL_RUNNING:${stage}`;
+    }
+
     if (!gl) {
       fail("WebGL context creation failed");
     } else {
       try {
-        const vertexShader = compileShader(gl.VERTEX_SHADER, `
-          attribute vec2 position;
+        const vertexShader = compileShader(gl.VERTEX_SHADER, `#version 300 es
+          layout(location = 0) in vec2 position;
+          layout(std140) uniform Tint {
+            vec4 tint;
+          };
+          out vec4 vertexTint;
           void main() {
             gl_Position = vec4(position, 0.0, 1.0);
+            vertexTint = tint;
           }
         `);
-        const fragmentShader = compileShader(gl.FRAGMENT_SHADER, `
+        const fragmentShader = compileShader(gl.FRAGMENT_SHADER, `#version 300 es
           precision mediump float;
+          in vec4 vertexTint;
+          out vec4 fragmentColor;
           void main() {
-            gl_FragColor = vec4(0.125, 0.75, 0.375, 1.0);
+            fragmentColor = vertexTint;
           }
         `);
         const program = gl.createProgram();
@@ -71,25 +89,132 @@
           throw new Error(gl.getProgramInfoLog(program) || "program link failed");
         }
         gl.useProgram(program);
+        progress("shader");
 
+        const vertexArray = gl.createVertexArray();
+        gl.bindVertexArray(vertexArray);
         const vertices = new Float32Array([-0.8, -0.8, 0.8, -0.8, 0.0, 0.8]);
         const buffer = gl.createBuffer();
         gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
         gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
-        const position = gl.getAttribLocation(program, "position");
-        gl.enableVertexAttribArray(position);
-        gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(0);
+        gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+        const tintBlock = gl.getUniformBlockIndex(program, "Tint");
+        const tintBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.UNIFORM_BUFFER, tintBuffer);
+        gl.bufferData(gl.UNIFORM_BUFFER,
+                      new Float32Array([0.125, 0.75, 0.375, 1.0]),
+                      gl.STATIC_DRAW);
+        gl.bindBufferBase(gl.UNIFORM_BUFFER, 0, tintBuffer);
+        gl.uniformBlockBinding(program, tintBlock, 0);
+        progress("ubo-vao");
+
+        const texture2d = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texture2d);
+        gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, 16, 16);
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 16, 16,
+                         gl.RGBA, gl.UNSIGNED_BYTE,
+                         new Uint8Array(16 * 16 * 4));
+
+        const texture3d = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_3D, texture3d);
+        gl.texStorage3D(gl.TEXTURE_3D, 1, gl.RGBA8, 4, 4, 4);
+        gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, 4, 4, 4,
+                         gl.RGBA, gl.UNSIGNED_BYTE,
+                         new Uint8Array(4 * 4 * 4 * 4));
+        progress("texture-storage");
+
+        const sampler = gl.createSampler();
+        gl.samplerParameteri(sampler, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.bindSampler(0, sampler);
+
+        const multisampleFramebuffer = gl.createFramebuffer();
+        const multisampleColor = gl.createRenderbuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, multisampleFramebuffer);
+        gl.bindRenderbuffer(gl.RENDERBUFFER, multisampleColor);
+        const samples = Math.min(4, gl.getParameter(gl.MAX_SAMPLES));
+        gl.renderbufferStorageMultisample(
+          gl.RENDERBUFFER, samples, gl.RGBA8, canvas.width, canvas.height);
+        gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0,
+                                   gl.RENDERBUFFER, multisampleColor);
+        if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+          throw new Error("multisample framebuffer is incomplete");
+        }
+        progress("msaa-storage");
+
+        const resolveFramebuffer = gl.createFramebuffer();
+        const resolveTexture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, resolveTexture);
+        gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8,
+                        canvas.width, canvas.height);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, resolveFramebuffer);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0,
+                                gl.TEXTURE_2D, resolveTexture, 0);
+        gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+        if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+          throw new Error("resolve framebuffer is incomplete");
+        }
+        progress("resolve-storage");
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, multisampleFramebuffer);
         gl.viewport(0, 0, canvas.width, canvas.height);
         gl.clearColor(0.02, 0.04, 0.08, 1.0);
         gl.clear(gl.COLOR_BUFFER_BIT);
-        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, 3, 1);
+
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, multisampleFramebuffer);
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, resolveFramebuffer);
+        gl.blitFramebuffer(0, 0, canvas.width, canvas.height,
+                           0, 0, canvas.width, canvas.height,
+                           gl.COLOR_BUFFER_BIT, gl.NEAREST);
+        progress("draw-resolve");
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, resolveFramebuffer);
 
         const pixel = new Uint8Array(4);
         gl.readPixels(canvas.width / 2, canvas.height / 2, 1, 1,
                       gl.RGBA, gl.UNSIGNED_BYTE, pixel);
-        if (gl.getError() !== gl.NO_ERROR || pixel[1] < 150 || pixel[3] !== 255) {
+        requireNoError("multisample draw and readback");
+        if (pixel[1] < 150 || pixel[3] !== 255) {
           throw new Error(`render validation failed rgba=${Array.from(pixel).join(",")}`);
         }
+        progress("readback");
+
+        const pixelPack = gl.createBuffer();
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pixelPack);
+        gl.bufferData(gl.PIXEL_PACK_BUFFER, 4, gl.STREAM_READ);
+        gl.readPixels(canvas.width / 2, canvas.height / 2, 1, 1,
+                      gl.RGBA, gl.UNSIGNED_BYTE, 0);
+        const packedPixel = new Uint8Array(4);
+        gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, packedPixel);
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+        requireNoError("pixel buffer readback");
+        if (packedPixel[1] < 150 || packedPixel[3] !== 255) {
+          throw new Error(`PBO validation failed rgba=${Array.from(packedPixel).join(",")}`);
+        }
+        progress("pbo");
+
+        const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+        if (!sync) {
+          throw new Error("GPU fence creation failed");
+        }
+        gl.flush();
+        gl.finish();
+        const syncStatus = gl.clientWaitSync(sync, 0, 0);
+        const syncObjectStatus = gl.getSyncParameter(sync, gl.SYNC_STATUS);
+        if (syncStatus !== gl.ALREADY_SIGNALED &&
+            syncStatus !== gl.CONDITION_SATISFIED &&
+            syncObjectStatus !== gl.SIGNALED) {
+          const syncError = gl.getError();
+          const maximumTimeout = gl.getParameter(gl.MAX_CLIENT_WAIT_TIMEOUT_WEBGL);
+          throw new Error(
+            `GPU synchronization failed status=0x${syncStatus.toString(16)} ` +
+            `objectStatus=0x${syncObjectStatus.toString(16)} ` +
+            `error=0x${syncError.toString(16)} maxTimeout=${maximumTimeout}`);
+        }
+        gl.deleteSync(sync);
+        requireNoError("WebGL2 resource coverage");
+        progress("sync");
 
         const debug = gl.getExtension("WEBGL_debug_renderer_info");
         const vendor = debug ?
@@ -100,10 +225,11 @@
           gl.getParameter(gl.RENDERER);
         result.className = "pass";
         result.textContent = [
-          "PASS: WebGL context, shader pipeline, draw, and readback",
+          "PASS: WebGL2 shader, UBO, VAO, texture storage, MSAA, PBO, sync, draw, and readback",
           `Version: ${gl.getParameter(gl.VERSION)}`,
           `Vendor: ${vendor}`,
           `Renderer: ${renderer}`,
+          `Samples: ${samples}`,
           `RGBA: ${Array.from(pixel).join(",")}`,
         ].join("\n");
         document.body.dataset.edgeosWebgl = "pass";

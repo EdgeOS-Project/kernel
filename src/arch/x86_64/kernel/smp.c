@@ -7,6 +7,7 @@
 
 #include "arch/x86_64/smp.h"
 #include "arch/x86_64/gdt.h"
+#include "arch/x86_64/fpu.h"
 #include "arch/x86_64/idt.h"
 #include "arch/x86_64/syscall.h"
 #include "drivers/acpi.h"
@@ -155,6 +156,7 @@ static void x86_smp_ap_entry(uint32_t logical_id) {
      */
     scheduler_set_cpu_id(logical_id);
     gdt_init_cpu(logical_id);
+    (void)x86_fpu_initialize_cpu();
     idt_load();
     (void)apic_init_local();
     edgeos_x86_64_syscall_init_cpu(logical_id);

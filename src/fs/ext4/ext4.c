@@ -34,7 +34,6 @@ static void ext4_current_fs_identity(uint32_t *uid, uint32_t *gid) {
 #define EXT4_READ_RUN_BLOCKS 128u
 #define EXT4_RO_WORKSPACES 32u
 #define EXT4_PARALLEL_READ_MIN (64u * 1024u)
-#define EXT4_OPEN_INODE_INITIAL_CAPACITY 256u
 #define EXT4_CACHE_PAGE_SIZE 4096u
 #define EXT4_MAX_EXTENT_DEPTH 5u
 
@@ -224,6 +223,14 @@ typedef struct {
     uint8_t delete_pending;
 } ext4_open_inode_entry_t;
 
+typedef struct ext4_open_inode_page ext4_open_inode_page_t;
+struct ext4_open_inode_page {
+    ext4_open_inode_page_t *next;
+    uint16_t capacity;
+    uint16_t live;
+    ext4_open_inode_entry_t entries[];
+};
+
 typedef struct ext4_fs {
     struct ext4_fs *registry_next;
     uint32_t allocation_pages;
@@ -239,6 +246,7 @@ typedef struct ext4_fs {
      */
     volatile uint32_t op_lock;
     volatile uint32_t read_count;
+    volatile uint64_t op_wait_sequence;
     uintptr_t op_lock_owner;
     int32_t op_lock_owner_pid;
     uint32_t op_lock_depth;
@@ -281,9 +289,8 @@ typedef struct ext4_fs {
     } block_cache[EXT4_BLOCK_CACHE_SLOTS];
     ext4_readdir_cache_entry_t readdir_cache[EXT4_READDIR_CACHE_SLOTS];
     uint32_t readdir_cache_clock;
-    ext4_open_inode_entry_t *open_inodes;
+    ext4_open_inode_page_t *open_inode_pages;
     uint32_t open_inode_capacity;
-    uint32_t open_inode_pages;
     /* Mutating extents is serialized by op_lock, so one path per mount is sufficient. */
     uint8_t extent_work[EXT4_MAX_EXTENT_DEPTH][4096];
     uint8_t extent_scratch[4096];
@@ -483,6 +490,9 @@ static void ext4_op_lock(ext4_fs_t *fs) {
         return;
     }
     while (__sync_lock_test_and_set(&fs->op_lock, 1)) {
+        uint64_t observed = __atomic_load_n(
+            &fs->op_wait_sequence, __ATOMIC_ACQUIRE);
+
         if (!wait_start_us) {
             wait_start_us = boottime_monotonic_us();
             next_log_us = wait_start_us + 500000ull;
@@ -498,11 +508,12 @@ static void ext4_op_lock(ext4_fs_t *fs) {
                 next_log_us = now + 500000ull;
             }
         }
-        /*
-         * This lock is only taken from normal process context.  Yielding while
-         * contended keeps the serial console and input path responsive during
-         * heavy dynamic-loader/package-manager filesystem traffic.
-         */
+        if (__atomic_load_n(&fs->op_lock, __ATOMIC_ACQUIRE)) {
+            int waited = kernel_runtime_wait_sequence(
+                &fs->op_wait_sequence, observed, UINT64_MAX);
+
+            if (waited >= 0) continue;
+        }
         if (!kernel_runtime_yield()) {
             int released = kernel_runtime_contention_begin();
 
@@ -516,6 +527,9 @@ static void ext4_op_lock(ext4_fs_t *fs) {
     fs->op_lock_owner_pid = current_pid;
     fs->op_lock_depth = 1;
     while (fs->read_count != 0) {
+        uint64_t observed = __atomic_load_n(
+            &fs->op_wait_sequence, __ATOMIC_ACQUIRE);
+
         if (!reader_wait_start_us) {
             reader_wait_start_us = boottime_monotonic_us();
             reader_next_log_us = reader_wait_start_us + 500000ull;
@@ -529,6 +543,12 @@ static void ext4_op_lock(ext4_fs_t *fs) {
                        (unsigned)(now - reader_wait_start_us));
                 reader_next_log_us = now + 500000ull;
             }
+        }
+        if (__atomic_load_n(&fs->read_count, __ATOMIC_ACQUIRE) != 0u) {
+            int waited = kernel_runtime_wait_sequence(
+                &fs->op_wait_sequence, observed, UINT64_MAX);
+
+            if (waited >= 0) continue;
         }
         if (!kernel_runtime_yield()) {
             int released = kernel_runtime_contention_begin();
@@ -559,12 +579,23 @@ static void ext4_op_unlock(ext4_fs_t *fs) {
     fs->op_lock_owner_pid = -1;
     fs->op_lock_depth = 0;
     __sync_lock_release(&fs->op_lock);
+    __atomic_add_fetch(&fs->op_wait_sequence, 1u, __ATOMIC_RELEASE);
+    kernel_runtime_notify_sequence(&fs->op_wait_sequence);
 }
 
 static void ext4_read_begin(ext4_fs_t *fs) {
     if (!fs) return;
     for (;;) {
         while (fs->op_lock) {
+            uint64_t observed = __atomic_load_n(
+                &fs->op_wait_sequence, __ATOMIC_ACQUIRE);
+
+            if (__atomic_load_n(&fs->op_lock, __ATOMIC_ACQUIRE)) {
+                int waited = kernel_runtime_wait_sequence(
+                    &fs->op_wait_sequence, observed, UINT64_MAX);
+
+                if (waited >= 0) continue;
+            }
             if (!kernel_runtime_yield()) {
                 int released = kernel_runtime_contention_begin();
 
@@ -575,13 +606,20 @@ static void ext4_read_begin(ext4_fs_t *fs) {
         }
         __sync_fetch_and_add(&fs->read_count, 1);
         if (!fs->op_lock) return;
-        __sync_fetch_and_sub(&fs->read_count, 1);
+        if (__sync_sub_and_fetch(&fs->read_count, 1) == 0u) {
+            __atomic_add_fetch(
+                &fs->op_wait_sequence, 1u, __ATOMIC_RELEASE);
+            kernel_runtime_notify_sequence(&fs->op_wait_sequence);
+        }
     }
 }
 
 static void ext4_read_end(ext4_fs_t *fs) {
     if (!fs) return;
-    __sync_fetch_and_sub(&fs->read_count, 1);
+    if (__sync_sub_and_fetch(&fs->read_count, 1) == 0u) {
+        __atomic_add_fetch(&fs->op_wait_sequence, 1u, __ATOMIC_RELEASE);
+        kernel_runtime_notify_sequence(&fs->op_wait_sequence);
+    }
 }
 
 static ext4_fs_t *ext4_lock_from_sb(vfs_superblock_t *sb) {
@@ -1774,6 +1812,7 @@ static void inode_cache_invalidate(ext4_fs_t *fs, uint32_t ino) {
 
 static void ext4_dynamic_state_release(ext4_fs_t *fs) {
     ext4_inode_cache_page_t *inode_page;
+    ext4_open_inode_page_t *open_inode_page;
 
     if (!fs) return;
     lookup_cache_invalidate_all(fs);
@@ -1789,15 +1828,15 @@ static void ext4_dynamic_state_release(ext4_fs_t *fs) {
         ext4_release_cache_page(inode_page);
         inode_page = next;
     }
-    if (fs->open_inodes) {
-        for (uint32_t page = 0; page < fs->open_inode_pages; ++page) {
-            arch_vm_free_page((uint8_t *)fs->open_inodes +
-                              (uint64_t)page * EXT4_CACHE_PAGE_SIZE);
-        }
+    open_inode_page = fs->open_inode_pages;
+    while (open_inode_page) {
+        ext4_open_inode_page_t *next = open_inode_page->next;
+
+        arch_vm_free_page(open_inode_page);
+        open_inode_page = next;
     }
-    fs->open_inodes = 0;
-    fs->open_inode_capacity = 0;
     fs->open_inode_pages = 0;
+    fs->open_inode_capacity = 0;
 }
 
 static int free_bitmap_item(ext4_fs_t *fs, uint32_t value,
@@ -4102,57 +4141,48 @@ static int ext4_dir_remove_entry(ext4_fs_t *fs, vfs_inode_t *dir, const char *na
 }
 
 static int ext4_open_inode_grow(ext4_fs_t *fs) {
-    ext4_open_inode_entry_t *entries;
-    uint32_t requested_capacity;
-    uint32_t pages;
+    ext4_open_inode_page_t *page;
     uint32_t capacity;
 
     if (!fs) return -1;
-    if (fs->open_inode_capacity > UINT32_MAX / 2u) return -1;
-    requested_capacity = fs->open_inode_capacity ?
-        fs->open_inode_capacity * 2u : EXT4_OPEN_INODE_INITIAL_CAPACITY;
-    pages = (uint32_t)(((uint64_t)requested_capacity * sizeof(*entries) +
-                        EXT4_CACHE_PAGE_SIZE - 1u) /
-                       EXT4_CACHE_PAGE_SIZE);
-    entries = (ext4_open_inode_entry_t *)arch_vm_alloc_pages(pages);
-    if (!entries) return -1;
-    memset(entries, 0, (uint64_t)pages * EXT4_CACHE_PAGE_SIZE);
-    capacity = (uint32_t)(((uint64_t)pages * EXT4_CACHE_PAGE_SIZE) /
-                          sizeof(*entries));
-    if (fs->open_inodes && fs->open_inode_capacity) {
-        memcpy(entries, fs->open_inodes,
-               (uint64_t)fs->open_inode_capacity * sizeof(*entries));
-        for (uint32_t page = 0; page < fs->open_inode_pages; ++page) {
-            arch_vm_free_page((uint8_t *)fs->open_inodes +
-                              (uint64_t)page * EXT4_CACHE_PAGE_SIZE);
-        }
-    }
-    fs->open_inodes = entries;
-    fs->open_inode_capacity = capacity;
-    fs->open_inode_pages = pages;
+    capacity = (EXT4_CACHE_PAGE_SIZE - sizeof(*page)) /
+        sizeof(page->entries[0]);
+    if (!capacity || fs->open_inode_capacity > UINT32_MAX - capacity)
+        return -1;
+    page = (ext4_open_inode_page_t *)arch_vm_alloc_pages(1u);
+    if (!page) return -1;
+    memset(page, 0, EXT4_CACHE_PAGE_SIZE);
+    page->capacity = (uint16_t)capacity;
+    page->next = fs->open_inode_pages;
+    fs->open_inode_pages = page;
+    fs->open_inode_capacity += capacity;
     return 0;
 }
 
-static int ext4_open_inode_slot(ext4_fs_t *fs, uint32_t ino, int create) {
-    int free_slot = -1;
-    if (!fs || !ino) return -1;
+static ext4_open_inode_entry_t *ext4_open_inode_entry(
+    ext4_fs_t *fs, uint32_t ino, int create) {
+    ext4_open_inode_entry_t *free_entry = 0;
+    ext4_open_inode_page_t *page;
+
+    if (!fs || !ino) return 0;
 retry:
-    for (uint32_t i = 0; i < fs->open_inode_capacity; ++i) {
-        if (fs->open_inodes[i].ino == ino) return (int)i;
-        if (create && free_slot < 0 && fs->open_inodes[i].ino == 0)
-            free_slot = (int)i;
+    for (page = fs->open_inode_pages; page; page = page->next) {
+        for (uint32_t i = 0; i < page->capacity; ++i) {
+            ext4_open_inode_entry_t *entry = &page->entries[i];
+
+            if (entry->ino == ino) return entry;
+            if (create && !free_entry && !entry->ino) free_entry = entry;
+        }
     }
-    if (free_slot >= 0) fs->open_inodes[free_slot].ino = ino;
-    if (free_slot < 0 && create && ext4_open_inode_grow(fs) == 0) {
-        free_slot = -1;
+    if (free_entry) {
+        free_entry->ino = ino;
+        return free_entry;
+    }
+    if (create && ext4_open_inode_grow(fs) == 0) {
+        free_entry = 0;
         goto retry;
     }
-    return free_slot;
-}
-
-static uint32_t ext4_open_inode_references(ext4_fs_t *fs, uint32_t ino) {
-    int slot = ext4_open_inode_slot(fs, ino, 0);
-    return slot >= 0 ? fs->open_inodes[slot].references : 0;
+    return 0;
 }
 
 static int ext4_release_xattr_block(ext4_fs_t *fs, ext4_inode_t *inode,
@@ -4991,7 +5021,7 @@ static int ext4_reclaim_inode(ext4_fs_t *fs, uint32_t ino,
 
 static int ext4_drop_inode_link(ext4_fs_t *fs, uint32_t ino) {
     ext4_inode_t inode;
-    int slot;
+    ext4_open_inode_entry_t *open_entry;
     if (!fs || !ino || read_inode(fs, ino, &inode) < 0 ||
         !inode.mode || !inode.links_count)
         return -1;
@@ -4999,9 +5029,9 @@ static int ext4_drop_inode_link(ext4_fs_t *fs, uint32_t ino) {
     inode.ctime = ext4_now_sec();
     if (inode.links_count) return write_inode(fs, ino, &inode);
     inode.dtime = inode.ctime;
-    slot = ext4_open_inode_slot(fs, ino, 0);
-    if (slot >= 0 && fs->open_inodes[slot].references) {
-        fs->open_inodes[slot].delete_pending = 1;
+    open_entry = ext4_open_inode_entry(fs, ino, 0);
+    if (open_entry && open_entry->references) {
+        open_entry->delete_pending = 1;
         return write_inode(fs, ino, &inode);
     }
     return ext4_reclaim_inode(fs, ino, &inode);
@@ -5213,15 +5243,15 @@ static int ext4_dir_replace_entry(ext4_fs_t *fs, vfs_inode_t *dir,
 
 static int ext4_retire_directory_inode(ext4_fs_t *fs, uint32_t ino,
                                        ext4_inode_t *inode) {
-    int open_slot;
+    ext4_open_inode_entry_t *open_entry;
     if (!fs || !ino || !inode ||
         (inode->mode & 0xf000u) != VFS_INODE_DIR)
         return -1;
     inode->links_count = 0;
     inode->ctime = inode->dtime = ext4_now_sec();
-    open_slot = ext4_open_inode_slot(fs, ino, 0);
-    if (open_slot >= 0 && ext4_open_inode_references(fs, ino)) {
-        fs->open_inodes[open_slot].delete_pending = 1;
+    open_entry = ext4_open_inode_entry(fs, ino, 0);
+    if (open_entry && open_entry->references) {
+        open_entry->delete_pending = 1;
         return write_inode(fs, ino, inode);
     }
     return ext4_reclaim_inode(fs, ino, inode);
@@ -5270,7 +5300,7 @@ static int ext4_rmdir(vfs_superblock_t *sb, vfs_inode_t *dir, const char *name) 
     uint32_t ino = 0;
     ext4_inode_t inode;
     ext4_inode_t parent;
-    int open_slot;
+    ext4_open_inode_entry_t *open_entry;
     int empty;
     if (!fs || !dir || !name) return VFS_PATH_ERR_INVALID;
     if (ext4_lookup(sb, dir, name, &target) < 0)
@@ -5287,9 +5317,9 @@ static int ext4_rmdir(vfs_superblock_t *sb, vfs_inode_t *dir, const char *name) 
     inode.ctime = inode.dtime = ext4_now_sec();
     if (parent.links_count) --parent.links_count;
     if (write_inode(fs, dir->ino, &parent) < 0) return VFS_PATH_ERR_IO;
-    open_slot = ext4_open_inode_slot(fs, ino, 0);
-    if (open_slot >= 0 && ext4_open_inode_references(fs, ino)) {
-        fs->open_inodes[open_slot].delete_pending = 1;
+    open_entry = ext4_open_inode_entry(fs, ino, 0);
+    if (open_entry && open_entry->references) {
+        open_entry->delete_pending = 1;
         return write_inode(fs, ino, &inode) < 0 ? VFS_PATH_ERR_IO : 0;
     }
     return ext4_reclaim_inode(fs, ino, &inode) < 0 ? VFS_PATH_ERR_IO : 0;
@@ -5314,7 +5344,7 @@ static int ext4_link(vfs_superblock_t *sb, vfs_inode_t *inode,
     ext4_inode_t disk_inode;
     ext4_inode_t original_inode;
     ext4_inode_t disk_dir;
-    int open_slot;
+    ext4_open_inode_entry_t *open_entry;
     if (!fs || !inode || !dir || !name || !name[0] ||
         (inode->mode & 0xf000u) == VFS_INODE_DIR ||
         ext4_lookup(sb, dir, name, &(vfs_inode_t){0}) == 0 ||
@@ -5333,8 +5363,8 @@ static int ext4_link(vfs_superblock_t *sb, vfs_inode_t *inode,
         (void)write_inode(fs, inode->ino, &original_inode);
         return -1;
     }
-    open_slot = ext4_open_inode_slot(fs, inode->ino, 0);
-    if (open_slot >= 0) fs->open_inodes[open_slot].delete_pending = 0;
+    open_entry = ext4_open_inode_entry(fs, inode->ino, 0);
+    if (open_entry) open_entry->delete_pending = 0;
     readdir_cache_invalidate(fs, dir->ino);
     return 0;
 }
@@ -5640,6 +5670,7 @@ done:
 
 int ext4_sync(vfs_superblock_t *sb) {
     ext4_fs_t *fs;
+    ext4_open_inode_page_t *page;
     int rc;
     if (!sb) return -1;
     fs = ext4_lock_from_sb(sb);
@@ -5649,17 +5680,20 @@ int ext4_sync(vfs_superblock_t *sb) {
         return 0;
     }
     rc = 0;
-    for (uint32_t i = 0; i < fs->open_inode_capacity; ++i) {
-        ext4_inode_t inode;
-        if (!fs->open_inodes[i].ino || fs->open_inodes[i].references ||
-            !fs->open_inodes[i].delete_pending)
-            continue;
-        if (read_inode(fs, fs->open_inodes[i].ino, &inode) < 0 ||
-            ext4_reclaim_inode(fs, fs->open_inodes[i].ino, &inode) < 0) {
-            rc = -1;
-            continue;
+    for (page = fs->open_inode_pages; page; page = page->next) {
+        for (uint32_t i = 0; i < page->capacity; ++i) {
+            ext4_open_inode_entry_t *entry = &page->entries[i];
+            ext4_inode_t inode;
+
+            if (!entry->ino || entry->references || !entry->delete_pending)
+                continue;
+            if (read_inode(fs, entry->ino, &inode) < 0 ||
+                ext4_reclaim_inode(fs, entry->ino, &inode) < 0) {
+                rc = -1;
+                continue;
+            }
+            memset(entry, 0, sizeof(*entry));
         }
-        memset(&fs->open_inodes[i], 0, sizeof(fs->open_inodes[i]));
     }
     if (ext4_flush_all_durable(fs) < 0) rc = -1;
     ext4_op_unlock(fs);
@@ -5693,6 +5727,7 @@ static uint32_t ext4_reclaim_metadata(vfs_superblock_t *sb,
 
 static int ext4_shutdown(vfs_superblock_t *sb) {
     ext4_fs_t *fs;
+    ext4_open_inode_page_t *page;
     int result = 0;
 
     if (!sb) return -1;
@@ -5717,15 +5752,17 @@ static int ext4_shutdown(vfs_superblock_t *sb) {
             goto out;
         }
     }
-    for (uint32_t slot = 0; slot < fs->open_inode_capacity; ++slot) {
-        ext4_inode_t inode;
-        if (!fs->open_inodes[slot].ino ||
-            !fs->open_inodes[slot].delete_pending)
-            continue;
-        if (read_inode(fs, fs->open_inodes[slot].ino, &inode) < 0 ||
-            (inode.mode && inode.links_count)) {
-            result = -1;
-            goto out;
+    for (page = fs->open_inode_pages; page; page = page->next) {
+        for (uint32_t slot = 0; slot < page->capacity; ++slot) {
+            ext4_open_inode_entry_t *entry = &page->entries[slot];
+            ext4_inode_t inode;
+
+            if (!entry->ino || !entry->delete_pending) continue;
+            if (read_inode(fs, entry->ino, &inode) < 0 ||
+                (inode.mode && inode.links_count)) {
+                result = -1;
+                goto out;
+            }
         }
     }
 
@@ -5735,19 +5772,24 @@ static int ext4_shutdown(vfs_superblock_t *sb) {
      * their existing behavior and never reclaim storage while a reference is
      * live.
      */
-    for (uint32_t slot = 0; slot < fs->open_inode_capacity; ++slot) {
-        ext4_inode_t inode;
-        uint32_t ino = fs->open_inodes[slot].ino;
-        if (!ino || !fs->open_inodes[slot].delete_pending) continue;
-        if (read_inode(fs, ino, &inode) < 0) {
-            result = -1;
-            break;
+    for (page = fs->open_inode_pages; page; page = page->next) {
+        for (uint32_t slot = 0; slot < page->capacity; ++slot) {
+            ext4_open_inode_entry_t *entry = &page->entries[slot];
+            ext4_inode_t inode;
+            uint32_t ino = entry->ino;
+
+            if (!ino || !entry->delete_pending) continue;
+            if (read_inode(fs, ino, &inode) < 0) {
+                result = -1;
+                break;
+            }
+            if (inode.mode && ext4_reclaim_inode(fs, ino, &inode) < 0) {
+                result = -1;
+                break;
+            }
+            memset(entry, 0, sizeof(*entry));
         }
-        if (inode.mode && ext4_reclaim_inode(fs, ino, &inode) < 0) {
-            result = -1;
-            break;
-        }
-        memset(&fs->open_inodes[slot], 0, sizeof(fs->open_inodes[slot]));
+        if (result < 0) break;
     }
     if (result == 0 && ext4_flush_all_durable(fs) < 0)
         result = -1;
@@ -6150,14 +6192,14 @@ out:
 static int ext4_inode_open_locked(vfs_superblock_t *sb,
                                   const vfs_inode_t *inode) {
     ext4_fs_t *fs = ext4_lock_from_sb(sb);
+    ext4_open_inode_entry_t *open_entry;
     ext4_inode_t disk_inode;
-    int slot;
     int result = -1;
     if (!fs) return -1;
     if (!inode || !inode->ino || inode->ino > fs->sb.inodes_count ||
         read_inode(fs, inode->ino, &disk_inode) < 0 || !disk_inode.mode)
         goto out;
-    slot = ext4_open_inode_slot(fs, inode->ino, 0);
+    open_entry = ext4_open_inode_entry(fs, inode->ino, 0);
     /*
      * mmap may acquire its independent file-object reference after unlink but
      * before the descriptor is closed.  Linux keeps that inode alive for the
@@ -6165,12 +6207,13 @@ static int ext4_inode_open_locked(vfs_superblock_t *sb,
      * open reference already proves the object has not been reclaimed.
      */
     if (!disk_inode.links_count &&
-        (slot < 0 || !fs->open_inodes[slot].references))
+        (!open_entry || !open_entry->references))
         goto out;
-    if (slot < 0) slot = ext4_open_inode_slot(fs, inode->ino, 1);
-    if (slot < 0 || fs->open_inodes[slot].references == UINT32_MAX)
+    if (!open_entry)
+        open_entry = ext4_open_inode_entry(fs, inode->ino, 1);
+    if (!open_entry || open_entry->references == UINT32_MAX)
         goto out;
-    ++fs->open_inodes[slot].references;
+    ++open_entry->references;
     result = 0;
 out:
     ext4_op_unlock(fs);
@@ -6180,25 +6223,25 @@ out:
 static void ext4_inode_close_locked(vfs_superblock_t *sb,
                                     const vfs_inode_t *inode) {
     ext4_fs_t *fs = ext4_lock_from_sb(sb);
+    ext4_open_inode_entry_t *open_entry;
     ext4_inode_t disk_inode;
-    int slot;
     if (!fs) return;
     if (!inode) goto out;
-    slot = ext4_open_inode_slot(fs, inode->ino, 0);
-    if (slot < 0 || !fs->open_inodes[slot].references) goto out;
-    --fs->open_inodes[slot].references;
-    if (fs->open_inodes[slot].references) goto out;
+    open_entry = ext4_open_inode_entry(fs, inode->ino, 0);
+    if (!open_entry || !open_entry->references) goto out;
+    --open_entry->references;
+    if (open_entry->references) goto out;
     if (read_inode(fs, inode->ino, &disk_inode) < 0) {
-        fs->open_inodes[slot].delete_pending = 1;
+        open_entry->delete_pending = 1;
         goto out;
     }
-    if (!disk_inode.links_count || fs->open_inodes[slot].delete_pending) {
+    if (!disk_inode.links_count || open_entry->delete_pending) {
         if (ext4_reclaim_inode(fs, inode->ino, &disk_inode) < 0) {
-            fs->open_inodes[slot].delete_pending = 1;
+            open_entry->delete_pending = 1;
             goto out;
         }
     }
-    memset(&fs->open_inodes[slot], 0, sizeof(fs->open_inodes[slot]));
+    memset(open_entry, 0, sizeof(*open_entry));
 out:
     ext4_op_unlock(fs);
 }

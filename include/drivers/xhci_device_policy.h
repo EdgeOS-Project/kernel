@@ -16,6 +16,7 @@
 #define XHCI_DEVICE_DRIVER_NETWORK  (1u << 4)
 #define XHCI_DEVICE_DRIVER_HID_REPORT (1u << 5)
 #define XHCI_DEVICE_MAX_FAILURES 3u
+#define XHCI_DEVICE_DISCONNECT_CONFIRMATIONS 3u
 
 typedef struct {
     uint8_t valid;
@@ -49,5 +50,6 @@ int xhci_hid_pointer_report_decode(
     uint8_t *buttons_out, int *wheel_present_out);
 uint64_t xhci_device_retry_delay_us(uint8_t failure_count);
 int xhci_device_retry_permitted(uint8_t failure_count);
+int xhci_device_disconnect_update(uint8_t *observations, int connected);
 
 #endif /* EDGEOS_DRIVERS_XHCI_DEVICE_POLICY_H */

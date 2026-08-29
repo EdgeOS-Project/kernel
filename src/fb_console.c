@@ -588,10 +588,14 @@ void fb_console_tick(uint32_t ticks) {
             cursor_visible = 1;
             draw_cursor();
         }
-        /* QEMU ramfb/Cocoa rebuilds its host surface from the guest-dirty
-         * region.  Regenerate the VT before the full present so a cursor-only
-         * update cannot leave the rest of the host surface black. */
-        vt_redraw(g_active_vt);
+        /*
+         * The backing buffer already contains the complete VT.  Repainting
+         * every glyph for a cursor blink consumed an entire CPU at 1080p and
+         * kept interrupts masked while thousands of cells were rasterized.
+         * Marking the cursor line is sufficient for both direct framebuffers
+         * and explicit-present devices; full reconstruction remains limited
+         * to initial activation and VT switches.
+         */
         fb_console_present_locked();
     }
     spin_unlock_irqrestore(&console_lock, flags);

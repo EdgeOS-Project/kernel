@@ -15,6 +15,7 @@
 #define EDGE_VIRTGPU_BACKEND_CONTEXT_INIT      (1u << 2)
 #define EDGE_VIRTGPU_BACKEND_RESOURCE_BLOB     (1u << 3)
 #define EDGE_VIRTGPU_BACKEND_HOST_VISIBLE      (1u << 4)
+#define EDGE_VIRTGPU_BACKING_SEGMENT_MAX       256u
 
 typedef struct {
     uint32_t target;
@@ -30,6 +31,18 @@ typedef struct {
     uint32_t size;
     uint32_t stride;
 } edge_virtgpu_resource_create_t;
+
+typedef struct {
+    void *address;
+    uint32_t page_count;
+    uint32_t reserved;
+} edge_virtgpu_backing_segment_t;
+
+typedef struct {
+    const edge_virtgpu_backing_segment_t *segments;
+    uint32_t segment_count;
+    uint32_t page_count;
+} edge_virtgpu_backing_t;
 
 typedef struct {
     uint32_t x;
@@ -65,7 +78,8 @@ typedef struct {
     int (*resource_create)(void *context, uint32_t context_id,
                            uint32_t resource_id,
                            const edge_virtgpu_resource_create_t *create,
-                           void *storage, uint64_t size);
+                           const edge_virtgpu_backing_t *backing,
+                           uint64_t size);
     int (*resource_destroy)(void *context, uint32_t context_id,
                             uint32_t resource_id);
     int (*resource_attach)(void *context, uint32_t context_id,
@@ -79,7 +93,8 @@ typedef struct {
                               uint32_t resource_id,
                               const edge_virtgpu_transfer_t *transfer);
     int (*submit_3d)(void *context, uint32_t context_id,
-                     const void *commands, uint32_t size);
+                     const void *commands, uint32_t size,
+                     uint64_t completion_id);
     int (*get_capset)(void *context, uint32_t capset_id,
                       uint32_t version, void *data, uint32_t size,
                       uint32_t *actual_size);
@@ -106,9 +121,18 @@ const char *edge_virtgpu_driver_name(void);
 
 int64_t edge_virtgpu_ioctl(uint64_t client_identity,
                            const kernel_ioctl_request_t *request);
+int64_t edge_virtgpu_syncobj_ioctl(
+    uint64_t client_identity, const kernel_ioctl_request_t *request);
 void edge_virtgpu_release_client(uint64_t client_identity);
 int edge_virtgpu_prime_retain(int32_t object_id);
 void edge_virtgpu_prime_release(int32_t object_id);
+int edge_virtgpu_sync_file_retain(int32_t object_id);
+void edge_virtgpu_sync_file_release(int32_t object_id);
+void edge_virtgpu_backend_submission_complete(
+    uint64_t completion_id, int status);
+int edge_virtgpu_sync_file_ready(int32_t object_id);
+int64_t edge_virtgpu_sync_file_ioctl(
+    int32_t object_id, const kernel_ioctl_request_t *request);
 int edge_virtgpu_framebuffer_acquire(
     uint64_t client_identity, uint32_t handle,
     edge_virtgpu_framebuffer_info_t *info);

@@ -26,6 +26,7 @@ typedef enum kernel_anonymous_fd_kind {
     KERNEL_ANONYMOUS_FD_BPF,
     KERNEL_ANONYMOUS_FD_SECCOMP,
     KERNEL_ANONYMOUS_FD_ZCRX,
+    KERNEL_ANONYMOUS_FD_DRM_SYNC,
 } kernel_anonymous_fd_kind_t;
 
 typedef struct kernel_anonymous_fd_poll_state {
@@ -64,5 +65,6 @@ int kernel_anonymous_fd_descriptor_object_id(
 uint32_t kernel_anonymous_fd_poll_events(
     const kernel_anonymous_fd_poll_state_t *state);
 void kernel_bpf_ringbuf_state_changed(void);
+void kernel_drm_sync_state_changed(int32_t object_id);
 
 #endif

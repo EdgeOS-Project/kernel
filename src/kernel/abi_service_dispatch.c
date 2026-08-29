@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include "kernel/bpf_runtime.h"
+#include "kernel/anonymous_fd.h"
 #include "kernel/fbdev_runtime.h"
 #include "kernel/ioctl_runtime.h"
 #include "kernel/keyring_runtime.h"
@@ -19,6 +20,7 @@
 #include "kernel/socket_runtime.h"
 #include "kernel/userfaultfd_runtime.h"
 #include "kernel/watch_queue_runtime.h"
+#include "kernel/virtgpu_runtime.h"
 
 __attribute__((noreturn)) void kernel_current_exit(
     int32_t code, int whole_thread_group) {
@@ -55,9 +57,14 @@ __attribute__((noreturn)) void kernel_current_exit(
 }
 
 int64_t kernel_ioctl_execute(const kernel_ioctl_request_t *request) {
+    int sync_file_id;
     int64_t result;
 
     if (!request) return -EDGE_LINUX_EIO;
+    sync_file_id = kernel_anonymous_fd_descriptor_object_id(
+        request->descriptor, KERNEL_ANONYMOUS_FD_DRM_SYNC);
+    if (sync_file_id >= 0)
+        return edge_virtgpu_sync_file_ioctl(sync_file_id, request);
     if (arch_ioctl_descriptor_is_fbdev(request->descriptor)) {
         result = kernel_fbdev_ioctl(request);
         if (result != -EDGE_LINUX_ENOTTY) return result;

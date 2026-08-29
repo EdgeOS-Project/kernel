@@ -5,6 +5,12 @@
 
 #include "kernel/deferred_work.h"
 
+static uint32_t input_kicks;
+
+void kernel_arch_input_work_request(void) {
+    ++input_kicks;
+}
+
 static int failures;
 
 static void *request_from_cpu(void *argument) {
@@ -24,6 +30,15 @@ static void expect_true(const char *name, int condition) {
 
 int main(void) {
     expect_true("initially idle", !kernel_deferred_work_pending());
+
+    kernel_input_work_request();
+    kernel_input_work_request();
+    expect_true("input requests coalesce", kernel_input_work_pending());
+    expect_true("input transition kicks once", input_kicks == 1u);
+    expect_true("input take observes request", kernel_input_work_take());
+    kernel_input_work_request();
+    expect_true("input rearm kicks again", input_kicks == 2u);
+    expect_true("input rearm take", kernel_input_work_take());
     kernel_deferred_work_request();
     kernel_deferred_work_request();
     expect_true("requests coalesce", kernel_deferred_work_pending());
@@ -56,6 +71,32 @@ int main(void) {
                 kernel_display_work_take());
     expect_true("display take clears request",
                 !kernel_display_work_take());
+
+    kernel_display_deadline_request(200u);
+    kernel_display_deadline_request(300u);
+    expect_true("later display deadline does not replace earlier one",
+                kernel_display_deadline() == 200u);
+    expect_true("display deadline remains idle before expiry",
+                !kernel_display_deadline_poll(199u));
+    expect_true("display deadline remains armed before expiry",
+                kernel_display_deadline() == 200u);
+    expect_true("display deadline publishes work at expiry",
+                kernel_display_deadline_poll(200u));
+    expect_true("expired display deadline is cleared",
+                kernel_display_deadline() == 0u);
+    expect_true("expired display deadline work is consumable",
+                kernel_display_work_take());
+    expect_true("expired display deadline fires once",
+                !kernel_display_deadline_poll(300u));
+
+    kernel_display_deadline_request(500u);
+    kernel_display_deadline_request(400u);
+    expect_true("earlier display deadline replaces later one",
+                kernel_display_deadline() == 400u);
+    expect_true("replaced display deadline publishes at earlier expiry",
+                kernel_display_deadline_poll(400u));
+    expect_true("replaced display deadline work is consumable",
+                kernel_display_work_take());
 
     expect_true("input work initially idle",
                 !kernel_input_work_pending());

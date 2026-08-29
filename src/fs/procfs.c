@@ -1896,6 +1896,25 @@ static int proc_read(vfs_superblock_t *sb, vfs_inode_t *inode, uint32_t off,
     return (int)count;
 }
 
+static int proc_read_description(vfs_superblock_t *sb, vfs_inode_t *inode,
+                                 uint64_t description_identity,
+                                 uint32_t off, void *out, uint32_t len) {
+    uint32_t view;
+
+    if (!inode) return -1;
+    if (inode->fs_private[0] == PROC_PID_MAPS)
+        view = KERNEL_PROC_MAPS_VIEW_MAPS;
+    else if (inode->fs_private[0] == PROC_PID_SMAPS)
+        view = KERNEL_PROC_MAPS_VIEW_SMAPS;
+    else if (inode->fs_private[0] == PROC_PID_SMAPS_ROLLUP)
+        view = KERNEL_PROC_MAPS_VIEW_SMAPS_ROLLUP;
+    else
+        return proc_read(sb, inode, off, out, len);
+    return kernel_proc_maps_read_description(
+        description_identity, (int32_t)inode->fs_private[1], view,
+        off, out, len);
+}
+
 static int proc_readlink(vfs_superblock_t *sb, vfs_inode_t *inode, char *out, uint32_t max) {
     uint32_t length;
     (void)sb;
@@ -2297,6 +2316,7 @@ static int proc_truncate(vfs_superblock_t *sb, vfs_inode_t *inode,
 static filesystem_ops_t g_proc_ops = {
     .lookup = proc_lookup,
     .read = proc_read,
+    .read_description = proc_read_description,
     .write = proc_write,
     .readlink = proc_readlink,
     .truncate = proc_truncate,

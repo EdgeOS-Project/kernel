@@ -2294,6 +2294,7 @@ static void xhci_mark_port_disconnected(xhci_controller_t *xc, uint8_t port_id) 
     xc->port_to_slot[port_id] = 0;
     xc->port_retry_after_us[port_id] = 0;
     xc->port_failure_count[port_id] = 0;
+    xc->port_disconnect_observations[port_id] = 0;
     printf("[usb][xhci] device disconnected port=%u slot=%u\n", (uint32_t)port_id, (uint32_t)slot_id);
 }
 
@@ -2862,6 +2863,8 @@ int xhci_storage_write(xhci_controller_t *xc, uint8_t slot_id, uint32_t lba, uin
 }
 
 void xhci_poll_controller(xhci_controller_t *xc) {
+    int needs_disconnect_confirmation = 0;
+
     if (!xc || !xc->used || !xc->running || !xc->op) return;
     xhci_poll_events(xc);
     if (!xc->port_change_pending && xc->port_poll_countdown > 0) {
@@ -2869,24 +2872,34 @@ void xhci_poll_controller(xhci_controller_t *xc) {
         return;
     }
     xc->port_change_pending = 0;
-    xc->port_poll_countdown = XHCI_PORT_RESCAN_INTERVAL;
     for (uint8_t p = 0; p < xc->max_ports; ++p) {
         uint32_t off = XHCI_PORTSC_BASE + (uint32_t)p * XHCI_PORTSC_STRIDE;
         uint32_t v = mmio_read32(xc->op, off);
         uint32_t ch = v & XHCI_PORTSC_RW1C;
         uint8_t port_id = (uint8_t)(p + 1u);
         if ((v & XHCI_PORTSC_CCS) == 0) {
-            if (xc->port_to_slot[port_id] != 0)
-                xhci_mark_port_disconnected(xc, port_id);
-            else {
+            if (xc->port_to_slot[port_id] != 0) {
+                if (xhci_device_disconnect_update(
+                        &xc->port_disconnect_observations[port_id], 0)) {
+                    xhci_mark_port_disconnected(xc, port_id);
+                } else {
+                    needs_disconnect_confirmation = 1;
+                }
+            } else {
+                xc->port_disconnect_observations[port_id] = 0;
                 xc->port_retry_after_us[port_id] = 0;
                 xc->port_failure_count[port_id] = 0;
             }
-        } else if (xc->port_to_slot[port_id] == 0) {
-            (void)xhci_enumerate_root_port(xc, port_id);
+        } else {
+            (void)xhci_device_disconnect_update(
+                &xc->port_disconnect_observations[port_id], 1);
+            if (xc->port_to_slot[port_id] == 0)
+                (void)xhci_enumerate_root_port(xc, port_id);
         }
         if (ch) xhci_portsc_clear_changes(xc, off, v);
     }
+    xc->port_poll_countdown = needs_disconnect_confirmation ?
+                              1u : XHCI_PORT_RESCAN_INTERVAL;
 }
 
 void xhci_poll_controller_events(xhci_controller_t *xc) {

@@ -7,7 +7,44 @@
 #include <stdint.h>
 
 #include "kernel/proc_maps.h"
+#include "mm/arch_vm.h"
 #include "string.h"
+
+#define PROC_MAPS_SNAPSHOT_SLOTS 512u
+#define PROC_MAPS_SNAPSHOT_PAGE_SIZE 4096u
+#define PROC_MAPS_SNAPSHOT_INITIAL_PAGES 16u
+#define PROC_MAPS_SNAPSHOT_MAX_PAGES 4096u
+
+typedef struct proc_maps_snapshot {
+    uint64_t description_identity;
+    int32_t pid;
+    uint32_t view;
+    char *data;
+    uint32_t length;
+    uint32_t pages;
+    uint8_t active;
+} proc_maps_snapshot_t;
+
+static proc_maps_snapshot_t g_proc_maps_snapshots[PROC_MAPS_SNAPSHOT_SLOTS];
+static volatile uint32_t g_proc_maps_snapshot_lock;
+
+static void proc_maps_snapshot_lock(void) {
+    while (__sync_lock_test_and_set(&g_proc_maps_snapshot_lock, 1u))
+        __asm__ volatile("" ::: "memory");
+}
+
+static void proc_maps_snapshot_unlock(void) {
+    __sync_lock_release(&g_proc_maps_snapshot_lock);
+}
+
+static void proc_maps_snapshot_free(char *data, uint32_t pages) {
+    uint32_t page;
+
+    if (!data) return;
+    for (page = 0; page < pages; ++page)
+        arch_vm_free_page(data + (uint64_t)page *
+                                   PROC_MAPS_SNAPSHOT_PAGE_SIZE);
+}
 
 static int maps_append(char *buffer, uint32_t capacity, uint32_t *length,
                        const char *text) {
@@ -512,4 +549,164 @@ int kernel_proc_smaps_rollup_read(int32_t pid, uint64_t offset, void *buffer,
                     totals.swapped_proportional_bytes);
     smaps_output_kb(&output, "Locked:         ", totals.locked_bytes);
     return (int)output.copied;
+}
+
+static int proc_maps_snapshot_generate(int32_t pid, uint32_t view,
+                                       char **data_out,
+                                       uint32_t *length_out,
+                                       uint32_t *pages_out) {
+    uint32_t pages = PROC_MAPS_SNAPSHOT_INITIAL_PAGES;
+
+    if (!data_out || !length_out || !pages_out) return -1;
+    while (pages <= PROC_MAPS_SNAPSHOT_MAX_PAGES) {
+        uint32_t capacity = pages * PROC_MAPS_SNAPSHOT_PAGE_SIZE;
+        char *data = (char *)arch_vm_alloc_pages(pages);
+        int result = -1;
+
+        if (!data) return -1;
+        if (view == KERNEL_PROC_MAPS_VIEW_MAPS)
+            result = kernel_proc_maps_render(pid, data, capacity);
+        else if (view == KERNEL_PROC_MAPS_VIEW_SMAPS)
+            result = kernel_proc_smaps_read(pid, 0, data, capacity);
+        else if (view == KERNEL_PROC_MAPS_VIEW_SMAPS_ROLLUP)
+            result = kernel_proc_smaps_rollup_read(pid, 0, data, capacity);
+        else {
+            proc_maps_snapshot_free(data, pages);
+            return -1;
+        }
+        if (result >= 0 && (uint32_t)result < capacity) {
+            *data_out = data;
+            *length_out = (uint32_t)result;
+            *pages_out = pages;
+            return 0;
+        }
+        proc_maps_snapshot_free(data, pages);
+        if (pages > PROC_MAPS_SNAPSHOT_MAX_PAGES / 2u) break;
+        pages *= 2u;
+    }
+    return -1;
+}
+
+static int proc_maps_snapshot_copy_locked(
+        const proc_maps_snapshot_t *snapshot, uint64_t offset,
+        void *buffer, uint32_t length) {
+    uint32_t copied;
+
+    if (!snapshot || !snapshot->data || (!buffer && length)) return -1;
+    if (offset >= snapshot->length || !length) return 0;
+    copied = snapshot->length - (uint32_t)offset;
+    if (copied > length) copied = length;
+    memcpy(buffer, snapshot->data + offset, copied);
+    return (int)copied;
+}
+
+int kernel_proc_maps_read_description(uint64_t description_identity,
+                                      int32_t pid, uint32_t view,
+                                      uint64_t offset, void *buffer,
+                                      uint32_t length) {
+    proc_maps_snapshot_t *snapshot = 0;
+    char *generated = 0;
+    uint32_t generated_length = 0;
+    uint32_t generated_pages = 0;
+    uint32_t index;
+    int result;
+
+    if (pid <= 0 || (!buffer && length)) return -1;
+    if (!description_identity) {
+        if (view == KERNEL_PROC_MAPS_VIEW_MAPS)
+            return kernel_proc_maps_read(pid, offset, buffer, length);
+        if (view == KERNEL_PROC_MAPS_VIEW_SMAPS)
+            return kernel_proc_smaps_read(pid, offset, buffer, length);
+        if (view == KERNEL_PROC_MAPS_VIEW_SMAPS_ROLLUP)
+            return kernel_proc_smaps_rollup_read(pid, offset, buffer, length);
+        return -1;
+    }
+
+    proc_maps_snapshot_lock();
+    for (index = 0; index < PROC_MAPS_SNAPSHOT_SLOTS; ++index) {
+        proc_maps_snapshot_t *candidate = &g_proc_maps_snapshots[index];
+        if (!candidate->active ||
+            candidate->description_identity != description_identity)
+            continue;
+        if (candidate->pid != pid || candidate->view != view) {
+            proc_maps_snapshot_unlock();
+            return -1;
+        }
+        snapshot = candidate;
+        if (snapshot->data) {
+            result = proc_maps_snapshot_copy_locked(
+                snapshot, offset, buffer, length);
+            proc_maps_snapshot_unlock();
+            return result;
+        }
+        break;
+    }
+    if (!snapshot) {
+        for (index = 0; index < PROC_MAPS_SNAPSHOT_SLOTS; ++index) {
+            if (g_proc_maps_snapshots[index].active) continue;
+            snapshot = &g_proc_maps_snapshots[index];
+            memset(snapshot, 0, sizeof(*snapshot));
+            snapshot->description_identity = description_identity;
+            snapshot->pid = pid;
+            snapshot->view = view;
+            snapshot->active = 1u;
+            break;
+        }
+    }
+    proc_maps_snapshot_unlock();
+    if (!snapshot) return -1;
+
+    if (proc_maps_snapshot_generate(
+            pid, view, &generated, &generated_length,
+            &generated_pages) < 0) {
+        proc_maps_snapshot_lock();
+        if (snapshot->active &&
+            snapshot->description_identity == description_identity &&
+            !snapshot->data)
+            memset(snapshot, 0, sizeof(*snapshot));
+        proc_maps_snapshot_unlock();
+        return -1;
+    }
+
+    proc_maps_snapshot_lock();
+    if (!snapshot->active ||
+        snapshot->description_identity != description_identity ||
+        snapshot->pid != pid || snapshot->view != view) {
+        proc_maps_snapshot_unlock();
+        proc_maps_snapshot_free(generated, generated_pages);
+        return -1;
+    }
+    if (!snapshot->data) {
+        snapshot->data = generated;
+        snapshot->length = generated_length;
+        snapshot->pages = generated_pages;
+        generated = 0;
+        generated_pages = 0;
+    }
+    result = proc_maps_snapshot_copy_locked(
+        snapshot, offset, buffer, length);
+    proc_maps_snapshot_unlock();
+    proc_maps_snapshot_free(generated, generated_pages);
+    return result;
+}
+
+void kernel_proc_maps_description_release(uint64_t description_identity) {
+    char *data = 0;
+    uint32_t pages = 0;
+    uint32_t index;
+
+    if (!description_identity) return;
+    proc_maps_snapshot_lock();
+    for (index = 0; index < PROC_MAPS_SNAPSHOT_SLOTS; ++index) {
+        proc_maps_snapshot_t *snapshot = &g_proc_maps_snapshots[index];
+        if (!snapshot->active ||
+            snapshot->description_identity != description_identity)
+            continue;
+        data = snapshot->data;
+        pages = snapshot->pages;
+        memset(snapshot, 0, sizeof(*snapshot));
+        break;
+    }
+    proc_maps_snapshot_unlock();
+    proc_maps_snapshot_free(data, pages);
 }

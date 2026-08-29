@@ -27,6 +27,7 @@ uint32_t kernel_anonymous_fd_poll_events(
     case KERNEL_ANONYMOUS_FD_USERFAULTFD:
     case KERNEL_ANONYMOUS_FD_PERF_EVENT:
     case KERNEL_ANONYMOUS_FD_PID:
+    case KERNEL_ANONYMOUS_FD_DRM_SYNC:
         if (state->pending) events |= KERNEL_ANONYMOUS_FD_POLL_INPUT;
         break;
     case KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE:

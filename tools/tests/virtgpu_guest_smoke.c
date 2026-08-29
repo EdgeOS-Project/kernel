@@ -140,8 +140,11 @@ static int exercise_resource(int fd) {
     uint32_t command = 0;
     uint32_t handles[1];
     uint32_t *pixels;
+    int duplicate_fence_fd = -1;
     int result = -1;
 
+    memset(&execution, 0, sizeof(execution));
+    execution.fence_fd = -1;
     memset(&create, 0, sizeof(create));
     create.target = TEST_TARGET_2D;
     create.format = TEST_FORMAT_B8G8R8X8_UNORM;
@@ -198,15 +201,25 @@ static int exercise_resource(int fd) {
         goto unmap_resource;
 
     handles[0] = create.bo_handle;
-    memset(&execution, 0, sizeof(execution));
     execution.size = sizeof(command);
     execution.command = (uintptr_t)&command;
     execution.bo_handles = (uintptr_t)handles;
     execution.num_bo_handles = 1;
+    execution.flags = VIRTGPU_EXECBUF_FENCE_FD_OUT;
     execution.fence_fd = -1;
     if (drm_call(fd, DRM_IOCTL_VIRTGPU_EXECBUFFER, &execution,
                  "DRM_IOCTL_VIRTGPU_EXECBUFFER") < 0)
         goto unmap_resource;
+    if (execution.fence_fd < 0) {
+        fprintf(stderr, "FAIL: virtgpu did not return an output fence fd\n");
+        goto unmap_resource;
+    }
+    duplicate_fence_fd = fcntl(
+        execution.fence_fd, F_DUPFD_CLOEXEC, 0);
+    if (duplicate_fence_fd < 0) {
+        report_errno("F_DUPFD_CLOEXEC virtgpu output fence");
+        goto unmap_resource;
+    }
 
     memset(&wait, 0, sizeof(wait));
     wait.handle = create.bo_handle;
@@ -229,6 +242,10 @@ static int exercise_resource(int fd) {
     result = 0;
 
 unmap_resource:
+    if (duplicate_fence_fd >= 0)
+        (void)close(duplicate_fence_fd);
+    if (execution.fence_fd >= 0)
+        (void)close(execution.fence_fd);
     (void)munmap(pixels, TEST_SIZE);
 close_resource:
     memset(&close_request, 0, sizeof(close_request));

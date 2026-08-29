@@ -14,6 +14,9 @@ static volatile uint32_t g_display_work_requested;
 static volatile uint64_t g_display_work_deadline_us;
 static volatile uint32_t g_input_work_requested;
 
+__attribute__((weak)) void kernel_arch_input_work_request(void) {
+}
+
 __attribute__((weak)) void kernel_arch_display_deadline_request(
     uint64_t deadline_us) {
     (void)deadline_us;
@@ -104,7 +107,9 @@ int kernel_display_deadline_poll(uint64_t now_us) {
 }
 
 void kernel_input_work_request(void) {
-    __atomic_store_n(&g_input_work_requested, 1u, __ATOMIC_RELEASE);
+    if (!__atomic_exchange_n(&g_input_work_requested, 1u,
+                             __ATOMIC_ACQ_REL))
+        kernel_arch_input_work_request();
 }
 
 int kernel_input_work_pending(void) {

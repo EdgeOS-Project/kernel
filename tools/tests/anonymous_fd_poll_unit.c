@@ -50,6 +50,12 @@ int main(void) {
     assert(kernel_anonymous_fd_poll_events(&state) ==
            KERNEL_ANONYMOUS_FD_POLL_INPUT);
 
+    state = state_for(KERNEL_ANONYMOUS_FD_DRM_SYNC);
+    assert(kernel_anonymous_fd_poll_events(&state) == 0);
+    state.pending = 1;
+    assert(kernel_anonymous_fd_poll_events(&state) ==
+           KERNEL_ANONYMOUS_FD_POLL_INPUT);
+
     puts("anonymous_fd_poll_unit: PASS");
     return 0;
 }

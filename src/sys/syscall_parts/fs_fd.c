@@ -2284,6 +2284,10 @@ static uint32_t anonymous_fd_ready_events(edge_fd_t *descriptor) {
         poll_state.kind = KERNEL_ANONYMOUS_FD_PERF_EVENT;
         if (kernel_perf_event_query(descriptor->pipe_id, &state) < 0)
             poll_state.valid = 0;
+    } else if (descriptor->kind == FD_DRM_SYNC) {
+        poll_state.kind = KERNEL_ANONYMOUS_FD_DRM_SYNC;
+        poll_state.pending =
+            edge_virtgpu_sync_file_ready(descriptor->pipe_id) > 0;
     } else if (descriptor->kind == FD_PIDFD) {
         const task_t *task = process_get_task(descriptor->pipe_id);
         poll_state.kind = KERNEL_ANONYMOUS_FD_PID;
@@ -2422,10 +2426,17 @@ static int poll_fd_revents(edge_fd_t *e, int16_t events) {
             LINUX_POLLERR | LINUX_POLLPRI, events);
     }
 
+    if (fd_is_console_active_event_source(e)) {
+        if (!fd_console_active_monitor_pending(e)) return 0;
+        return (int16_t)kernel_wait_poll_project(
+            LINUX_POLLERR | LINUX_POLLPRI, events);
+    }
+
     if (e->kind == FD_EVENTFD || e->kind == FD_TIMERFD ||
         e->kind == FD_SIGNALFD || e->kind == FD_INOTIFY ||
         e->kind == FD_FANOTIFY || e->kind == FD_USERFAULTFD ||
         e->kind == FD_PERF_EVENT ||
+        e->kind == FD_DRM_SYNC ||
         e->kind == FD_PIDFD || e->kind == FD_MQUEUE ||
         e->kind == FD_IO_URING || e->kind == FD_BPF ||
         e->kind == FD_SECCOMP) {
@@ -2514,6 +2525,7 @@ static int poll_fd_revents(edge_fd_t *e, int16_t events) {
                    e->kind == FD_FANOTIFY ||
                    e->kind == FD_USERFAULTFD ||
                    e->kind == FD_PERF_EVENT ||
+                   e->kind == FD_DRM_SYNC ||
                    e->kind == FD_PIDFD || e->kind == FD_MQUEUE ||
                    e->kind == FD_IO_URING || e->kind == FD_BPF ||
                    e->kind == FD_SECCOMP) {
@@ -2592,6 +2604,7 @@ static int poll_fd_revents(edge_fd_t *e, int16_t events) {
                    e->kind == FD_FANOTIFY ||
                    e->kind == FD_USERFAULTFD ||
                    e->kind == FD_PERF_EVENT ||
+                   e->kind == FD_DRM_SYNC ||
                    e->kind == FD_PIDFD || e->kind == FD_MQUEUE ||
                    e->kind == FD_IO_URING || e->kind == FD_BPF ||
                    e->kind == FD_SECCOMP) {
@@ -3234,6 +3247,7 @@ static int x86_wait_source_from_entry(const edge_fd_t *entry,
         case FD_FANOTIFY:
         case FD_USERFAULTFD:
         case FD_PERF_EVENT:
+        case FD_DRM_SYNC:
             source->kind = KERNEL_WAIT_SOURCE_OWNER_WAKE;
             break;
         case FD_SIGNALFD:
@@ -3297,6 +3311,7 @@ static int x86_wait_source_from_captured(
         case FD_FANOTIFY:
         case FD_USERFAULTFD:
         case FD_PERF_EVENT:
+        case FD_DRM_SYNC:
             source->kind = KERNEL_WAIT_SOURCE_OWNER_WAKE;
             break;
         case FD_SIGNALFD:
@@ -5318,6 +5333,7 @@ int arch_vfs_open_install_regular(
     entry->sb = vfs_superblock_stable(superblock);
     entry->mount_id = superblock ? superblock->mount_id : 0;
     fd_mount_monitor_initialize(entry);
+    fd_console_active_monitor_initialize(entry);
     if (!(request->flags & KERNEL_VFS_OPEN_PATH) &&
         alsa_path_kind(entry->path) != EDGE_ALSA_NODE_NONE) {
         alsa_open(entry->path);
@@ -6044,7 +6060,31 @@ static uint64_t do_sys_fd_read_entry(int fd, edge_fd_t *e,
                         result = tty_interrupt_current_ret();
                         goto regular_read_out;
                     }
-                    wait_blocking_step();
+                    if (edge_fuse_is_device(e->inode.rdev)) {
+                        task_t *waiter = process_current_task();
+                        uint64_t identity = file_ref_identity(e->file_ref);
+                        int ready;
+
+                        if (!waiter || scheduler_task_is_idle(waiter)) {
+                            wait_blocking_step();
+                            continue;
+                        }
+                        waiter->fuse_wait_identity = identity;
+                        waiter->fuse_wait_active = 1u;
+                        scheduler_task_set_blocked(waiter);
+                        ready = edge_fuse_device_poll(identity, 0x0001u);
+                        if (ready != 0)
+                            scheduler_task_make_runnable(
+                                waiter, scheduler_cpu_id());
+                        scheduler_yield();
+                        waiter = process_current_task();
+                        if (waiter && !scheduler_task_is_idle(waiter)) {
+                            waiter->fuse_wait_active = 0u;
+                            waiter->fuse_wait_identity = 0u;
+                        }
+                    } else {
+                        wait_blocking_step();
+                    }
                     continue;
                 }
                 result = done ? done : (uint64_t)(int64_t)r;
@@ -6072,11 +6112,12 @@ static uint64_t do_sys_fd_read_entry(int fd, edge_fd_t *e,
             if (r < 0 && position == 0)
                 r = vfs_read_file(e->path, read_chunk, (uint32_t)n);
             if (r > 0) fd_description_advance(e, (uint64_t)r);
-        } else if (e->sb && e->sb->ops && e->sb->ops->read) {
+        } else if (e->sb && e->sb->ops &&
+                   (e->sb->ops->read || e->sb->ops->read_description)) {
             if (position > UINT32_MAX) r = 0;
-            else r = e->sb->ops->read(e->sb, &e->inode,
-                                      (uint32_t)position, read_chunk,
-                                      (uint32_t)n);
+            else r = vfs_read_description(
+                e->sb, &e->inode, file_ref_identity(e->file_ref),
+                (uint32_t)position, read_chunk, (uint32_t)n);
             if (r > 0) fd_description_advance(e, (uint64_t)r);
         }
 
@@ -6112,6 +6153,8 @@ static uint64_t do_sys_fd_read_entry(int fd, edge_fd_t *e,
         printf("[sshdbg] read pid=%d cmd=%s fd=%d kind=vfs len=%u ret=%u fl=0x%x\n",
                cur->pid, cur->name, fd, (unsigned)len, (unsigned)done, (unsigned)e->flags);
     }
+    if (done > 0)
+        fd_console_active_monitor_acknowledge(e);
     result = done;
 regular_read_out:
     if (pooled) kernel_io_buffer_release(&io_buffer);
@@ -6762,11 +6805,13 @@ static uint64_t do_sys_pread64_entry(
                     goto pread_out;
                 }
                 r = (int)transferred;
-            } else if (e->sb && e->sb->ops && e->sb->ops->read) {
+            } else if (e->sb && e->sb->ops &&
+                       (e->sb->ops->read ||
+                        e->sb->ops->read_description)) {
                 if (off > UINT32_MAX) r = 0;
-                else r = e->sb->ops->read(e->sb, &e->inode,
-                                           (uint32_t)off, read_chunk,
-                                           (uint32_t)n);
+                else r = vfs_read_description(
+                    e->sb, &e->inode, file_ref_identity(e->file_ref),
+                    (uint32_t)off, read_chunk, (uint32_t)n);
             }
 
             if (r < 0) {
@@ -6958,6 +7003,7 @@ static int linux_fd_fill_kstat(edge_fd_t *e, int fd,
     } else if (e->kind == FD_EVENTFD || e->kind == FD_TIMERFD ||
                e->kind == FD_SIGNALFD || e->kind == FD_EPOLL ||
                e->kind == FD_PIDFD || e->kind == FD_DMA_BUF ||
+               e->kind == FD_DRM_SYNC ||
                e->kind == FD_MOUNT || e->kind == FD_IO_URING ||
                e->kind == FD_BPF || e->kind == FD_SECCOMP) {
         /* Linux anon_inode descriptors have permission bits but no file type. */

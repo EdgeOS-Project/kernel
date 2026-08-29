@@ -393,6 +393,20 @@ int kernel_runtime_yield(void) {
     return arch_runtime_yield();
 }
 
+int kernel_runtime_wait_sequence(volatile uint64_t *sequence,
+                                 uint64_t observed,
+                                 uint64_t deadline_microseconds) {
+    if (!sequence ||
+        __atomic_load_n(sequence, __ATOMIC_ACQUIRE) != observed)
+        return 1;
+    return arch_runtime_wait_sequence(
+        sequence, observed, deadline_microseconds);
+}
+
+void kernel_runtime_notify_sequence(volatile uint64_t *sequence) {
+    if (sequence) arch_runtime_notify_sequence(sequence);
+}
+
 int kernel_runtime_contention_begin(void) {
     return arch_runtime_contention_begin();
 }

@@ -258,6 +258,13 @@ int vfs_permission_check(const vfs_inode_t *inode, int access_mask) {
     return g_permission_result;
 }
 
+int vfs_permission_check_with_acl(vfs_superblock_t *superblock,
+                                  const vfs_inode_t *inode,
+                                  int access_mask) {
+    (void)superblock;
+    return vfs_permission_check(inode, access_mask);
+}
+
 int kernel_current_cgroup_id(uint32_t *cgroup_id) {
     if (cgroup_id) *cgroup_id = 1u;
     return 0;

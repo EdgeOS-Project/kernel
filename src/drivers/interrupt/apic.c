@@ -318,47 +318,31 @@ int apic_timer_arm_oneshot_us(uint32_t microseconds) {
 void apic_timer_cancel_oneshot(void) {
     uint32_t cpu = x86_smp_current_cpu_id();
     uint8_t state;
-    uint32_t current;
-    uint32_t elapsed;
-    uint32_t periodic_remaining;
 
     if (cpu >= EDGE_SMP_MAX_CPUS) return;
     state = __atomic_exchange_n(&g_apic_timer_oneshot[cpu], 0u,
                                 __ATOMIC_ACQ_REL);
     if (state != 1u) return;
-    current = lapic_read(APIC_REG_TIMER_CURRENT);
-    elapsed = current < g_apic_timer_oneshot_count[cpu] ?
-              g_apic_timer_oneshot_count[cpu] - current :
-              g_apic_timer_oneshot_count[cpu];
-    periodic_remaining = g_apic_timer_period_saved[cpu];
-    periodic_remaining = periodic_remaining > elapsed ?
-                         periodic_remaining - elapsed : 1u;
-    __atomic_store_n(&g_apic_timer_oneshot[cpu], 2u, __ATOMIC_RELEASE);
-    lapic_write(APIC_REG_LVT_TIMER, APIC_TIMER_VECTOR);
-    lapic_write(APIC_REG_TIMER_INITIAL, periodic_remaining);
+    /*
+     * Restoring the periodic scheduler tick through a second, extremely
+     * short one-shot is not reliable on every hypervisor.  A remaining count
+     * of one can expire while the virtual APIC state is being updated and
+     * leave the CPU without any subsequent timer interrupt.  Restart the
+     * periodic source directly; losing a partial tick is preferable to losing
+     * the global clock and every timeout wakeup.
+     */
+    apic_timer_resume_periodic();
 }
 
 int apic_timer_consume_oneshot(void) {
     uint32_t cpu = x86_smp_current_cpu_id();
     uint8_t state;
-    uint32_t elapsed;
-    uint32_t periodic_remaining;
 
     if (cpu >= EDGE_SMP_MAX_CPUS) return 0;
     state = __atomic_exchange_n(&g_apic_timer_oneshot[cpu], 0u,
                                 __ATOMIC_ACQ_REL);
     if (!state) return 0;
-    if (state == 2u) {
-        apic_timer_resume_periodic();
-        return 0;
-    }
-    elapsed = g_apic_timer_oneshot_count[cpu];
-    periodic_remaining = g_apic_timer_period_saved[cpu];
-    periodic_remaining = periodic_remaining > elapsed ?
-                         periodic_remaining - elapsed : 1u;
-    __atomic_store_n(&g_apic_timer_oneshot[cpu], 2u, __ATOMIC_RELEASE);
-    lapic_write(APIC_REG_LVT_TIMER, APIC_TIMER_VECTOR);
-    lapic_write(APIC_REG_TIMER_INITIAL, periodic_remaining);
+    apic_timer_resume_periodic();
     return 1;
 }
 

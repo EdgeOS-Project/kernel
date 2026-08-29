@@ -9,7 +9,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "console.h"
 #include "display.h"
+#include "drivers/virtio_gpu.h"
 #include "fb.h"
 #include "fb_console.h"
 #include "kernel/anonymous_fd.h"
@@ -17,6 +19,7 @@
 #include "kernel/drm_runtime.h"
 #include "kernel/fd_runtime.h"
 #include "kernel/linux_errno.h"
+#include "kernel/process_runtime.h"
 #include "kernel/virtgpu_runtime.h"
 #include "mm/arch_vm.h"
 #include "string.h"
@@ -29,6 +32,7 @@
 #define EDGE_DRM_IOCTL_AUTH_MAGIC            0x40046411u
 #define EDGE_DRM_IOCTL_GET_CAP               0xc010640cu
 #define EDGE_DRM_IOCTL_SET_CLIENT_CAP        0x4010640du
+#define EDGE_DRM_IOCTL_WAIT_VBLANK           0xc018643au
 #define EDGE_DRM_IOCTL_PRIME_HANDLE_TO_FD    0xc00c642du
 #define EDGE_DRM_IOCTL_PRIME_FD_TO_HANDLE    0xc00c642eu
 #define EDGE_DRM_IOCTL_SET_MASTER            0x0000641eu
@@ -36,6 +40,7 @@
 #define EDGE_DRM_IOCTL_MODE_GETRESOURCES     0xc04064a0u
 #define EDGE_DRM_IOCTL_MODE_GETCRTC          0xc06864a1u
 #define EDGE_DRM_IOCTL_MODE_SETCRTC          0xc06864a2u
+#define EDGE_DRM_IOCTL_MODE_CURSOR           0xc01c64a3u
 #define EDGE_DRM_IOCTL_MODE_GETENCODER       0xc01464a6u
 #define EDGE_DRM_IOCTL_MODE_GETCONNECTOR     0xc05064a7u
 #define EDGE_DRM_IOCTL_MODE_GETPROPERTY      0xc04064aau
@@ -55,6 +60,7 @@
 #define EDGE_DRM_IOCTL_MODE_ADDFB2           0xc06864b8u
 #define EDGE_DRM_IOCTL_MODE_OBJ_GETPROPERTIES 0xc02064b9u
 #define EDGE_DRM_IOCTL_MODE_OBJ_SETPROPERTY  0xc01864bau
+#define EDGE_DRM_IOCTL_MODE_CURSOR2          0xc02464bbu
 #define EDGE_DRM_IOCTL_MODE_ATOMIC           0xc03864bcu
 #define EDGE_DRM_IOCTL_MODE_CREATEPROPBLOB   0xc01064bdu
 #define EDGE_DRM_IOCTL_MODE_DESTROYPROPBLOB  0xc00464beu
@@ -74,11 +80,21 @@
 #define EDGE_DRM_MODE_TYPE_DRIVER            (1u << 6)
 #define EDGE_DRM_MODE_PAGE_FLIP_EVENT        0x01u
 #define EDGE_DRM_MODE_PAGE_FLIP_ASYNC        0x02u
+#define EDGE_DRM_MODE_CURSOR_BO              0x01u
+#define EDGE_DRM_MODE_CURSOR_MOVE            0x02u
+#define EDGE_DRM_MODE_CURSOR_FLAGS           0x03u
 #define EDGE_DRM_MODE_ATOMIC_TEST_ONLY       0x0100u
 #define EDGE_DRM_MODE_ATOMIC_NONBLOCK        0x0200u
 #define EDGE_DRM_MODE_ATOMIC_ALLOW_MODESET   0x0400u
 #define EDGE_DRM_MODE_ATOMIC_FLAGS           0x0703u
+#define EDGE_DRM_EVENT_VBLANK                0x01u
 #define EDGE_DRM_EVENT_FLIP_COMPLETE         0x02u
+#define EDGE_DRM_VBLANK_RELATIVE             0x00000001u
+#define EDGE_DRM_VBLANK_HIGH_CRTC_MASK       0x0000003eu
+#define EDGE_DRM_VBLANK_EVENT                0x04000000u
+#define EDGE_DRM_VBLANK_NEXTONMISS           0x10000000u
+#define EDGE_DRM_VBLANK_SECONDARY            0x20000000u
+#define EDGE_DRM_VBLANK_SIGNAL               0x40000000u
 #define EDGE_DRM_PRIME_RDWR                  0x00000002u
 #define EDGE_DRM_PRIME_CLOEXEC               0x00080000u
 #define EDGE_DRM_PRIME_FLAGS                 \
@@ -313,6 +329,18 @@ typedef struct {
 } edge_drm_page_flip_t;
 
 typedef struct {
+    uint32_t flags;
+    uint32_t crtc_id;
+    int32_t x;
+    int32_t y;
+    uint32_t width;
+    uint32_t height;
+    uint32_t handle;
+    uint32_t hotspot_x;
+    uint32_t hotspot_y;
+} edge_drm_mode_cursor_t;
+
+typedef struct {
     uint32_t fb_id;
     uint32_t flags;
     uint32_t color;
@@ -466,6 +494,20 @@ typedef struct {
     uint32_t crtc_id;
 } edge_drm_event_vblank_t;
 
+typedef union {
+    struct {
+        uint32_t type;
+        uint32_t sequence;
+        uint64_t signal;
+    } request;
+    struct {
+        uint32_t type;
+        uint32_t sequence;
+        int64_t tv_sec;
+        int64_t tv_usec;
+    } reply;
+} edge_drm_wait_vblank_t;
+
 typedef struct {
     uint8_t used;
     uint8_t handle_open;
@@ -523,10 +565,14 @@ typedef struct {
     uint8_t aspect_ratio;
     uint8_t atomic;
     uint8_t flip_pending;
-    uint8_t event_pad[3];
+    uint8_t vblank_pending;
+    uint8_t event_pad[2];
     uint64_t identity;
     uint64_t flip_user_data;
     uint64_t flip_due_us;
+    uint64_t vblank_user_data;
+    uint64_t vblank_due_us;
+    uint32_t vblank_sequence;
     uint32_t magic;
     uint32_t event_head;
     uint32_t event_count;
@@ -579,6 +625,8 @@ typedef struct {
     int32_t cursor_crtc_y;
     uint32_t cursor_crtc_w;
     uint32_t cursor_crtc_h;
+    uint32_t cursor_hotspot_x;
+    uint32_t cursor_hotspot_y;
 } edge_drm_atomic_state_t;
 
 typedef struct {
@@ -592,6 +640,8 @@ typedef struct {
     int32_t crtc_y;
     uint32_t crtc_w;
     uint32_t crtc_h;
+    uint32_t hotspot_x;
+    uint32_t hotspot_y;
 } edge_drm_cursor_state_t;
 
 typedef struct {
@@ -624,8 +674,12 @@ _Static_assert(sizeof(edge_drm_obj_get_properties_t) == 32,
                "Linux DRM object property layout mismatch");
 _Static_assert(sizeof(edge_drm_atomic_t) == 56,
                "Linux DRM atomic layout mismatch");
+_Static_assert(sizeof(edge_drm_mode_cursor_t) == 36,
+               "Linux DRM cursor2 layout mismatch");
 _Static_assert(sizeof(edge_drm_event_vblank_t) == 32,
                "Linux DRM event layout mismatch");
+_Static_assert(sizeof(edge_drm_wait_vblank_t) == 24,
+               "Linux DRM wait-vblank layout mismatch");
 _Static_assert(sizeof(edge_drm_prime_handle_t) == 12,
                "Linux DRM PRIME handle layout mismatch");
 _Static_assert(sizeof(edge_drm_mode_list_lessees_t) == 16,
@@ -658,6 +712,8 @@ static uint64_t g_edge_drm_vblank_epoch_us;
 static uint64_t g_edge_drm_vblank_interval_us;
 static volatile uint32_t g_edge_drm_scanout_idle_frames;
 static volatile uint32_t g_edge_drm_scanout_activity_sequence;
+static volatile uint32_t g_edge_drm_imported_activity_sequence;
+static volatile uint32_t g_edge_drm_imported_refresh_armed;
 static volatile unsigned int g_edge_drm_scanout_guard;
 static volatile uint64_t g_edge_drm_explicit_verify_us;
 static uint64_t
@@ -674,6 +730,22 @@ static uint32_t g_edge_drm_scanout_width;
 static uint32_t g_edge_drm_scanout_height;
 static uint32_t g_edge_drm_scanout_pitch;
 static edge_drm_runtime_stats_t g_edge_drm_runtime_stats;
+static volatile uint32_t g_edge_drm_virgl_diagnostic_count;
+static volatile uint32_t g_edge_drm_flip_diagnostic_count;
+
+static int edge_drm_virgl_diagnostic_enabled(void)
+{
+    return __atomic_fetch_add(
+               &g_edge_drm_virgl_diagnostic_count, 1u,
+               __ATOMIC_RELAXED) < 96u;
+}
+
+static int edge_drm_flip_diagnostic_enabled(void)
+{
+    return __atomic_fetch_add(
+               &g_edge_drm_flip_diagnostic_count, 1u,
+               __ATOMIC_RELAXED) < 128u;
+}
 
 static void edge_drm_mode_blob_reference_locked(uint32_t id);
 static void edge_drm_buffer_maybe_release_locked(uint32_t buffer_index);
@@ -1131,6 +1203,35 @@ static uint64_t edge_drm_next_vblank_locked(uint64_t submitted_us) {
     return g_edge_drm_vblank_epoch_us + periods * interval_us;
 }
 
+static uint32_t edge_drm_vblank_sequence_locked(uint64_t now_us) {
+    uint64_t interval_us = edge_drm_scanout_active_interval();
+
+    if (!interval_us) interval_us = EDGE_DRM_SCANOUT_DEFAULT_INTERVAL_US;
+    if (!g_edge_drm_vblank_epoch_us ||
+        g_edge_drm_vblank_interval_us != interval_us ||
+        now_us < g_edge_drm_vblank_epoch_us) {
+        g_edge_drm_vblank_epoch_us = now_us;
+        g_edge_drm_vblank_interval_us = interval_us;
+        return 0u;
+    }
+    return (uint32_t)((now_us - g_edge_drm_vblank_epoch_us) / interval_us);
+}
+
+static uint64_t edge_drm_vblank_deadline_locked(
+    uint64_t now_us, uint32_t current_sequence, uint32_t target_sequence) {
+    uint64_t interval_us = edge_drm_scanout_active_interval();
+    uint32_t delta = target_sequence - current_sequence;
+    uint64_t phase_us;
+
+    if (!interval_us) interval_us = EDGE_DRM_SCANOUT_DEFAULT_INTERVAL_US;
+    if (!delta) return now_us;
+    phase_us = (now_us - g_edge_drm_vblank_epoch_us) % interval_us;
+    if ((uint64_t)delta >
+        (UINT64_MAX - (now_us - phase_us)) / interval_us)
+        return UINT64_MAX;
+    return now_us - phase_us + (uint64_t)delta * interval_us;
+}
+
 static void edge_drm_schedule_explicit_verification(uint64_t now_us) {
     uint64_t interval_us = edge_drm_scanout_active_interval() * 2u;
     uint64_t deadline_us;
@@ -1525,6 +1626,7 @@ static int edge_drm_cursor_restore(const edge_drm_cursor_state_t *cursor,
     display_rect_t damage = {0};
     int result;
 
+    if (virtio_gpu_cursor_available()) return 0;
     edge_drm_scanout_lock();
     result = edge_drm_cursor_restore_internal(
         cursor, primary_fb_id, 0, &damage);
@@ -1628,9 +1730,27 @@ static int edge_drm_cursor_draw_internal(
 }
 
 static int edge_drm_cursor_draw(const edge_drm_cursor_state_t *cursor) {
+    edge_drm_present_source_t source;
     display_rect_t damage = {0};
     int result;
 
+    if (virtio_gpu_cursor_available()) {
+        if (!cursor || !cursor->fb_id || !cursor->crtc_id)
+            return virtio_gpu_cursor_hide();
+        edge_drm_lock();
+        result = edge_drm_present_source_locked(cursor->fb_id, &source);
+        edge_drm_unlock();
+        if (result < 0 || !source.data || source.virtgpu_handle ||
+            source.pixel_format != EDGE_DRM_FORMAT_ARGB8888)
+            return -EDGE_LINUX_EINVAL;
+        return virtio_gpu_cursor_update(
+            source.data, source.width, source.height, source.pitch,
+            cursor->src_x >> 16, cursor->src_y >> 16,
+            cursor->crtc_w, cursor->crtc_h,
+            cursor->crtc_x, cursor->crtc_y,
+            cursor->hotspot_x, cursor->hotspot_y) < 0 ?
+            -EDGE_LINUX_EIO : 0;
+    }
     edge_drm_scanout_lock();
     result = edge_drm_cursor_draw_internal(cursor, 0, &damage);
     if (damage.width && damage.height)
@@ -1646,6 +1766,8 @@ static int edge_drm_cursor_transition(
     uint32_t count = 0;
     int result;
 
+    if (virtio_gpu_cursor_available())
+        return edge_drm_cursor_draw(next);
     edge_drm_scanout_lock();
     memset(damage, 0, sizeof(damage));
     result = edge_drm_cursor_restore_internal(
@@ -1861,7 +1983,7 @@ static void edge_drm_scanout_flush_present(
         return;
     memset(&cursor, 0, sizeof(cursor));
     memset(&cursor_rect, 0, sizeof(cursor_rect));
-    if (redraw_cursor) {
+    if (redraw_cursor && !virtio_gpu_cursor_available()) {
         edge_drm_cursor_snapshot(&cursor);
         if (cursor.fb_id && edge_drm_cursor_clip(
                 &cursor, &destination_x, &destination_y,
@@ -2087,8 +2209,73 @@ static void edge_drm_pump_deferred_internal(int redraw_cursor,
     framebuffer_id = g_edge_drm_active_fb;
     framebuffer = g_edge_drm_crtc_active ?
         edge_drm_framebuffer_locked(framebuffer_id, 0) : 0;
-    if (!framebuffer || framebuffer->virtgpu ||
-        framebuffer->buffer_index >= EDGE_DRM_BUFFER_COUNT) {
+    if (!framebuffer) {
+        g_edge_drm_next_scanout_us = 0;
+        edge_drm_unlock();
+        goto out;
+    }
+    if (framebuffer->virtgpu) {
+        uint32_t imported_activity = __atomic_load_n(
+            &g_edge_drm_imported_activity_sequence, __ATOMIC_ACQUIRE);
+        int hardware_cursor_visible = g_edge_drm_cursor.fb_id &&
+            g_edge_drm_cursor.crtc_id;
+
+        if (hardware_cursor_visible ||
+            imported_activity == activity_sequence) {
+            __atomic_store_n(
+                &g_edge_drm_imported_refresh_armed, 0u, __ATOMIC_RELEASE);
+            g_edge_drm_next_scanout_us = 0;
+            edge_drm_unlock();
+            goto out;
+        }
+        /*
+         * Input is delivered before a compositor renders its software
+         * cursor. Defer the imported-resource flush by one display interval
+         * so the render submission reaches VirtIO-GPU first. An immediate
+         * flush republishes the old frame and consumes the only activity
+         * notification, leaving the new cursor pixels invisible.
+         */
+        if (!__atomic_exchange_n(
+                &g_edge_drm_imported_refresh_armed, 1u,
+                __ATOMIC_ACQ_REL)) {
+            g_edge_drm_scanout_idle_frames = 0u;
+            g_edge_drm_next_scanout_us =
+                now_us + edge_drm_scanout_active_interval();
+            edge_drm_unlock();
+            goto out;
+        }
+        if (edge_drm_present_source_locked(
+                framebuffer_id, &present_source) < 0) {
+            g_edge_drm_next_scanout_us = 0;
+            edge_drm_unlock();
+            goto out;
+        }
+        source_x = present_source.source_x;
+        source_y = present_source.source_y;
+        if (source_x >= present_source.width ||
+            source_y >= present_source.height) {
+            g_edge_drm_next_scanout_us = 0;
+            edge_drm_unlock();
+            goto out;
+        }
+        width = edge_drm_min_u32(
+            fb.width, present_source.width - source_x);
+        height = edge_drm_min_u32(
+            fb.height, present_source.height - source_y);
+        edge_drm_unlock();
+
+        if (edge_drm_present_source_rect(
+                &present_source, 0u, 0u, width, height, 1) == 0) {
+            __atomic_store_n(
+                &g_edge_drm_imported_activity_sequence,
+                activity_sequence, __ATOMIC_RELEASE);
+            __atomic_store_n(
+                &g_edge_drm_imported_refresh_armed, 0u, __ATOMIC_RELEASE);
+            changed = 1;
+        }
+        goto schedule;
+    }
+    if (framebuffer->buffer_index >= EDGE_DRM_BUFFER_COUNT) {
         g_edge_drm_next_scanout_us = 0;
         edge_drm_unlock();
         goto out;
@@ -2484,6 +2671,7 @@ static int edge_drm_present_flip(uint32_t framebuffer_id,
                                  uint32_t damage_blob_id,
                                  int redraw_cursor) {
     uint64_t started_us = boottime_monotonic_us();
+    edge_drm_present_source_t source;
     uint64_t duration_us;
     int result;
 
@@ -2498,12 +2686,37 @@ static int edge_drm_present_flip(uint32_t framebuffer_id,
             framebuffer_id, damage_blob_id, redraw_cursor);
         goto out;
     }
+    edge_drm_lock();
+    result = edge_drm_present_source_locked(framebuffer_id, &source);
+    edge_drm_unlock();
+    if (edge_drm_virgl_diagnostic_enabled())
+        console_printf(
+            "[virgl-diag] flip fb=%u result=%d virtgpu=%u owner=%llu handle=%u damage=%u\n",
+            framebuffer_id, result,
+            result == 0 && source.virtgpu_handle != 0u,
+            (unsigned long long)(result == 0 ? source.owner : 0u),
+            result == 0 ? source.virtgpu_handle : 0u,
+            damage_blob_id);
+    if (result < 0) goto out;
+    if (source.virtgpu_handle) {
+        /*
+         * Imported VirtIO-GPU framebuffers are host resources rather than
+         * CPU-visible dumb buffers. A page flip without FB_DAMAGE_CLIPS must
+         * still publish the complete resource. The direct scanout pump below
+         * intentionally ignores imported resources, so routing them through
+         * it can leave the newly selected primary plane black until a later
+         * modeset happens to republish the resource.
+         */
+        result = edge_drm_present_source_rect(
+            &source, 0u, 0u, fb.width, fb.height, 1);
+        goto out;
+    }
     /*
      * EdgeOS dumb buffers are separate cacheable pages. Reuse the
-     * content-aware scanout path for direct and explicit-present displays so
-     * an idle compositor alternating equal buffers does not transfer the
-     * complete screen on every flip. When requested, cursor composition joins
-     * the same damage batch so no cursorless intermediate frame is visible.
+     * content-aware scanout path so an idle compositor alternating equal
+     * buffers does not transfer the complete screen on every flip. When
+     * requested, cursor composition joins the same damage batch so no
+     * cursorless intermediate frame is visible.
      */
     edge_drm_scanout_activity();
     edge_drm_pump_deferred_internal(redraw_cursor, 1);
@@ -2523,21 +2736,21 @@ out:
     return result;
 }
 
-static void edge_drm_enqueue_flip_event_locked(
-    edge_drm_client_t *client, uint64_t user_data,
-    uint64_t microseconds) {
+static void edge_drm_enqueue_event_locked(
+    edge_drm_client_t *client, uint32_t type, uint64_t user_data,
+    uint64_t microseconds, uint32_t sequence) {
     edge_drm_event_vblank_t event;
     uint32_t tail;
 
     if (!client) return;
     memset(&event, 0, sizeof(event));
-    event.type = EDGE_DRM_EVENT_FLIP_COMPLETE;
+    event.type = type;
     event.length = sizeof(event);
     event.user_data = user_data;
     event.tv_sec = (uint32_t)(microseconds / 1000000u);
     event.tv_usec = (uint32_t)(microseconds % 1000000u);
     event.crtc_id = EDGE_DRM_CRTC_ID;
-    event.sequence = ++g_edge_drm_flip_sequence;
+    event.sequence = sequence;
     if (client->event_count == EDGE_DRM_EVENT_COUNT) {
         client->event_head =
             (client->event_head + 1u) % EDGE_DRM_EVENT_COUNT;
@@ -2548,9 +2761,18 @@ static void edge_drm_enqueue_flip_event_locked(
     client->events[tail] = event;
     client->event_count++;
     client->readiness_sequence++;
-    __atomic_add_fetch(
-        &g_edge_drm_runtime_stats.flip_events_delivered, 1u,
-        __ATOMIC_RELAXED);
+    if (type == EDGE_DRM_EVENT_FLIP_COMPLETE)
+        __atomic_add_fetch(
+            &g_edge_drm_runtime_stats.flip_events_delivered, 1u,
+            __ATOMIC_RELAXED);
+}
+
+static void edge_drm_enqueue_flip_event_locked(
+    edge_drm_client_t *client, uint64_t user_data,
+    uint64_t microseconds) {
+    edge_drm_enqueue_event_locked(
+        client, EDGE_DRM_EVENT_FLIP_COMPLETE, user_data, microseconds,
+        ++g_edge_drm_flip_sequence);
 }
 
 static void edge_drm_pump_flip_events(uint64_t now_us) {
@@ -2579,18 +2801,40 @@ static void edge_drm_pump_flip_events(uint64_t now_us) {
         }
         edge_drm_enqueue_flip_event_locked(
             client, client->flip_user_data, now_us);
+        if (edge_drm_flip_diagnostic_enabled())
+            printf("[drm-flip] deliver owner=%llu now=%llu due=%llu events=%u\n",
+                   (unsigned long long)client->identity,
+                   (unsigned long long)now_us,
+                   (unsigned long long)client->flip_due_us,
+                   client->event_count);
         client->flip_pending = 0u;
         client->flip_user_data = 0u;
         client->flip_due_us = 0u;
     }
     for (uint32_t index = 0; index < EDGE_DRM_CLIENT_COUNT; ++index) {
+        edge_drm_client_t *client = &g_edge_drm_clients[index];
+
+        if (!client->used || !client->vblank_pending ||
+            now_us < client->vblank_due_us)
+            continue;
+        edge_drm_enqueue_event_locked(
+            client, EDGE_DRM_EVENT_VBLANK, client->vblank_user_data,
+            now_us, client->vblank_sequence);
+        client->vblank_pending = 0u;
+        client->vblank_user_data = 0u;
+        client->vblank_due_us = 0u;
+        client->vblank_sequence = 0u;
+    }
+    for (uint32_t index = 0; index < EDGE_DRM_CLIENT_COUNT; ++index) {
         const edge_drm_client_t *client = &g_edge_drm_clients[index];
 
-        if (!client->used || !client->flip_pending ||
-            !client->flip_due_us)
-            continue;
-        if (!next_due_us || client->flip_due_us < next_due_us)
+        if (!client->used) continue;
+        if (client->flip_pending && client->flip_due_us &&
+            (!next_due_us || client->flip_due_us < next_due_us))
             next_due_us = client->flip_due_us;
+        if (client->vblank_pending && client->vblank_due_us &&
+            (!next_due_us || client->vblank_due_us < next_due_us))
+            next_due_us = client->vblank_due_us;
     }
     edge_drm_unlock();
     if (next_due_us) kernel_display_deadline_request(next_due_us);
@@ -2618,6 +2862,11 @@ static int edge_drm_queue_flip_event(uint64_t identity,
             __ATOMIC_RELAXED);
     } else if (asynchronous) {
         edge_drm_enqueue_flip_event_locked(client, user_data, now_us);
+        if (edge_drm_flip_diagnostic_enabled())
+            printf("[drm-flip] async owner=%llu now=%llu events=%u\n",
+                   (unsigned long long)identity,
+                   (unsigned long long)now_us,
+                   client->event_count);
     } else {
         client->flip_pending = 1u;
         client->flip_user_data = user_data;
@@ -2629,10 +2878,93 @@ static int edge_drm_queue_flip_event(uint64_t identity,
          * so a frame submitted before the next boundary completes there.
          */
         client->flip_due_us = edge_drm_next_vblank_locked(submitted_us);
+        if (edge_drm_flip_diagnostic_enabled())
+            printf("[drm-flip] queue owner=%llu now=%llu submit=%llu due=%llu\n",
+                   (unsigned long long)identity,
+                   (unsigned long long)now_us,
+                   (unsigned long long)submitted_us,
+                   (unsigned long long)client->flip_due_us);
         kernel_display_deadline_request(client->flip_due_us);
     }
     edge_drm_unlock();
     return result;
+}
+
+static int64_t edge_drm_ioctl_wait_vblank(
+    uint64_t identity, const kernel_ioctl_request_t *request) {
+    edge_drm_wait_vblank_t wait;
+    edge_drm_client_t *client;
+    uint64_t now_us;
+    uint64_t due_us;
+    uint32_t current_sequence;
+    uint32_t target_sequence;
+    uint32_t type;
+
+    if (!request->argument ||
+        edge_drm_copy_from(request, &wait, request->argument,
+                           sizeof(wait)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    type = wait.request.type;
+    if (type & (EDGE_DRM_VBLANK_HIGH_CRTC_MASK |
+                EDGE_DRM_VBLANK_SECONDARY |
+                EDGE_DRM_VBLANK_SIGNAL))
+        return -EDGE_LINUX_EINVAL;
+    if (type & ~(EDGE_DRM_VBLANK_RELATIVE |
+                 EDGE_DRM_VBLANK_EVENT |
+                 EDGE_DRM_VBLANK_NEXTONMISS))
+        return -EDGE_LINUX_EINVAL;
+
+    now_us = boottime_monotonic_us();
+    edge_drm_lock();
+    current_sequence = edge_drm_vblank_sequence_locked(now_us);
+    if (type & EDGE_DRM_VBLANK_RELATIVE) {
+        target_sequence = current_sequence + wait.request.sequence;
+    } else {
+        target_sequence = wait.request.sequence;
+        if ((int32_t)(target_sequence - current_sequence) <= 0) {
+            target_sequence = (type & EDGE_DRM_VBLANK_NEXTONMISS) ?
+                current_sequence + 1u : current_sequence;
+        }
+    }
+    due_us = edge_drm_vblank_deadline_locked(
+        now_us, current_sequence, target_sequence);
+    if (type & EDGE_DRM_VBLANK_EVENT) {
+        client = edge_drm_client_locked(identity, 1);
+        if (!client) {
+            edge_drm_unlock();
+            return -EDGE_LINUX_ENOSPC;
+        }
+        if (client->vblank_pending) {
+            edge_drm_unlock();
+            return -EDGE_LINUX_EBUSY;
+        }
+        if (due_us <= now_us) {
+            edge_drm_enqueue_event_locked(
+                client, EDGE_DRM_EVENT_VBLANK, wait.request.signal,
+                now_us, target_sequence);
+        } else {
+            client->vblank_pending = 1u;
+            client->vblank_user_data = wait.request.signal;
+            client->vblank_due_us = due_us;
+            client->vblank_sequence = target_sequence;
+        }
+        edge_drm_unlock();
+        if (due_us > now_us) kernel_display_deadline_request(due_us);
+        return 0;
+    }
+    edge_drm_unlock();
+    memset(&wait, 0, sizeof(wait));
+    wait.reply.type = type;
+    wait.reply.sequence = target_sequence;
+    wait.reply.tv_sec = (int64_t)(due_us / 1000000u);
+    wait.reply.tv_usec = (int64_t)(due_us % 1000000u);
+    if (edge_drm_copy_to(
+            request, request->argument, &wait, sizeof(wait)) < 0)
+        return -EDGE_LINUX_EFAULT;
+    if (due_us <= now_us) return 0;
+    kernel_display_deadline_request(due_us);
+    return kernel_current_sleep_until(
+        due_us, 0u, 0, 0, request->user_registers);
 }
 
 static int64_t edge_drm_ioctl_version(
@@ -2708,15 +3040,17 @@ static int64_t edge_drm_ioctl_get_cap(
         return -EDGE_LINUX_EFAULT;
     switch (capability.capability) {
         case EDGE_DRM_CAP_DUMB_BUFFER:
+        case EDGE_DRM_CAP_VBLANK_HIGH_CRTC:
         case EDGE_DRM_CAP_TIMESTAMP_MONOTONIC:
         case EDGE_DRM_CAP_CRTC_IN_VBLANK_EVENT:
             capability.value = 1u;
             break;
         case EDGE_DRM_CAP_DUMB_PREFERRED_DEPTH:
-            capability.value = 24u;
-            break;
         case EDGE_DRM_CAP_DUMB_PREFER_SHADOW:
-            capability.value = display_backend_requires_present() ? 1u : 0u;
+        case EDGE_DRM_CAP_ASYNC_PAGE_FLIP:
+        case EDGE_DRM_CAP_ADDFB2_MODIFIERS:
+        case EDGE_DRM_CAP_PAGE_FLIP_TARGET:
+            capability.value = 0u;
             break;
         case EDGE_DRM_CAP_PRIME:
             capability.value = EDGE_DRM_PRIME_CAP_IMPORT |
@@ -2726,10 +3060,9 @@ static int64_t edge_drm_ioctl_get_cap(
         case EDGE_DRM_CAP_CURSOR_HEIGHT:
             capability.value = 64u;
             break;
-        case EDGE_DRM_CAP_ADDFB2_MODIFIERS:
         case EDGE_DRM_CAP_SYNCOBJ:
         case EDGE_DRM_CAP_SYNCOBJ_TIMELINE:
-            capability.value = 0u;
+            capability.value = edge_virtgpu_available() ? 1u : 0u;
             break;
         default:
             return -EDGE_LINUX_EINVAL;
@@ -3850,6 +4183,11 @@ static int64_t edge_drm_add_framebuffer(
     framebuffer->owner = identity;
     *framebuffer_id = framebuffer->id;
     edge_drm_unlock();
+    if (edge_drm_virgl_diagnostic_enabled())
+        console_printf(
+            "[virgl-diag] addfb owner=%llu handle=%u fb=%u virtgpu=%u %ux%u pitch=%u\n",
+            (unsigned long long)identity, handle, *framebuffer_id,
+            virtgpu ? 1u : 0u, width, height, pitch);
     return 0;
 }
 
@@ -3884,6 +4222,17 @@ static int64_t edge_drm_ioctl_addfb2(
         edge_drm_copy_from(request, &command, request->argument,
                            sizeof(command)) < 0)
         return -EDGE_LINUX_EFAULT;
+    if (edge_drm_virgl_diagnostic_enabled())
+        console_printf(
+            "[virgl-diag] addfb2-request owner=%llu handle=%u flags=0x%x format=0x%x %ux%u pitch=%u offsets=%u,%u,%u,%u modifiers=%llu,%llu,%llu,%llu\n",
+            (unsigned long long)identity, command.handles[0],
+            command.flags, command.pixel_format, command.width,
+            command.height, command.pitches[0], command.offsets[0],
+            command.offsets[1], command.offsets[2], command.offsets[3],
+            (unsigned long long)command.modifier[0],
+            (unsigned long long)command.modifier[1],
+            (unsigned long long)command.modifier[2],
+            (unsigned long long)command.modifier[3]);
     if (command.flags || command.handles[1] || command.handles[2] ||
         command.handles[3] || command.pitches[1] || command.pitches[2] ||
         command.pitches[3] || command.offsets[0] || command.offsets[1] ||
@@ -4020,6 +4369,140 @@ static int64_t edge_drm_ioctl_closefb(
         edge_virtgpu_framebuffer_release(
             virtgpu_owners[index], virtgpu_handles[index]);
     return 0;
+}
+
+static int edge_drm_legacy_cursor_framebuffer_locked(
+    uint64_t identity, uint32_t handle, uint32_t width, uint32_t height,
+    uint32_t *framebuffer_id)
+{
+    edge_drm_buffer_t *buffer;
+    edge_drm_framebuffer_t *framebuffer = 0;
+    uint32_t buffer_index;
+
+    if (!framebuffer_id || !handle || !width || !height ||
+        width > EDGE_DRM_CURSOR_MAX_WIDTH ||
+        height > EDGE_DRM_CURSOR_MAX_HEIGHT)
+        return -EDGE_LINUX_EINVAL;
+    buffer = edge_drm_buffer_handle_locked(identity, handle, &buffer_index);
+    if (!buffer || width > buffer->width || height > buffer->height ||
+        buffer->pitch < width * 4u ||
+        (uint64_t)buffer->pitch * height > buffer->size)
+        return -EDGE_LINUX_EINVAL;
+    for (uint32_t index = 0; index < EDGE_DRM_FRAMEBUFFER_COUNT; ++index) {
+        edge_drm_framebuffer_t *candidate =
+            &g_edge_drm_framebuffers[index];
+
+        if (candidate->used && !candidate->user_live &&
+            !candidate->virtgpu && candidate->owner == identity &&
+            candidate->buffer_index == buffer_index &&
+            candidate->width == width && candidate->height == height) {
+            *framebuffer_id = candidate->id;
+            return 0;
+        }
+        if (!candidate->used && !framebuffer)
+            framebuffer = candidate;
+    }
+    if (!framebuffer) return -EDGE_LINUX_ENOSPC;
+    memset(framebuffer, 0, sizeof(*framebuffer));
+    framebuffer->used = 1u;
+    framebuffer->id = g_edge_drm_next_fb_id++;
+    if (framebuffer->id < EDGE_DRM_FB_ID_BASE)
+        framebuffer->id = g_edge_drm_next_fb_id = EDGE_DRM_FB_ID_BASE;
+    framebuffer->buffer_index = buffer_index;
+    framebuffer->width = width;
+    framebuffer->height = height;
+    framebuffer->pitch = buffer->pitch;
+    framebuffer->pixel_format = EDGE_DRM_FORMAT_ARGB8888;
+    framebuffer->depth = 32u;
+    framebuffer->bpp = 32u;
+    framebuffer->owner = identity;
+    *framebuffer_id = framebuffer->id;
+    return 0;
+}
+
+static int64_t edge_drm_ioctl_cursor(
+    uint64_t identity, const kernel_ioctl_request_t *request,
+    int cursor2)
+{
+    edge_drm_mode_cursor_t command;
+    edge_drm_cursor_state_t previous;
+    edge_drm_cursor_state_t next;
+    uint64_t virtgpu_owners[EDGE_DRM_FRAMEBUFFER_COUNT];
+    uint32_t virtgpu_handles[EDGE_DRM_FRAMEBUFFER_COUNT];
+    uint32_t virtgpu_count = 0u;
+    uint32_t framebuffer_id = 0u;
+    uint32_t primary_fb_id;
+    int result;
+
+    memset(&command, 0, sizeof(command));
+    if (!request->argument ||
+        edge_drm_copy_from(request, &command, request->argument,
+                           cursor2 ? sizeof(command) : 28u) < 0)
+        return -EDGE_LINUX_EFAULT;
+    if (!command.flags ||
+        (command.flags & ~EDGE_DRM_MODE_CURSOR_FLAGS) ||
+        command.crtc_id != EDGE_DRM_CRTC_ID)
+        return -EDGE_LINUX_EINVAL;
+    if (!cursor2) {
+        command.hotspot_x = 0u;
+        command.hotspot_y = 0u;
+    }
+    if ((command.flags & EDGE_DRM_MODE_CURSOR_BO) && command.handle &&
+        (!command.width || !command.height ||
+         command.hotspot_x >= command.width ||
+         command.hotspot_y >= command.height))
+        return -EDGE_LINUX_EINVAL;
+
+    edge_drm_atomic_lock();
+    edge_drm_lock();
+    result = edge_drm_require_master_locked(identity);
+    previous = g_edge_drm_cursor;
+    next = previous;
+    primary_fb_id = g_edge_drm_active_fb;
+    if (result == 0 && (command.flags & EDGE_DRM_MODE_CURSOR_BO)) {
+        if (command.handle) {
+            result = edge_drm_legacy_cursor_framebuffer_locked(
+                identity, command.handle, command.width, command.height,
+                &framebuffer_id);
+            if (result == 0) {
+                next.fb_id = framebuffer_id;
+                next.crtc_id = EDGE_DRM_CRTC_ID;
+                next.src_x = 0u;
+                next.src_y = 0u;
+                next.src_w = command.width << 16;
+                next.src_h = command.height << 16;
+                next.crtc_w = command.width;
+                next.crtc_h = command.height;
+                next.hotspot_x = command.hotspot_x;
+                next.hotspot_y = command.hotspot_y;
+            }
+        } else {
+            memset(&next, 0, sizeof(next));
+        }
+    }
+    if (result == 0 && (command.flags & EDGE_DRM_MODE_CURSOR_MOVE)) {
+        next.crtc_x = command.x;
+        next.crtc_y = command.y;
+    }
+    if (result == 0) g_edge_drm_cursor = next;
+    edge_drm_unlock();
+    if (result == 0)
+        result = edge_drm_cursor_transition(
+            &previous, &next, primary_fb_id);
+    if (result < 0) {
+        edge_drm_lock();
+        g_edge_drm_cursor = previous;
+        edge_drm_unlock();
+    }
+    edge_drm_lock();
+    virtgpu_count = edge_drm_detached_framebuffers_release_locked(
+        virtgpu_owners, virtgpu_handles, EDGE_DRM_FRAMEBUFFER_COUNT);
+    edge_drm_unlock();
+    edge_drm_atomic_unlock();
+    for (uint32_t index = 0; index < virtgpu_count; ++index)
+        edge_virtgpu_framebuffer_release(
+            virtgpu_owners[index], virtgpu_handles[index]);
+    return result;
 }
 
 static int64_t edge_drm_ioctl_page_flip(
@@ -4330,6 +4813,8 @@ static void edge_drm_atomic_state_locked(
     state->cursor_crtc_y = g_edge_drm_cursor.crtc_y;
     state->cursor_crtc_w = g_edge_drm_cursor.crtc_w;
     state->cursor_crtc_h = g_edge_drm_cursor.crtc_h;
+    state->cursor_hotspot_x = g_edge_drm_cursor.hotspot_x;
+    state->cursor_hotspot_y = g_edge_drm_cursor.hotspot_y;
 }
 
 static void edge_drm_atomic_cursor_state(
@@ -4347,6 +4832,8 @@ static void edge_drm_atomic_cursor_state(
     cursor->crtc_y = state->cursor_crtc_y;
     cursor->crtc_w = state->cursor_crtc_w;
     cursor->crtc_h = state->cursor_crtc_h;
+    cursor->hotspot_x = state->cursor_hotspot_x;
+    cursor->hotspot_y = state->cursor_hotspot_y;
 }
 
 static int edge_drm_cursor_state_equal(
@@ -4362,7 +4849,9 @@ static int edge_drm_cursor_state_equal(
            left->crtc_x == right->crtc_x &&
            left->crtc_y == right->crtc_y &&
            left->crtc_w == right->crtc_w &&
-           left->crtc_h == right->crtc_h;
+           left->crtc_h == right->crtc_h &&
+           left->hotspot_x == right->hotspot_x &&
+           left->hotspot_y == right->hotspot_y;
 }
 
 static int edge_drm_atomic_set_property(
@@ -4672,6 +5161,11 @@ static int64_t edge_drm_ioctl_atomic(
         (command.count_objs &&
          (!command.objs_ptr || !command.count_props_ptr)))
         return -EDGE_LINUX_EINVAL;
+    if (edge_drm_virgl_diagnostic_enabled())
+        console_printf(
+            "[virgl-diag] atomic-request owner=%llu flags=0x%x objs=%u\n",
+            (unsigned long long)identity, command.flags,
+            command.count_objs);
     if (!edge_drm_mode_available(&current, 0))
         return -EDGE_LINUX_ENODEV;
     if (command.count_objs &&
@@ -4747,6 +5241,15 @@ static int64_t edge_drm_ioctl_atomic(
         previous.mode_blob_id != state.mode_blob_id;
     cursor_only = cursor_changed && !primary_changed &&
         !state.damage_blob_id;
+    if (edge_drm_virgl_diagnostic_enabled())
+        console_printf(
+            "[virgl-diag] atomic owner=%llu flags=0x%x objs=%u prev_fb=%u fb=%u primary_changed=%u primary_touched=%u cursor_changed=%u cursor_only=%u damage=%u\n",
+            (unsigned long long)identity, command.flags,
+            command.count_objs, previous.plane_fb_id,
+            state.plane_fb_id, primary_changed ? 1u : 0u,
+            primary_plane_touched ? 1u : 0u,
+            cursor_changed ? 1u : 0u, cursor_only ? 1u : 0u,
+            state.damage_blob_id);
     __atomic_add_fetch(
         &g_edge_drm_runtime_stats.atomic_commits, 1u,
         __ATOMIC_RELAXED);
@@ -4866,6 +5369,11 @@ int64_t edge_drm_ioctl(uint64_t identity,
     int64_t result;
 
     if (!identity || !request) return -EDGE_LINUX_EBADF;
+    if ((request->command & 0xff00u) == 0x6400u &&
+        edge_drm_virgl_diagnostic_enabled())
+        console_printf(
+            "[virgl-diag] ioctl owner=%llu command=0x%x\n",
+            (unsigned long long)identity, request->command);
     switch (request->command) {
         case EDGE_DRM_IOCTL_VERSION:
             if (edge_virtgpu_available())
@@ -4904,6 +5412,8 @@ int64_t edge_drm_ioctl(uint64_t identity,
             return edge_drm_ioctl_get_cap(request);
         case EDGE_DRM_IOCTL_SET_CLIENT_CAP:
             return edge_drm_ioctl_set_client_cap(identity, request);
+        case EDGE_DRM_IOCTL_WAIT_VBLANK:
+            return edge_drm_ioctl_wait_vblank(identity, request);
         case EDGE_DRM_IOCTL_PRIME_HANDLE_TO_FD:
             result = edge_drm_ioctl_prime_handle_to_fd(identity, request);
             if (result == -EDGE_LINUX_ENOENT && edge_virtgpu_available())
@@ -4943,6 +5453,8 @@ int64_t edge_drm_ioctl(uint64_t identity,
             return edge_drm_ioctl_get_crtc(request);
         case EDGE_DRM_IOCTL_MODE_SETCRTC:
             return edge_drm_ioctl_set_crtc(identity, request);
+        case EDGE_DRM_IOCTL_MODE_CURSOR:
+            return edge_drm_ioctl_cursor(identity, request, 0);
         case EDGE_DRM_IOCTL_MODE_GETENCODER:
             return edge_drm_ioctl_encoder(request);
         case EDGE_DRM_IOCTL_MODE_GETCONNECTOR:
@@ -4987,6 +5499,8 @@ int64_t edge_drm_ioctl(uint64_t identity,
             return edge_drm_ioctl_object_properties(identity, request);
         case EDGE_DRM_IOCTL_MODE_OBJ_SETPROPERTY:
             return edge_drm_ioctl_set_property(identity, request, 0);
+        case EDGE_DRM_IOCTL_MODE_CURSOR2:
+            return edge_drm_ioctl_cursor(identity, request, 1);
         case EDGE_DRM_IOCTL_MODE_ATOMIC:
             return edge_drm_ioctl_atomic(identity, request);
         case EDGE_DRM_IOCTL_MODE_CREATEPROPBLOB:
@@ -4998,6 +5512,8 @@ int64_t edge_drm_ioctl(uint64_t identity,
         case EDGE_DRM_IOCTL_MODE_CLOSEFB:
             return edge_drm_ioctl_closefb(identity, request);
         default:
+            result = edge_virtgpu_syncobj_ioctl(identity, request);
+            if (result != -EDGE_LINUX_ENOTTY) return result;
             if (edge_virtgpu_available())
                 return edge_virtgpu_ioctl(identity, request);
             return -EDGE_LINUX_ENOTTY;
@@ -5007,8 +5523,12 @@ int64_t edge_drm_ioctl(uint64_t identity,
 int64_t edge_drm_ioctl_path(
     uint64_t identity, const char *path,
     const kernel_ioctl_request_t *request) {
-    if (edge_drm_path_is_render(path))
-        return edge_virtgpu_ioctl(identity, request);
+    if (edge_drm_path_is_render(path)) {
+        int64_t result = edge_virtgpu_syncobj_ioctl(identity, request);
+
+        return result != -EDGE_LINUX_ENOTTY ? result :
+            edge_virtgpu_ioctl(identity, request);
+    }
     if (edge_drm_path_is_card(path))
         return edge_drm_ioctl(identity, request);
     return -EDGE_LINUX_ENODEV;

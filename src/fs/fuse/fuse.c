@@ -1784,6 +1784,7 @@ void edge_fuse_device_close(uint64_t identity) {
     }
     if (!session->references) session->used = 0;
     spin_unlock_irqrestore(&session->lock, flags);
+    kernel_runtime_fuse_notify(identity);
     for (uint32_t index = 0; index < command_count; ++index)
         (void)kernel_io_uring_command_complete(
             rings[index], commands[index],

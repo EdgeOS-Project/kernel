@@ -8,12 +8,14 @@
 
 #if defined(__x86_64__)
 #define SYS_write 1
+#define SYS_brk 12
 #define SYS_mmap 9
 #define SYS_munmap 11
 #define SYS_mincore 27
 #define SYS_exit 60
 #elif defined(__aarch64__)
 #define SYS_write 64
+#define SYS_brk 214
 #define SYS_exit 93
 #define SYS_munmap 215
 #define SYS_mmap 222
@@ -120,6 +122,10 @@ static long mincore_raw(uint64_t address, uint64_t length, void *vector) {
 static int run_tests(void) {
     uint8_t vector[3] = {0xaa, 0xaa, 0xaa};
     volatile uint8_t *mapping;
+    uint64_t break_current;
+    uint64_t break_page;
+    uint64_t break_target;
+    uint64_t stack_page;
     long mapped;
     int failures = 0;
 
@@ -130,6 +136,26 @@ static int run_tests(void) {
     failures += expect_result("overflow range",
         mincore_raw(UINT64_MAX & ~(uint64_t)(PAGE_SIZE - 1u),
                     PAGE_SIZE * 2u, vector), -ENOMEM);
+
+    stack_page = (uint64_t)(uintptr_t)vector &
+        ~(uint64_t)(PAGE_SIZE - 1u);
+    failures += expect_result("implicit stack mapping",
+        mincore_raw(stack_page, PAGE_SIZE, vector), 0);
+    failures += expect_true("stack page resident", (vector[0] & 1u) != 0);
+
+    break_current = (uint64_t)raw_syscall6(
+        SYS_brk, 0, 0, 0, 0, 0, 0);
+    break_page = break_current & ~(uint64_t)(PAGE_SIZE - 1u);
+    break_target = break_page + PAGE_SIZE * 2u;
+    failures += expect_result("grow program break",
+        raw_syscall6(SYS_brk, (long)break_target, 0, 0, 0, 0, 0),
+        (long)break_target);
+    *(volatile uint8_t *)(uintptr_t)(break_page + PAGE_SIZE) = 0x5au;
+    vector[0] = vector[1] = 0;
+    failures += expect_result("program break mapping",
+        mincore_raw(break_page, PAGE_SIZE * 2u, vector), 0);
+    failures += expect_true("program break page resident",
+        (vector[1] & 1u) != 0);
 
     mapped = raw_syscall6(SYS_mmap, 0, PAGE_SIZE * 3u,
                           PROT_READ | PROT_WRITE,

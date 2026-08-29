@@ -1057,7 +1057,7 @@ $(OBJ)/arm64-bsd/upstream/%.obj: \
 	$(ARM64_EFI_CC) $(BSD_BRIDGE_ARM64_COMPILE_FLAGS) \
 		-DLOCORE -x assembler-with-cpp -c $< -o $@
 
-.PHONY: display-backend-unit drm-runtime-unit virtgpu-runtime-unit virtio-gpu-damage-unit pty-runtime-unit tty-session-unit
+.PHONY: display-backend-unit drm-runtime-unit virtgpu-runtime-unit virtio-gpu-damage-unit virtio-gpu-sync-unit pty-runtime-unit tty-session-unit
 .PHONY: xhci-transfer-unit usb-dma-layout-unit
 .PHONY: block-registry-unit netdev-registry-unit native-netdev-unit usb-handoff-unit xhci-capability-unit bsd-driver-build-plan-check bsd-driver-package-registry-check bsd-driver-manifest-check bsd-driver-dependency-report bsd-driver-interface-check bsd-driver-modules bsd-driver-modules-x86_64 bsd-driver-modules-arm64 bsd-bridge-acpica-runtime-compile bsd-bridge-arm64-abi-layout-unit bsd-bridge-arm64-handoff-unit bsd-bridge-x86_64-handoff-unit bsd-bridge-audio-unit bsd-bridge-base-headers-unit bsd-bridge-atomic-unit bsd-bridge-allocator-unit bsd-bridge-block-unit bsd-bridge-bootstrap-unit bsd-bridge-bus-dma-unit bsd-bridge-bus-space-unit bsd-bridge-callout-unit bsd-bridge-cam-unit bsd-bridge-cdev-unit bsd-bridge-config-intrhook-unit bsd-bridge-contigmalloc-unit bsd-bridge-device-property-unit bsd-bridge-driver-adapters-unit bsd-bridge-dwc-hdmi-compile bsd-bridge-environment-unit bsd-bridge-epoch-unit bsd-bridge-evdev-unit bsd-bridge-eventhandler-unit bsd-bridge-fdt-inventory-unit bsd-bridge-firmware-frontends-unit bsd-bridge-firmware-metadata-unit bsd-bridge-framebuffer-unit bsd-bridge-gtaskqueue-unit bsd-bridge-handoff-unit bsd-bridge-hash-unit bsd-bridge-interrupt-unit bsd-bridge-intrng-unit bsd-bridge-kernel-link bsd-bridge-kobj-unit bsd-bridge-kthread-unit bsd-bridge-led-unit bsd-bridge-libkern-sort-unit bsd-bridge-linker-unit bsd-bridge-malloc-unit bsd-bridge-module-unit bsd-bridge-network-unit bsd-bridge-newbus-unit bsd-bridge-ofw-unit bsd-bridge-package-unit bsd-bridge-pci-unit bsd-bridge-platform-unit bsd-bridge-pps-unit bsd-bridge-random-unit bsd-bridge-resource-unit bsd-bridge-rss-unit bsd-bridge-sbuf-sysctl-unit bsd-bridge-selinfo-unit bsd-bridge-sglist-unit bsd-bridge-source-gate bsd-bridge-systm-unit bsd-bridge-sync-unit bsd-bridge-taskqueue-unit bsd-bridge-time-unit bsd-bridge-tty-unit bsd-bridge-videomode-unit bsd-bridge-vmem-unit bsd-bridge-watchdog-unit bsd-bridge-virtio-balloon-compile bsd-bridge-virtio-block-compile bsd-bridge-virtio-console-compile bsd-bridge-virtio-core-compile bsd-bridge-virtio-gpu-compile bsd-bridge-virtio-network-compile bsd-bridge-virtio-pci-compile bsd-bridge-virtio-random-compile bsd-bridge-virtio-scmi-compile bsd-bridge-virtio-transport-compile bsd-bridge-virtqueue-compile bsd-bridge-vm-page-unit
 .PHONY: bsd-bridge-bitstring-unit
@@ -1157,6 +1157,21 @@ virtio-gpu-damage-unit: tools/tests/virtio_gpu_damage_unit.c \
 		$(SRC)/drivers/virtio/virtio_gpu_damage.c \
 		-o $(OUT)/tests/virtio_gpu_damage_sanitize
 	@ASAN_OPTIONS=detect_leaks=0 $(OUT)/tests/virtio_gpu_damage_sanitize
+
+virtio-gpu-sync-unit: tools/tests/virtio_gpu_sync_unit.c \
+		include/drivers/virtio_gpu_sync.h
+	@mkdir -p $(OUT)/tests
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror \
+		-iquote $(INC) \
+		tools/tests/virtio_gpu_sync_unit.c \
+		-o $(OUT)/tests/virtio_gpu_sync_unit
+	@$(OUT)/tests/virtio_gpu_sync_unit
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror \
+		-fsanitize=address,undefined -fno-omit-frame-pointer \
+		-iquote $(INC) \
+		tools/tests/virtio_gpu_sync_unit.c \
+		-o $(OUT)/tests/virtio_gpu_sync_sanitize
+	@ASAN_OPTIONS=detect_leaks=0 $(OUT)/tests/virtio_gpu_sync_sanitize
 
 bsd-bridge-ofw-unit: tools/tests/bsd_bridge_ofw_unit.c \
 		$(SRC)/compat/freebsd/kern/allocator.c \

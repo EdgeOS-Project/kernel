@@ -298,6 +298,8 @@ static process_user_vma_retain_hook_t g_user_vma_retain_hook;
 static process_user_vma_release_hook_t g_user_vma_release_hook;
 static uint64_t g_kernel_cr3;
 static uint8_t g_default_fxsave_region[512] __attribute__((aligned(16)));
+static uint8_t g_default_xsave_region[EDGE_X86_XSAVE_MAX_SIZE]
+    __attribute__((aligned(64)));
 
 static uint64_t task_sighand_context_alloc(void) {
     uint64_t context_id = g_next_sighand_context_id++;
@@ -351,6 +353,8 @@ static int task_seccomp_inherit(task_t *dst, const task_t *src) {
 static uint64_t g_pml4[USER_AS_MAX_TASKS][512] __attribute__((aligned(4096)));
 static uint64_t g_pdpt[USER_AS_MAX_TASKS][512] __attribute__((aligned(4096)));
 static uint64_t g_pdpt_pci_mmio[USER_AS_MAX_TASKS][512] __attribute__((aligned(4096)));
+static uint64_t g_pdpt_pci_mmio_i440fx_alias[USER_AS_MAX_TASKS][512]
+    __attribute__((aligned(4096)));
 static uint64_t g_pdpt_mmio_low_alias[USER_AS_MAX_TASKS][EDGE_MMIO_LOW_ALIAS_PML4_COUNT][512]
     __attribute__((aligned(4096)));
 /*
@@ -558,14 +562,6 @@ static inline uint64_t cr3_read(void) {
     return v;
 }
 
-static inline void fxsave_region(void *region) {
-    __asm__ __volatile__("fxsave (%0)" :: "r"(region) : "memory");
-}
-
-static inline void fxrstor_region(const void *region) {
-    __asm__ __volatile__("fxrstor (%0)" :: "r"(region) : "memory");
-}
-
 static uint64_t task_heap_used_bytes(task_t *t, uint64_t *heap_ext_out);
 static uint64_t task_bigpie_used_bytes(task_t *t);
 static void task_save_user_region_watermarks(task_t *t);
@@ -573,6 +569,7 @@ static void task_save_user_region_watermarks(task_t *t);
 static void task_init_default_fx(task_t *t) {
     if (!t) return;
     memcpy(t->fxsave_region, g_default_fxsave_region, sizeof(t->fxsave_region));
+    memcpy(t->xsave_region, g_default_xsave_region, sizeof(t->xsave_region));
 }
 
 static void init_default_fxsave_region(void) {
@@ -581,7 +578,7 @@ static void init_default_fxsave_region(void) {
         uint32_t mxcsr = 0x00001F80u;
         __asm__ __volatile__("ldmxcsr %0" :: "m"(mxcsr) : "memory");
     }
-    fxsave_region(g_default_fxsave_region);
+    x86_fpu_save_state(g_default_xsave_region, g_default_fxsave_region);
 }
 
 extern void ret_from_fork(void);
@@ -974,6 +971,7 @@ static int process_vm_owner_pid_of_task_raw(const task_t *t) {
 }
 
 static void task_release_unused(task_t *t);
+static void process_user_mm_release_abandoned_locks(task_t *t);
 static void task_clear_user_vmas(task_t *t);
 static int process_user_vma_is_fbdev(const edge_user_vma_t *v);
 static int process_user_any_fbdev_mapping(void);
@@ -1348,6 +1346,7 @@ static void task_release_unused(task_t *t) {
     t->child_wait_active = 0;
     t->sleep_deadline_us = 0;
     t->need_resched = 0;
+    process_user_mm_release_abandoned_locks(t);
     kernel_exec_file_release(t->exec_file_handle);
     t->exec_file_handle = KERNEL_EXEC_FILE_HANDLE_NONE;
     if (t->pid_namespace_attached) {
@@ -1476,7 +1475,7 @@ static const char *task_state_name_local(task_state_t state) {
 }
 
 static void task_dump_slots_local(const char *reason) {
-    static int budget = 8;
+    static int budget = 32;
     if (budget <= 0) return;
     budget--;
     printf("[task-slots] %s used=%d/%d as=%d/%d taskonly=%d/%d\n",
@@ -1488,10 +1487,16 @@ static void task_dump_slots_local(const char *reason) {
     for (int i = 0; i < PROC_MAX_TASKS; ++i) {
         task_t *t = &g_tasks[i];
         if (t->state == TASK_UNUSED) continue;
-        printf("[task-slot] idx=%d pid=%d ppid=%d tgid=%d vm=%d fd=%d state=%s name=%s syscall=%u in=%u wait=%u/%u/%u/%u\n",
+        printf("[task-slot] idx=%d pid=%d ppid=%d tgid=%d vm=%d fd=%d state=%s cpu=%d oncpu=%u onrq=%u name=%s syscall=%u in=%u a1=%llx a2=%llx a3=%llx ret=%lld wait=%u/%u/%u/%u\n",
                i, t->pid, t->ppid, t->tgid, t->vm_owner_pid, t->fd_owner_pid,
-               task_state_name_local(t->state), t->name[0] ? t->name : "?",
+               task_state_name_local(t->state), t->assigned_cpu,
+               (unsigned)t->on_cpu, (unsigned)t->on_runqueue,
+               t->name[0] ? t->name : "?",
                (uint32_t)t->last_syscall_nr, (unsigned)t->in_syscall,
+               (unsigned long long)t->last_syscall_args[0],
+               (unsigned long long)t->last_syscall_args[1],
+               (unsigned long long)t->last_syscall_args[2],
+               (long long)t->last_syscall_ret,
                (unsigned)t->sleep_wait_active,
                (unsigned)t->fd_wait_active,
                (unsigned)t->child_wait_active,
@@ -1511,9 +1516,46 @@ static task_t *task_vm_owner_local(task_t *t) {
     return owner ? owner : t;
 }
 
+static void process_user_mm_release_abandoned_locks(task_t *task) {
+    task_t *memory;
+    int32_t owner_pid;
+    static volatile int log_budget = 16;
+
+    if (!task || task->pid <= 0) return;
+    memory = task_vm_owner_local(task);
+    if (!memory) return;
+
+    owner_pid = task->pid;
+    if (__atomic_load_n(&memory->user_vma_mutation_lock,
+                        __ATOMIC_ACQUIRE) &&
+        __atomic_load_n(&memory->user_vma_mutation_owner_pid,
+                        __ATOMIC_ACQUIRE) == owner_pid) {
+        memory->user_vma_mutation_depth = 0;
+        __atomic_store_n(&memory->user_vma_mutation_owner_pid, 0,
+                         __ATOMIC_RELEASE);
+        __sync_lock_release(&memory->user_vma_mutation_lock);
+        if (__sync_fetch_and_sub(&log_budget, 1) > 0)
+            printf("[mm-lock] released abandoned VMA lock mm=%d owner=%d\n",
+                   memory->pid, owner_pid);
+    }
+
+    if (__atomic_load_n(&memory->user_page_table_lock,
+                        __ATOMIC_ACQUIRE) &&
+        __atomic_load_n(&memory->user_page_table_owner_pid,
+                        __ATOMIC_ACQUIRE) == owner_pid) {
+        memory->user_page_table_lock_depth = 0;
+        __atomic_store_n(&memory->user_page_table_owner_pid, 0,
+                         __ATOMIC_RELEASE);
+        __sync_lock_release(&memory->user_page_table_lock);
+        if (__sync_fetch_and_sub(&log_budget, 1) > 0)
+            printf("[mm-lock] released abandoned page-table lock mm=%d owner=%d\n",
+                   memory->pid, owner_pid);
+    }
+}
+
 void process_user_mm_cpu_enter(task_t *task, uint32_t cpu_id) {
     static volatile int32_t active_mm_pid[64];
-    task_t *memory = task && !task->is_idle ?
+    task_t *memory = task && !scheduler_task_is_idle(task) ?
         task_vm_owner_local(task) : 0;
     int32_t new_pid = memory && memory->cr3 ? memory->pid : 0;
     int32_t old_pid;
@@ -1539,6 +1581,7 @@ void process_user_vma_mutation_lock(task_t *task) {
     task_t *current = process_current_task();
     int owner_pid = current ? current->pid : -1;
     uint32_t spins = 0u;
+    static volatile int contention_log_budget = 16;
 
     if (!memory) return;
     if (memory->user_vma_mutation_lock &&
@@ -1549,10 +1592,25 @@ void process_user_vma_mutation_lock(task_t *task) {
     }
     while (__sync_lock_test_and_set(
                &memory->user_vma_mutation_lock, 1u)) {
+        if (++spins == 100000u) {
+            task_t *owner = task_find_by_pid(
+                memory->user_vma_mutation_owner_pid);
+            if (__sync_fetch_and_sub(&contention_log_budget, 1) > 0)
+                printf("[vma-lock] waiter=%d:%s mm=%d owner=%d:%s "
+                       "state=%d syscall=%u oncpu=%u\n",
+                       current ? current->pid : -1,
+                       (current && current->name[0]) ? current->name : "?",
+                       memory->pid, memory->user_vma_mutation_owner_pid,
+                       (owner && owner->name[0]) ? owner->name : "?",
+                       owner ? (int)owner->state : -1,
+                       owner ? (uint32_t)owner->last_syscall_nr : UINT32_MAX,
+                       owner ? (unsigned)owner->on_cpu : 0u);
+        }
         __asm__ __volatile__("pause");
-        if ((++spins & 0x3fffu) == 0u) {
+        if ((spins & 0x3fffu) == 0u) {
             current = process_current_task();
-            if (current && !current->is_idle && current->pid > 0 &&
+            if (current && !scheduler_task_is_idle(current) &&
+                current->pid > 0 &&
                 current->state == TASK_RUNNING)
                 scheduler_yield();
         }
@@ -1593,23 +1651,24 @@ static void process_user_page_table_lock(task_t *task) {
         return;
     }
     while (__sync_lock_test_and_set(&memory->user_page_table_lock, 1u)) {
-        if (++spins == 100000u &&
-            __sync_fetch_and_sub(&contention_log_budget, 1) > 0) {
+        if (++spins == 100000u) {
             task_t *owner = task_find_by_pid(
                 memory->user_page_table_owner_pid);
-            printf("[page-table-lock] waiter=%d:%s mm=%d owner=%d:%s state=%d syscall=%u oncpu=%u\n",
-                   current ? current->pid : -1,
-                   (current && current->name[0]) ? current->name : "?",
-                   memory->pid, memory->user_page_table_owner_pid,
-                   (owner && owner->name[0]) ? owner->name : "?",
-                   owner ? owner->state : -1,
-                   owner ? (uint32_t)owner->last_syscall_nr : UINT32_MAX,
-                   owner ? (unsigned)owner->on_cpu : 0u);
+            if (__sync_fetch_and_sub(&contention_log_budget, 1) > 0)
+                printf("[page-table-lock] waiter=%d:%s mm=%d owner=%d:%s state=%d syscall=%u oncpu=%u\n",
+                       current ? current->pid : -1,
+                       (current && current->name[0]) ? current->name : "?",
+                       memory->pid, memory->user_page_table_owner_pid,
+                       (owner && owner->name[0]) ? owner->name : "?",
+                       owner ? (int)owner->state : -1,
+                       owner ? (uint32_t)owner->last_syscall_nr : UINT32_MAX,
+                       owner ? (unsigned)owner->on_cpu : 0u);
         }
         __asm__ __volatile__("pause");
         if ((spins & 0x3fffu) == 0u) {
             current = process_current_task();
-            if (current && !current->is_idle && current->pid > 0 &&
+            if (current && !scheduler_task_is_idle(current) &&
+                current->pid > 0 &&
                 current->state == TASK_RUNNING)
                 scheduler_yield();
         }
@@ -4286,7 +4345,18 @@ static int process_user_heap_commit_page(task_t *mm, uint64_t addr, int write) {
     uint8_t *page_ptr;
     edge_user_vma_t *v;
     uint64_t pte_flags = PAGE_PRESENT | PAGE_USER;
-    if (!process_user_heap_addr_valid(mm, page, write)) return -1;
+    static int heap_fault_diagnostic_budget = 64;
+    if (!process_user_heap_addr_valid(mm, page, write)) {
+        if (heap_fault_diagnostic_budget > 0) {
+            printf("[heap-fault] invalid pid=%d page=0x%x write=%d base=0x%x brk=0x%x limit=0x%x budget=%d\n",
+                   mm ? mm->pid : -1, (uint32_t)page, write,
+                   mm ? (uint32_t)mm->user_heap_base : 0,
+                   mm ? (uint32_t)mm->user_brk : 0,
+                   mm ? (uint32_t)mm->user_heap_limit : 0,
+                   --heap_fault_diagnostic_budget);
+        }
+        return -1;
+    }
     v = process_user_heap_vma_for_addr(mm, page);
     if (!v || (v->prot & 0x2u) != 0) {
         pte_flags |= PAGE_WRITE;
@@ -4296,7 +4366,14 @@ static int process_user_heap_commit_page(task_t *mm, uint64_t addr, int write) {
         return -1;
     {
         int idx = task_index(mm);
-        if (idx < 0 || idx >= USER_AS_MAX_TASKS) return -1;
+        if (idx < 0 || idx >= USER_AS_MAX_TASKS) {
+            if (heap_fault_diagnostic_budget > 0) {
+                printf("[heap-fault] task-index pid=%d idx=%d page=0x%x budget=%d\n",
+                       mm ? mm->pid : -1, idx, (uint32_t)page,
+                       --heap_fault_diagnostic_budget);
+            }
+            return -1;
+        }
         pt = g_user_heap_pt[idx][slot];
     }
     if (!pt) {
@@ -4307,6 +4384,11 @@ static int process_user_heap_commit_page(task_t *mm, uint64_t addr, int write) {
         process_user_page_table_lock(mm);
         if (process_user_heap_ensure_pt(mm, page, &pt) < 0) {
             process_user_page_table_unlock(mm);
+            if (heap_fault_diagnostic_budget > 0) {
+                printf("[heap-fault] ensure-pt pid=%d page=0x%x slot=%u budget=%d\n",
+                       mm ? mm->pid : -1, (uint32_t)page, slot,
+                       --heap_fault_diagnostic_budget);
+            }
             return -1;
         }
         process_user_page_table_unlock(mm);
@@ -4316,6 +4398,11 @@ static int process_user_heap_commit_page(task_t *mm, uint64_t addr, int write) {
     backing_idx = sparse_mmap_alloc_backing_index_local();
     if (backing_idx < 0) {
         sparse_mmap_log_oom_local(mm, "heap-backing", page);
+        if (heap_fault_diagnostic_budget > 0) {
+            printf("[heap-fault] backing pid=%d page=0x%x budget=%d\n",
+                   mm ? mm->pid : -1, (uint32_t)page,
+                   --heap_fault_diagnostic_budget);
+        }
         return -1;
     }
     page_ptr = sparse_mmap_backing_ptr(backing_idx);
@@ -4326,6 +4413,12 @@ static int process_user_heap_commit_page(task_t *mm, uint64_t addr, int write) {
     /* The backing allocator returns a fully zeroed page, preserving Linux
      * demand-zero semantics without clearing the same 4 KiB twice here. */
     if (sparse_mmap_user_alias_acquire(mm, backing_idx) < 0) {
+        if (heap_fault_diagnostic_budget > 0) {
+            printf("[heap-fault] charge pid=%d page=0x%x backing=%d cgroup=%u budget=%d\n",
+                   mm ? mm->pid : -1, (uint32_t)page, backing_idx,
+                   mm ? mm->cgroup_id : 0u,
+                   --heap_fault_diagnostic_budget);
+        }
         sparse_mmap_release_backing_index_local(backing_idx);
         return -1;
     }
@@ -4334,6 +4427,12 @@ static int process_user_heap_commit_page(task_t *mm, uint64_t addr, int write) {
     if (!__atomic_compare_exchange_n(
             &pt[pte_idx], &expected, new_pte, 0,
             __ATOMIC_RELEASE, __ATOMIC_ACQUIRE)) {
+        if (heap_fault_diagnostic_budget > 0 &&
+            (expected & PAGE_PRESENT) == 0) {
+            printf("[heap-fault] stale-pte pid=%d page=0x%x pte=0x%x budget=%d\n",
+                   mm ? mm->pid : -1, (uint32_t)page,
+                   (uint32_t)expected, --heap_fault_diagnostic_budget);
+        }
         sparse_mmap_user_alias_release(backing_idx);
         sparse_mmap_release_backing_index_local(backing_idx);
         return (expected & PAGE_PRESENT) != 0 ? 0 : -1;
@@ -7911,6 +8010,8 @@ static int task_build_address_space(task_t *t, int user_mode) {
     memset(g_pml4[idx], 0, sizeof(g_pml4[idx]));
     memset(g_pdpt[idx], 0, sizeof(g_pdpt[idx]));
     memset(g_pdpt_pci_mmio[idx], 0, sizeof(g_pdpt_pci_mmio[idx]));
+    memset(g_pdpt_pci_mmio_i440fx_alias[idx], 0,
+           sizeof(g_pdpt_pci_mmio_i440fx_alias[idx]));
     memset(g_pdpt_mmio_low_alias[idx], 0, sizeof(g_pdpt_mmio_low_alias[idx]));
     memset(g_pd[idx], 0, sizeof(g_pd[idx]));
     if (trace_as_build && t && t->pid > 0 && t->pid <= 2) proc_trace_puts("[as-build] roots-cleared\n");
@@ -7932,13 +8033,24 @@ static int task_build_address_space(task_t *t, int user_mode) {
     g_pml4[idx][0] = ((uint64_t)&g_pdpt[idx][0]) | upper_flags;
     g_pml4[idx][USER_PCI_MMIO_PML4_IDX] = ((uint64_t)&g_pdpt_pci_mmio[idx][0]) |
                                           PAGE_PRESENT | PAGE_WRITE;
+    g_pml4[idx][EDGE_PCI_MMIO_I440FX_ALIAS_PML4_INDEX] =
+        ((uint64_t)&g_pdpt_pci_mmio_i440fx_alias[idx][0]) |
+        PAGE_PRESENT | PAGE_WRITE;
     for (uint32_t slot = 0; slot < EDGE_MMIO_LOW_ALIAS_PML4_COUNT; ++slot) {
         g_pml4[idx][EDGE_MMIO_LOW_ALIAS_PML4_INDEX + slot] =
             ((uint64_t)&g_pdpt_mmio_low_alias[idx][slot][0]) | PAGE_PRESENT | PAGE_WRITE;
     }
     for (int pdi = 0; pdi < 512; ++pdi) {
         uint64_t base = USER_PCI_MMIO_PML4_BASE + ((uint64_t)pdi << 30);
-        g_pdpt_pci_mmio[idx][pdi] = base | PAGE_PRESENT | PAGE_WRITE | PAGE_PS;
+        g_pdpt_pci_mmio[idx][pdi] =
+            base | PAGE_PRESENT | PAGE_WRITE | PAGE_PCD | PAGE_PS;
+    }
+
+    for (int pdi = 0; pdi < 512; ++pdi) {
+        uint64_t base = EDGE_PCI_MMIO_I440FX_PHYS_BASE +
+            ((uint64_t)pdi << 30);
+        g_pdpt_pci_mmio_i440fx_alias[idx][pdi] =
+            base | PAGE_PRESENT | PAGE_WRITE | PAGE_PCD | PAGE_PS;
     }
 
     for (uint32_t slot = 0; slot < EDGE_MMIO_LOW_ALIAS_PML4_COUNT; ++slot) {
@@ -8347,7 +8459,7 @@ void process_init(void) {
     init->cr3 = cr3_read();
     init_default_fxsave_region();
     task_init_default_fx(init);
-    fxrstor_region(init->fxsave_region);
+    x86_fpu_restore_state(init->xsave_region, init->fxsave_region);
     scheduler_set_boot_current(init);
     g_next_pid = 1;
 }
@@ -8395,7 +8507,7 @@ int process_user_vma_reserve(task_t *task, uint32_t required_count) {
 
 int process_fork(const edge_trap_frame_t *parent_tf,
                  uint64_t namespace_flags) {
-    static int slow_fork_trace_budget = 32;
+    static int slow_fork_trace_budget = 0;
     task_t *parent = process_current_task();
     task_t *vm_parent;
     task_t *parent_leader;
@@ -8564,8 +8676,9 @@ int process_fork(const edge_trap_frame_t *parent_tf,
     child->sigaltstack_sp = parent->sigaltstack_sp;
     child->sigaltstack_size = parent->sigaltstack_size;
     child->sigaltstack_flags = parent->sigaltstack_flags;
-    fxsave_region(parent->fxsave_region);
+    x86_fpu_save_state(parent->xsave_region, parent->fxsave_region);
     memcpy(child->fxsave_region, parent->fxsave_region, sizeof(child->fxsave_region));
+    memcpy(child->xsave_region, parent->xsave_region, sizeof(child->xsave_region));
     task_child_link(parent_leader ? parent_leader : parent, child);
     trace_metadata_us = boottime_monotonic_us();
 
@@ -8863,8 +8976,9 @@ static int process_fork_shared_vm_impl(const edge_trap_frame_t *parent_tf,
     child->sigaltstack_sp = 0;
     child->sigaltstack_size = 0;
     child->sigaltstack_flags = EDGE_LINUX_SS_DISABLE;
-    fxsave_region(parent->fxsave_region);
+    x86_fpu_save_state(parent->xsave_region, parent->fxsave_region);
     memcpy(child->fxsave_region, parent->fxsave_region, sizeof(child->fxsave_region));
+    memcpy(child->xsave_region, parent->xsave_region, sizeof(child->xsave_region));
     task_child_link(parent_leader ? parent_leader : parent, child);
 
     child->fork_tf = *parent_tf;
@@ -9079,8 +9193,9 @@ int process_clone_thread(const edge_trap_frame_t *parent_tf) {
     child->sigaltstack_flags = EDGE_LINUX_SS_DISABLE;
     child->sig_stub_installed = parent->sig_stub_installed;
     child->assigned_cpu = -1;
-    fxsave_region(parent->fxsave_region);
+    x86_fpu_save_state(parent->xsave_region, parent->fxsave_region);
     memcpy(child->fxsave_region, parent->fxsave_region, sizeof(child->fxsave_region));
+    memcpy(child->xsave_region, parent->xsave_region, sizeof(child->xsave_region));
 
     child->fork_tf = *parent_tf;
     child->fork_tf.rax = 0;
@@ -10577,6 +10692,14 @@ static int process_spawn_exec_env_internal(
 #if EDGE_SCHED_PROC_DEBUG
     printf("[proc] spawn child=%d -> BLOCKED\n", child->pid);
 #endif
+    /*
+     * Publish the child only after returning to the parent's address space.
+     * On SMP, scheduler_task_make_runnable() can start the child immediately
+     * on another CPU.  Publishing while this CPU still uses the child's CR3
+     * lets both CPUs execute against an address space whose loader is still
+     * completing the parent-side handoff.
+     */
+    cr3_write(old_cr3);
     scheduler_task_set_blocked(child);
 #if EDGE_SCHED_PROC_DEBUG
     printf("[proc] spawn child=%d -> RUNNABLE cpu=%d\n", child->pid, process_pick_target_cpu());
@@ -10587,7 +10710,6 @@ static int process_spawn_exec_env_internal(
         scheduler_task_make_runnable(
             child, (uint32_t)process_pick_target_cpu());
 
-    cr3_write(old_cr3);
     if (rflags & (1ULL << 9)) __asm__ __volatile__("sti");
     return child->pid;
 }
@@ -10768,7 +10890,18 @@ void arch_runtime_contention_end(int released) {
 }
 
 void arch_runtime_fuse_notify(uint64_t description_identity) {
-    (void)description_identity;
+    if (!description_identity) return;
+    for (int index = 0; index < PROC_MAX_TASKS; ++index) {
+        task_t *task = &g_tasks[index];
+
+        if (!task->fuse_wait_active ||
+            task->fuse_wait_identity != description_identity ||
+            task->state != TASK_BLOCKED)
+            continue;
+        scheduler_task_make_runnable(
+            task, task->assigned_cpu >= 0 ?
+                (uint32_t)task->assigned_cpu : scheduler_cpu_id());
+    }
 }
 
 void arch_runtime_fuse_reply_wait(uint64_t description_identity) {
@@ -11260,7 +11393,8 @@ void arch_process_task_apply_locked(
 edge_seccomp_state_t *arch_process_task_seccomp_locked(
     kernel_process_task_handle_t handle) {
     task_t *task = (task_t *)(uintptr_t)handle;
-    if (!task || task->state == TASK_UNUSED || task->is_idle) return 0;
+    if (!task || task->state == TASK_UNUSED ||
+        scheduler_task_is_idle(task)) return 0;
     return &task->seccomp;
 }
 
@@ -11268,7 +11402,8 @@ void arch_process_task_seccomp_replace_locked(
     kernel_process_task_handle_t handle,
     const edge_seccomp_state_t *installed, int set_no_new_privileges) {
     task_t *task = (task_t *)(uintptr_t)handle;
-    if (!task || task->state == TASK_UNUSED || task->is_idle || !installed)
+    if (!task || task->state == TASK_UNUSED ||
+        scheduler_task_is_idle(task) || !installed)
         return;
     edge_seccomp_state_release(&task->seccomp);
     task->seccomp = *installed;
@@ -11278,7 +11413,8 @@ void arch_process_task_seccomp_replace_locked(
 uint32_t *arch_process_task_membarrier_locked(
     kernel_process_task_handle_t handle) {
     task_t *task = (task_t *)(uintptr_t)handle;
-    if (!task || task->state == TASK_UNUSED || task->is_idle) return 0;
+    if (!task || task->state == TASK_UNUSED ||
+        scheduler_task_is_idle(task)) return 0;
     return &task->membarrier_registrations;
 }
 
@@ -11598,13 +11734,14 @@ int process_prepare_exec_current(void) {
         if (trace_exec_prepare && cur->pid > 0 && cur->pid <= 2) proc_trace_puts("[exec-prepare] rebuilt\n");
         cr3_write(cur->cr3);
         /*
-         * Do not restore IF here.  Linux syscall entry keeps interrupts under
-         * entry/exit control, and EdgeOS' syscall dispatcher relies on the same
-         * invariant while REGISTERS is live on the kernel stack.  Re-enabling
-         * IRQs during exec allowed timer/preemption paths to run after CR3 had
-         * been rewritten but before the syscall frame was complete, which reset
-         * Alpine PID1's vfork/exec child while launching /sbin/openrc.
+         * SYSCALL entry has already installed the complete kernel trap frame
+         * before enabling interrupts.  Restore the entry state after the new
+         * address space is complete and active.  Keeping IF clear throughout
+         * ELF loading lets concurrent execve calls disable timer scheduling on
+         * every CPU and strand a filesystem lock owner indefinitely.
          */
+        if (rflags & (1ULL << 9))
+            __asm__ __volatile__("sti" ::: "memory");
     } else {
         uint64_t rflags;
         uint64_t old_cr3 = backing_access_enter(&rflags);
@@ -11639,8 +11776,11 @@ int process_prepare_exec_current(void) {
         if (trace_exec_prepare && cur->pid > 0 && cur->pid <= 2) proc_trace_puts("[exec-prepare] rebuilt\n");
         cr3_write(cur->cr3);
         /*
-         * Keep IRQs masked until syscall return; see the CLONE_VM branch above.
+         * The new mm is now fully published to the current task, so return to
+         * the interrupt state observed before the kernel-CR3 transition.
          */
+        if (rflags & (1ULL << 9))
+            __asm__ __volatile__("sti" ::: "memory");
     }
     cur->vm_owner_pid = cur->pid;
     cur->user_stack_top = USER_STACK_TOP;
@@ -11696,7 +11836,7 @@ int process_exec_reset_current(
         cur->membarrier_registrations = 0;
     if (configuration->reset_floating_point) {
         task_init_default_fx(cur);
-        fxrstor_region(cur->fxsave_region);
+        x86_fpu_restore_state(cur->xsave_region, cur->fxsave_region);
     }
     if (configuration->reset_architecture_tls) {
         cur->fs_base = 0;

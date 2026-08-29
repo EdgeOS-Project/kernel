@@ -16,6 +16,7 @@
 #define DRM_IOCTL_VERSION                0xc0406400u
 #define DRM_IOCTL_GET_CAP                0xc010640cu
 #define DRM_IOCTL_SET_CLIENT_CAP         0x4010640du
+#define DRM_IOCTL_WAIT_VBLANK            0xc018643au
 #define DRM_IOCTL_PRIME_HANDLE_TO_FD     0xc00c642du
 #define DRM_IOCTL_PRIME_FD_TO_HANDLE     0xc00c642eu
 #define DRM_IOCTL_SET_MASTER             0x0000641eu
@@ -36,15 +37,26 @@
 #define DRM_IOCTL_MODE_DESTROYPROPBLOB   0xc00464beu
 #define DRM_IOCTL_MODE_LIST_LESSEES      0xc01064c7u
 #define DRM_MODE_PAGE_FLIP_EVENT         0x01u
+#define DRM_VBLANK_RELATIVE              0x00000001u
+#define DRM_VBLANK_EVENT                 0x04000000u
 #define DRM_MODE_ATOMIC_TEST_ONLY        0x0100u
 #define DRM_MODE_ATOMIC_ALLOW_MODESET    0x0400u
 #define DRM_FORMAT_XRGB8888              0x34325258u
 #define DRM_FORMAT_ARGB8888              0x34325241u
 #define DRM_CLIENT_CAP_UNIVERSAL_PLANES  2u
 #define DRM_CLIENT_CAP_ATOMIC            3u
+#define DRM_CAP_DUMB_BUFFER              0x01u
+#define DRM_CAP_VBLANK_HIGH_CRTC         0x02u
+#define DRM_CAP_DUMB_PREFERRED_DEPTH     0x03u
+#define DRM_CAP_DUMB_PREFER_SHADOW       0x04u
 #define DRM_CAP_PRIME                    0x05u
+#define DRM_CAP_TIMESTAMP_MONOTONIC      0x06u
+#define DRM_CAP_ASYNC_PAGE_FLIP          0x07u
 #define DRM_CAP_CURSOR_WIDTH             0x08u
 #define DRM_CAP_CURSOR_HEIGHT            0x09u
+#define DRM_CAP_ADDFB2_MODIFIERS         0x10u
+#define DRM_CAP_PAGE_FLIP_TARGET         0x11u
+#define DRM_CAP_CRTC_IN_VBLANK_EVENT     0x12u
 #define DRM_CLOEXEC                      0x00080000u
 #define DRM_RDWR                         0x00000002u
 #define DRM_MODE_OBJECT_CRTC             0xccccccccu
@@ -54,6 +66,20 @@ typedef struct {
     uint64_t capability;
     uint64_t value;
 } test_drm_get_cap_t;
+
+typedef union {
+    struct {
+        uint32_t type;
+        uint32_t sequence;
+        uint64_t signal;
+    } request;
+    struct {
+        uint32_t type;
+        uint32_t sequence;
+        int64_t tv_sec;
+        int64_t tv_usec;
+    } reply;
+} test_drm_wait_vblank_t;
 
 typedef struct {
     int32_t version_major;
@@ -282,6 +308,35 @@ static int g_console_drm_owned;
 static int32_t g_prime_descriptor = -1;
 static int32_t g_prime_object = -1;
 
+int virtio_gpu_cursor_available(void) {
+    return 0;
+}
+
+int virtio_gpu_cursor_update(const uint8_t *pixels, uint32_t width,
+                             uint32_t height, uint32_t pitch,
+                             uint32_t source_x, uint32_t source_y,
+                             uint32_t cursor_width, uint32_t cursor_height,
+                             int32_t x, int32_t y,
+                             uint32_t hotspot_x, uint32_t hotspot_y) {
+    (void)pixels;
+    (void)width;
+    (void)height;
+    (void)pitch;
+    (void)source_x;
+    (void)source_y;
+    (void)cursor_width;
+    (void)cursor_height;
+    (void)x;
+    (void)y;
+    (void)hotspot_x;
+    (void)hotspot_y;
+    return -1;
+}
+
+int virtio_gpu_cursor_hide(void) {
+    return -1;
+}
+
 void *arch_vm_alloc_pages(uint64_t page_count) {
     void *memory = 0;
     if (posix_memalign(&memory, 4096u, (size_t)page_count * 4096u) != 0)
@@ -291,6 +346,60 @@ void *arch_vm_alloc_pages(uint64_t page_count) {
 
 void arch_vm_free_page(void *page) {
     (void)page;
+}
+
+int kernel_eventfd_retain(int event_id) {
+    return event_id == 1 ? 0 : -EDGE_LINUX_EBADF;
+}
+
+void kernel_eventfd_release(int event_id) {
+    assert(event_id == 1);
+}
+
+int64_t kernel_eventfd_write_value(int event_id, int nonblocking,
+                                   uint64_t value) {
+    assert(event_id == 1);
+    assert(nonblocking == 1);
+    assert(value == 1u);
+    return 8;
+}
+
+void kernel_drm_sync_state_changed(int32_t object_id) {
+    (void)object_id;
+}
+
+int kernel_runtime_yield(void) {
+    return 1;
+}
+
+int kernel_runtime_wait_sequence(volatile uint64_t *sequence,
+                                 uint64_t observed,
+                                 uint64_t deadline_microseconds) {
+    if (sequence &&
+        __atomic_load_n(sequence, __ATOMIC_ACQUIRE) != observed)
+        return 1;
+    if (deadline_microseconds != UINT64_MAX &&
+        g_now_us < deadline_microseconds)
+        g_now_us = deadline_microseconds;
+    return 0;
+}
+
+int64_t kernel_current_sleep_until(uint64_t deadline_microseconds,
+                                   uint64_t remaining_user,
+                                   int write_remaining,
+                                   int remaining_time32,
+                                   void *user_registers) {
+    (void)remaining_user;
+    (void)write_remaining;
+    (void)remaining_time32;
+    (void)user_registers;
+    if (g_now_us < deadline_microseconds)
+        g_now_us = deadline_microseconds;
+    return 0;
+}
+
+void kernel_runtime_notify_sequence(volatile uint64_t *sequence) {
+    (void)sequence;
 }
 
 int arch_vm_write_notify_supported(void) {
@@ -613,6 +722,24 @@ int main(void) {
     test_drm_get_cap_t prime_capability = {
         .capability = DRM_CAP_PRIME,
     };
+    const struct {
+        uint64_t capability;
+        uint64_t value;
+    } linux_capabilities[] = {
+        { DRM_CAP_DUMB_BUFFER, 1u },
+        { DRM_CAP_VBLANK_HIGH_CRTC, 1u },
+        { DRM_CAP_DUMB_PREFERRED_DEPTH, 0u },
+        { DRM_CAP_DUMB_PREFER_SHADOW, 0u },
+        { DRM_CAP_PRIME, 3u },
+        { DRM_CAP_TIMESTAMP_MONOTONIC, 1u },
+        { DRM_CAP_ASYNC_PAGE_FLIP, 0u },
+        { DRM_CAP_CURSOR_WIDTH, 64u },
+        { DRM_CAP_CURSOR_HEIGHT, 64u },
+        { DRM_CAP_ADDFB2_MODIFIERS, 0u },
+        { DRM_CAP_PAGE_FLIP_TARGET, 0u },
+        { DRM_CAP_CRTC_IN_VBLANK_EVENT, 1u },
+    };
+    test_drm_wait_vblank_t wait_vblank;
     test_drm_prime_handle_t prime;
     test_drm_prime_handle_t imported;
     test_drm_prime_handle_t cross_imported;
@@ -679,7 +806,33 @@ int main(void) {
     assert(strcmp(name, "edgeos-kms") == 0);
     assert(test_ioctl(client, DRM_IOCTL_GET_CAP, &prime_capability) == 0);
     assert(prime_capability.value == 3u);
+    for (uint32_t index = 0;
+         index < sizeof(linux_capabilities) / sizeof(linux_capabilities[0]);
+         ++index) {
+        test_drm_get_cap_t capability = {
+            .capability = linux_capabilities[index].capability,
+        };
+
+        assert(test_ioctl(client, DRM_IOCTL_GET_CAP, &capability) == 0);
+        assert(capability.value == linux_capabilities[index].value);
+    }
     assert(test_ioctl(client, DRM_IOCTL_SET_MASTER, 0) == 0);
+    memset(&wait_vblank, 0, sizeof(wait_vblank));
+    wait_vblank.request.type = DRM_VBLANK_RELATIVE;
+    wait_vblank.request.sequence = 1u;
+    assert(test_ioctl(client, DRM_IOCTL_WAIT_VBLANK, &wait_vblank) == 0);
+    assert(wait_vblank.reply.sequence >= 1u);
+    memset(&wait_vblank, 0, sizeof(wait_vblank));
+    wait_vblank.request.type = DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT;
+    wait_vblank.request.sequence = 1u;
+    wait_vblank.request.signal = 0x12345678u;
+    assert(test_ioctl(client, DRM_IOCTL_WAIT_VBLANK, &wait_vblank) == 0);
+    g_now_us += 20000u;
+    edge_drm_pump_deferred();
+    assert(edge_drm_read(client, &event, sizeof(event)) ==
+           (int64_t)sizeof(event));
+    assert(event.type == 1u);
+    assert(event.user_data == 0x12345678u);
     assert(test_ioctl(client, DRM_IOCTL_MODE_LIST_LESSEES, &lessees) == 0);
     assert(lessees.count_lessees == 0u);
     assert(lessees.pad == 0u);

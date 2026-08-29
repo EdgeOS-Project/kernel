@@ -2,6 +2,7 @@
 #define SYS_PROCESS_H
 
 #include <stdint.h>
+#include "arch/x86_64/fpu.h"
 #include "kernel/credentials.h"
 #include "kernel/event_runtime.h"
 #include "kernel/exec_payload.h"
@@ -264,6 +265,10 @@ typedef struct task_struct {
     uint8_t vt_wait_target;
     uint8_t child_wait_active;
     uint8_t file_lock_wait_active;
+    uint8_t fuse_wait_active;
+    uint64_t fuse_wait_identity;
+    volatile uint64_t *runtime_wait_sequence;
+    uint64_t runtime_wait_observed;
     kernel_epoll_wait_lease_t epoll_wait_lease;
     spinlock_t file_lock_wait_lock;
     int64_t file_lock_wait_result;
@@ -345,6 +350,7 @@ typedef struct task_struct {
     char exec_path[TASK_CWD_MAX];
     uint64_t exec_file_handle;
     uint8_t fxsave_region[512] __attribute__((aligned(16)));
+    uint8_t xsave_region[EDGE_X86_XSAVE_MAX_SIZE] __attribute__((aligned(64)));
     edge_user_vma_t *user_vmas;
     kernel_exec_record_t *exec_record;
     kernel_task_scratch_t *scratch;

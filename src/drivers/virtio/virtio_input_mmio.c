@@ -6,6 +6,7 @@
 #include "drivers/virtio_input_mmio.h"
 #include "kernel/deferred_work.h"
 #include "drivers/virtio_net_mmio.h"
+#include "kernel/drm_runtime.h"
 #include "kernel/linux_time.h"
 #include "sys/boottime.h"
 #include "sys/spinlock.h"
@@ -270,6 +271,8 @@ static void queue_event(input_device_t *d, const virtio_event_t *event) {
     d->event_tail = next;
     __atomic_store_n(&d->event_sequence, sequence, __ATOMIC_RELEASE);
     spin_unlock_irqrestore(&d->event_lock, irq_flags);
+    if (event->type != EV_SYN)
+        edge_drm_scanout_activity();
     kernel_input_work_request();
 }
 
@@ -330,7 +333,6 @@ static int initialize_device(input_device_t *d, uint64_t base,
     }
     d->avail.index = VQ_SIZE;
     __asm__ __volatile__("dmb oshst" ::: "memory");
-    wr(d, REG_QUEUE_NOTIFY, 0);
 
     /* Queue 1 carries host-directed events such as keyboard LED state. */
     wr(d, REG_QUEUE_SEL, 1);
@@ -345,6 +347,15 @@ static int initialize_device(input_device_t *d, uint64_t base,
         d->status_desc[i].length = sizeof(virtio_event_t);
     }
     wr(d, REG_STATUS, rd(d, REG_STATUS) | STATUS_DRIVER_OK);
+    /*
+     * A device may ignore queue notifications until DRIVER_OK is visible.
+     * Publish the receive buffers first, finish device activation, and only
+     * then notify the event queue.  Without this final notification, an MMIO
+     * input device can remain idle indefinitely even though all descriptors
+     * are available.
+     */
+    __asm__ __volatile__("dmb oshst" ::: "memory");
+    wr(d, REG_QUEUE_NOTIFY, 0);
     d->ready = 1;
     return 0;
 fail:
@@ -384,8 +395,15 @@ static void virtio_input_interrupt(uint32_t interrupt, void *context) {
 
     (void)interrupt;
     if (!device || !device->ready) return;
-    __atomic_store_n(&g_poll_pending, 1u, __ATOMIC_RELEASE);
+    /*
+     * Drain the completed descriptors before publishing deferred work.  An
+     * idle CPU may have stopped its scheduler tick, so merely setting a flag
+     * here can leave every evdev reader asleep indefinitely.  The poller is
+     * non-blocking under contention and queue_event() broadcasts the first
+     * idle-to-pending transition after the records are visible.
+     */
     virtio_input_poll();
+    kernel_input_work_request();
 }
 
 int edgeos_arm64_virtio_input_enable_interrupts(void) {
@@ -412,18 +430,35 @@ int edgeos_arm64_virtio_input_enable_interrupts(void) {
     return enabled ? 0 : -1;
 }
 
+int virtio_input_pending(void) {
+    if (__atomic_load_n(&g_poll_pending, __ATOMIC_ACQUIRE)) return 1;
+    for (uint32_t index = 0; index < g_device_count; ++index) {
+        input_device_t *device = &g_devices[index];
+        uint16_t used_index;
+
+        if (!device->ready) continue;
+        used_index = *(volatile uint16_t *)&device->used.index;
+        __asm__ __volatile__("dmb oshld" ::: "memory");
+        if (used_index != device->used_index) return 1;
+    }
+    return 0;
+}
+
 void virtio_input_poll(void) {
+    uint32_t passes = 0u;
+
     /*
-     * Timer ticks and evdev readers may poll from different CPUs.  A second
-     * consumer must not advance the same used ring while the first consumer
-     * is returning descriptors to the available ring.  Use a non-blocking
-     * guard because a timer interrupt may preempt a task that is already in
-     * this function.  An interrupt that finds an active owner publishes a
-     * pending marker so that owner drains the queue again before releasing it.
+     * Timer ticks, device interrupts, and evdev readers can enter from
+     * different CPUs.  EdgeOS serializes kernel execution separately, so an
+     * interrupt must never spin while another CPU owns this poller.  Publish
+     * a pending pass instead.  The owner coalesces a bounded number of passes
+     * before releasing ownership; the periodic tick drains anything that
+     * arrives across the final handoff without allowing cross-CPU livelock.
      */
-acquire_owner:
-    if (__atomic_exchange_n(&g_poll_active, 1u, __ATOMIC_ACQUIRE))
+    if (__atomic_exchange_n(&g_poll_active, 1u, __ATOMIC_ACQUIRE)) {
+        __atomic_store_n(&g_poll_pending, 1u, __ATOMIC_RELEASE);
         return;
+    }
 drain_again:
     __atomic_store_n(&g_poll_pending, 0u, __ATOMIC_RELEASE);
     for (uint32_t index = 0; index < g_device_count; ++index) {
@@ -462,16 +497,26 @@ drain_again:
             wr(d, REG_QUEUE_NOTIFY, 0);
         }
     }
-    if (__atomic_load_n(&g_poll_pending, __ATOMIC_ACQUIRE))
+    ++passes;
+    if (__atomic_exchange_n(&g_poll_pending, 0u, __ATOMIC_ACQ_REL) &&
+        passes < 4u)
         goto drain_again;
     __atomic_store_n(&g_poll_active, 0u, __ATOMIC_RELEASE);
+
     /*
-     * Close the handoff race with an interrupt that marked work after the
-     * final loop check but before the active owner was released.  If another
-     * caller acquired ownership first, its pass will consume the marker.
+     * Close the ownership handoff window. An interrupt can observe the old
+     * owner immediately before it clears g_poll_active and publish a pending
+     * pass that no owner would otherwise consume until a later timer tick.
+     * Reacquire once after releasing ownership; if another caller won, leave
+     * the pending bit set for that owner.
      */
-    if (__atomic_exchange_n(&g_poll_pending, 0u, __ATOMIC_ACQ_REL))
-        goto acquire_owner;
+    if (__atomic_exchange_n(&g_poll_pending, 0u, __ATOMIC_ACQ_REL)) {
+        if (!__atomic_exchange_n(&g_poll_active, 1u, __ATOMIC_ACQUIRE)) {
+            passes = 0u;
+            goto drain_again;
+        }
+        __atomic_store_n(&g_poll_pending, 1u, __ATOMIC_RELEASE);
+    }
 }
 
 int input_write_events(uint32_t device, const void *events,

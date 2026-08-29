@@ -1813,6 +1813,7 @@ static void x86_file_description_detach(void *context,
     (void)context;
     input_device_release_description(identity);
     kernel_epoll_detach_description(identity);
+    kernel_proc_maps_description_release(identity);
 }
 
 static void net_init_defaults(void) {
@@ -5268,6 +5269,89 @@ static void fd_mount_event_notify(uint32_t namespace_id) {
     }
 }
 
+static int fd_is_console_active_event_path(const edge_fd_t *e) {
+    return e && e->kind == FD_VFS &&
+           strcmp(e->path, "/sys/class/tty/tty0/active") == 0;
+}
+
+static void fd_console_active_monitor_initialize(edge_fd_t *e) {
+    if (!fd_is_console_active_event_path(e) || e->file_ref <= 0)
+        return;
+    (void)kernel_file_description_notify_bind(
+        file_ref_locator(e->file_ref),
+        KERNEL_FILE_DESCRIPTION_NOTIFY_CONSOLE_ACTIVE,
+        console_active_vt_generation());
+}
+
+static int fd_console_active_monitor_snapshot(
+        const edge_fd_t *e, uint32_t *source,
+        uint32_t *observed_generation) {
+    uint32_t ignored_source;
+    uint32_t ignored_generation;
+
+    if (!e || e->kind != FD_VFS || e->file_ref <= 0)
+        return 0;
+    if (!source) source = &ignored_source;
+    if (!observed_generation) observed_generation = &ignored_generation;
+    return kernel_file_description_notify_snapshot(
+               file_ref_locator(e->file_ref), source,
+               observed_generation) == 0;
+}
+
+static int fd_is_console_active_event_source(const edge_fd_t *e) {
+    uint32_t source;
+
+    return fd_console_active_monitor_snapshot(e, &source, 0) &&
+           source == KERNEL_FILE_DESCRIPTION_NOTIFY_CONSOLE_ACTIVE;
+}
+
+static int fd_console_active_monitor_pending(const edge_fd_t *e) {
+    uint32_t source;
+    uint32_t observed_generation;
+
+    if (!fd_console_active_monitor_snapshot(
+            e, &source, &observed_generation) ||
+        source != KERNEL_FILE_DESCRIPTION_NOTIFY_CONSOLE_ACTIVE)
+        return 0;
+    return observed_generation != console_active_vt_generation();
+}
+
+static void fd_console_active_monitor_acknowledge(edge_fd_t *e) {
+    uint32_t source;
+
+    if (!fd_console_active_monitor_snapshot(e, &source, 0) ||
+        source != KERNEL_FILE_DESCRIPTION_NOTIFY_CONSOLE_ACTIVE)
+        return;
+    (void)kernel_file_description_notify_acknowledge(
+        file_ref_locator(e->file_ref), source,
+        console_active_vt_generation());
+}
+
+static void fd_console_active_event_notify(uint32_t generation) {
+    task_t *current = process_current_task();
+
+    (void)generation;
+    fd_proc_registry_read_begin();
+    for (int process = 0; process < EDGE_MAX_FD_PROCS; ++process) {
+        edge_fd_proc_t *owner = __atomic_load_n(
+            &g_fd_procs[process], __ATOMIC_ACQUIRE);
+
+        if (!owner || owner->pid <= 0 ||
+            __atomic_load_n(&owner->detached, __ATOMIC_ACQUIRE))
+            continue;
+        for (int descriptor = 0; descriptor < EDGE_MAX_FD; ++descriptor) {
+            edge_fd_t *entry = &owner->fds[descriptor];
+
+            if (!entry->used ||
+                !fd_is_console_active_event_source(entry))
+                continue;
+            fd_wake_fd_owner_tasks(owner->pid, current, "console-active");
+            break;
+        }
+    }
+    fd_proc_registry_read_end();
+}
+
 static void fd_wake_tun_description(uint64_t description_identity) {
     task_t *current = process_current_task();
 
@@ -5486,6 +5570,7 @@ static int fd_file_lock_info_for_entry(
                 object_identity = (uint64_t)(uint32_t)entry->pipe_id;
                 break;
             case FD_DMA_BUF:
+            case FD_DRM_SYNC:
             case FD_IO_URING:
             case FD_LANDLOCK:
             case FD_BPF:
@@ -6093,6 +6178,8 @@ static void fd_drop_backing_object(edge_fd_t *e) {
         kernel_perf_event_release(e->pipe_id);
     if (e->kind == FD_MEMFD) memfd_drop_ref(e->pipe_id);
     if (e->kind == FD_DMA_BUF) edge_drm_prime_release(e->pipe_id);
+    if (e->kind == FD_DRM_SYNC)
+        edge_virtgpu_sync_file_release(e->pipe_id);
     if (e->kind == FD_MOUNT) kernel_mount_api_release(e->pipe_id);
     if (e->kind == FD_MQUEUE) kernel_posix_mq_release(e->pipe_id);
     if (e->kind == FD_IO_URING) kernel_io_uring_release(e->pipe_id);
@@ -6185,6 +6272,8 @@ static int fd_add_backing_object(edge_fd_t *e) {
     }
     if (e->kind == FD_DMA_BUF)
         return edge_drm_prime_retain(e->pipe_id) == 0 ? 0 : -1;
+    if (e->kind == FD_DRM_SYNC)
+        return edge_virtgpu_sync_file_retain(e->pipe_id) == 0 ? 0 : -1;
     if (e->kind == FD_MOUNT)
         return kernel_mount_api_retain(e->pipe_id) == 0 ? 0 : -1;
     if (e->kind == FD_MQUEUE)
@@ -6571,13 +6660,12 @@ static int fd_snapshot_retain(edge_fd_proc_t *p, int fd,
         kernel_fd_table_unlock(&p->table_runtime, irq_flags);
         return -ENOMEM;
     }
+    kernel_fd_table_unlock(&p->table_runtime, irq_flags);
     if (fd_add_backing_object(snapshot) < 0) {
         (void)file_ref_put(snapshot->file_ref);
         memset(snapshot, 0, sizeof(*snapshot));
-        kernel_fd_table_unlock(&p->table_runtime, irq_flags);
         return -EBADF;
     }
-    kernel_fd_table_unlock(&p->table_runtime, irq_flags);
     return 0;
 }
 
@@ -7268,51 +7356,56 @@ static void fd_clone_table_abort(edge_fd_proc_t *table) {
 
 static int fd_clone_table_contents(edge_fd_proc_t *source,
                                    edge_fd_proc_t *destination) {
+    uint32_t inherited_limit;
     uint64_t irq_flags;
 
     if (!source || !destination) return -ENOMEM;
     irq_flags = kernel_fd_table_lock(&source->table_runtime);
-    for (int descriptor = 0; descriptor < EDGE_MAX_FD; ++descriptor) {
+    inherited_limit = kernel_fd_table_allocated_limit_locked(
+        &source->table_runtime);
+    kernel_fd_table_unlock(&source->table_runtime, irq_flags);
+    for (uint32_t descriptor = 0;
+         descriptor < inherited_limit; ++descriptor) {
         edge_fd_t copy;
+
+        memset(&copy, 0, sizeof(copy));
+        irq_flags = kernel_fd_table_lock(&source->table_runtime);
         if (!kernel_fd_table_is_open_locked(
                 &source->table_runtime, (uint32_t)descriptor) ||
             !__atomic_load_n(
-                &source->fds[descriptor].used, __ATOMIC_ACQUIRE))
+                &source->fds[descriptor].used, __ATOMIC_ACQUIRE)) {
+            kernel_fd_table_unlock(
+                &source->table_runtime, irq_flags);
             continue;
+        }
         copy = source->fds[descriptor];
         if (copy.file_ref <= 0 || file_ref_get(copy.file_ref) < 0) {
             kernel_fd_table_unlock(&source->table_runtime, irq_flags);
             return -ENOMEM;
         }
+        kernel_fd_table_unlock(&source->table_runtime, irq_flags);
         if (fd_add_backing_object(&copy) < 0) {
             (void)file_ref_put(copy.file_ref);
-            kernel_fd_table_unlock(&source->table_runtime, irq_flags);
             return -ENOMEM;
         }
-        if (fd_reserve_exact(destination, descriptor) < 0 ||
-            fd_install_reserved(destination, descriptor, &copy) < 0) {
-            fd_abort_reserved(destination, descriptor);
+        if (fd_reserve_exact(destination, (int)descriptor) < 0 ||
+            fd_install_reserved(destination, (int)descriptor, &copy) < 0) {
+            fd_abort_reserved(destination, (int)descriptor);
             (void)fd_release_entry(&copy, 0, 0, 0);
-            kernel_fd_table_unlock(&source->table_runtime, irq_flags);
             return -ENOMEM;
         }
     }
     {
         uint64_t destination_flags =
             kernel_fd_table_lock(&destination->table_runtime);
-        int inherit_result =
-            kernel_fd_table_inherit_allocated_limit_locked(
-                &destination->table_runtime,
-                &source->table_runtime);
+
+        if (inherited_limit > destination->table_runtime.limit)
+            inherited_limit = destination->table_runtime.limit;
+        if (destination->table_runtime.allocated_limit < inherited_limit)
+            destination->table_runtime.allocated_limit = inherited_limit;
         kernel_fd_table_unlock(
             &destination->table_runtime, destination_flags);
-        if (inherit_result < 0) {
-            kernel_fd_table_unlock(
-                &source->table_runtime, irq_flags);
-            return -ENOMEM;
-        }
     }
-    kernel_fd_table_unlock(&source->table_runtime, irq_flags);
     return 0;
 }
 
@@ -7405,6 +7498,7 @@ static const char *fd_kind_name(edge_fd_kind_t kind) {
         case FD_LANDLOCK: return "landlock";
         case FD_BPF: return "bpf";
         case FD_SECCOMP: return "seccomp";
+        case FD_DRM_SYNC: return "sync_file";
         default: return "none";
     }
 }

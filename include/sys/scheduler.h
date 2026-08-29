@@ -38,6 +38,7 @@ void scheduler_secondary_enter(uint32_t logical_id)
     __attribute__((noreturn));
 task_t *scheduler_current_task(void);
 scheduler_cpu_t *scheduler_cpu_local(void);
+int scheduler_task_is_idle(const task_t *t);
 void scheduler_set_boot_current(task_t *t);
 void scheduler_task_context_ready(task_t *t);
 void scheduler_task_make_runnable(task_t *t, uint32_t cpu_id);

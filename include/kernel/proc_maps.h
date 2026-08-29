@@ -12,6 +12,10 @@
 #define KERNEL_PROC_MAP_SEALED  (1u << 4)
 #define KERNEL_PROC_MAP_PATH_MAX 512u
 
+#define KERNEL_PROC_MAPS_VIEW_MAPS         1u
+#define KERNEL_PROC_MAPS_VIEW_SMAPS        2u
+#define KERNEL_PROC_MAPS_VIEW_SMAPS_ROLLUP 3u
+
 typedef struct kernel_proc_vma_cursor {
     uint64_t start;
     uint32_t order;
@@ -56,6 +60,11 @@ int kernel_proc_smaps_read(int32_t pid, uint64_t offset, void *buffer,
                            uint32_t length);
 int kernel_proc_smaps_rollup_read(int32_t pid, uint64_t offset, void *buffer,
                                   uint32_t length);
+int kernel_proc_maps_read_description(uint64_t description_identity,
+                                      int32_t pid, uint32_t view,
+                                      uint64_t offset, void *buffer,
+                                      uint32_t length);
+void kernel_proc_maps_description_release(uint64_t description_identity);
 int kernel_proc_vma_account(int32_t pid,
                             kernel_proc_vma_accounting_t *accounting);
 void kernel_proc_vma_account_mapping(

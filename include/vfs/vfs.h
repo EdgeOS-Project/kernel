@@ -194,6 +194,9 @@ struct linux_group_list;
 typedef struct {
     int (*lookup)(vfs_superblock_t *sb, vfs_inode_t *dir, const char *name, vfs_inode_t *out);
     int (*read)(vfs_superblock_t *sb, vfs_inode_t *inode, uint32_t off, void *buf, uint32_t len);
+    int (*read_description)(vfs_superblock_t *sb, vfs_inode_t *inode,
+                            uint64_t description_identity, uint32_t off,
+                            void *buf, uint32_t len);
     int (*write)(vfs_superblock_t *sb, vfs_inode_t *inode, uint32_t off, const void *buf, uint32_t len);
     int (*create)(vfs_superblock_t *sb, vfs_inode_t *dir, const char *name, uint16_t mode, vfs_inode_t *out);
     int (*mkdir)(vfs_superblock_t *sb, vfs_inode_t *dir, const char *name, uint16_t mode, vfs_inode_t *out);
@@ -448,6 +451,9 @@ int vfs_resolve_cached(const char *path, vfs_inode_t *out_inode,
 int vfs_resolve_superblock_path(vfs_superblock_t *sb, const char *path,
                                 vfs_inode_t *out_inode);
 int vfs_pread(const char *path, uint32_t off, void *out, uint32_t len);
+int vfs_read_description(vfs_superblock_t *sb, vfs_inode_t *inode,
+                         uint64_t description_identity, uint32_t off,
+                         void *out, uint32_t len);
 int vfs_append_write(const char *path, vfs_superblock_t *sb,
                      vfs_inode_t *inode, const void *buf, uint32_t len,
                      uint32_t *offset_out);
@@ -535,6 +541,9 @@ int vfs_mountinfo_snapshot(char *buf, uint32_t max);
 int vfs_mount_snapshot_read(int mountinfo, uint64_t offset,
                             void *buffer, uint32_t length);
 int vfs_permission_check(const vfs_inode_t *inode, int access_mask);
+int vfs_permission_check_with_acl(vfs_superblock_t *superblock,
+                                  const vfs_inode_t *inode,
+                                  int access_mask);
 int vfs_permission_check_as(const vfs_inode_t *inode, int access_mask,
                             uint32_t uid, uint32_t gid,
                             const struct linux_group_list *groups,

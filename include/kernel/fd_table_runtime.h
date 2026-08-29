@@ -19,6 +19,7 @@ typedef enum kernel_fd_slot_state {
 
 typedef struct kernel_fd_table_runtime {
     spinlock_t lock;
+    volatile uintptr_t owner_site;
     uint8_t *states;
     uint32_t limit;
     uint32_t allocated_limit;

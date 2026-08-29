@@ -832,7 +832,8 @@ int arch_vfs_describe_descriptor(int32_t descriptor,
         entry->kind == FD_PERF_EVENT ||
         entry->kind == FD_DMA_BUF || entry->kind == FD_MOUNT ||
         entry->kind == FD_IO_URING || entry->kind == FD_LANDLOCK ||
-        entry->kind == FD_BPF || entry->kind == FD_SECCOMP) {
+        entry->kind == FD_BPF || entry->kind == FD_SECCOMP ||
+        entry->kind == FD_DRM_SYNC) {
         description->kind = KERNEL_VFS_DESCRIPTOR_ANONYMOUS;
         return 0;
     }
@@ -2474,32 +2475,10 @@ static int x86_fd_duplicate_minimum(void *context, int32_t source,
         exclusive_limit = EDGE_MAX_FD;
 
     memset(&duplicate, 0, sizeof(duplicate));
-    irq_flags = kernel_fd_table_lock(&process->table_runtime);
-    if (!kernel_fd_table_is_open_locked(
-            &process->table_runtime, (uint32_t)source) ||
-        !__atomic_load_n(
-            &process->fds[source].used, __ATOMIC_ACQUIRE)) {
-        kernel_fd_table_unlock(&process->table_runtime, irq_flags);
-        return -EBADF;
-    }
-
-    duplicate = process->fds[source];
-    if (duplicate.file_ref <= 0) {
-        kernel_fd_table_unlock(&process->table_runtime, irq_flags);
-        return -EBADF;
-    }
-    if (file_ref_get(duplicate.file_ref) < 0) {
-        kernel_fd_table_unlock(&process->table_runtime, irq_flags);
-        return -ENOMEM;
-    }
-    if (fd_add_backing_object(&duplicate) < 0) {
-        kernel_fd_table_unlock(&process->table_runtime, irq_flags);
-        (void)file_ref_put(duplicate.file_ref);
-        return -ENOMEM;
-    }
+    status = fd_snapshot_retain(process, source, &duplicate);
+    if (status < 0) return status;
     if (kernel_file_description_status_load(
             file_ref_locator(duplicate.file_ref), &status_flags) < 0) {
-        kernel_fd_table_unlock(&process->table_runtime, irq_flags);
         (void)fd_release_entry(&duplicate, 0, 0, 0);
         return -EBADF;
     }
@@ -2508,6 +2487,7 @@ static int x86_fd_duplicate_minimum(void *context, int32_t source,
     duplicate.fd_flags =
         (int)(descriptor_flags & KERNEL_FD_CLOEXEC);
 
+    irq_flags = kernel_fd_table_lock(&process->table_runtime);
     status = kernel_fd_table_reserve_next_below_locked(
         &process->table_runtime, (uint32_t)minimum,
         exclusive_limit, &descriptor);
@@ -6548,6 +6528,20 @@ static int user_vma_range_covered(task_t *t, uint64_t start, uint64_t end) {
     return 1;
 }
 
+static int user_mincore_page_mapped(task_t *memory, uint64_t page) {
+    uint64_t heap_end;
+
+    if (!memory || page > UINT64_MAX - PAGE_SIZE) return 0;
+    if (user_vma_range_covered(memory, page, page + PAGE_SIZE)) return 1;
+
+    heap_end = page_align_up(memory->user_brk);
+    if (page >= memory->user_heap_base && page < heap_end) return 1;
+    if (page >= USER_STACK_BASE_ADDR &&
+        page < memory->user_stack_top)
+        return 1;
+    return 0;
+}
+
 static int user_madvise_noop_range_covered(task_t *t, uint64_t start,
                                            uint64_t end) {
     int live;
@@ -8298,6 +8292,54 @@ int64_t arch_current_sleep_until(uint64_t deadline_microseconds,
     return (int64_t)result;
 }
 
+int arch_runtime_wait_sequence(volatile uint64_t *sequence,
+                               uint64_t observed,
+                               uint64_t deadline_microseconds) {
+    task_t *current = process_current_task();
+
+    if (!sequence ||
+        __atomic_load_n(sequence, __ATOMIC_ACQUIRE) != observed)
+        return 1;
+    if (!current || current->is_idle) {
+        scheduler_yield();
+        return 0;
+    }
+    current->runtime_wait_sequence = sequence;
+    current->runtime_wait_observed = observed;
+    if (deadline_microseconds != UINT64_MAX) {
+        current->sleep_deadline_us = deadline_microseconds;
+        current->sleep_wait_active = 1;
+    }
+    scheduler_task_set_blocked(current);
+    if (__atomic_load_n(sequence, __ATOMIC_ACQUIRE) != observed)
+        scheduler_task_make_runnable(current, scheduler_cpu_id());
+    scheduler_yield();
+    current = process_current_task();
+    if (!current || current->is_idle) return 0;
+    current->runtime_wait_sequence = 0;
+    current->runtime_wait_observed = 0;
+    current->sleep_deadline_us = 0;
+    current->sleep_wait_active = 0;
+    return signal_pending_interrupt() ? -1 : 0;
+}
+
+void arch_runtime_notify_sequence(volatile uint64_t *sequence) {
+    uint32_t current_cpu = scheduler_cpu_id();
+
+    if (!sequence) return;
+    for (int index = 0; index < PROC_MAX_TASKS; ++index) {
+        task_t *task = (task_t *)(uintptr_t)process_task_by_index(index);
+        uint32_t target_cpu;
+
+        if (!task || task->state != TASK_BLOCKED ||
+            task->runtime_wait_sequence != sequence)
+            continue;
+        target_cpu = task->assigned_cpu >= 0 ?
+            (uint32_t)task->assigned_cpu : current_cpu;
+        scheduler_task_make_runnable(task, target_cpu);
+    }
+}
+
 static spinlock_t g_syslog_wait_lock;
 static task_t *g_syslog_waiters[PROC_MAX_TASKS];
 
@@ -8609,18 +8651,23 @@ int arch_mm_query_residency(uint64_t address, uint32_t page_count,
                             uint8_t *vector) {
     task_t *current = process_current_task();
     task_t *memory = current ? process_vm_task(current) : 0;
-    uint64_t length;
-    uint64_t end;
-    length = (uint64_t)page_count * PAGE_SIZE;
-    end = address + length;
-    if (end < address || !memory ||
-        !user_vma_range_covered(memory, address, end))
-        return -ENOMEM;
+    int status = 0;
+
+    if (!memory) return -ENOMEM;
+    process_user_vma_mutation_lock(memory);
     for (uint32_t index = 0; index < page_count; ++index) {
-        uint64_t flags = user_pte_flags(address + (uint64_t)index * PAGE_SIZE);
+        uint64_t page = address + (uint64_t)index * PAGE_SIZE;
+        uint64_t flags;
+
+        if (!user_mincore_page_mapped(memory, page)) {
+            status = -ENOMEM;
+            break;
+        }
+        flags = user_pte_flags(page);
         vector[index] = (flags & PTE_PRESENT) != 0 ? 1u : 0u;
     }
-    return 0;
+    process_user_vma_mutation_unlock(memory);
+    return status;
 }
 
 int arch_mm_lock_range(uint64_t address, uint64_t length, uint32_t flags) {
@@ -12187,6 +12234,9 @@ static int x86_anonymous_fd_install(
     case KERNEL_ANONYMOUS_FD_ZCRX:
         local_kind = FD_ZCRX;
         break;
+    case KERNEL_ANONYMOUS_FD_DRM_SYNC:
+        local_kind = FD_DRM_SYNC;
+        break;
     default:
         return -EINVAL;
     }
@@ -12249,6 +12299,9 @@ static int x86_anonymous_fd_object_id(
     case KERNEL_ANONYMOUS_FD_ZCRX:
         expected = FD_ZCRX;
         break;
+    case KERNEL_ANONYMOUS_FD_DRM_SYNC:
+        expected = FD_DRM_SYNC;
+        break;
     default:
         return -EINVAL;
     }
@@ -12265,7 +12318,8 @@ static void x86_anonymous_fd_state_changed(
     }
     if (kind != KERNEL_ANONYMOUS_FD_SIGNAL &&
         kind != KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE &&
-        kind != KERNEL_ANONYMOUS_FD_BPF)
+        kind != KERNEL_ANONYMOUS_FD_BPF &&
+        kind != KERNEL_ANONYMOUS_FD_DRM_SYNC)
         return;
     current = process_current_task();
     fd_proc_registry_read_begin();
@@ -12281,7 +12335,8 @@ static void x86_anonymous_fd_state_changed(
             edge_fd_kind_t expected_kind =
                 kind == KERNEL_ANONYMOUS_FD_SIGNAL ?
                 FD_SIGNALFD : kind == KERNEL_ANONYMOUS_FD_BPF ?
-                FD_BPF : FD_MQUEUE;
+                FD_BPF : kind == KERNEL_ANONYMOUS_FD_DRM_SYNC ?
+                FD_DRM_SYNC : FD_MQUEUE;
             if (!entry->used || entry->kind != expected_kind ||
                 (object_id >= 0 && entry->pipe_id != object_id))
                 continue;
@@ -12289,7 +12344,8 @@ static void x86_anonymous_fd_state_changed(
                 process->pid, current,
                 kind == KERNEL_ANONYMOUS_FD_SIGNAL ?
                     "signalfd" : kind == KERNEL_ANONYMOUS_FD_BPF ?
-                    "bpf" : "mqueue");
+                    "bpf" : kind == KERNEL_ANONYMOUS_FD_DRM_SYNC ?
+                    "drm-sync" : "mqueue");
             break;
         }
     }

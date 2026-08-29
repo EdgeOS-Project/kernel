@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "kernel/proc_maps.h"
@@ -13,6 +14,16 @@
 static int g_failures;
 static int g_backend_mode;
 static int g_account_mode;
+static int g_mapping_revision;
+
+void *arch_vm_alloc_pages(uint64_t page_count) {
+    if (!page_count || page_count > SIZE_MAX / 4096u) return 0;
+    return calloc((size_t)page_count, 4096u);
+}
+
+void arch_vm_free_page(void *page) {
+    (void)page;
+}
 
 static void expect_true(const char *name, int condition) {
     if (condition) return;
@@ -60,6 +71,8 @@ int arch_proc_vma_next(int32_t pid,
     }
     if (!after || !after->valid) {
         *snapshot = records[0];
+        if (g_mapping_revision)
+            strcpy(snapshot->path, "/bin/replaced");
         return 1;
     }
     if (after->start == records[0].start &&
@@ -140,6 +153,7 @@ static void test_render_and_read(void) {
     int copied;
 
     g_backend_mode = 0;
+    g_mapping_revision = 0;
     length = kernel_proc_maps_render(1, rendered, sizeof(rendered));
     expect_true("render complete",
                 length == (int)strlen(expected) &&
@@ -150,6 +164,48 @@ static void test_render_and_read(void) {
                 memcmp(slice, expected + 17, sizeof(slice)) == 0);
     expect_true("render rejects short buffer",
                 kernel_proc_maps_render(1, rendered, 8u) < 0);
+}
+
+static void test_open_description_snapshot(void) {
+    static const char original_path[] = "/bin/test";
+    static const char replacement_path[] = "/bin/replaced";
+    char snapshot[512];
+    char reopened[512];
+    int length = 0;
+    int result;
+
+    memset(snapshot, 0, sizeof(snapshot));
+    g_backend_mode = 0;
+    g_mapping_revision = 0;
+    result = kernel_proc_maps_read_description(
+        UINT64_C(0x1234), 1, KERNEL_PROC_MAPS_VIEW_MAPS,
+        0, snapshot, 37u);
+    expect_true("description first chunk", result == 37);
+    if (result > 0) length = result;
+    g_mapping_revision = 1;
+    while ((uint32_t)length < sizeof(snapshot)) {
+        result = kernel_proc_maps_read_description(
+            UINT64_C(0x1234), 1, KERNEL_PROC_MAPS_VIEW_MAPS,
+            (uint64_t)length, snapshot + length, 37u);
+        expect_true("description subsequent chunk", result >= 0);
+        if (result <= 0) break;
+        length += result;
+    }
+    snapshot[length] = 0;
+    expect_true("description snapshot stays stable",
+                strstr(snapshot, original_path) != 0 &&
+                strstr(snapshot, replacement_path) == 0);
+
+    kernel_proc_maps_description_release(UINT64_C(0x1234));
+    memset(reopened, 0, sizeof(reopened));
+    result = kernel_proc_maps_read_description(
+        UINT64_C(0x1235), 1, KERNEL_PROC_MAPS_VIEW_MAPS,
+        0, reopened, sizeof(reopened) - 1u);
+    expect_true("description reopened after mapping change",
+                result > 0 && strstr(reopened, replacement_path) != 0 &&
+                strstr(reopened, original_path) == 0);
+    kernel_proc_maps_description_release(UINT64_C(0x1235));
+    g_mapping_revision = 0;
 }
 
 static void test_vma_accounting(void) {
@@ -235,6 +291,7 @@ static void test_smaps_and_rollup(void) {
 int main(void) {
     test_shared_iterator_validation();
     test_render_and_read();
+    test_open_description_snapshot();
     test_vma_accounting();
     test_smaps_and_rollup();
     if (g_failures) return 1;

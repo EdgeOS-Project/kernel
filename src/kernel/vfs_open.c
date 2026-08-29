@@ -631,7 +631,8 @@ int64_t kernel_vfs_open_at(const kernel_vfs_open_request_t *request) {
             return -EDGE_LINUX_EPERM;
     }
     status = kernel_vfs_open_access_mask(request, created);
-    if (status && vfs_permission_check(target.inode, status) < 0)
+    if (status && vfs_permission_check_with_acl(
+                      target.superblock, target.inode, status) < 0)
         return -EDGE_LINUX_EACCES;
     status = kernel_landlock_check_path(
         path, kernel_vfs_landlock_open_access(

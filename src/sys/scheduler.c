@@ -3,6 +3,7 @@
 #include "fb.h"
 #include "fb_console.h"
 #include "arch/x86_64/gdt.h"
+#include "arch/x86_64/fpu.h"
 #include "arch/x86_64/syscall.h"
 #include "arch/x86_64/smp.h"
 #include "drivers/apic.h"
@@ -18,6 +19,7 @@
 #include "sys/boottime.h"
 #include "sys/syscall.h"
 #include "sys/mmio.h"
+#include "sys/process.h"
 #include "fs/cgroupfs.h"
 #include "string.h"
 #ifdef CONFIG_BSD_DRIVER_BRIDGE
@@ -57,14 +59,22 @@ static volatile uint64_t g_sched_idle_ticks;
 static uint64_t g_scheduler_kernel_cr3;
 static int g_scheduler_bad_ptr_log_budget = 16;
 static int g_scheduler_kstack_log_budget = 16;
+static int g_scheduler_idle_marker_log_budget = 16;
+static volatile uint8_t g_scheduler_display_work_guard;
 #ifndef EDGE_SCHED_XFCE_TRACE
 #define EDGE_SCHED_XFCE_TRACE 0
 #endif
 #ifndef EDGE_SCHED_CONTEXT_DIAGNOSTICS
 #define EDGE_SCHED_CONTEXT_DIAGNOSTICS 0
 #endif
+#ifndef EDGE_SCHED_STALL_DIAGNOSTICS
+#define EDGE_SCHED_STALL_DIAGNOSTICS 0
+#endif
 
 static int g_scheduler_xfce_switch_log_budget = EDGE_SCHED_XFCE_TRACE ? 160 : 0;
+#if EDGE_SCHED_STALL_DIAGNOSTICS
+static volatile uint64_t g_scheduler_stall_dump_deadline_us = 180000000ull;
+#endif
 
 static void scheduler_counter_add(volatile uint64_t *counter,
                                   uint64_t delta) {
@@ -129,6 +139,25 @@ static void rq_remove_locked(scheduler_cpu_t *cpu, task_t *t);
 static void scheduler_place_wakeup_locked(scheduler_cpu_t *cpu,
                                           task_t *task,
                                           int woke_from_blocked);
+
+int scheduler_task_is_idle(const task_t *t) {
+    if (!t) return 0;
+    for (uint32_t cpu = 0; cpu < SCHED_MAX_CPUS; ++cpu) {
+        if (t == &g_idle_tasks[cpu]) return 1;
+    }
+    return 0;
+}
+
+static void scheduler_repair_idle_marker(task_t *t, const char *where) {
+    if (!t || scheduler_task_is_idle(t) || !t->is_idle) return;
+    if (g_scheduler_idle_marker_log_budget > 0) {
+        --g_scheduler_idle_marker_log_budget;
+        printf("[sched][WARN] %s clearing invalid idle marker pid=%d task=%s address=0x%x\n",
+               where ? where : "idle-marker", t->pid, t->name,
+               (uint32_t)(uintptr_t)t);
+    }
+    t->is_idle = 0;
+}
 
 static void scheduler_context_event(scheduler_context_event_op_t operation,
                                     const task_t *current,
@@ -357,7 +386,7 @@ static uint32_t scheduler_account_run_stop(task_t *t, uint64_t now) {
     uint64_t delta;
     uint32_t result;
     edge_linux_scheduler_state_t effective;
-    if (!t || t->is_idle || !t->rusage_run_start_us) return 0;
+    if (!t || scheduler_task_is_idle(t) || !t->rusage_run_start_us) return 0;
     runtime = now > t->rusage_run_start_us ?
               now - t->rusage_run_start_us : 0;
     cpu = scheduler_cpu_local();
@@ -386,7 +415,7 @@ static uint32_t scheduler_account_run_stop(task_t *t, uint64_t now) {
 }
 
 static void scheduler_account_run_start(task_t *t, uint64_t now) {
-    if (!t || t->is_idle) return;
+    if (!t || scheduler_task_is_idle(t)) return;
     t->rusage_run_start_us = now ? now : boottime_monotonic_us();
 }
 
@@ -395,7 +424,8 @@ void scheduler_account_current_mode_switch(void) {
     uint64_t now;
     uint32_t result;
 
-    if (!current || current->is_idle || current->state != TASK_RUNNING ||
+    if (!current || scheduler_task_is_idle(current) ||
+        current->state != TASK_RUNNING ||
         !current->rusage_run_start_us)
         return;
     now = boottime_monotonic_us();
@@ -467,15 +497,14 @@ static void sched_log_switch_target(const task_t *prev, const task_t *next,
 
 static int scheduler_task_ptr_valid(const task_t *t) {
     if (!t) return 0;
-    for (uint32_t i = 0; i < SCHED_MAX_CPUS; ++i) {
-        if (t == &g_idle_tasks[i]) return 1;
-    }
+    if (scheduler_task_is_idle(t)) return 1;
     return process_task_pointer_valid(t);
 }
 
 static int scheduler_task_runnable_ptr(const task_t *t) {
     if (!scheduler_task_ptr_valid(t)) return 0;
-    return t->is_idle || t->state == TASK_RUNNABLE || t->state == TASK_RUNNING;
+    return scheduler_task_is_idle(t) || t->state == TASK_RUNNABLE ||
+           t->state == TASK_RUNNING;
 }
 
 static int scheduler_kernel_context_pc_valid(uint64_t rip) {
@@ -499,7 +528,7 @@ static int scheduler_task_context_image_valid(const task_t *t) {
     int has_cookie;
 
     if (!scheduler_task_ptr_valid(t)) return 0;
-    if (!t->is_idle &&
+    if (!scheduler_task_is_idle(t) &&
         (t->state == TASK_UNUSED || t->state == TASK_ZOMBIE)) return 0;
     if (!t->context.rip || !t->context.rsp) return 0;
     /*
@@ -536,7 +565,7 @@ static int scheduler_task_context_image_valid(const task_t *t) {
      * tables before loading the idle context.  The idle task is kernel-owned,
      * and the structural checks above are sufficient until that switch.
      */
-    if (t->is_idle) return 1;
+    if (scheduler_task_is_idle(t)) return 1;
     return *(const volatile uint64_t *)(uintptr_t)
                t->context.resume_cookie_addr ==
                t->context.resume_cookie_value &&
@@ -656,7 +685,8 @@ static void sched_warn_kstack_depth(const task_t *t, const char *where) {
     uint64_t sp;
     uint64_t used;
 
-    if (!t || t->is_idle || g_scheduler_kstack_log_budget <= 0) return;
+    if (!t || scheduler_task_is_idle(t) ||
+        g_scheduler_kstack_log_budget <= 0) return;
     __asm__ __volatile__("mov %%rsp, %0" : "=r"(sp));
     if (sp > t->kernel_stack_top) return;
     used = t->kernel_stack_top - sp;
@@ -678,7 +708,7 @@ static inline void fxsave_task(task_t *t) {
         scheduler_log_bad_task_ptr("fxsave", t);
         return;
     }
-    __asm__ __volatile__("fxsave (%0)" :: "r"(t->fxsave_region) : "memory");
+    x86_fpu_save_state(t->xsave_region, t->fxsave_region);
 }
 
 static inline void fxrstor_task(task_t *t) {
@@ -687,7 +717,7 @@ static inline void fxrstor_task(task_t *t) {
         scheduler_log_bad_task_ptr("fxrstor", t);
         return;
     }
-    __asm__ __volatile__("fxrstor (%0)" :: "r"(t->fxsave_region) : "memory");
+    x86_fpu_restore_state(t->xsave_region, t->fxsave_region);
 }
 
 #ifndef EDGE_SCHED_DEBUG
@@ -741,11 +771,13 @@ static void sched_invariant_check(const char *where, scheduler_cpu_t *cpu) {
     if (cpu->rq_head != 0 && cpu->rq_tail == 0) {
         printf("[sched][ERR] %s cpu=%u head=%d tail=NULL\n", where, cpu->logical_id, sched_pid(cpu->rq_head));
     }
-    if (cpu->rq_head == 0 && cpu->current && !cpu->current->is_idle) {
+    if (cpu->rq_head == 0 && cpu->current &&
+        !scheduler_task_is_idle(cpu->current)) {
         printf("[sched][ERR] %s cpu=%u rq-empty current-not-idle pid=%d st=%s\n",
                where, cpu->logical_id, cpu->current->pid, sched_state_name(cpu->current->state));
     }
-    if (cpu->current && !cpu->current->is_idle && cpu->current->state != TASK_RUNNING) {
+    if (cpu->current && !scheduler_task_is_idle(cpu->current) &&
+        cpu->current->state != TASK_RUNNING) {
         printf("[sched][ERR] %s cpu=%u current pid=%d state=%s (expected RUNNING)\n",
                where, cpu->logical_id, cpu->current->pid, sched_state_name(cpu->current->state));
     }
@@ -835,6 +867,28 @@ static void scheduler_idle_loop(void) {
          * This must precede scheduler_yield() so a packet that woke HLT can
          * immediately make its sleeping consumer runnable.
         */
+        /*
+         * A VirtIO-GPU completion can target any CPU. Consume display work
+         * before the bootstrap-CPU split so a busy CPU 0 cannot delay render
+         * fences while another CPU has already entered its idle worker.
+         * Requeue a racing request rather than running two display pumps at
+         * once; the DRM worker and scanout state remain one ordered stream.
+         */
+        if (kernel_display_work_take()) {
+            if (__atomic_test_and_set(
+                    &g_scheduler_display_work_guard,
+                    __ATOMIC_ACQUIRE)) {
+                kernel_display_work_request();
+            } else {
+                edge_drm_pump_deferred();
+                fb_user_mmap_pump_deferred();
+                __atomic_clear(
+                    &g_scheduler_display_work_guard,
+                    __ATOMIC_RELEASE);
+            }
+            scheduler_yield();
+            continue;
+        }
         if (cpu_id != 0u) {
             scheduler_cpu_t *cpu = scheduler_cpu_local();
 
@@ -1160,7 +1214,8 @@ static uint64_t scheduler_min_vruntime_locked(const scheduler_cpu_t *cpu) {
 
     if (!cpu) return 0;
     task = cpu->current;
-    if (task && !task->is_idle && task->scheduler_vruntime_valid) {
+    if (task && !scheduler_task_is_idle(task) &&
+        task->scheduler_vruntime_valid) {
         minimum = task->scheduler_vruntime_us;
         found = 1;
     }
@@ -1195,7 +1250,8 @@ static void scheduler_place_wakeup_locked(scheduler_cpu_t *cpu, task_t *task,
 }
 
 static uint32_t scheduler_select_allowed_cpu(const task_t *task,
-                                             uint32_t requested) {
+                                             uint32_t requested,
+                                             int allow_active_balance) {
     uint64_t online = g_online_cpu_mask ? g_online_cpu_mask : 1u;
     uint64_t cpuset = task ?
         cgroupfs_cpuset_cpu_mask64(task->cgroup_id) & online : online;
@@ -1207,6 +1263,17 @@ static uint32_t scheduler_select_allowed_cpu(const task_t *task,
     if (!cpuset) cpuset = online;
     allowed = task ? task->scheduler.affinity_mask & cpuset : cpuset;
     if (!allowed) allowed = cpuset;
+    /*
+     * Slice continuation is not a placement event.  Recomputing hierarchical
+     * cgroup state and scanning every possible CPU on each 100 Hz tick made
+     * scheduler selection consume several host cores while system services
+     * started.  Keep an executing task on its current CPU whenever that CPU
+     * is still online and permitted by affinity and cpuset.  Wake placement
+     * and forced relocation retain the complete topology-aware path below.
+     */
+    if (!allow_active_balance && requested < SCHED_MAX_CPUS &&
+        (allowed & (1ull << requested)))
+        return requested;
     if (task) {
         scheduler_effective_state(task, &effective);
         for (uint32_t cpu = 0; cpu < SCHED_MAX_CPUS; ++cpu) {
@@ -1265,7 +1332,7 @@ static uint32_t scheduler_select_allowed_cpu(const task_t *task,
             selected_load = load;
             selected_distance = distance;
         }
-    } else if (task && task->on_cpu &&
+    } else if (allow_active_balance && task && task->on_cpu &&
                (task->state == TASK_RUNNING ||
                 task->state == TASK_RUNNABLE) &&
                edge_linux_scheduler_policy_is_fair(effective.policy)) {
@@ -1591,6 +1658,7 @@ task_t *scheduler_current_task(void) {
         cpu->current = cpu->idle ? cpu->idle : &g_idle_tasks[0];
         cur = cpu->current;
     }
+    scheduler_repair_idle_marker(cur, "current");
 #if EDGE_SCHED_DEBUG
     printf("[sched] current cpu=%u pid=%d st=%s acpu=%d onrq=%d head=%d tail=%d cur=%d\n",
            cpu->logical_id, sched_pid(cur), sched_state_name(cur->state), cur->assigned_cpu,
@@ -1624,7 +1692,9 @@ void scheduler_set_boot_current(task_t *t) {
 }
 
 void scheduler_task_context_ready(task_t *t) {
-    if (!t || !scheduler_task_ptr_valid(t) || t->is_idle) return;
+    if (!t || !scheduler_task_ptr_valid(t) || scheduler_task_is_idle(t))
+        return;
+    scheduler_repair_idle_marker(t, "context-ready");
     if (!scheduler_task_context_image_valid(t)) {
         scheduler_log_bad_context("context_ready", t);
         return;
@@ -1651,7 +1721,8 @@ void scheduler_task_make_runnable(task_t *t, uint32_t cpu_id) {
         scheduler_log_bad_task_ptr("make_runnable", t);
         return;
     }
-    if (t->is_idle) return;
+    if (scheduler_task_is_idle(t)) return;
+    scheduler_repair_idle_marker(t, "make-runnable");
     /*
      * Object wake queues may observe an event concurrently with task teardown.
      * An exited task is terminal: a stale fd, child, or futex wake must never
@@ -1732,7 +1803,7 @@ void scheduler_task_make_runnable(task_t *t, uint32_t cpu_id) {
         }
 
         source_min_vruntime = scheduler_min_vruntime_locked(old_cpu);
-        cpu_id = scheduler_select_allowed_cpu(t, cpu_id);
+        cpu_id = scheduler_select_allowed_cpu(t, cpu_id, 1);
         if (cpu_id >= SCHED_MAX_CPUS) cpu_id = 0u;
         if (t->on_runqueue && old_cpu_id != cpu_id)
             rq_remove_locked(old_cpu, t);
@@ -1817,7 +1888,7 @@ void scheduler_task_make_runnable(task_t *t, uint32_t cpu_id) {
     scheduler_place_wakeup_locked(cpu, t, woke_from_blocked);
     rq_push_tail_locked(cpu, t);
     notify_remote = cpu_id != scheduler_cpu_id();
-    if (cpu->current && !cpu->current->is_idle) {
+    if (cpu->current && !scheduler_task_is_idle(cpu->current)) {
         uint64_t now = boottime_monotonic_us();
         uint64_t live_runtime = cpu->current->rusage_run_start_us &&
                                 now > cpu->current->rusage_run_start_us ?
@@ -1881,7 +1952,8 @@ void scheduler_task_set_blocked(task_t *t) {
         scheduler_log_bad_task_ptr("set_blocked", t);
         return;
     }
-    if (t->is_idle) return;
+    if (scheduler_task_is_idle(t)) return;
+    scheduler_repair_idle_marker(t, "set-blocked");
     cpu = scheduler_lock_task_owner(t, scheduler_cpu_id(), &cpu_id, &flags);
     if (process_task_group_exit_requested(t, 0)) {
         if (t->state != TASK_ZOMBIE && t->state != TASK_UNUSED)
@@ -1916,7 +1988,8 @@ void scheduler_task_set_stopped(task_t *t) {
         scheduler_log_bad_task_ptr("set_stopped", t);
         return;
     }
-    if (t->is_idle) return;
+    if (scheduler_task_is_idle(t)) return;
+    scheduler_repair_idle_marker(t, "set-stopped");
     cpu = scheduler_lock_task_owner(t, scheduler_cpu_id(), &cpu_id, &flags);
     if (t->state == TASK_ZOMBIE || t->state == TASK_UNUSED) {
         spin_unlock_irqrestore(&cpu->rq_lock, flags);
@@ -1944,7 +2017,8 @@ void scheduler_task_set_zombie(task_t *t) {
         scheduler_log_bad_task_ptr("set_zombie", t);
         return;
     }
-    if (t->is_idle) return;
+    if (scheduler_task_is_idle(t)) return;
+    scheduler_repair_idle_marker(t, "set-zombie");
     cpu = scheduler_lock_task_owner(t, scheduler_cpu_id(), &cpu_id, &flags);
     if (t->state == TASK_ZOMBIE || t->state == TASK_UNUSED) {
         spin_unlock_irqrestore(&cpu->rq_lock, flags);
@@ -1983,7 +2057,8 @@ void scheduler_task_set_unused(task_t *t) {
         scheduler_log_bad_task_ptr("set_unused", t);
         return;
     }
-    if (t->is_idle) return;
+    if (scheduler_task_is_idle(t)) return;
+    scheduler_repair_idle_marker(t, "set-unused");
     cpu = scheduler_lock_task_owner(t, scheduler_cpu_id(), &cpu_id, &flags);
 
     if (t->on_runqueue) rq_remove_locked(cpu, t);
@@ -2001,7 +2076,9 @@ int scheduler_task_reap_ready(task_t *t) {
     uint64_t flags;
     int ready;
 
-    if (!t || !scheduler_task_ptr_valid(t) || t->is_idle) return 0;
+    if (!t || !scheduler_task_ptr_valid(t) || scheduler_task_is_idle(t))
+        return 0;
+    scheduler_repair_idle_marker(t, "reap-ready");
     cpu = scheduler_lock_task_owner(t, 0u, &cpu_id, &flags);
     ready = t->state == TASK_ZOMBIE && !t->on_cpu &&
             !t->switch_pending && !t->on_runqueue;
@@ -2019,7 +2096,8 @@ void scheduler_task_set_running(task_t *t) {
         scheduler_log_bad_task_ptr("set_running", t);
         return;
     }
-    if (t->is_idle) return;
+    if (scheduler_task_is_idle(t)) return;
+    scheduler_repair_idle_marker(t, "set-running");
     cpu = scheduler_lock_task_owner(t, scheduler_cpu_id(), &cpu_id, &flags);
     if (t->state == TASK_ZOMBIE || t->state == TASK_UNUSED) {
         spin_unlock_irqrestore(&cpu->rq_lock, flags);
@@ -2067,6 +2145,21 @@ void scheduler_schedule_common(int tick_mode) {
      */
     if (!tick_mode) fb_user_mmap_pump_deferred();
 
+#if EDGE_SCHED_STALL_DIAGNOSTICS
+    if (scheduler_cpu_id() == 0u) {
+        uint64_t dump_now = boottime_monotonic_us();
+        uint64_t deadline = __atomic_load_n(
+            &g_scheduler_stall_dump_deadline_us, __ATOMIC_RELAXED);
+
+        if (dump_now >= deadline &&
+            __atomic_compare_exchange_n(
+                &g_scheduler_stall_dump_deadline_us, &deadline,
+                deadline + 5000000ull, 0,
+                __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+            process_debug_dump_tasks("scheduler-stall-snapshot");
+    }
+#endif
+
     flags = spin_lock_irqsave(&cpu->rq_lock);
     prev = cpu->current ? cpu->current : cpu->idle;
     if (cpu->retired && cpu->retired != prev) {
@@ -2087,6 +2180,20 @@ void scheduler_schedule_common(int tick_mode) {
                             (uint64_t)(uintptr_t)__builtin_return_address(0));
     __asm__ __volatile__("mov %%rsp, %0" : "=r"(stack_pointer));
     stack_owner = scheduler_task_for_kernel_sp(stack_pointer);
+    scheduler_repair_idle_marker(prev, "schedule-prev");
+    if (prev && !scheduler_task_is_idle(prev) && !stack_owner &&
+        prev->pid == 0) {
+        /*
+         * The architecture bootstrap task executes on the boot stack rather
+         * than its reserved task stack.  Saving a normal scheduler
+         * continuation here would publish boot-stack words as a reusable task
+         * context.  Defer ordinary yields until kmain performs the terminal
+         * bootstrap-to-init handoff with scheduler_abandon_current_and_yield().
+         */
+        prev->need_resched = 0;
+        spin_unlock_irqrestore(&cpu->rq_lock, flags);
+        return;
+    }
     if (stack_owner && stack_owner != prev) {
         printf("[sched][FATAL] current/stack mismatch current=%d:%s owner=%d:%s rsp=0x%x current_top=0x%x owner_top=0x%x\n",
                prev ? prev->pid : -1, prev ? prev->name : "nil",
@@ -2112,14 +2219,14 @@ void scheduler_schedule_common(int tick_mode) {
     now = boottime_monotonic_us();
     account_result = scheduler_account_run_stop(prev, now);
     if ((account_result & EDGE_SCHEDULER_ACCOUNT_OVERRUN) &&
-        prev && !prev->is_idle)
+        prev && !scheduler_task_is_idle(prev))
         (void)process_send_signal_thread(prev->pid, EDGE_LINUX_SIGXCPU);
 
-    if (!prev->is_idle) {
+    if (!scheduler_task_is_idle(prev)) {
         if (tick_mode) {
             if (prev->state == TASK_RUNNING || prev->state == TASK_RUNNABLE) {
                 uint32_t target = scheduler_select_allowed_cpu(
-                    prev, scheduler_cpu_id());
+                    prev, scheduler_cpu_id(), 0);
                 prev->rusage_involuntary_ctxt_switches++;
                 prev->on_cpu = 0;
                 prev->context_ready = 1;
@@ -2162,7 +2269,7 @@ void scheduler_schedule_common(int tick_mode) {
             }
         } else if (prev->state == TASK_RUNNING) {
             uint32_t target = scheduler_select_allowed_cpu(
-                prev, scheduler_cpu_id());
+                prev, scheduler_cpu_id(), 0);
             prev->rusage_voluntary_ctxt_switches++;
             prev->on_cpu = 0;
             prev->context_ready = 1;
@@ -2211,7 +2318,8 @@ void scheduler_schedule_common(int tick_mode) {
         scheduler_log_bad_task_ptr("schedule_next", next);
         next = cpu->idle;
     }
-    if (next && !next->is_idle) {
+    scheduler_repair_idle_marker(next, "schedule-next");
+    if (next && !scheduler_task_is_idle(next)) {
         edge_linux_scheduler_state_t effective;
 
         next->assigned_cpu = (int)scheduler_cpu_id();
@@ -2228,7 +2336,7 @@ void scheduler_schedule_common(int tick_mode) {
         next->on_cpu = 1;
         process_user_mm_cpu_enter(next, scheduler_cpu_id());
     }
-    if (prev && !prev->is_idle && next != prev) {
+    if (prev && !scheduler_task_is_idle(prev) && next != prev) {
         prev->switch_pending = 1;
         cpu->retired = prev;
     }
@@ -2316,17 +2424,20 @@ void scheduler_tick(void) {
     runtime = cur->rusage_run_start_us && now > cur->rusage_run_start_us ?
               now - cur->rusage_run_start_us : 0;
     g_sched_total_ticks++;
-    if (cur->is_idle) g_sched_idle_ticks++;
+    scheduler_repair_idle_marker(cur, "tick-current");
+    if (scheduler_task_is_idle(cur)) g_sched_idle_ticks++;
     /*
      * Interrupt-capable devices request an immediate bottom-half turn.  This
      * periodic fallback also services devices operating without a usable IRQ
      * route and advances protocol timers while all user tasks remain runnable.
      */
-    if (edge_kernel_timer_runs_global_work(cpu->logical_id) &&
-        kernel_deferred_work_tick(EDGE_KERNEL_TIMER_50MS_TICKS)) {
-        deferred_due = 1;
+    if (edge_kernel_timer_runs_global_work(cpu->logical_id)) {
+        if (kernel_display_deadline_poll(now))
+            deferred_due = 1;
+        if (kernel_deferred_work_tick(EDGE_KERNEL_TIMER_50MS_TICKS))
+            deferred_due = 1;
     }
-    if (!cur->is_idle && cur->state == TASK_RUNNING) {
+    if (!scheduler_task_is_idle(cur) && cur->state == TASK_RUNNING) {
         edge_linux_scheduler_state_t effective;
 
         scheduler_effective_state(cur, &effective);
@@ -2345,7 +2456,7 @@ void scheduler_tick(void) {
                 &effective, &cur->scheduler_entity, runtime, now);
         }
     }
-    if (!cur->is_idle && cur->state == TASK_RUNNING &&
+    if (!scheduler_task_is_idle(cur) && cur->state == TASK_RUNNING &&
         (policy_preempts || deferred_due ||
          kernel_deferred_work_service_pending(scheduler_cpu_id()))) {
         cur->need_resched = 1;
@@ -2386,10 +2497,9 @@ void scheduler_kill_current_group_and_yield(int code) {
 void scheduler_abandon_current_and_yield(int code) {
     scheduler_cpu_t *cpu;
     task_t *prev;
+    task_t *failed;
     task_t *next;
     uint64_t flags;
-
-    process_exit_current_group(code);
 
     cpu = scheduler_cpu_local();
     if (!g_scheduler_ready || !cpu) {
@@ -2398,7 +2508,33 @@ void scheduler_abandon_current_and_yield(int code) {
 
     flags = spin_lock_irqsave(&cpu->rq_lock);
     prev = cpu->current ? cpu->current : cpu->idle;
-    if (prev && scheduler_task_ptr_valid(prev) && !prev->is_idle) {
+    scheduler_repair_idle_marker(prev, "abandon-current");
+    if (prev && scheduler_task_ptr_valid(prev) &&
+        !scheduler_task_is_idle(prev)) {
+        /*
+         * Publish terminal stack ownership before process teardown.  Fatal
+         * group exit can detach or auto-reap the current non-leader thread;
+         * without this marker another CPU may recycle its task slot and stack
+         * before this CPU has completed the non-returning switch.
+         */
+        prev->switch_pending = 1;
+    }
+    spin_unlock_irqrestore(&cpu->rq_lock, flags);
+    /*
+     * PID 0 is an architecture bootstrap context, not a Linux process.  Its
+     * frame lives on the boot stack and its inherited state is already owned
+     * by PID 1.  Running ordinary process teardown here can wait on or notify
+     * the child that is meant to replace it.  Other abandon callers still use
+     * the complete fatal process-exit path.
+     */
+    if (!prev || scheduler_task_is_idle(prev) || prev->pid != 0)
+        process_exit_current_group(code);
+
+    flags = spin_lock_irqsave(&cpu->rq_lock);
+    prev = cpu->current ? cpu->current : cpu->idle;
+    scheduler_repair_idle_marker(prev, "abandon-retire");
+    if (prev && scheduler_task_ptr_valid(prev) &&
+        !scheduler_task_is_idle(prev)) {
         if (prev->on_runqueue) rq_remove_locked(cpu, prev);
         scheduler_account_run_stop(prev, boottime_monotonic_us());
         prev->state = TASK_ZOMBIE;
@@ -2411,7 +2547,8 @@ void scheduler_abandon_current_and_yield(int code) {
 
     next = pick_next_runnable_locked(cpu, 0);
     if (!scheduler_task_runnable_ptr(next)) next = cpu->idle;
-    if (next && !next->is_idle) {
+    scheduler_repair_idle_marker(next, "abandon-next");
+    if (next && !scheduler_task_is_idle(next)) {
         edge_linux_scheduler_state_t effective;
 
         next->assigned_cpu = (int)scheduler_cpu_id();
@@ -2428,7 +2565,7 @@ void scheduler_abandon_current_and_yield(int code) {
         next->on_cpu = 1;
         process_user_mm_cpu_enter(next, scheduler_cpu_id());
     }
-    if (prev && !prev->is_idle && next != prev) {
+    if (prev && !scheduler_task_is_idle(prev) && next != prev) {
         prev->switch_pending = 1;
         cpu->retired = prev;
     }
@@ -2452,6 +2589,39 @@ void scheduler_abandon_current_and_yield(int code) {
      * into the dying task and it may be resumed later if the slot is recycled.
      */
     switch_task_context(0, cpu->current);
+
+    /*
+     * A rejected destination context must not remove an entire CPU from the
+     * scheduler.  Quarantine that task and fall back to this CPU's real idle
+     * context.  The next idle scheduling pass clears the retired handoff and
+     * resumes normal work.  Returning here means validation failed before the
+     * architecture jump, so it is safe to repair scheduler metadata in place.
+     */
+    flags = spin_lock_irqsave(&cpu->rq_lock);
+    failed = cpu->current;
+    if (failed && !scheduler_task_is_idle(failed)) {
+        failed->state = TASK_ZOMBIE;
+        failed->need_resched = 0;
+        failed->on_cpu = 0;
+        failed->on_runqueue = 0;
+        failed->context_ready = 0;
+        failed->switch_pending = 0;
+        failed->rq_next = 0;
+        failed->rq_prev = 0;
+    }
+    next = cpu->idle;
+    if (next) {
+        next->assigned_cpu = (int)scheduler_cpu_id();
+        next->state = TASK_RUNNING;
+        next->need_resched = 0;
+        next->on_cpu = 1;
+        next->on_runqueue = 0;
+        next->context_ready = 0;
+        cpu->current = next;
+    }
+    spin_unlock_irqrestore(&cpu->rq_lock, flags & ~(1ull << 9));
+    if (next && next != failed)
+        switch_task_context(0, next);
     for (;;) __asm__ __volatile__("sti; hlt");
 }
 
@@ -2491,7 +2661,8 @@ int kernel_arch_scheduler_cpu_stats(
 
     now = boottime_monotonic_us();
     current = __atomic_load_n(&cpu->current, __ATOMIC_ACQUIRE);
-    if (current && !current->is_idle && current->state == TASK_RUNNING) {
+    if (current && !scheduler_task_is_idle(current) &&
+        current->state == TASK_RUNNING) {
         if (stats->nr_running != UINT32_MAX) ++stats->nr_running;
         if (current->rusage_run_start_us &&
             now > current->rusage_run_start_us)

@@ -5,6 +5,7 @@
 #include "console_backend.h"
 #include "serial_console.h"
 #include "arch/x86_64/gdt.h"
+#include "arch/x86_64/fpu.h"
 #include "arch/x86_64/smp.h"
 #include "arch/x86_64/idt.h"
 #include "keyboard.h"
@@ -480,6 +481,9 @@ void kmain(uint32_t magic, void *mb_info) {
     bootlog_stage("Initializing APIC");
     apic_init();
     x86_smp_discover();
+#ifdef CONFIG_VIRTIO_GPU
+    (void)virtio_gpu_enable_interrupts();
+#endif
 #endif
 #endif
 #ifdef CONFIG_VIRTIO_RNG
@@ -641,6 +645,11 @@ void kmain(uint32_t magic, void *mb_info) {
     /* Do not mutate rootfs before launching init. On LiveCD/ramdisk this can
      * destabilize startup if userspace image is not expecting writes yet. */
 
+    if (x86_fpu_initialize_cpu()) {
+        printf("[fpu] XSAVE enabled features=0x%x size=%u\n",
+               (uint32_t)x86_fpu_enabled_features(),
+               x86_fpu_extended_state_size());
+    }
     process_init();
 
 #ifdef CONFIG_BSD_DRIVER_BRIDGE
@@ -711,6 +720,7 @@ void kmain(uint32_t magic, void *mb_info) {
             0
         };
         int init_pid;
+        uint64_t bootstrap_rflags;
 
         if (kernel_boot_init_path(
                 initramfs_root, g_boot_init_path,
@@ -719,8 +729,20 @@ void kmain(uint32_t magic, void *mb_info) {
             for (;;) __asm__ __volatile__("hlt");
         }
         init_argv[0] = (char *)boot_init_name(g_boot_init_path);
+        printf("[init] spawn begin path=%s\n", g_boot_init_path);
+
+        /*
+         * The bootstrap task executes on the architecture boot stack.  Keep
+         * the final PID 1 creation and handoff non-preemptible so a timer IRQ
+         * cannot publish a continuation that is outside the task-owned stack.
+         * The fresh userspace entry restores its own interrupt state.
+         */
+        __asm__ __volatile__("pushfq; popq %0; cli"
+                             : "=r"(bootstrap_rflags) :: "memory");
+        (void)bootstrap_rflags;
         init_pid = process_spawn_exec_env(
             g_boot_init_path, 1, init_argv, 4, init_envp);
+        printf("[init] spawn result pid=%d\n", init_pid);
         if (init_pid < 0 &&
             !kernel_boot_option_present("init") &&
             !(initramfs_root && kernel_boot_option_present("rdinit"))) {
@@ -734,7 +756,9 @@ void kmain(uint32_t magic, void *mb_info) {
             for (;;) __asm__ __volatile__("hlt");
         }
 
+        printf("[init] flushing boot log\n");
         kernel_boot_log_flush_now();
+        printf("[init] bootstrap handoff\n");
         (void)init_pid;
         /*
          * The bootstrap task executes on the architecture boot stack, not on
@@ -744,8 +768,7 @@ void kmain(uint32_t magic, void *mb_info) {
          * to PID 1; the per-CPU idle tasks provide the persistent kernel idle
          * context.
          */
-        scheduler_task_set_zombie(process_current_task());
-        scheduler_yield();
+        scheduler_abandon_current_and_yield(0);
         for (;;) __asm__ __volatile__("sti; hlt");
     }
 }

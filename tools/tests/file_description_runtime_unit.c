@@ -207,6 +207,8 @@ static void test_basic_shared_state(void) {
     uint32_t handle;
     uint32_t mount_namespace;
     uint32_t mount_generation;
+    uint32_t notify_source;
+    uint32_t notify_generation;
     uint32_t status;
     int32_t async_owner;
     int32_t async_signal;
@@ -301,6 +303,34 @@ static void test_basic_shared_state(void) {
                500u) == 0);
     assert(kernel_file_description_mount_snapshot(
                by_handle, &mount_namespace, &mount_generation) ==
+           -EDGE_LINUX_ENODATA);
+
+    assert(kernel_file_description_notify_snapshot(
+               by_handle, &notify_source, &notify_generation) ==
+           -EDGE_LINUX_ENODATA);
+    assert(kernel_file_description_notify_bind(
+               by_identity,
+               KERNEL_FILE_DESCRIPTION_NOTIFY_CONSOLE_ACTIVE,
+               7u) == 0);
+    assert(kernel_file_description_notify_snapshot(
+               by_handle, &notify_source, &notify_generation) == 0);
+    assert(notify_source ==
+           KERNEL_FILE_DESCRIPTION_NOTIFY_CONSOLE_ACTIVE);
+    assert(notify_generation == 7u);
+    assert(kernel_file_description_notify_acknowledge(
+               by_handle, 2u, 8u) == -EDGE_LINUX_EAGAIN);
+    assert(kernel_file_description_notify_acknowledge(
+               by_handle,
+               KERNEL_FILE_DESCRIPTION_NOTIFY_CONSOLE_ACTIVE,
+               8u) == 0);
+    assert(kernel_file_description_notify_snapshot(
+               by_identity, &notify_source, &notify_generation) == 0);
+    assert(notify_generation == 8u);
+    assert(kernel_file_description_notify_bind(
+               by_handle, KERNEL_FILE_DESCRIPTION_NOTIFY_NONE,
+               9u) == 0);
+    assert(kernel_file_description_notify_snapshot(
+               by_handle, &notify_source, &notify_generation) ==
            -EDGE_LINUX_ENODATA);
 
     assert(kernel_file_description_status_update(

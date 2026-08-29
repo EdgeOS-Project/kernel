@@ -34,6 +34,14 @@ int virtio_gpu_mmio_init(const struct edgeos_arm64_bootinfo *bootinfo);
 int virtio_gpu_enable_interrupts(void);
 int virtio_gpu_present(void);
 int virtio_gpu_has_virgl(void);
+int virtio_gpu_cursor_available(void);
+int virtio_gpu_cursor_update(const uint8_t *pixels, uint32_t width,
+                             uint32_t height, uint32_t pitch,
+                             uint32_t source_x, uint32_t source_y,
+                             uint32_t cursor_width, uint32_t cursor_height,
+                             int32_t x, int32_t y,
+                             uint32_t hotspot_x, uint32_t hotspot_y);
+int virtio_gpu_cursor_hide(void);
 int virtio_gpu_pci_device_name(char *out, uint32_t capacity);
 void virtio_gpu_flush_rect(uint32_t x, uint32_t y, uint32_t width, uint32_t height);
 void virtio_gpu_flush_rects(const display_rect_t *rects, uint32_t count);

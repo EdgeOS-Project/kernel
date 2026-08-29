@@ -24,6 +24,7 @@ EDGE_SHARED_SRCS := \
 	$(SRC)/vfs/path_cache.c \
 	$(SRC)/vfs/readahead.c \
 	$(SRC)/vfs/readahead_state.c \
+	$(SRC)/vfs/read_description.c \
 	$(SRC)/vfs/resolve_superblock.c \
 	$(SRC)/vfs/seek.c \
 	$(SRC)/vfs/truncate.c \
