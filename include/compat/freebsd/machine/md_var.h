@@ -6,7 +6,9 @@
 
 #include <stdbool.h>
 #include <sys/types.h>
+#if defined(__x86_64__)
 #include <machine/specialreg.h>
+#endif
 
 extern unsigned int cpu_power_eax;
 extern unsigned int cpu_power_ecx;

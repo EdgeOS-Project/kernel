@@ -131,9 +131,9 @@ INCLUDE_GROUP_FLAGS = {
     "rtw89": "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/dev/rtw89 "
     "-include rtw89_compat.h",
 }
-INCLUDE_GROUP_X86_FLAGS = {
+INCLUDE_GROUP_X86_CLANG_FLAGS = {
     "acpica": "",
-    "ath": "-Wno-aggressive-loop-optimizations",
+    "ath": "",
     "ath10k": "",
     "ath11k": "",
     "ath12k": "",
@@ -146,12 +146,18 @@ INCLUDE_GROUP_X86_FLAGS = {
     "iwlwifi": "",
     "irdma": "",
     "linuxkpi": "",
-    "linux-typec": "-Wno-discarded-qualifiers",
+    "linux-typec": "-Wno-incompatible-pointer-types-discards-qualifiers",
     "mt76": "",
     "netgraph-bluetooth": "",
-    "ofed": "-Wno-pointer-arith -Wno-zero-length-bounds",
+    "ofed": "-Wno-pointer-arith -Wno-zero-length-array",
     "rtw88": "-Wno-array-bounds",
     "rtw89": "-Wno-array-bounds",
+}
+INCLUDE_GROUP_X86_GCC_FLAGS = {
+    **INCLUDE_GROUP_X86_CLANG_FLAGS,
+    "ath": "-Wno-aggressive-loop-optimizations",
+    "linux-typec": "-Wno-discarded-qualifiers",
+    "ofed": "-Wno-pointer-arith -Wno-zero-length-bounds",
 }
 INCLUDE_GROUP_POST_FLAGS = {
     "acpica": "",
@@ -175,7 +181,7 @@ INCLUDE_GROUP_POST_FLAGS = {
     "rtw88": "",
     "rtw89": "",
 }
-INCLUDE_GROUP_ARM64_FLAGS = {
+INCLUDE_GROUP_ARM64_CLANG_FLAGS = {
     "acpica": "-U_MSC_VER",
     "ath": "",
     "ath10k": "",
@@ -196,6 +202,15 @@ INCLUDE_GROUP_ARM64_FLAGS = {
     "ofed": "-Wno-pointer-arith",
     "rtw88": "",
     "rtw89": "",
+}
+INCLUDE_GROUP_ARM64_GCC_FLAGS = {
+    **INCLUDE_GROUP_ARM64_CLANG_FLAGS,
+    "ath": "-Wno-aggressive-loop-optimizations",
+    "iwlwifi": "-Wno-override-init",
+    "linux-typec": "-Wno-discarded-qualifiers",
+    "ofed": "-Wno-pointer-arith -Wno-zero-length-bounds",
+    "rtw88": "-Wno-array-bounds",
+    "rtw89": "-Wno-array-bounds",
 }
 INCLUDE_GROUP_PREREQUISITES = {
     "acpica": "$(BSD_BRIDGE_ACPICA_INCLUDE_STAMP)",
@@ -294,10 +309,22 @@ def _append_conditionally(
         lines.append("endif")
 
 
-def render_build_plan(manifest_dir: Path, capability_dir: Path) -> str:
+def render_build_plan(
+    manifest_dir: Path, capability_dir: Path, compiler: str = "clang"
+) -> str:
     """Return a Make fragment derived only from validated package metadata."""
 
     catalog = load_catalog(manifest_dir, capability_dir)
+    x86_include_group_flags = (
+        INCLUDE_GROUP_X86_CLANG_FLAGS
+        if compiler == "clang"
+        else INCLUDE_GROUP_X86_GCC_FLAGS
+    )
+    arm64_include_group_flags = (
+        INCLUDE_GROUP_ARM64_CLANG_FLAGS
+        if compiler == "clang"
+        else INCLUDE_GROUP_ARM64_GCC_FLAGS
+    )
     manifests = catalog["manifests"]
     providers = {manifest["provider"] for manifest in manifests}
     unsupported_providers = sorted(providers - {"freebsd", "netbsd"})
@@ -587,9 +614,9 @@ def render_build_plan(manifest_dir: Path, capability_dir: Path) -> str:
             ):
                 flags.append(INCLUDE_GROUP_FLAGS[group])
                 if architecture == "x86_64":
-                    flags.append(INCLUDE_GROUP_X86_FLAGS[group])
+                    flags.append(x86_include_group_flags[group])
                 else:
-                    flags.append(INCLUDE_GROUP_ARM64_FLAGS[group])
+                    flags.append(arm64_include_group_flags[group])
             compile_mappings.extend(
                 f"{stem}={flag}" for flag in dict.fromkeys(flags)
             )
@@ -631,7 +658,7 @@ def render_build_plan(manifest_dir: Path, capability_dir: Path) -> str:
                         INCLUDE_GROUP_FLAGS[group]
                         for group in include_groups
                     ) + " " + " ".join(
-                        INCLUDE_GROUP_X86_FLAGS[group]
+                        x86_include_group_flags[group]
                         for group in include_groups
                     )
                 )
@@ -666,7 +693,7 @@ def render_build_plan(manifest_dir: Path, capability_dir: Path) -> str:
                             INCLUDE_GROUP_FLAGS[group]
                             for group in include_groups
                         ] + [
-                            INCLUDE_GROUP_ARM64_FLAGS[group]
+                            arm64_include_group_flags[group]
                             for group in include_groups
                         ]
                     )
@@ -798,14 +825,14 @@ def render_build_plan(manifest_dir: Path, capability_dir: Path) -> str:
         lines.extend(_assignment(
             include_flags_name,
             [INCLUDE_GROUP_FLAGS[group] for group in include_groups] + [
-                INCLUDE_GROUP_X86_FLAGS[group]
+                x86_include_group_flags[group]
                 for group in include_groups
             ],
         ))
         lines.extend(_assignment(
             arm64_include_flags_name,
             [INCLUDE_GROUP_FLAGS[group] for group in include_groups] + [
-                INCLUDE_GROUP_ARM64_FLAGS[group]
+                arm64_include_group_flags[group]
                 for group in include_groups
             ],
         ))
@@ -1037,6 +1064,7 @@ def main() -> int:
         default=Path("config/bsd_drivers/capabilities"),
     )
     parser.add_argument("--repo-root", type=Path)
+    parser.add_argument("--compiler", choices=("clang", "gcc"), default="clang")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--check", type=Path)
     arguments = parser.parse_args()
@@ -1054,6 +1082,7 @@ def main() -> int:
             (repo_root / arguments.capability_dir).resolve()
             if not arguments.capability_dir.is_absolute()
             else arguments.capability_dir.resolve(),
+            arguments.compiler,
         )
         if arguments.check is not None:
             check_path = arguments.check.resolve()

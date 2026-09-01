@@ -3,8 +3,8 @@ ENTRY(efi_main)
 
 SECTIONS
 {
-    . = 0;
-    ImageBase = .;
+    ImageBase = DEFINED(EDGEOS_IMAGE_BASE) ? EDGEOS_IMAGE_BASE : 0;
+    . = ImageBase + 0x1000;
     _kernel_start = .;
 
     .text : ALIGN(4096)

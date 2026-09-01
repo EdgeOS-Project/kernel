@@ -201,6 +201,23 @@ static unsigned long text_length(const char *text) {
     return length;
 }
 
+void *memset(void *destination, int value, unsigned long length) {
+    uint8_t *bytes = destination;
+
+    for (unsigned long index = 0; index < length; ++index)
+        bytes[index] = (uint8_t)value;
+    return destination;
+}
+
+void *memcpy(void *destination, const void *source, unsigned long length) {
+    uint8_t *output = destination;
+    const uint8_t *input = source;
+
+    for (unsigned long index = 0; index < length; ++index)
+        output[index] = input[index];
+    return destination;
+}
+
 static void print(const char *text) {
     (void)syscall3(SYS_WRITE, 1, (long)text, (long)text_length(text));
 }

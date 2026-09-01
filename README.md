@@ -96,8 +96,16 @@ validation rules.
 
 ## Build
 
-The build requires GNU Make, Python 3, Clang/LLVM, LLD and NASM. The cross
-toolchains used by the Makefile must also be available in `PATH`.
+The build requires GNU Make, Python 3 and NASM. LLVM is the default toolchain
+for both x86_64 and AArch64 and uses Clang, LLD, llvm-ar, llvm-nm and
+llvm-objcopy. The GNU toolchain is also supported for both architectures and
+uses `x86_64-elf-*` and `aarch64-elf-*` cross tools. NASM remains responsible
+only for the existing x86_64 files written in NASM syntax.
+
+Run `make toolchain-check` to validate the selected toolchain or `make
+toolchain-info` to show the resolved commands. `make llvm-toolchain-check` and
+`make gnu-toolchain-check` validate the two installations explicitly. Tool
+prefixes and individual commands can be overridden on the Make command line.
 
 ### x86_64
 
@@ -108,6 +116,12 @@ make -j"$(getconf _NPROCESSORS_ONLN)" kernel
 
 Output: `out/edgeos.bin`
 
+GNU toolchain equivalent:
+
+```sh
+make -j"$(getconf _NPROCESSORS_ONLN)" TOOLCHAIN=gnu kernel
+```
+
 ### AArch64 UEFI
 
 ```sh
@@ -116,6 +130,15 @@ make -j"$(getconf _NPROCESSORS_ONLN)" arm64-kernel
 ```
 
 Output: `out/arm64/BOOTAA64.EFI`
+
+GNU toolchain equivalent:
+
+```sh
+make -j"$(getconf _NPROCESSORS_ONLN)" TOOLCHAIN=gnu arm64-kernel
+```
+
+Use separate `OBJ` and `OUT` directories when switching toolchains in the same
+checkout so objects built by different compilers cannot be mixed.
 
 Configuration menus:
 

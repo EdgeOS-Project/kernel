@@ -180,7 +180,7 @@ def main() -> int:
     parser.add_argument(
         "--manifest-dir",
         type=Path,
-        default=Path("config/bsd_drivers/manifests"),
+        action="append",
     )
     parser.add_argument("--repo-root", type=Path)
     parser.add_argument("--output", type=Path)
@@ -192,16 +192,22 @@ def main() -> int:
             if arguments.repo_root
             else locate_repo_root(Path.cwd())
         )
-        manifest_paths = (
-            [path.resolve() for path in arguments.manifest]
-            if arguments.manifest
-            else discover_json_files(
-                (repo_root / arguments.manifest_dir).resolve()
-                if not arguments.manifest_dir.is_absolute()
-                else arguments.manifest_dir.resolve(),
-                "manifest",
+        if arguments.manifest:
+            manifest_paths = [path.resolve() for path in arguments.manifest]
+        else:
+            manifest_dirs = arguments.manifest_dir or [
+                Path("config/bsd_drivers/manifests")
+            ]
+            manifest_paths = sorted(
+                path
+                for manifest_dir in manifest_dirs
+                for path in discover_json_files(
+                    (repo_root / manifest_dir).resolve()
+                    if not manifest_dir.is_absolute()
+                    else manifest_dir.resolve(),
+                    "manifest",
+                )
             )
-        )
         generated = generate_catalog_interfaces(
             manifest_paths, arguments.output, repo_root
         )

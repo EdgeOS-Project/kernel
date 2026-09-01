@@ -1,9 +1,76 @@
 ASM = nasm
-HOST_CC ?= cc
-X86_64_CROSS_PREFIX ?= $(if $(shell command -v x86_64-elf-gcc 2>/dev/null),x86_64-elf-,)
-CC  = $(if $(X86_64_CROSS_PREFIX),$(X86_64_CROSS_PREFIX)gcc,gcc)
-LD  = $(if $(X86_64_CROSS_PREFIX),$(X86_64_CROSS_PREFIX)ld,ld)
-NM  = $(if $(X86_64_CROSS_PREFIX),$(X86_64_CROSS_PREFIX)nm,nm)
+TOOLCHAIN ?= llvm
+LLVM_BINDIR ?= $(if $(wildcard /opt/homebrew/opt/llvm/bin/clang),/opt/homebrew/opt/llvm/bin/,)
+CLANG ?= $(LLVM_BINDIR)clang
+LLVM_LD ?= ld.lld
+LLVM_AR ?= $(LLVM_BINDIR)llvm-ar
+LLVM_NM ?= $(LLVM_BINDIR)llvm-nm
+LLVM_OBJCOPY ?= $(LLVM_BINDIR)llvm-objcopy
+LLVM_OBJDUMP ?= $(LLVM_BINDIR)llvm-objdump
+LLVM_RANLIB ?= $(LLVM_BINDIR)llvm-ranlib
+LLVM_STRIP ?= $(LLVM_BINDIR)llvm-strip
+LLVM_LINK ?= $(LLVM_BINDIR)llvm-link
+X86_64_GNU_PREFIX ?= x86_64-elf-
+AARCH64_GNU_PREFIX ?= aarch64-elf-
+
+ifeq ($(TOOLCHAIN),llvm)
+HOST_CC ?= $(CLANG)
+CC = $(CLANG) --target=x86_64-unknown-elf
+X86_64_LINK_CC ?= $(CLANG) --target=x86_64-unknown-linux-none
+LD = $(LLVM_LD)
+AR = $(LLVM_AR)
+NM = $(LLVM_NM)
+OBJCOPY = $(LLVM_OBJCOPY)
+OBJDUMP = $(LLVM_OBJDUMP)
+RANLIB = $(LLVM_RANLIB)
+STRIP = $(LLVM_STRIP)
+X86_32_CC ?= $(CLANG) --target=i386-unknown-elf
+TARGET_LINK_FLAGS ?= -fuse-ld=lld
+AARCH64_CC ?= $(CLANG) --target=aarch64-unknown-elf
+AARCH64_LD ?= $(LLVM_LD)
+AARCH64_OBJCOPY ?= $(LLVM_OBJCOPY)
+ARM64_EFI_CC ?= $(CLANG)
+VDSO_ARM64_CC ?= $(CLANG) --target=aarch64-linux-gnu
+VDSO_X86_64_CC ?= $(CLANG) --target=x86_64-linux-gnu
+VDSO_LINK_FLAGS ?= -fuse-ld=lld
+TOOLCHAIN_COMPILER := clang
+ARM64_COFF_TARGET_FLAGS := -target aarch64-unknown-windows
+ARM64_FREEBSD_TARGET_FLAGS := -target aarch64-unknown-freebsd
+ARM64_IR_COMPILE_FLAGS := -emit-llvm
+BSD_BRIDGE_ARM64_ABI_FLAGS = \
+	-DEDGEOS_BSD_COFF_TARGET=1 \
+	-include $(INC)/compat/freebsd/edgeos/arm64_coff_varargs.h
+ARM64_ACPICA_COMPAT_DEFINES := -D__GNUC__=4 -D__LP64__=1
+else ifeq ($(TOOLCHAIN),gnu)
+HOST_CC ?= $(if $(shell command -v gcc-16 2>/dev/null),gcc-16,gcc)
+CC = $(X86_64_GNU_PREFIX)gcc
+X86_64_LINK_CC ?= $(CC)
+LD = $(X86_64_GNU_PREFIX)ld
+AR = $(X86_64_GNU_PREFIX)ar
+NM = $(X86_64_GNU_PREFIX)nm
+OBJCOPY = $(X86_64_GNU_PREFIX)objcopy
+OBJDUMP = $(X86_64_GNU_PREFIX)objdump
+RANLIB = $(X86_64_GNU_PREFIX)ranlib
+STRIP = $(X86_64_GNU_PREFIX)strip
+X86_32_CC ?= $(CC) -m32
+TARGET_LINK_FLAGS ?=
+AARCH64_CC ?= $(AARCH64_GNU_PREFIX)gcc
+AARCH64_LD ?= $(AARCH64_GNU_PREFIX)ld
+AARCH64_OBJCOPY ?= $(AARCH64_GNU_PREFIX)objcopy
+ARM64_EFI_CC ?= $(AARCH64_CC)
+VDSO_ARM64_CC ?= $(AARCH64_CC)
+VDSO_X86_64_CC ?= $(CC)
+VDSO_LINK_FLAGS ?=
+TOOLCHAIN_COMPILER := gcc
+ARM64_COFF_TARGET_FLAGS :=
+ARM64_FREEBSD_TARGET_FLAGS :=
+ARM64_IR_COMPILE_FLAGS :=
+BSD_BRIDGE_ARM64_ABI_FLAGS =
+ARM64_ACPICA_COMPAT_DEFINES :=
+else
+$(error unsupported TOOLCHAIN '$(TOOLCHAIN)'; expected llvm or gnu)
+endif
+
 GRUB = grub-mkrescue
 X86_64_UEFI_CODE ?= $(firstword \
 	$(wildcard /opt/homebrew/share/qemu/edk2-x86_64-code.fd) \
@@ -11,18 +78,43 @@ X86_64_UEFI_CODE ?= $(firstword \
 	$(wildcard /usr/share/qemu/edk2-x86_64-code.fd) \
 	$(wildcard /usr/share/OVMF/OVMF_CODE.fd) \
 	$(wildcard /usr/share/edk2/x64/OVMF_CODE.fd))
-AARCH64_CC ?= aarch64-elf-gcc
-AARCH64_LD ?= aarch64-elf-ld
-AARCH64_OBJCOPY ?= aarch64-elf-objcopy
-ARM64_EFI_CC ?= /opt/homebrew/opt/llvm/bin/clang
-VDSO_CC ?= /opt/homebrew/opt/llvm/bin/clang
-LLVM_NM ?= /opt/homebrew/opt/llvm/bin/llvm-nm
-LLVM_LINK ?= /opt/homebrew/opt/llvm/bin/llvm-link
 QEMU_AARCH64 ?= qemu-system-aarch64
 LWIP_DIR ?= third_party/lwip
 
 .DEFAULT_GOAL := kernel
 export PATH := /opt/homebrew/opt/llvm/bin:/opt/homebrew/opt/e2fsprogs/sbin:/opt/homebrew/opt/e2fsprogs/bin:/opt/homebrew/bin:/usr/sbin:/sbin:$(PATH)
+
+.PHONY: toolchain-check llvm-toolchain-check gnu-toolchain-check toolchain-info
+
+toolchain-info:
+	@printf 'TOOLCHAIN=%s\n' "$(TOOLCHAIN)"
+	@printf 'HOST_CC=%s\n' "$(HOST_CC)"
+	@printf 'CC=%s\n' "$(CC)"
+	@printf 'X86_64_LINK_CC=%s\n' "$(X86_64_LINK_CC)"
+	@printf 'LD=%s\n' "$(LD)"
+	@printf 'AARCH64_CC=%s\n' "$(AARCH64_CC)"
+	@printf 'AARCH64_LD=%s\n' "$(AARCH64_LD)"
+	@printf 'OBJCOPY=%s\n' "$(OBJCOPY)"
+	@printf 'NM=%s\n' "$(NM)"
+toolchain-check:
+	@for tool in "$(firstword $(CC))" "$(firstword $(LD))" \
+		"$(firstword $(AR))" "$(firstword $(NM))" \
+		"$(firstword $(OBJCOPY))" "$(firstword $(OBJDUMP))" \
+		"$(firstword $(RANLIB))" "$(firstword $(STRIP))" \
+		"$(firstword $(AARCH64_CC))" "$(firstword $(AARCH64_LD))" \
+		"$(firstword $(AARCH64_OBJCOPY))"; do \
+		command -v "$$tool" >/dev/null || { \
+			echo "[toolchain] missing tool: $$tool"; exit 1; }; \
+	done
+	@$(CC) --version | head -n 1 | grep -qi "$(TOOLCHAIN_COMPILER)" || { \
+		echo "[toolchain] CC does not identify as $(TOOLCHAIN_COMPILER)"; exit 1; }
+	@printf '[toolchain] %s toolchain ready\n' "$(TOOLCHAIN)"
+
+llvm-toolchain-check:
+	@$(MAKE) --no-print-directory TOOLCHAIN=llvm toolchain-check
+
+gnu-toolchain-check:
+	@$(MAKE) --no-print-directory TOOLCHAIN=gnu toolchain-check
 
 DOT_CONFIG ?= .config
 ARCH ?= x86
@@ -366,13 +458,13 @@ edge-kvm-arm64-acceptance-payload: \
 		tools/tests/edge_kvm_arm64_qemu_init.ld \
 		tools/tests/edge_kvm_arm64_qemu_init.c
 	@mkdir -p $(OUT)/tests
-	@$(AARCH64_CC) -nostdlib -static -ffreestanding -fno-builtin \
+	@$(AARCH64_CC) $(TARGET_LINK_FLAGS) -nostdlib -static -ffreestanding -fno-builtin \
 		-fno-stack-protector -mgeneral-regs-only \
 		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,--strip-all \
 		-Wl,-T,tools/tests/edge_kvm_arm64_guest.ld \
 		tools/tests/edge_kvm_arm64_guest.S \
 		-o $(EDGE_KVM_ARM64_GUEST_ELF)
-	@$(AARCH64_CC) -nostdlib -static -ffreestanding -fno-builtin \
+	@$(AARCH64_CC) $(TARGET_LINK_FLAGS) -nostdlib -static -ffreestanding -fno-builtin \
 		-fno-stack-protector -mgeneral-regs-only \
 		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,--strip-all \
 		-Wl,-T,tools/tests/edge_kvm_arm64_qemu_init.ld \
@@ -388,13 +480,13 @@ edge-kvm-arm64-migration-payload: \
 		tools/tests/edge_kvm_arm64_migration_init.c \
 		tools/tests/edge_kvm_arm64_qemu_init.ld
 	@mkdir -p $(OUT)/tests
-	@$(AARCH64_CC) -nostdlib -static -ffreestanding -fno-builtin \
+	@$(AARCH64_CC) $(TARGET_LINK_FLAGS) -nostdlib -static -ffreestanding -fno-builtin \
 		-fno-stack-protector -mgeneral-regs-only \
 		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,--strip-all \
 		-Wl,-T,tools/tests/edge_kvm_arm64_guest.ld \
 		tools/tests/edge_kvm_arm64_migration_guest.S \
 		-o $(EDGE_KVM_ARM64_MIGRATION_GUEST)
-	@$(AARCH64_CC) -nostdlib -static -ffreestanding -fno-builtin \
+	@$(AARCH64_CC) $(TARGET_LINK_FLAGS) -nostdlib -static -ffreestanding -fno-builtin \
 		-fno-stack-protector -mgeneral-regs-only \
 		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,--strip-all \
 		-Wl,-T,tools/tests/edge_kvm_arm64_qemu_init.ld \
@@ -409,13 +501,13 @@ edge-kvm-arm64-linux-benchmark-payload: \
 		tools/tests/edge_kvm_arm64_linux_qemu_init.c \
 		tools/tests/edge_kvm_arm64_qemu_init.ld
 	@mkdir -p $(OUT)/tests
-	@$(AARCH64_CC) -nostdlib -static -O2 -ffreestanding -fno-builtin \
+	@$(AARCH64_CC) $(TARGET_LINK_FLAGS) -nostdlib -static -O2 -ffreestanding -fno-builtin \
 		-fno-stack-protector -mgeneral-regs-only \
 		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,--strip-all \
 		-Wl,-T,tools/tests/edge_kvm_arm64_qemu_init.ld \
 		tools/tests/edge_kvm_arm64_linux_benchmark_init.c \
 		-o $(EDGE_KVM_ARM64_LINUX_INIT)
-	@$(AARCH64_CC) -nostdlib -static -O2 -ffreestanding -fno-builtin \
+	@$(AARCH64_CC) $(TARGET_LINK_FLAGS) -nostdlib -static -O2 -ffreestanding -fno-builtin \
 		-fno-stack-protector -mgeneral-regs-only \
 		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,--strip-all \
 		-Wl,-T,tools/tests/edge_kvm_arm64_qemu_init.ld \
@@ -427,7 +519,7 @@ edge-kvm-arm64-linux-benchmark-payload: \
 
 edge-kvm-x86-uapi-probe: tools/tests/edge_kvm_uapi_probe.c
 	@mkdir -p $(OUT)/tests
-	@x86_64-elf-gcc -nostdlib -static -O2 -ffreestanding -fno-builtin \
+	@$(X86_64_LINK_CC) $(TARGET_LINK_FLAGS) -nostdlib -static -O2 -ffreestanding -fno-builtin \
 		-fno-stack-protector -mno-red-zone -mgeneral-regs-only \
 		-Wall -Wextra -Werror -Wl,--build-id=none \
 		tools/tests/edge_kvm_uapi_probe.c \
@@ -439,7 +531,7 @@ edge-kvm-x86-uapi-probe: tools/tests/edge_kvm_uapi_probe.c
 edge-virtualization-peripheral-probe: \
 		tools/tests/edge_virtualization_peripheral_probe.c
 	@mkdir -p $(OUT)/tests
-	@x86_64-elf-gcc -nostdlib -static -O2 -ffreestanding -fno-builtin \
+	@$(X86_64_LINK_CC) $(TARGET_LINK_FLAGS) -nostdlib -static -O2 -ffreestanding -fno-builtin \
 		-fno-stack-protector -mno-red-zone -mgeneral-regs-only \
 		-Wall -Wextra -Werror -Wl,--build-id=none \
 		tools/tests/edge_virtualization_peripheral_probe.c \
@@ -454,13 +546,13 @@ edge-kvm-x86-migration-payload: \
 		tools/tests/edge_kvm_x86_migration_init.c \
 		tools/tests/edge_kvm_x86_migration_init.ld
 	@mkdir -p $(OUT)/tests
-	@x86_64-elf-as --32 tools/tests/edge_kvm_x86_migration_guest.S \
+	@$(X86_32_CC) -c tools/tests/edge_kvm_x86_migration_guest.S \
 		-o $(EDGE_KVM_X86_MIGRATION_GUEST_OBJ)
-	@x86_64-elf-ld -m elf_i386 --build-id=none \
+	@$(LD) -m elf_i386 --build-id=none \
 		-T tools/tests/edge_kvm_x86_migration_guest.ld \
 		$(EDGE_KVM_X86_MIGRATION_GUEST_OBJ) \
 		-o $(EDGE_KVM_X86_MIGRATION_GUEST)
-	@x86_64-elf-gcc -nostdlib -static -ffreestanding -fno-builtin \
+	@$(X86_64_LINK_CC) $(TARGET_LINK_FLAGS) -nostdlib -static -ffreestanding -fno-builtin \
 		-fno-stack-protector -mno-red-zone \
 		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,--strip-all \
 		-Wl,-T,tools/tests/edge_kvm_x86_migration_init.ld \
@@ -475,13 +567,13 @@ edge-kvm-x86-linux-benchmark-payload: \
 		tools/tests/edge_kvm_x86_linux_qemu_init.c \
 		tools/tests/freestanding_linux.ld
 	@mkdir -p $(OUT)/tests
-	@x86_64-elf-gcc -nostdlib -static -O2 -ffreestanding -fno-builtin \
+	@$(X86_64_LINK_CC) $(TARGET_LINK_FLAGS) -nostdlib -static -O2 -ffreestanding -fno-builtin \
 		-fno-stack-protector -mno-red-zone -mgeneral-regs-only \
 		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,--strip-all \
 		-Wl,-T,tools/tests/freestanding_linux.ld \
 		tools/tests/edge_kvm_x86_linux_benchmark_init.c \
 		-o $(EDGE_KVM_X86_LINUX_INIT)
-	@x86_64-elf-gcc -nostdlib -static -O2 -ffreestanding -fno-builtin \
+	@$(X86_64_LINK_CC) $(TARGET_LINK_FLAGS) -nostdlib -static -O2 -ffreestanding -fno-builtin \
 		-fno-stack-protector -mno-red-zone -mgeneral-regs-only \
 		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,--strip-all \
 		-Wl,-T,tools/tests/freestanding_linux.ld \
@@ -816,6 +908,9 @@ BSD_DRIVER_CAPABILITY_DIR := config/bsd_drivers/capabilities
 BSD_DRIVER_MANIFESTS := $(sort $(wildcard $(BSD_DRIVER_MANIFEST_DIR)/*.json))
 BSD_VMM_MANIFEST_DIR := config/bsd_vmm/manifests
 BSD_VMM_MANIFESTS := $(sort $(wildcard $(BSD_VMM_MANIFEST_DIR)/*.json))
+BSD_BRIDGE_INTERFACE_MANIFEST_ARGS := \
+	--manifest-dir $(BSD_DRIVER_MANIFEST_DIR) \
+	--manifest-dir $(BSD_VMM_MANIFEST_DIR)
 BSD_VMM_MANIFEST_DEFINITIONS := \
 	VMM_KEEP_STATS \
 	EDGEOS_BHYVE_HOST_IRQ_REENTER
@@ -853,7 +948,7 @@ BSD_BRIDGE_ARM64_ACPICA_OS_BCS := \
 	$(OBJ)/arm64-bsd/acpica/acpica_runtime.bc
 BSD_BRIDGE_ARM64_ACPICA_OS_OBJS := \
 	$(BSD_BRIDGE_ARM64_ACPICA_OS_BCS:.bc=.obj)
-BSD_BRIDGE_BUILD_PLAN := $(OUT)/bsd_bridge/packages.mk
+BSD_BRIDGE_BUILD_PLAN := $(OUT)/bsd_bridge/packages-$(TOOLCHAIN).mk
 BSD_BRIDGE_PACKAGE_REGISTRY := \
 	$(BSD_BRIDGE_GENERATED)/bsd_package_registry.c
 ifneq ($(MAKECMDGOALS),clean)
@@ -867,9 +962,6 @@ BSD_BRIDGE_SOURCE_WARNINGS := \
 	-Wno-empty-body -Wno-return-type -Wno-implicit-fallthrough \
 	-Wno-unused-but-set-variable -Wno-unused-but-set-parameter \
 	-Wno-address-of-packed-member -Wno-cast-function-type -Wno-enum-compare
-BSD_BRIDGE_GCC_SOURCE_WARNINGS := \
-	-Wno-old-style-declaration -Wno-maybe-uninitialized \
-	-Wno-unknown-pragmas
 BSD_BRIDGE_CLANG_SOURCE_WARNINGS := \
 	-Wno-microsoft-enum-forward-reference \
 	-Wno-macro-redefined \
@@ -877,14 +969,30 @@ BSD_BRIDGE_CLANG_SOURCE_WARNINGS := \
 	-Wno-null-pointer-subtraction \
 	-Wno-bitfield-constant-conversion \
 	-Wno-unused-const-variable \
-	-Wno-cast-function-type-mismatch
-BSD_BRIDGE_VTNET_GCC_WARNINGS := -Wno-error=maybe-uninitialized
-BSD_BRIDGE_E1000_GCC_WARNINGS := -Wno-error=maybe-uninitialized
-BSD_BRIDGE_VMXNET3_GCC_WARNINGS := -Wno-error=maybe-uninitialized
-BSD_BRIDGE_IGC_GCC_WARNINGS := -Wno-error=maybe-uninitialized
-BSD_BRIDGE_QSORT_GCC_WARNINGS := -Wno-error=sign-compare
+	-Wno-cast-function-type-mismatch \
+	-Wno-typedef-redefinition
+BSD_BRIDGE_CLANG_UNINITIALIZED_WARNINGS := \
+	-Wno-error=uninitialized -Wno-error=sometimes-uninitialized
 BSD_BRIDGE_QSORT_CLANG_WARNINGS := \
 	-Wno-error=null-pointer-subtraction -Wno-error=sign-compare
+BSD_BRIDGE_GCC_SOURCE_WARNINGS := \
+	-Wno-old-style-declaration -Wno-maybe-uninitialized \
+	-Wno-unknown-pragmas -Wno-array-bounds
+BSD_BRIDGE_GCC_UNINITIALIZED_WARNINGS := -Wno-error=maybe-uninitialized
+BSD_BRIDGE_QSORT_GCC_WARNINGS := -Wno-error=sign-compare
+ifeq ($(TOOLCHAIN),llvm)
+BSD_BRIDGE_COMPILER_SOURCE_WARNINGS := $(BSD_BRIDGE_CLANG_SOURCE_WARNINGS)
+BSD_BRIDGE_UNINITIALIZED_WARNINGS := $(BSD_BRIDGE_CLANG_UNINITIALIZED_WARNINGS)
+BSD_BRIDGE_QSORT_WARNINGS := $(BSD_BRIDGE_QSORT_CLANG_WARNINGS)
+BSD_BRIDGE_MPR_USER_WARNINGS := -Wno-array-bounds
+BSD_BRIDGE_USIE_WARNINGS := -Wno-packed
+else
+BSD_BRIDGE_COMPILER_SOURCE_WARNINGS := $(BSD_BRIDGE_GCC_SOURCE_WARNINGS)
+BSD_BRIDGE_UNINITIALIZED_WARNINGS := $(BSD_BRIDGE_GCC_UNINITIALIZED_WARNINGS)
+BSD_BRIDGE_QSORT_WARNINGS := $(BSD_BRIDGE_QSORT_GCC_WARNINGS)
+BSD_BRIDGE_MPR_USER_WARNINGS := -Wno-aggressive-loop-optimizations
+BSD_BRIDGE_USIE_WARNINGS := -Wno-packed-not-aligned
+endif
 BSD_BRIDGE_COFF_SOURCE_WARNINGS := \
 	$(BSD_BRIDGE_SOURCE_WARNINGS) -Wno-unused-function
 BSD_BRIDGE_RUNTIME_SRCS := \
@@ -1095,7 +1203,10 @@ BSD_BRIDGE_ARM64_DEPS := \
 	$(BSD_BRIDGE_ARM64_ACPICA_OS_BCS:.bc=.d)
 .SECONDARY: $(BSD_BRIDGE_ARM64_RUNTIME_BCS) \
 	$(BSD_BRIDGE_ARM64_GENERATED_BCS) $(BSD_BRIDGE_ARM64_UPSTREAM_BCS) \
-	$(BSD_BRIDGE_ARM64_ACPICA_CORE_BCS) $(BSD_BRIDGE_ARM64_ACPICA_OS_BCS)
+	$(BSD_BRIDGE_ARM64_ACPICA_CORE_BCS) $(BSD_BRIDGE_ARM64_ACPICA_OS_BCS) \
+	$(addprefix $(BSD_BRIDGE_GENERATED)/,$(BSD_BRIDGE_X86_64_GENERATED_SRCS)) \
+	$(addprefix $(BSD_BRIDGE_GENERATED)/,$(BSD_BRIDGE_ARM64_GENERATED_SRCS)) \
+	$(BSD_BRIDGE_GENERATED)/vgic_if.c
 .PRECIOUS: $(BSD_BRIDGE_ARM64_RUNTIME_BCS) \
 	$(BSD_BRIDGE_ARM64_GENERATED_BCS) $(BSD_BRIDGE_ARM64_UPSTREAM_BCS) \
 	$(BSD_BRIDGE_ARM64_ACPICA_CORE_BCS) $(BSD_BRIDGE_ARM64_ACPICA_OS_BCS)
@@ -1163,8 +1274,6 @@ BSD_VMM_BHYVE_X86_OBJS := \
 BSD_VMM_BHYVE_ARM64_BCS := \
 	$(OBJ)/arm64-bsd/compat/freebsd/kern/edge_kvm_bhyve_arm64.bc \
 	$(OBJ)/arm64-bsd/compat/freebsd/arch/arm64/vmm_host.bc \
-	$(OBJ)/arm64-bsd/compat/freebsd/kern/vm_page.bc \
-	$(OBJ)/arm64-bsd/compat/freebsd/kern/vmm_vmspace.bc \
 	$(OBJ)/arm64-bsd/generated/vgic_if.bc \
 	$(OBJ)/arm64-bsd/upstream/dev/vmm/vmm_mem.bc \
 	$(OBJ)/arm64-bsd/upstream/dev/vmm/vmm_stat.bc \
@@ -1194,7 +1303,7 @@ $(BSD_VMM_BHYVE_ARM64_BCS): \
 		BSD_BRIDGE_SOURCE_CPPFLAGS += $(BSD_VMM_MANIFEST_CPPFLAGS)
 $(BSD_VMM_BHYVE_X86_OBJS) $(BSD_VMM_BHYVE_ARM64_BCS): \
 		$(BSD_VMM_MANIFESTS)
-# The bridge is a FreeBSD kernel target even when GCC itself runs on Linux.
+# The bridge is a FreeBSD kernel target even when Clang runs on another host.
 # Host OS macros select incompatible ACPICA and libc-facing header branches.
 BSD_BRIDGE_X86_COMPILE_FLAGS = \
 	$(BSD_BRIDGE_SOURCE_INCLUDE_FLAGS) \
@@ -1206,7 +1315,7 @@ BSD_BRIDGE_X86_COMPILE_FLAGS = \
 	-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/libfdt \
 	-I$(SRC)/lib/zlib/upstream $(CFLAGS) \
 	-Werror $(BSD_BRIDGE_SOURCE_WARNINGS) \
-	$(BSD_BRIDGE_GCC_SOURCE_WARNINGS) \
+	$(BSD_BRIDGE_COMPILER_SOURCE_WARNINGS) \
 	-D_KERNEL -DEDGEOS_BSD_BRIDGE $(BSD_BRIDGE_SOURCE_CPPFLAGS) \
 	$(BSD_BRIDGE_SOURCE_POST_INCLUDE_FLAGS)
 BSD_BRIDGE_ARM64_COMMON_SOURCE_FLAGS = \
@@ -1217,8 +1326,8 @@ BSD_BRIDGE_ARM64_COMMON_SOURCE_FLAGS = \
 	-ffunction-sections -fdata-sections \
 	-MMD -MP \
 	-Wall -Wextra -Werror $(BSD_BRIDGE_COFF_SOURCE_WARNINGS) \
-	$(BSD_BRIDGE_CLANG_SOURCE_WARNINGS) \
-	-D_KERNEL -DEDGEOS_BSD_BRIDGE -DEDGEOS_BSD_COFF_TARGET=1 \
+	$(BSD_BRIDGE_COMPILER_SOURCE_WARNINGS) \
+	-D_KERNEL -DEDGEOS_BSD_BRIDGE $(BSD_BRIDGE_ARM64_ABI_FLAGS) \
 	-DEDGEOS_BSD_ARM64=1 \
 	$(BSD_BRIDGE_SOURCE_CPPFLAGS) \
 	-I$(INC)/compat/freebsd -I$(BSD_BRIDGE_GENERATED) \
@@ -1233,12 +1342,14 @@ BSD_BRIDGE_ARM64_COMMON_SOURCE_FLAGS = \
 # Production FreeBSD sources are compiled with the FreeBSD LP64/AAPCS
 # frontend and then lowered to the COFF object format required by UEFI.
 BSD_BRIDGE_ARM64_COMPILE_FLAGS = \
-	-target aarch64-unknown-windows -D__STDC__=1 \
+	$(ARM64_COFF_TARGET_FLAGS) -D__STDC__=1 \
 	$(BSD_BRIDGE_ARM64_COMMON_SOURCE_FLAGS) \
 	$(BSD_BRIDGE_ARM64_TARGET_FLAGS)
+BSD_BRIDGE_ARM64_ASM_COMPILE_FLAGS = $(subst \
+	-include $(INC)/compat/freebsd/edgeos/arm64_coff_varargs.h,,\
+	$(BSD_BRIDGE_ARM64_COMPILE_FLAGS))
 BSD_BRIDGE_ARM64_FRONTEND_FLAGS = \
-	-target aarch64-unknown-freebsd \
-	-include $(INC)/compat/freebsd/edgeos/arm64_coff_varargs.h \
+	$(ARM64_FREEBSD_TARGET_FLAGS) \
 	$(BSD_BRIDGE_ARM64_COMMON_SOURCE_FLAGS) \
 	$(BSD_BRIDGE_ARM64_TARGET_FLAGS)
 
@@ -1271,7 +1382,7 @@ BSD_BRIDGE_ARM64_MODULE_COMPILE_FLAGS = \
 	$(BSD_BRIDGE_ARM64_FRONTEND_FLAGS) \
 	-DEDGEOS_BSD_LOADABLE_MODULE=1
 BSD_BRIDGE_ARM64_MODULE_FINAL_FLAGS = \
-	-target aarch64-unknown-windows -O2 -ffreestanding -fshort-wchar \
+	$(ARM64_COFF_TARGET_FLAGS) -O2 -ffreestanding -fshort-wchar \
 	-fno-builtin -fno-stack-protector -fno-strict-aliasing \
 	-mgeneral-regs-only -ffunction-sections -fdata-sections \
 	-Wno-override-module
@@ -1337,9 +1448,11 @@ $(BSD_BRIDGE_BUILD_PLAN): $(BSD_DRIVER_MANIFESTS) \
 	@python3 tools/bsd_bridge/generate_build_plan.py \
 		--manifest-dir $(BSD_DRIVER_MANIFEST_DIR) \
 		--capability-dir $(BSD_DRIVER_CAPABILITY_DIR) \
+		--compiler $(TOOLCHAIN_COMPILER) \
 		--output $@
 
 $(BSD_BRIDGE_GENERATED_STAMP): $(BSD_DRIVER_MANIFESTS) \
+		$(BSD_VMM_MANIFESTS) \
 		$(BSD_DRIVER_CAPABILITY_REGISTRIES) $(BSD_BRIDGE_BUILD_PLAN) \
 		tools/bsd_bridge/generate_interfaces.py \
 		tools/bsd_bridge/generate_miidevs.py \
@@ -1348,7 +1461,7 @@ $(BSD_BRIDGE_GENERATED_STAMP): $(BSD_DRIVER_MANIFESTS) \
 		bsd-bridge-source-gate
 	@mkdir -p $(BSD_BRIDGE_GENERATED)
 	@python3 tools/bsd_bridge/generate_interfaces.py \
-		--manifest-dir $(BSD_DRIVER_MANIFEST_DIR) \
+		$(BSD_BRIDGE_INTERFACE_MANIFEST_ARGS) \
 		--output $(BSD_BRIDGE_GENERATED)
 	@python3 tools/bsd_bridge/generate_package_registry.py \
 		--manifest-dir $(BSD_DRIVER_MANIFEST_DIR) \
@@ -1360,7 +1473,7 @@ $(BSD_BRIDGE_GENERATED)/%.c $(BSD_BRIDGE_GENERATED)/%.h: \
 		| $(BSD_BRIDGE_GENERATED_STAMP)
 	@if [ ! -f "$@" ]; then \
 		python3 tools/bsd_bridge/generate_interfaces.py \
-			--manifest-dir $(BSD_DRIVER_MANIFEST_DIR) \
+			$(BSD_BRIDGE_INTERFACE_MANIFEST_ARGS) \
 			--output $(BSD_BRIDGE_GENERATED); \
 	fi
 
@@ -1416,8 +1529,8 @@ $(OBJ)/arm64-bsd/acpica/%.bc: \
 	@mkdir -p $(dir $@)
 	$(ARM64_EFI_CC) -I$(BSD_BRIDGE_ACPICA_INCLUDE) \
 		$(BSD_BRIDGE_ARM64_FRONTEND_FLAGS) -U_MSC_VER \
-		-D__GNUC__=4 -D__LP64__=1 -D__FreeBSD__=14 \
-		-DEDGEOS_BSD_FULL_ACPICA -emit-llvm -c $< -o $@
+		$(ARM64_ACPICA_COMPAT_DEFINES) -D__FreeBSD__=14 \
+		-DEDGEOS_BSD_FULL_ACPICA $(ARM64_IR_COMPILE_FLAGS) -c $< -o $@
 
 $(OBJ)/arm64-bsd/acpica/acpica_osl.bc: \
 		$(SRC)/compat/freebsd/kern/acpica_osl.c \
@@ -1427,8 +1540,8 @@ $(OBJ)/arm64-bsd/acpica/acpica_osl.bc: \
 	@mkdir -p $(dir $@)
 	$(ARM64_EFI_CC) -I$(BSD_BRIDGE_ACPICA_INCLUDE) \
 		$(BSD_BRIDGE_ARM64_FRONTEND_FLAGS) -U_MSC_VER \
-		-D__GNUC__=4 -D__LP64__=1 -D__FreeBSD__=14 \
-		-DEDGEOS_BSD_FULL_ACPICA -emit-llvm -c $< -o $@
+		$(ARM64_ACPICA_COMPAT_DEFINES) -D__FreeBSD__=14 \
+		-DEDGEOS_BSD_FULL_ACPICA $(ARM64_IR_COMPILE_FLAGS) -c $< -o $@
 
 $(OBJ)/arm64-bsd/acpica/acpica_runtime.bc: \
 		$(SRC)/compat/freebsd/kern/acpica_runtime.c \
@@ -1438,8 +1551,8 @@ $(OBJ)/arm64-bsd/acpica/acpica_runtime.bc: \
 	@mkdir -p $(dir $@)
 	$(ARM64_EFI_CC) -I$(BSD_BRIDGE_ACPICA_INCLUDE) \
 		$(BSD_BRIDGE_ARM64_FRONTEND_FLAGS) -U_MSC_VER \
-		-D__GNUC__=4 -D__LP64__=1 -D__FreeBSD__=14 \
-		-DEDGEOS_BSD_FULL_ACPICA -emit-llvm -c $< -o $@
+		$(ARM64_ACPICA_COMPAT_DEFINES) -D__FreeBSD__=14 \
+		-DEDGEOS_BSD_FULL_ACPICA $(ARM64_IR_COMPILE_FLAGS) -c $< -o $@
 
 $(OBJ)/compat/freebsd/%.o: $(SRC)/compat/freebsd/%.c \
 		$(BSD_BRIDGE_GENERATED_STAMP) $(AUTOCONF_H) | \
@@ -1577,7 +1690,7 @@ $(BSD_VMM_ARM64_NVHE_EXCEPTION_O): \
 		$(BSD_VMM_HYP_ASSYM_H) $(ARM64_AUTOCONF_H) | \
 		bsd-bridge-source-gate
 	@mkdir -p $(dir $@)
-	$(ARM64_EFI_CC) -target aarch64-unknown-freebsd \
+	$(ARM64_EFI_CC) $(ARM64_FREEBSD_TARGET_FLAGS) \
 		-D_KERNEL -DEDGEOS_BSD_BRIDGE -DEDGEOS_BSD_ARM64=1 \
 		$(BSD_BRIDGE_SOURCE_CPPFLAGS) \
 		-I$(INC)/compat/freebsd -I$(BSD_BRIDGE_GENERATED) \
@@ -1626,7 +1739,7 @@ $(OBJ)/arm64-bsd/upstream/arm64/vmm/vmm_hyp_el2.obj: \
 		$(BSD_VMM_ARM64_HYP_BLOB_BIN) $(ARM64_AUTOCONF_H) | \
 		bsd-bridge-source-gate
 	@mkdir -p $(dir $@)
-	$(ARM64_EFI_CC) $(BSD_BRIDGE_ARM64_COMPILE_FLAGS) \
+	$(ARM64_EFI_CC) $(BSD_BRIDGE_ARM64_ASM_COMPILE_FLAGS) \
 		-Wa,-I,$(dir $(BSD_VMM_ARM64_HYP_BLOB_BIN)) \
 		-DLOCORE -x assembler-with-cpp -c $< -o $@
 
@@ -1675,27 +1788,27 @@ bsd-vmm-bhyve-arm64-compile: $(BSD_VMM_BHYVE_ARM64_BCS) \
 	@echo "bsd-vmm-bhyve-arm64-compile: PASS"
 
 $(OBJ)/compat/freebsd/upstream/dev/virtio/network/if_vtnet.o: \
-		BSD_BRIDGE_X86_COMPILE_FLAGS += $(BSD_BRIDGE_VTNET_GCC_WARNINGS)
+		BSD_BRIDGE_X86_COMPILE_FLAGS += $(BSD_BRIDGE_UNINITIALIZED_WARNINGS)
 $(OBJ)/compat/freebsd/upstream/dev/e1000/e1000_phy.o: \
-		BSD_BRIDGE_X86_COMPILE_FLAGS += $(BSD_BRIDGE_E1000_GCC_WARNINGS)
+		BSD_BRIDGE_X86_COMPILE_FLAGS += $(BSD_BRIDGE_UNINITIALIZED_WARNINGS)
 $(OBJ)/compat/freebsd/upstream/dev/e1000/if_em.o: \
 		BSD_BRIDGE_X86_COMPILE_FLAGS += \
-		$(BSD_BRIDGE_E1000_GCC_WARNINGS) -Wno-unused-but-set-variable
+		$(BSD_BRIDGE_UNINITIALIZED_WARNINGS) -Wno-unused-but-set-variable
 $(OBJ)/compat/freebsd/upstream/dev/vmware/vmxnet3/if_vmx.o: \
-		BSD_BRIDGE_X86_COMPILE_FLAGS += $(BSD_BRIDGE_VMXNET3_GCC_WARNINGS)
+		BSD_BRIDGE_X86_COMPILE_FLAGS += $(BSD_BRIDGE_UNINITIALIZED_WARNINGS)
 $(OBJ)/compat/freebsd/upstream/dev/igc/if_igc.o: \
 		BSD_BRIDGE_X86_COMPILE_FLAGS += \
-		$(BSD_BRIDGE_IGC_GCC_WARNINGS) -Wno-unused-but-set-variable
+		$(BSD_BRIDGE_UNINITIALIZED_WARNINGS) -Wno-unused-but-set-variable
 $(OBJ)/compat/freebsd/upstream/dev/mpr/mpr.o: \
 		BSD_BRIDGE_X86_COMPILE_FLAGS += -Wno-array-bounds
 $(OBJ)/compat/freebsd/upstream/dev/mpr/mpr_sas.o: \
 		BSD_BRIDGE_X86_COMPILE_FLAGS += -Wno-array-bounds
 $(OBJ)/compat/freebsd/upstream/dev/mpr/mpr_user.o: \
-		BSD_BRIDGE_X86_COMPILE_FLAGS += -Wno-aggressive-loop-optimizations
+		BSD_BRIDGE_X86_COMPILE_FLAGS += $(BSD_BRIDGE_MPR_USER_WARNINGS)
 $(OBJ)/compat/freebsd/upstream/dev/mps/mps_sas.o: \
 		BSD_BRIDGE_X86_COMPILE_FLAGS += -Wno-array-bounds
 $(OBJ)/compat/freebsd/upstream/libkern/qsort.o: \
-		BSD_BRIDGE_X86_COMPILE_FLAGS += $(BSD_BRIDGE_QSORT_GCC_WARNINGS)
+		BSD_BRIDGE_X86_COMPILE_FLAGS += $(BSD_BRIDGE_QSORT_WARNINGS)
 $(OBJ)/compat/freebsd/upstream/net/iflib.o: \
 		BSD_BRIDGE_X86_COMPILE_FLAGS += -Wno-unused-but-set-variable
 $(OBJ)/compat/freebsd/upstream/dev/oce/oce_sysctl.o: \
@@ -1720,7 +1833,9 @@ $(OBJ)/compat/freebsd/upstream/dev/hwt/%.o: \
 $(OBJ)/compat/freebsd/upstream/dev/oce/oce_mbox.o: \
 		BSD_BRIDGE_X86_COMPILE_FLAGS += -Wno-array-bounds
 $(OBJ)/compat/freebsd/upstream/dev/usb/net/if_usie.o: \
-		BSD_BRIDGE_X86_COMPILE_FLAGS += -Wno-packed-not-aligned
+		BSD_BRIDGE_X86_COMPILE_FLAGS += $(BSD_BRIDGE_USIE_WARNINGS)
+$(OBJ)/arm64-bsd/upstream/dev/usb/net/if_usie.bc: \
+		BSD_BRIDGE_ARM64_FRONTEND_FLAGS += $(BSD_BRIDGE_USIE_WARNINGS)
 $(OBJ)/compat/freebsd/upstream/dev/bxe/bxe_elink.o: \
 		BSD_BRIDGE_X86_COMPILE_FLAGS += -Wno-cast-function-type
 $(OBJ)/compat/freebsd/upstream/isa/isa_common.o: \
@@ -1734,7 +1849,7 @@ $(OBJ)/compat/freebsd/upstream/dev/liquidio/%.o: \
 		BSD_BRIDGE_SOURCE_CPPFLAGS += -DSMP
 
 $(OBJ)/arm64-bsd/upstream/libkern/qsort.obj: \
-		BSD_BRIDGE_ARM64_TARGET_FLAGS += $(BSD_BRIDGE_QSORT_CLANG_WARNINGS)
+		BSD_BRIDGE_ARM64_TARGET_FLAGS += $(BSD_BRIDGE_QSORT_WARNINGS)
 $(OBJ)/arm64-bsd/upstream/dev/iavf/iavf_osdep.obj: \
 		BSD_BRIDGE_ARM64_TARGET_FLAGS += -Dinline=
 $(OBJ)/arm64-bsd/upstream/dev/ixl/ixl_pf_main.obj: \
@@ -1758,6 +1873,8 @@ $(OBJ)/arm64-bsd/upstream/dev/bxe/bxe_elink.obj: \
 		-Wno-cast-function-type-mismatch
 $(OBJ)/arm64-bsd/upstream/dev/bwi/%.obj: \
 		BSD_BRIDGE_ARM64_TARGET_FLAGS += -Wno-shift-count-overflow
+$(OBJ)/arm64-bsd/upstream/contrib/dev/rtw88/%.bc: \
+		BSD_BRIDGE_ARM64_FRONTEND_FLAGS += -Wno-array-bounds
 $(OBJ)/arm64-bsd/upstream/contrib/ena-com/%.obj: \
 		BSD_BRIDGE_ARM64_TARGET_FLAGS += \
 		-Wno-void-pointer-to-int-cast -Wno-int-to-void-pointer-cast
@@ -1819,33 +1936,37 @@ $(OBJ)/arm64-bsd/%.bc: $(SRC)/%.c Makefile \
 		$(ARM64_AUTOCONF_H) | bsd-bridge-source-gate
 	@mkdir -p $(dir $@)
 	$(ARM64_EFI_CC) $(BSD_BRIDGE_ARM64_FRONTEND_FLAGS) \
-		-emit-llvm -c $< -o $@
+		$(ARM64_IR_COMPILE_FLAGS) -c $< -o $@
 
 $(OBJ)/arm64-bsd/generated/%.bc: $(BSD_BRIDGE_GENERATED)/%.c Makefile \
 		$(BSD_BRIDGE_GENERATED_STAMP) $(ARM64_AUTOCONF_H) | \
 		bsd-bridge-source-gate
 	@mkdir -p $(dir $@)
 	$(ARM64_EFI_CC) $(BSD_BRIDGE_ARM64_FRONTEND_FLAGS) \
-		-emit-llvm -c $< -o $@
+		$(ARM64_IR_COMPILE_FLAGS) -c $< -o $@
 
 $(OBJ)/arm64-bsd/upstream/%.bc: $(BSD_BRIDGE_UPSTREAM_SYS)/%.c Makefile \
 		$(BSD_BRIDGE_GENERATED_STAMP) $(ARM64_AUTOCONF_H) | \
 		bsd-bridge-source-gate
 	@mkdir -p $(dir $@)
 	$(ARM64_EFI_CC) $(BSD_BRIDGE_ARM64_FRONTEND_FLAGS) \
-		-emit-llvm -c $< -o $@
+		$(ARM64_IR_COMPILE_FLAGS) -c $< -o $@
 
 $(OBJ)/arm64-bsd/%.obj: $(OBJ)/arm64-bsd/%.bc
 	@mkdir -p $(dir $@)
+ifeq ($(TOOLCHAIN),llvm)
 	$(ARM64_EFI_CC) $(BSD_BRIDGE_ARM64_MODULE_FINAL_FLAGS) \
 		-c $< -o $@
+else
+	$(AARCH64_OBJCOPY) $< $@
+endif
 
 $(OBJ)/arm64-bsd/upstream/%.obj: \
 		$(BSD_BRIDGE_UPSTREAM_SYS)/%.S Makefile \
 		$(BSD_BRIDGE_GENERATED_STAMP) $(ARM64_AUTOCONF_H) | \
 		bsd-bridge-source-gate
 	@mkdir -p $(dir $@)
-	$(ARM64_EFI_CC) $(BSD_BRIDGE_ARM64_COMPILE_FLAGS) \
+	$(ARM64_EFI_CC) $(BSD_BRIDGE_ARM64_ASM_COMPILE_FLAGS) \
 		-DLOCORE -x assembler-with-cpp -c $< -o $@
 
 .PHONY: display-backend-unit drm-runtime-unit virtgpu-runtime-unit virtio-gpu-damage-unit virtio-gpu-sync-unit pty-runtime-unit tty-session-unit
@@ -1887,7 +2008,7 @@ bsd-bridge-arm64-abi-layout-unit: \
 		tools/tests/bsd_bridge_arm64_layout_unit.c arm64-syncconfig
 	@mkdir -p $(OUT)/tests
 	@$(ARM64_EFI_CC) $(BSD_BRIDGE_ARM64_FRONTEND_FLAGS) \
-		-emit-llvm -c $< \
+		$(ARM64_IR_COMPILE_FLAGS) -c $< \
 		-o $(OUT)/tests/bsd_bridge_arm64_layout.bc
 	@$(ARM64_EFI_CC) $(BSD_BRIDGE_ARM64_MODULE_FINAL_FLAGS) \
 		-c $(OUT)/tests/bsd_bridge_arm64_layout.bc \
@@ -2191,14 +2312,14 @@ bsd-bridge-arm64-fdt-fallback-compile: \
 		$(SRC)/drivers/virtio/virtio_net_mmio.c
 	@mkdir -p $(OUT)/tests
 	@$(ARM64_EFI_CC) -I$(INC) -I$(SRC) \
-		-target aarch64-unknown-windows -std=gnu11 -O2 \
+		$(ARM64_COFF_TARGET_FLAGS) -std=gnu11 -O2 \
 		-ffreestanding -fshort-wchar -fno-stack-protector -fno-builtin \
 		-mgeneral-regs-only -Wall -Wextra -Werror \
 		-DCONFIG_BSD_DRIVER_BRIDGE=1 \
 		-c $(SRC)/arch/arm64/kernel/interrupt.c \
 		-o $(OUT)/tests/arm64_interrupt_fdt_fallback.obj
 	@$(ARM64_EFI_CC) -I$(INC) -I$(SRC) \
-		-target aarch64-unknown-windows -std=gnu11 -O2 \
+		$(ARM64_COFF_TARGET_FLAGS) -std=gnu11 -O2 \
 		-ffreestanding -fshort-wchar -fno-stack-protector -fno-builtin \
 		-mgeneral-regs-only -Wall -Wextra -Werror \
 		-DCONFIG_BSD_DRIVER_BRIDGE=1 \
@@ -2601,7 +2722,7 @@ bsd-bridge-handoff-unit: tools/tests/bsd_bridge_handoff_unit.c $(SRC)/compat/fre
 		-fno-stack-protector -Wall -Wextra -Werror \
 		-c $(SRC)/compat/freebsd/kern/handoff.c \
 		-o $(OUT)/tests/bsd_bridge_handoff_arm64.o
-	@$(ARM64_EFI_CC) -target aarch64-unknown-windows \
+	@$(ARM64_EFI_CC) $(ARM64_COFF_TARGET_FLAGS) \
 		-I$(INC) -I$(SRC) -DCONFIG_NET=1 \
 		-std=gnu11 -O2 -ffreestanding -fno-builtin \
 		-fno-stack-protector -Wall -Wextra -Werror \
@@ -2759,7 +2880,7 @@ bsd-bridge-sbuf-sysctl-unit:
 	done
 	@set -e; for source in $(BSD_BRIDGE_SUPPORT_SRCS); do \
 		name=$$(basename "$$source" .c); \
-		$(ARM64_EFI_CC) -target aarch64-unknown-windows \
+		$(ARM64_EFI_CC) $(ARM64_COFF_TARGET_FLAGS) \
 			-D__STDC__=1 -std=gnu11 -O2 -ffreestanding \
 			-fno-builtin -fno-stack-protector -fno-strict-aliasing \
 			-mgeneral-regs-only -Wall -Wextra -Werror \
@@ -2824,7 +2945,7 @@ bsd-bridge-virtio-core-compile: bsd-bridge-sbuf-sysctl-unit
 			esac; \
 		done; \
 		$(ARM64_EFI_CC) $$extra_flags \
-			-target aarch64-unknown-windows \
+			$(ARM64_COFF_TARGET_FLAGS) \
 			-D__STDC__=1 -std=gnu11 -O2 -ffreestanding \
 			-fno-builtin -fno-stack-protector -fno-strict-aliasing \
 			-mgeneral-regs-only -Wall -Wextra -Werror \
@@ -2865,7 +2986,7 @@ bsd-bridge-virtio-pci-compile: bsd-bridge-virtio-core-compile
 	done
 	@set -e; for source in $(BSD_BRIDGE_PCI_SRCS); do \
 		name=$$(basename "$$source" .c); \
-		$(ARM64_EFI_CC) -target aarch64-unknown-windows \
+		$(ARM64_EFI_CC) $(ARM64_COFF_TARGET_FLAGS) \
 			-D__STDC__=1 -std=gnu11 -O2 -ffreestanding \
 			-fno-builtin -fno-stack-protector -fno-strict-aliasing \
 			-mgeneral-regs-only -Wall -Wextra -Werror \
@@ -2921,7 +3042,7 @@ bsd-bridge-virtio-random-compile: bsd-bridge-virtio-transport-compile
 		-include $(AUTOCONF_H) \
 		-c $(BSD_BRIDGE_RANDOM_SRCS) \
 		-o $(OUT)/tests/freebsd_virtio_random_arm64.o
-	@$(ARM64_EFI_CC) -target aarch64-unknown-windows \
+	@$(ARM64_EFI_CC) $(ARM64_COFF_TARGET_FLAGS) \
 		-D__STDC__=1 -std=gnu11 -O2 -ffreestanding -fno-builtin \
 		-fno-stack-protector -fno-strict-aliasing \
 		-mgeneral-regs-only -Wall -Wextra -Werror \
@@ -3038,14 +3159,14 @@ bsd-bridge-virtio-block-compile: bsd-bridge-block-unit bsd-bridge-virtio-core-co
 
 bsd-bridge-virtio-network-compile: bsd-bridge-network-unit bsd-bridge-virtio-core-compile
 	@$(CC) $(BSD_BRIDGE_X86_COMPILE_FLAGS) \
-		$(BSD_BRIDGE_VTNET_GCC_WARNINGS) \
+		$(BSD_BRIDGE_UNINITIALIZED_WARNINGS) \
 		-c $(BSD_BRIDGE_NETWORK_SRCS) \
 		-o $(OUT)/tests/freebsd_virtio_network_x86_64.o
 	@$(AARCH64_CC) -std=gnu11 -O2 -ffreestanding -fno-builtin \
 		-fno-stack-protector -fno-strict-aliasing \
 		-mgeneral-regs-only -Wall -Wextra -Werror \
 		$(BSD_BRIDGE_SOURCE_WARNINGS) \
-		$(BSD_BRIDGE_VTNET_GCC_WARNINGS) \
+		$(BSD_BRIDGE_UNINITIALIZED_WARNINGS) \
 		-D_KERNEL -DEDGEOS_BSD_BRIDGE $(BSD_BRIDGE_SOURCE_CPPFLAGS) \
 		-I$(INC)/compat/freebsd -I$(BSD_BRIDGE_GENERATED) \
 		-I$(BSD_BRIDGE_UPSTREAM_SYS) -I$(INC) -I$(SRC) \
@@ -3095,7 +3216,7 @@ bsd-bridge-base-headers-unit: tools/tests/bsd_bridge_base_headers_unit.c include
 		-I$(BSD_BRIDGE_UPSTREAM_SYS) \
 		-c tools/tests/bsd_bridge_base_headers_unit.c \
 		-o $(OUT)/tests/bsd_bridge_base_headers_arm64.o
-	@$(ARM64_EFI_CC) -target aarch64-unknown-windows \
+	@$(ARM64_EFI_CC) $(ARM64_COFF_TARGET_FLAGS) \
 		-D__STDC__=1 -std=c11 -Wall -Wextra -Werror \
 		-Wno-unused-function -ffreestanding -D_KERNEL \
 		-I$(INC)/compat/freebsd \
@@ -3141,7 +3262,7 @@ bsd-bridge-atomic-unit: tools/tests/bsd_bridge_atomic_unit.c include/compat/free
 		-I$(BSD_BRIDGE_UPSTREAM_SYS) \
 		-c tools/tests/bsd_bridge_atomic_unit.c \
 		-o $(OUT)/tests/bsd_bridge_atomic_arm64.o
-	@$(ARM64_EFI_CC) -target aarch64-unknown-windows \
+	@$(ARM64_EFI_CC) $(ARM64_COFF_TARGET_FLAGS) \
 		-D__STDC__=1 -std=c11 -Wall -Wextra -Werror \
 		-Wno-unused-function -ffreestanding \
 		-D_KERNEL -DBSD_BRIDGE_TARGET_COMPILE \
@@ -3592,7 +3713,7 @@ bsd-bridge-platform-unit: bsd-bridge-newbus-unit bsd-driver-interface-check tool
 		-include $(AUTOCONF_H) \
 		-c $(SRC)/compat/freebsd/drivers/virtio_mmio.c \
 		-o $(OUT)/tests/bsd_bridge_virtio_mmio_frontend_arm64.o
-	@$(ARM64_EFI_CC) -target aarch64-unknown-windows \
+	@$(ARM64_EFI_CC) $(ARM64_COFF_TARGET_FLAGS) \
 		-D__STDC__=1 -std=gnu11 -O2 -ffreestanding -fno-builtin \
 		-fno-stack-protector -fno-strict-aliasing \
 		-mgeneral-regs-only -Wall -Wextra -Werror \
@@ -3776,7 +3897,7 @@ bsd-bridge-package-unit: tools/tests/bsd_bridge_package_unit.c \
 		-fno-stack-protector -Wall -Wextra -Werror \
 		-c $(SRC)/compat/freebsd/kern/package.c \
 		-o $(OUT)/tests/bsd_bridge_package_arm64.o
-	@$(ARM64_EFI_CC) -target aarch64-unknown-windows \
+	@$(ARM64_EFI_CC) $(ARM64_COFF_TARGET_FLAGS) \
 		-I$(INC) -I$(SRC) -std=gnu11 -O2 -ffreestanding -fno-builtin \
 		-fno-stack-protector -Wall -Wextra -Werror \
 		-c $(SRC)/compat/freebsd/kern/package.c \
@@ -3794,7 +3915,7 @@ bsd-bridge-linker-unit: tools/tests/bsd_linker_module_fixture.c \
 		-Wall -Wextra -Werror \
 		-c tools/tests/bsd_linker_module_fixture.c \
 		-o $(OUT)/tests/bsd_linker_fixture_x86_64.o
-	@$(ARM64_EFI_CC) -target aarch64-unknown-windows \
+	@$(ARM64_EFI_CC) $(ARM64_COFF_TARGET_FLAGS) \
 		-std=gnu11 -O2 -ffreestanding -fno-builtin \
 		-fno-stack-protector -ffunction-sections -fdata-sections \
 		-Wall -Wextra -Werror \
@@ -3901,18 +4022,18 @@ bsd-bridge-module-unit: bsd-bridge-virtio-core-compile bsd-bridge-package-unit t
 		-fno-stack-protector -Wall -Wextra -Werror \
 		-c $(SRC)/compat/freebsd/kern/module.c \
 		-o $(OUT)/tests/bsd_bridge_module_arm64.o
-	@$(ARM64_EFI_CC) -target aarch64-unknown-windows \
+	@$(ARM64_EFI_CC) $(ARM64_COFF_TARGET_FLAGS) \
 		-I$(INC) -I$(SRC) -std=gnu11 -O2 -ffreestanding -fno-builtin \
 		-fno-stack-protector -Wall -Wextra -Werror \
 		-c $(SRC)/compat/freebsd/kern/module.c \
 		-o $(OUT)/tests/bsd_bridge_module_arm64_coff.o
-	@$(ARM64_EFI_CC) -target aarch64-unknown-freebsd \
+	@$(ARM64_EFI_CC) $(ARM64_FREEBSD_TARGET_FLAGS) \
 		-DEDGEOS_BSD_COFF_TARGET=1 \
 		-I$(INC) -I$(SRC) -std=gnu11 -O2 -ffreestanding -fno-builtin \
 		-fno-stack-protector -Wall -Wextra -Werror \
 		-c $(SRC)/compat/freebsd/kern/module.c \
 		-o $(OUT)/tests/bsd_bridge_module_arm64_coff_pipeline.o
-	@$(ARM64_EFI_CC) -target aarch64-unknown-windows \
+	@$(ARM64_EFI_CC) $(ARM64_COFF_TARGET_FLAGS) \
 		-I$(INC) -I$(SRC) -std=gnu11 -O2 -ffreestanding -fno-builtin \
 		-fno-stack-protector -Wall -Wextra -Werror \
 		-c tools/tests/bsd_bridge_module_target_compile.c \
@@ -4199,7 +4320,7 @@ bsd-bridge-systm-unit: tools/tests/bsd_bridge_systm_unit.c $(SRC)/compat/freebsd
 		-fno-stack-protector -Wall -Wextra -Werror \
 		-c $(SRC)/compat/freebsd/kern/systm.c \
 		-o $(OUT)/tests/bsd_bridge_systm_arm64.o
-	@$(ARM64_EFI_CC) -target aarch64-unknown-windows \
+	@$(ARM64_EFI_CC) $(ARM64_COFF_TARGET_FLAGS) \
 		-D__STDC__=1 -std=gnu11 -O2 -ffreestanding \
 		-fno-builtin -fno-stack-protector -fno-strict-aliasing \
 		-mgeneral-regs-only -Wall -Wextra -Werror \
@@ -4214,7 +4335,7 @@ bsd-bridge-libkern-sort-unit: tools/tests/bsd_bridge_libkern_sort_unit.c \
 		include/compat/freebsd/sys/libkern.h
 	@mkdir -p $(OUT)/tests
 	@$(HOST_CC) -std=gnu11 -Wall -Wextra -Werror \
-		$(BSD_BRIDGE_QSORT_CLANG_WARNINGS) \
+		$(BSD_BRIDGE_QSORT_WARNINGS) \
 		-D_KERNEL -DEDGEOS_BSD_BRIDGE \
 		-I$(INC)/compat/freebsd -I$(BSD_BRIDGE_UPSTREAM_SYS) \
 		-I$(INC) -I$(SRC) \
@@ -4753,7 +4874,7 @@ bsd-bridge-acpica-runtime-compile: \
 		name=$$(basename "$$source" .c); \
 		$(ARM64_EFI_CC) -I$(BSD_BRIDGE_ACPICA_INCLUDE) \
 			$(BSD_BRIDGE_ARM64_COMPILE_FLAGS) -U_MSC_VER \
-			-D__GNUC__=4 -D__LP64__=1 -D__FreeBSD__=14 \
+			$(ARM64_ACPICA_COMPAT_DEFINES) -D__FreeBSD__=14 \
 			-DEDGEOS_BSD_FULL_ACPICA \
 			-c "$$source" \
 			-o "$(OUT)/tests/acpica/arm64/$${name}.obj"; \
@@ -4770,13 +4891,13 @@ bsd-bridge-acpica-runtime-compile: \
 		-o $(OUT)/tests/acpica/x86_64/acpica_runtime.o
 	@$(ARM64_EFI_CC) -I$(BSD_BRIDGE_ACPICA_INCLUDE) \
 		$(BSD_BRIDGE_ARM64_COMPILE_FLAGS) -U_MSC_VER \
-		-D__GNUC__=4 -D__LP64__=1 -D__FreeBSD__=14 \
+		$(ARM64_ACPICA_COMPAT_DEFINES) -D__FreeBSD__=14 \
 		-DEDGEOS_BSD_FULL_ACPICA \
 		-c $(SRC)/compat/freebsd/kern/acpica_osl.c \
 		-o $(OUT)/tests/acpica/arm64/acpica_osl.obj
 	@$(ARM64_EFI_CC) -I$(BSD_BRIDGE_ACPICA_INCLUDE) \
 		$(BSD_BRIDGE_ARM64_COMPILE_FLAGS) -U_MSC_VER \
-		-D__GNUC__=4 -D__LP64__=1 -D__FreeBSD__=14 \
+		$(ARM64_ACPICA_COMPAT_DEFINES) -D__FreeBSD__=14 \
 		-DEDGEOS_BSD_FULL_ACPICA \
 		-c $(SRC)/compat/freebsd/kern/acpica_runtime.c \
 		-o $(OUT)/tests/acpica/arm64/acpica_runtime.obj
@@ -4796,7 +4917,7 @@ bsd-bridge-acpica-runtime-compile: \
 
 all: kernel
 
-kernel: prepare $(TARGET)
+kernel: toolchain-check prepare $(TARGET)
 
 prepare: syncconfig syscall-inventory-check cross-arch-unity-check
 
@@ -5953,14 +6074,25 @@ ARM64_UEFI_LINK_OBJS := $(ARM64_EDGE_OBJS) $(ARM64_EDGE_PREBUILT_OBJS)
 ARM64_EDGE_DEPS := $(ARM64_EDGE_OBJS:.obj=.d)
 ARM64_UEFI_COMPILE_FLAGS = \
 	-I$(INC) -I$(SRC) -I$(LWIP_DIR)/src/include -I$(VDSO_GENERATED) \
-	$(ARM64_VERSION_CFLAGS) -target aarch64-unknown-windows \
+	$(ARM64_VERSION_CFLAGS) $(ARM64_COFF_TARGET_FLAGS) \
 	-O2 -ffreestanding -fshort-wchar -fno-stack-protector -fno-builtin \
 	-mgeneral-regs-only -ffunction-sections -fdata-sections \
 	-Wall -Wextra -Wframe-larger-than=2048 -MMD -MP
+ifeq ($(TOOLCHAIN),llvm)
 ARM64_UEFI_LINK_FLAGS = \
-	-target aarch64-unknown-windows -fuse-ld=lld \
+	$(ARM64_COFF_TARGET_FLAGS) -fuse-ld=lld \
 	-Wl,/entry:efi_main -Wl,/subsystem:efi_application -Wl,/base:0 \
 	-Wl,/opt:ref -Wl,/map:$(ARM64_OUT)/BOOTAA64.map -nostdlib
+else
+ARM64_UEFI_GNU_ELF := $(ARM64_OUT)/edgeos-arm64-uefi-gnu.elf
+ARM64_GNU_IMAGE_BASE ?= 0x80000000
+AARCH64_LIBGCC ?= $(shell $(AARCH64_CC) -print-libgcc-file-name)
+ARM64_UEFI_LINK_FLAGS = \
+	-nostdlib -static -Bsymbolic --gc-sections --emit-relocs \
+	--defsym=EDGEOS_IMAGE_BASE=$(ARM64_GNU_IMAGE_BASE) \
+	-T $(CONFIG)/linker-arm64-uefi.ld \
+	-Map=$(ARM64_OUT)/BOOTAA64.map
+endif
 
 $(OBJ)/arm64-edge/src/%.obj: $(SRC)/%.c $(ARM64_AUTOCONF_H)
 	@mkdir -p $(dir $@)
@@ -5978,10 +6110,23 @@ $(OBJ)/arm64-edge/lwip/%.obj: $(LWIP_DIR)/src/%.c $(ARM64_AUTOCONF_H)
 
 -include $(ARM64_EDGE_DEPS)
 
-$(ARM64_UEFI_EFI): $(ARM64_AUTOCONF_H) $(ARM64_UEFI_LINK_OBJS) tools/arm64/materialize_pe_data.py | syscall-inventory-check
+$(ARM64_UEFI_EFI): $(ARM64_AUTOCONF_H) $(ARM64_UEFI_LINK_OBJS) tools/arm64/materialize_pe_data.py tools/arm64/add_pe_relocations.py | syscall-inventory-check
 	@mkdir -p $(ARM64_OUT)
+ifeq ($(TOOLCHAIN),llvm)
 	$(ARM64_EFI_CC) $(ARM64_UEFI_LINK_FLAGS) $(ARM64_UEFI_LINK_OBJS) -o $@
-	python3 tools/arm64/materialize_pe_data.py --objcopy $(AARCH64_OBJCOPY) $@
+else
+	$(AARCH64_LD) $(ARM64_UEFI_LINK_FLAGS) \
+		$(ARM64_UEFI_LINK_OBJS) $(AARCH64_LIBGCC) \
+		-o $(ARM64_UEFI_GNU_ELF)
+	$(AARCH64_OBJCOPY) -w --remove-relocations='*' --strip-debug \
+		-O pei-aarch64-little --subsystem efi-app \
+		--image-base=$(ARM64_GNU_IMAGE_BASE) \
+		$(ARM64_UEFI_GNU_ELF) $@
+endif
+	python3 tools/arm64/materialize_pe_data.py $@
+ifneq ($(TOOLCHAIN),llvm)
+	python3 tools/arm64/add_pe_relocations.py $(ARM64_UEFI_GNU_ELF) $@
+endif
 
 $(ARM64_INITRAMFS): $(INITRAMFS_TOOL) $(INITRAMFS_BASE_MANIFEST) FORCE
 	@if [ -z "$(INITRAMFS_SOURCE_DIR)" ]; then \
@@ -6025,7 +6170,7 @@ $(ARM64_RPI4_ESP): $(ARM64_UEFI_EFI) $(ARM64_INITRAMFS) config/startup-arm64-ini
 	mcopy -i $@ config/cmdline-arm64-initramfs ::/boot/cmdline
 	mcopy -i $@ $(ARM64_INITRAMFS) ::/boot/initramfs.img
 
-arm64-kernel: arm64-syncconfig $(ARM64_UEFI_EFI)
+arm64-kernel: toolchain-check arm64-syncconfig $(ARM64_UEFI_EFI)
 	@echo "[arm64] built $(ARM64_UEFI_EFI)"
 
 arm64-initramfs-uefi: $(ARM64_INITRAMFS_ESP)
@@ -6078,7 +6223,7 @@ $(OBJ)/kernel/linux_vdso_image.o: $(VDSO_X86_64_IMAGE)
 $(VDSO_ARM64_SO): $(SRC)/kernel/vdso/vdso.c \
 		$(SRC)/kernel/vdso/vdso.lds $(SRC)/kernel/vdso/vdso-arm64.map
 	@mkdir -p $(dir $@)
-	$(VDSO_CC) -target aarch64-linux-gnu -fuse-ld=lld -O2 -fPIC \
+	$(VDSO_ARM64_CC) $(VDSO_LINK_FLAGS) -O2 -fPIC \
 		-ffreestanding -fno-builtin -fno-stack-protector -nostdlib -shared \
 		-Wl,-soname=linux-vdso.so.1 -Wl,--hash-style=both \
 		-Wl,--version-script=$(SRC)/kernel/vdso/vdso-arm64.map \
@@ -6087,7 +6232,7 @@ $(VDSO_ARM64_SO): $(SRC)/kernel/vdso/vdso.c \
 $(VDSO_X86_64_SO): $(SRC)/kernel/vdso/vdso.c \
 		$(SRC)/kernel/vdso/vdso.lds $(SRC)/kernel/vdso/vdso-x86_64.map
 	@mkdir -p $(dir $@)
-	$(VDSO_CC) -target x86_64-linux-gnu -fuse-ld=lld -O2 -fPIC \
+	$(VDSO_X86_64_CC) $(VDSO_LINK_FLAGS) -O2 -fPIC \
 		-ffreestanding -fno-builtin -fno-stack-protector -nostdlib -shared \
 		-Wl,-soname=linux-vdso.so.1 -Wl,--hash-style=both \
 		-Wl,--version-script=$(SRC)/kernel/vdso/vdso-x86_64.map \

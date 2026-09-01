@@ -33,6 +33,7 @@ void arch_cpu_set_user_tls(uint64_t tls) {
     __asm__ __volatile__("msr tpidr_el0, %0\n\tisb" :: "r"(tls) : "memory");
 }
 
+#if defined(__clang__)
 __attribute__((naked, target("fp"))) void arch_cpu_save_user_fp(void *state) {
     __asm__ __volatile__(
         "stp q0, q1, [x0, #0]\n\tstp q2, q3, [x0, #32]\n\t"
@@ -89,6 +90,62 @@ __attribute__((naked, noreturn)) void arch_cpu_call_on_stack(
         "mov x0, x2\n\t"
         "br x1");
 }
+#else
+/* GCC does not implement the AArch64 naked function attribute. */
+__asm__(
+    ".text\n"
+    ".global arch_cpu_save_user_fp\n"
+    ".type arch_cpu_save_user_fp, %function\n"
+    "arch_cpu_save_user_fp:\n"
+    "stp q0, q1, [x0, #0]\n\tstp q2, q3, [x0, #32]\n\t"
+    "stp q4, q5, [x0, #64]\n\tstp q6, q7, [x0, #96]\n\t"
+    "stp q8, q9, [x0, #128]\n\tstp q10, q11, [x0, #160]\n\t"
+    "stp q12, q13, [x0, #192]\n\tstp q14, q15, [x0, #224]\n\t"
+    "stp q16, q17, [x0, #256]\n\tstp q18, q19, [x0, #288]\n\t"
+    "stp q20, q21, [x0, #320]\n\tstp q22, q23, [x0, #352]\n\t"
+    "stp q24, q25, [x0, #384]\n\tstp q26, q27, [x0, #416]\n\t"
+    "stp q28, q29, [x0, #448]\n\tstp q30, q31, [x0, #480]\n\t"
+    "mrs x1, fpsr\n\tmrs x2, fpcr\n\tadd x3, x0, #512\n\t"
+    "stp x1, x2, [x3]\n\tret\n"
+    ".size arch_cpu_save_user_fp, .-arch_cpu_save_user_fp\n"
+    ".global arch_cpu_restore_user_fp\n"
+    ".type arch_cpu_restore_user_fp, %function\n"
+    "arch_cpu_restore_user_fp:\n"
+    "ldp q0, q1, [x0, #0]\n\tldp q2, q3, [x0, #32]\n\t"
+    "ldp q4, q5, [x0, #64]\n\tldp q6, q7, [x0, #96]\n\t"
+    "ldp q8, q9, [x0, #128]\n\tldp q10, q11, [x0, #160]\n\t"
+    "ldp q12, q13, [x0, #192]\n\tldp q14, q15, [x0, #224]\n\t"
+    "ldp q16, q17, [x0, #256]\n\tldp q18, q19, [x0, #288]\n\t"
+    "ldp q20, q21, [x0, #320]\n\tldp q22, q23, [x0, #352]\n\t"
+    "ldp q24, q25, [x0, #384]\n\tldp q26, q27, [x0, #416]\n\t"
+    "ldp q28, q29, [x0, #448]\n\tldp q30, q31, [x0, #480]\n\t"
+    "add x3, x0, #512\n\tldp x1, x2, [x3]\n\t"
+    "msr fpsr, x1\n\tmsr fpcr, x2\n\tret\n"
+    ".size arch_cpu_restore_user_fp, .-arch_cpu_restore_user_fp\n"
+    ".global arch_cpu_call_on_stack\n"
+    ".type arch_cpu_call_on_stack, %function\n"
+    "arch_cpu_call_on_stack:\n"
+    "msr daifset, #0xf\n\tmov sp, x0\n\tmov x0, x2\n\tbr x1\n"
+    ".size arch_cpu_call_on_stack, .-arch_cpu_call_on_stack\n");
+
+void arch_cpu_set_user_single_step(int enabled) {
+    uint64_t mdscr;
+    __asm__ __volatile__("mrs %0, mdscr_el1" : "=r"(mdscr));
+    if (enabled) {
+        mdscr |= (1ULL << 0) | (1ULL << 13) | (1ULL << 15);
+    } else {
+        mdscr &= ~((1ULL << 0) | (1ULL << 13) | (1ULL << 15));
+    }
+    __asm__ __volatile__("msr mdscr_el1, %0\n\tisb" :: "r"(mdscr) :
+                         "memory");
+}
+
+uint64_t arch_cpu_stack_pointer(void) {
+    uint64_t value;
+    __asm__ __volatile__("mov %0, sp" : "=r"(value));
+    return value;
+}
+#endif
 
 uint64_t arch_cpu_cycle_counter(void) {
     uint64_t value;

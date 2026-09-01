@@ -20,7 +20,9 @@
 #include "compat/freebsd/machine/frame.h"
 #include "compat/freebsd/x86/ucode.h"
 #endif
+#if defined(__x86_64__)
 #include "compat/freebsd/machine/specialreg.h"
+#endif
 #include "compat/freebsd/sys/_callout.h"
 #include "compat/freebsd/sys/pcpu.h"
 #include "compat/freebsd/sys/smp.h"

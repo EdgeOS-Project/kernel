@@ -81,7 +81,7 @@ static void edge_delay(void) {
     (void)edge_syscall6(EDGE_SYS_NANOSLEEP, (long)&delay, 0, 0, 0, 0, 0);
 }
 
-static void edge_exit(long status) {
+static _Noreturn void edge_exit(long status) {
     (void)edge_syscall6(EDGE_SYS_EXIT, status, 0, 0, 0, 0, 0);
     for (;;)
         __asm__ volatile("pause");

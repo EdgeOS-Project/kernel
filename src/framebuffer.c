@@ -1,5 +1,5 @@
 #include "arch/x86_64/boot/multiboot.h"
-#include "stdint-gcc.h"
+#include <stdint.h>
 #include "ctypes.h"
 #include "qemu.h"
 

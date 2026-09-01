@@ -5,6 +5,7 @@
 #include <dev/psci/smccc.h>
 
 bool
+__attribute__((weak))
 has_hyp(void)
 {
     register_t current_el;
@@ -63,6 +64,7 @@ arm_smccc_hvc(register_t a0, register_t a1, register_t a2,
     return arm_smccc_call(1, a0, a1, a2, a3, a4, a5, a6, a7, result);
 }
 
+#if defined(__clang__)
 static int
 arm_smccc_call_1_2(int use_hvc, const struct arm_smccc_1_2_regs *arguments,
     struct arm_smccc_1_2_regs *result)
@@ -136,3 +138,42 @@ arm_smccc_1_2_hvc(const struct arm_smccc_1_2_regs *arguments,
 {
     return arm_smccc_call_1_2(1, arguments, result);
 }
+#else
+/* GCC limits extended asm to 30 operands, below the SMCCC 1.2 register set. */
+__asm__(
+    ".text\n"
+    ".macro edgeos_smccc_1_2 name, instruction\n"
+    ".global \\name\n"
+    ".type \\name, %function\n"
+    "\\name:\n"
+    "stp x19, x20, [sp, #-16]!\n"
+    "mov x19, x0\n"
+    "mov x20, x1\n"
+    "ldp x0, x1, [x19, #0]\n"
+    "ldp x2, x3, [x19, #16]\n"
+    "ldp x4, x5, [x19, #32]\n"
+    "ldp x6, x7, [x19, #48]\n"
+    "ldp x8, x9, [x19, #64]\n"
+    "ldp x10, x11, [x19, #80]\n"
+    "ldp x12, x13, [x19, #96]\n"
+    "ldp x14, x15, [x19, #112]\n"
+    "ldp x16, x17, [x19, #128]\n"
+    "\\instruction #0\n"
+    "cbz x20, 1f\n"
+    "stp x0, x1, [x20, #0]\n"
+    "stp x2, x3, [x20, #16]\n"
+    "stp x4, x5, [x20, #32]\n"
+    "stp x6, x7, [x20, #48]\n"
+    "stp x8, x9, [x20, #64]\n"
+    "stp x10, x11, [x20, #80]\n"
+    "stp x12, x13, [x20, #96]\n"
+    "stp x14, x15, [x20, #112]\n"
+    "stp x16, x17, [x20, #128]\n"
+    "1:\n"
+    "ldp x19, x20, [sp], #16\n"
+    "ret\n"
+    ".size \\name, .-\\name\n"
+    ".endm\n"
+    "edgeos_smccc_1_2 arm_smccc_1_2_smc, smc\n"
+    "edgeos_smccc_1_2 arm_smccc_1_2_hvc, hvc\n");
+#endif
