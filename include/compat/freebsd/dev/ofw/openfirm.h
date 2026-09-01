@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include "../../edgeos/malloc.h"
+#include "../../machine/bus.h"
 #include "../../machine/ofw_machdep.h"
 
 #ifndef _SYS_BUS_H_
@@ -70,5 +71,7 @@ device_t OF_device_from_xref(phandle_t xref);
 phandle_t OF_xref_from_device(device_t device);
 int OF_device_register_xref(phandle_t xref, device_t device);
 void OF_device_unregister_xref(phandle_t xref, device_t device);
+int OF_decode_addr(phandle_t device, int register_index,
+    bus_space_tag_t *tag, bus_space_handle_t *handle, bus_size_t *size);
 
 #endif

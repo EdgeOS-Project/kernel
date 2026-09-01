@@ -1,0 +1,8 @@
+#ifndef EDGEOS_FREEBSD_LINUXKPI_NOUVEAU_FIFO_COMPAT_H
+#define EDGEOS_FREEBSD_LINUXKPI_NOUVEAU_FIFO_COMPAT_H
+
+#ifdef pause
+#undef pause
+#endif
+
+#endif

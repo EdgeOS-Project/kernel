@@ -1,0 +1,77 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-brcmfmac",
+  "provider": "freebsd",
+  "description": "FreeBSD LinuxKPI Broadcom brcmfmac PCI wireless LAN driver.",
+  "architectures": ["x86_64", "arm64"],
+  "compile": {
+    "definitions": [
+      "CONFIG_BRCMDBG",
+      "CONFIG_BRCMFMAC_PCIE",
+      "CONFIG_BRCMFMAC_PROTO_MSGBUF",
+      "DEBUG",
+      "EDGEOS_BSD_LINUXKPI=1",
+      "KBUILD_MODNAME=brcmfmac",
+      "LINUXKPI_VERSION=70000",
+      "__FreeBSD__=14"
+    ],
+    "undefinitions": ["CONFIG_ACPI"],
+    "include_groups": ["brcm80211", "linuxkpi"]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": ["BSD-2-Clause", "ISC", "LicenseRef-Upstream-Unmarked"],
+    "allow_unmarked_files": true,
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/contrib/dev/broadcom/brcm80211",
+      "sys/netlink/netlink.h"
+    ],
+    "file_count": 134,
+    "tree_sha256": "efe4fb0e9db765212587dcaefe6504d513814c831cc353a7e3455e225bac4df3"
+  },
+  "generated_interfaces": [],
+  "modules": [{
+    "id": "brcmfmac",
+    "sources": [
+      "sys/contrib/dev/broadcom/brcm80211/brcmfmac/core.c",
+      "sys/contrib/dev/broadcom/brcm80211/brcmfmac/btcoex.c",
+      "sys/contrib/dev/broadcom/brcm80211/brcmfmac/cfg80211.c",
+      "sys/contrib/dev/broadcom/brcm80211/brcmfmac/chip.c",
+      "sys/contrib/dev/broadcom/brcm80211/brcmfmac/common.c",
+      "sys/contrib/dev/broadcom/brcm80211/brcmfmac/feature.c",
+      "sys/contrib/dev/broadcom/brcm80211/brcmfmac/firmware.c",
+      "sys/contrib/dev/broadcom/brcm80211/brcmfmac/fweh.c",
+      "sys/contrib/dev/broadcom/brcm80211/brcmfmac/fwil.c",
+      "sys/contrib/dev/broadcom/brcm80211/brcmfmac/fwvid.c",
+      "sys/contrib/dev/broadcom/brcm80211/brcmfmac/p2p.c",
+      "sys/contrib/dev/broadcom/brcm80211/brcmfmac/pno.c",
+      "sys/contrib/dev/broadcom/brcm80211/brcmfmac/proto.c",
+      "sys/contrib/dev/broadcom/brcm80211/brcmfmac/vendor.c",
+      "sys/contrib/dev/broadcom/brcm80211/brcmfmac/xtlv.c",
+      "sys/contrib/dev/broadcom/brcm80211/brcmfmac/wcc/core.c",
+      "sys/contrib/dev/broadcom/brcm80211/brcmfmac/cyw/core.c",
+      "sys/contrib/dev/broadcom/brcm80211/brcmfmac/bca/core.c",
+      "sys/contrib/dev/broadcom/brcm80211/brcmfmac/pcie.c",
+      "sys/contrib/dev/broadcom/brcm80211/brcmfmac/msgbuf.c",
+      "sys/contrib/dev/broadcom/brcm80211/brcmfmac/commonring.c",
+      "sys/contrib/dev/broadcom/brcm80211/brcmfmac/flowring.c",
+      "sys/contrib/dev/broadcom/brcm80211/brcmfmac/debug.c"
+    ],
+    "capabilities": ["base", "network"],
+    "build": {"mode": "builtin"}
+  }]
+}

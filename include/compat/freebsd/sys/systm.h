@@ -23,8 +23,16 @@
 #include <sys/sched.h>
 #include <sys/sysctl.h>
 
+extern int boothowto;
+
+#ifndef CHECK_EARLY_PRINTF
+#define CHECK_EARLY_PRINTF(name) 0
+#endif
+
 uint32_t arc4random(void);
+uint32_t arc4random_uniform(uint32_t upper_bound);
 void arc4random_buf(void *buffer, size_t length);
+void explicit_bzero(void *buffer, size_t length);
 void hexdump(const void *pointer, int length, const char *header, int flags);
 int sysbeep(int hertz, sbintime_t duration);
 int sscanf(const char *input, const char *format, ...);
@@ -70,6 +78,7 @@ int bsd_asprintf(char **result, struct malloc_type *type, const char *format,
 #define strnlen(text, maximum) bsd_strnlen((text), (maximum))
 #define strrchr(text, character) bsd_strrchr((text), (character))
 #define strchr(text, character) bsd_strchr((text), (character))
+#define strchrnul(text, character) bsd_strchrnul((text), (character))
 #define strcpy(destination, source) bsd_strcpy((destination), (source))
 #define strncpy(destination, source, length) \
     bsd_strncpy((destination), (source), (length))
@@ -92,7 +101,7 @@ int bsd_asprintf(char **result, struct malloc_type *type, const char *format,
     bsd_vsnprintf((destination), (capacity), (format), (arguments))
 #define sprintf(destination, ...) bsd_sprintf((destination), __VA_ARGS__)
 #define vprintf(format, arguments) bsd_vprintf((format), (arguments))
-#define printf(...) bsd_printf(__VA_ARGS__)
+#define printf bsd_printf
 #define vlog(priority, format, arguments) \
     bsd_vlog((priority), (format), (arguments))
 #define log(priority, ...) bsd_log((priority), __VA_ARGS__)
@@ -110,8 +119,16 @@ int bsd_asprintf(char **result, struct malloc_type *type, const char *format,
 #define fueword32(source, value) bsd_fueword32((source), (value))
 #define suword16(destination, value) bsd_suword16((destination), (value))
 #define suword32(destination, value) bsd_suword32((destination), (value))
+#define suword64(destination, value) bsd_suword64((destination), (value))
+#define subyte(destination, value) bsd_subyte((destination), (value))
 #define critical_enter() bsd_critical_enter()
 #define critical_exit() bsd_critical_exit()
+
+static inline int
+kcmp_cmp(uintptr_t left, uintptr_t right)
+{
+    return left < right ? -1 : left > right;
+}
 
 static inline intrmask_t
 spltty(void)
@@ -131,9 +148,14 @@ splx(intrmask_t level __unused)
 #define flsl(value) bsd_flsl(value)
 #define flsll(value) bsd_flsll(value)
 #define roundup_pow_of_two(value) \
-    ((__typeof__(value))bsd_roundup_power_of_two((uint64_t)(value)))
+    __builtin_choose_expr(__builtin_constant_p(value), \
+        ((__typeof__(value))((value) <= 1 ? 1UL : \
+        (1UL << ((sizeof(unsigned long) * 8) - \
+        __builtin_clzl((unsigned long)(value) - 1))))), \
+        ((__typeof__(value))bsd_roundup_power_of_two((uint64_t)(value))))
 #define rounddown_pow_of_two(value) \
     ((__typeof__(value))bsd_rounddown_power_of_two((uint64_t)(value)))
+#ifndef EDGEOS_BSD_LINUXKPI
 #define min(left, right) ({                 \
     __typeof__(left) _min_left = (left);    \
     __typeof__(right) _min_right = (right); \
@@ -144,6 +166,7 @@ splx(intrmask_t level __unused)
     __typeof__(right) _max_right = (right); \
     _max_left > _max_right ? _max_left : _max_right; \
 })
+#endif
 #define imin(left, right) ((left) < (right) ? (left) : (right))
 #define imax(left, right) ((left) > (right) ? (left) : (right))
 #define lmax(left, right) ((long)(left) > (long)(right) ? \
@@ -171,6 +194,7 @@ int getenv_array(const char *name, void *data, int size, int *result_size,
 int kern_setenv(const char *name, const char *value);
 int kern_unsetenv(const char *name);
 int testenv(const char *name);
+int doadump(bool textdump);
 
 #define GETENV_UNSIGNED false
 #define GETENV_SIGNED true
@@ -182,6 +206,7 @@ extern const int osreldate;
 extern const char osrelease[];
 extern const char ostype[];
 extern int bootverbose;
+extern const char *panicstr;
 struct eventtimer;
 void cpu_et_frequency(struct eventtimer *eventtimer, uint64_t frequency);
 extern int cold;
@@ -233,8 +258,10 @@ uint64_t cputick2usec(uint64_t tick);
 #define tsleep_sbt(channel, priority, wait_message, sbt, precision, flags) \
     bsd_tsleep_sbt((channel), (priority), (wait_message), (sbt), \
         (precision), (flags))
+#ifndef EDGEOS_BSD_DRIVER_PROVIDES_WAKEUP
 #define wakeup(channel) bsd_wakeup(channel)
 #define wakeup_one(channel) bsd_wakeup_one(channel)
+#endif
 
 #include <sys/libkern.h>
 

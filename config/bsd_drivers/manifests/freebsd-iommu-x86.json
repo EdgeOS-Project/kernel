@@ -37,9 +37,6 @@
   },
   "source_lock": {
     "paths": [
-      "sys/dev/iommu",
-      "sys/dev/iommu/busdma_iommu.c",
-      "sys/dev/iommu/iommu_gas.c",
       "sys/x86/iommu",
       "sys/x86/iommu/amd_cmd.c",
       "sys/x86/iommu/amd_ctx.c",
@@ -58,16 +55,14 @@
       "sys/x86/iommu/iommu_utils.c",
       "sys/x86/include/busdma_impl.h"
     ],
-    "file_count": 29,
-    "tree_sha256": "39e026d87fb7990c31b73aa3790973bbb6b987a2b291df093ab40d5e73814eb2"
+    "file_count": 22,
+    "tree_sha256": "fedf64e910e6b45a60af3b352983bdb4e2a84bc917486b62348fd3e405a2c075"
   },
   "generated_interfaces": [],
   "modules": [
     {
       "id": "iommu-x86",
       "sources": [
-        "sys/dev/iommu/busdma_iommu.c",
-        "sys/dev/iommu/iommu_gas.c",
         "sys/x86/iommu/amd_cmd.c",
         "sys/x86/iommu/amd_ctx.c",
         "sys/x86/iommu/amd_drv.c",

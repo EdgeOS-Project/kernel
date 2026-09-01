@@ -1,0 +1,126 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-ath12k",
+  "provider": "freebsd",
+  "description": "FreeBSD LinuxKPI Qualcomm Wi-Fi 7 ath12k PCI driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "CONFIG_ATH12K_DEBUG",
+      "CONFIG_ATH12K_PCI",
+      "EDGEOS_BSD_DRIVER_PROVIDES_WAKEUP",
+      "EDGEOS_BSD_LINUXKPI=1",
+      "KBUILD_MODNAME=ath12k",
+      "LINUXKPI_VERSION=70000",
+      "LINUXKPI_WANT_LINUX_ACPI",
+      "__FreeBSD__=14"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "acpica",
+      "linuxkpi",
+      "ath12k"
+    ],
+    "source_preincludes": {
+      "sys/contrib/dev/athk/ath12k/acpi.c": "ath12k_acpi_compat.h"
+    }
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "patched",
+    "allow_inline_patches": true,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "BSD-3-Clause-Clear",
+      "ISC",
+      "LicenseRef-Upstream-Unmarked"
+    ],
+    "allow_unmarked_files": true,
+    "license_exceptions": {},
+    "patches": [
+      {
+        "path": "sys/contrib/dev/athk/ath12k/wmi.c",
+        "upstream_sha256": "1c2db91841a4e6474abda8da0a5dcdb78c354993f6714a9a47d5a180a0bcc193",
+        "reason": "Preserve const qualification while filtering immutable regulatory rule data."
+      },
+      {
+        "path": "sys/contrib/dev/athk/ath12k/reg.c",
+        "upstream_sha256": "a8ff39367fe209291599355fb228af54d4a5d0746711c6da9277b229c1963678",
+        "reason": "Initialize the fixed-width regulatory alpha2 code without an out-of-bounds string terminator."
+      }
+    ]
+  },
+  "source_lock": {
+    "paths": [
+      "sys/contrib/dev/athk/ath12k"
+    ],
+    "file_count": 104,
+    "tree_sha256": "024b497e5f44dea97f823dbd9d211ee5d3d75709a961b0584a9255d5b7786a98"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "ath12k",
+      "sources": [
+        "sys/contrib/dev/athk/ath12k/acpi.c",
+        "sys/contrib/dev/athk/ath12k/core.c",
+        "sys/contrib/dev/athk/ath12k/hal.c",
+        "sys/contrib/dev/athk/ath12k/wmi.c",
+        "sys/contrib/dev/athk/ath12k/mac.c",
+        "sys/contrib/dev/athk/ath12k/reg.c",
+        "sys/contrib/dev/athk/ath12k/htc.c",
+        "sys/contrib/dev/athk/ath12k/qmi.c",
+        "sys/contrib/dev/athk/ath12k/dp.c",
+        "sys/contrib/dev/athk/ath12k/dp_tx.c",
+        "sys/contrib/dev/athk/ath12k/dp_rx.c",
+        "sys/contrib/dev/athk/ath12k/dp_mon.c",
+        "sys/contrib/dev/athk/ath12k/debug.c",
+        "sys/contrib/dev/athk/ath12k/ce.c",
+        "sys/contrib/dev/athk/ath12k/peer.c",
+        "sys/contrib/dev/athk/ath12k/dbring.c",
+        "sys/contrib/dev/athk/ath12k/fw.c",
+        "sys/contrib/dev/athk/ath12k/p2p.c",
+        "sys/contrib/dev/athk/ath12k/dp_htt.c",
+        "sys/contrib/dev/athk/ath12k/dp_peer.c",
+        "sys/contrib/dev/athk/ath12k/wifi7/ce.c",
+        "sys/contrib/dev/athk/ath12k/wifi7/core.c",
+        "sys/contrib/dev/athk/ath12k/wifi7/dp.c",
+        "sys/contrib/dev/athk/ath12k/wifi7/dp_mon.c",
+        "sys/contrib/dev/athk/ath12k/wifi7/dp_rx.c",
+        "sys/contrib/dev/athk/ath12k/wifi7/dp_tx.c",
+        "sys/contrib/dev/athk/ath12k/wifi7/hal.c",
+        "sys/contrib/dev/athk/ath12k/wifi7/hal_tx.c",
+        "sys/contrib/dev/athk/ath12k/wifi7/hal_rx.c",
+        "sys/contrib/dev/athk/ath12k/wifi7/hal_qcc2072.c",
+        "sys/contrib/dev/athk/ath12k/wifi7/hal_qcn9274.c",
+        "sys/contrib/dev/athk/ath12k/wifi7/hal_wcn7850.c",
+        "sys/contrib/dev/athk/ath12k/wifi7/hw.c",
+        "sys/contrib/dev/athk/ath12k/wifi7/wmi.c",
+        "sys/contrib/dev/athk/ath12k/mhi.c",
+        "sys/contrib/dev/athk/ath12k/pci.c",
+        "sys/contrib/dev/athk/ath12k/wifi7/mhi.c",
+        "sys/contrib/dev/athk/ath12k/wifi7/pci.c"
+      ],
+      "capabilities": [
+        "base",
+        "network"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

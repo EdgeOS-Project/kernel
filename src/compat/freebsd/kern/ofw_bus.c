@@ -21,6 +21,23 @@
 
 static int ofw_bus_string_equal(const char *left, const char *right);
 
+phandle_t
+ofw_bus_find_iparent(phandle_t node)
+{
+    phandle_t interrupt_parent;
+
+    if (OF_searchencprop(node, "interrupt-parent", &interrupt_parent,
+        sizeof(interrupt_parent)) == -1) {
+        for (interrupt_parent = node; interrupt_parent != 0;
+            interrupt_parent = OF_parent(interrupt_parent)) {
+            if (OF_hasprop(interrupt_parent, "interrupt-controller"))
+                break;
+        }
+        interrupt_parent = OF_xref_from_node(interrupt_parent);
+    }
+    return interrupt_parent;
+}
+
 static void
 ofw_bus_release_property(char **property)
 {

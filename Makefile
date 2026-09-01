@@ -866,7 +866,7 @@ BSD_BRIDGE_SOURCE_WARNINGS := \
 	-Wno-format -Wno-type-limits -Wno-unused-function \
 	-Wno-empty-body -Wno-return-type -Wno-implicit-fallthrough \
 	-Wno-unused-but-set-variable -Wno-unused-but-set-parameter \
-	-Wno-address-of-packed-member -Wno-cast-function-type
+	-Wno-address-of-packed-member -Wno-cast-function-type -Wno-enum-compare
 BSD_BRIDGE_GCC_SOURCE_WARNINGS := \
 	-Wno-old-style-declaration -Wno-maybe-uninitialized \
 	-Wno-unknown-pragmas
@@ -913,9 +913,11 @@ BSD_BRIDGE_RUNTIME_SRCS := \
 	$(SRC)/compat/freebsd/kern/devicestat.c \
 	$(SRC)/compat/freebsd/kern/driver_loader.c \
 	$(SRC)/compat/freebsd/kern/driver_path.c \
+	$(SRC)/compat/freebsd/kern/driver_kernel_exports.c \
 	$(SRC)/compat/freebsd/kern/driver_symbols.c \
 	$(SRC)/compat/freebsd/kern/environment.c \
 	$(SRC)/compat/freebsd/kern/epoch.c \
+	$(SRC)/compat/freebsd/kern/eventfd.c \
 	$(SRC)/compat/freebsd/kern/efi_runtime.c \
 	$(SRC)/compat/freebsd/kern/eventtimer.c \
 	$(SRC)/compat/freebsd/kern/evdev.c \
@@ -924,6 +926,7 @@ BSD_BRIDGE_RUNTIME_SRCS := \
 	$(SRC)/compat/freebsd/drivers/wireless_firmware.c \
 	$(SRC)/compat/freebsd/kern/eventhandler.c \
 	$(SRC)/compat/freebsd/kern/fdt_inventory.c \
+	$(SRC)/compat/freebsd/kern/filedesc.c \
 	$(SRC)/compat/freebsd/kern/firmware.c \
 	$(SRC)/compat/freebsd/kern/firmware_metadata.c \
 	$(SRC)/compat/freebsd/kern/framebuffer.c \
@@ -944,6 +947,8 @@ BSD_BRIDGE_RUNTIME_SRCS := \
 	$(SRC)/compat/freebsd/kern/kthread.c \
 	$(SRC)/compat/freebsd/kern/led.c \
 	$(SRC)/compat/freebsd/kern/linker.c \
+	$(SRC)/compat/freebsd/kern/linuxkpi_notifier.c \
+	$(SRC)/compat/freebsd/kern/linuxkpi_runtime_pm.c \
 	$(SRC)/compat/freebsd/kern/malloc.c \
 	$(SRC)/compat/freebsd/kern/mbuf.c \
 	$(SRC)/compat/freebsd/kern/module.c \
@@ -963,7 +968,9 @@ BSD_BRIDGE_RUNTIME_SRCS := \
 	$(SRC)/compat/freebsd/kern/pps.c \
 	$(SRC)/compat/freebsd/kern/random.c \
 	$(SRC)/compat/freebsd/kern/resource.c \
+	$(SRC)/compat/freebsd/kern/resource_limits.c \
 	$(SRC)/compat/freebsd/kern/resource_rman.c \
+	$(SRC)/compat/freebsd/kern/route.c \
 	$(SRC)/compat/freebsd/kern/route_notify.c \
 	$(SRC)/compat/freebsd/kern/rss.c \
 	$(SRC)/compat/freebsd/kern/root_mount.c \
@@ -1200,7 +1207,8 @@ BSD_BRIDGE_X86_COMPILE_FLAGS = \
 	-I$(SRC)/lib/zlib/upstream $(CFLAGS) \
 	-Werror $(BSD_BRIDGE_SOURCE_WARNINGS) \
 	$(BSD_BRIDGE_GCC_SOURCE_WARNINGS) \
-	-D_KERNEL -DEDGEOS_BSD_BRIDGE $(BSD_BRIDGE_SOURCE_CPPFLAGS)
+	-D_KERNEL -DEDGEOS_BSD_BRIDGE $(BSD_BRIDGE_SOURCE_CPPFLAGS) \
+	$(BSD_BRIDGE_SOURCE_POST_INCLUDE_FLAGS)
 BSD_BRIDGE_ARM64_COMMON_SOURCE_FLAGS = \
 	$(BSD_BRIDGE_SOURCE_INCLUDE_FLAGS) \
 	-std=gnu11 -O2 -ffreestanding -fshort-wchar \
@@ -1219,7 +1227,8 @@ BSD_BRIDGE_ARM64_COMMON_SOURCE_FLAGS = \
 	-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/device-tree/include \
 	-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/libfdt \
 	-I$(SRC)/lib/zlib/upstream -I$(INC) -I$(SRC) \
-	-include $(ARM64_AUTOCONF_H)
+	-include $(ARM64_AUTOCONF_H) \
+	$(BSD_BRIDGE_SOURCE_POST_INCLUDE_FLAGS)
 # Direct COFF flags remain available for isolated ABI compile checks.
 # Production FreeBSD sources are compiled with the FreeBSD LP64/AAPCS
 # frontend and then lowered to the COFF object format required by UEFI.
@@ -1252,7 +1261,11 @@ $(OBJ)/arm64-bsd/compat/freebsd/kern/edge_kvm_bhyve_arm64.bc: \
 		$(INC)/kernel/edge_kvm_abi.h \
 		$(INC)/kernel/edge_kvm_object.h
 BSD_BRIDGE_X86_MODULE_COMPILE_FLAGS = \
-	$(BSD_BRIDGE_X86_COMPILE_FLAGS) -mcmodel=large \
+	$(BSD_BRIDGE_X86_COMPILE_FLAGS) -Wno-unused-variable \
+	-Wno-unused-value -Wno-unused-label -Wno-enum-int-mismatch \
+	-Wno-unterminated-string-initialization -Wno-int-in-bool-context \
+	-Wno-override-init -Wno-array-bounds -Wno-dangling-pointer \
+	-Wno-incompatible-pointer-types -mcmodel=large \
 	-DEDGEOS_BSD_LOADABLE_MODULE=1
 BSD_BRIDGE_ARM64_MODULE_COMPILE_FLAGS = \
 	$(BSD_BRIDGE_ARM64_FRONTEND_FLAGS) \
@@ -1262,6 +1275,18 @@ BSD_BRIDGE_ARM64_MODULE_FINAL_FLAGS = \
 	-fno-builtin -fno-stack-protector -fno-strict-aliasing \
 	-mgeneral-regs-only -ffunction-sections -fdata-sections \
 	-Wno-override-module
+BSD_BRIDGE_LINUXKPI_RUNTIME_PM_FLAGS = \
+	-I$(INC)/compat/freebsd/linuxkpi-preinclude \
+	-I$(BSD_BRIDGE_UPSTREAM_SYS)/compat/linuxkpi/common/include \
+	-I$(BSD_BRIDGE_UPSTREAM_SYS)/compat/linuxkpi/dummy/include \
+	-include linux/kconfig.h -D__FreeBSD__=14 -Wno-enum-conversion
+
+$(OBJ)/compat/freebsd/kern/linuxkpi_runtime_pm.o: \
+		BSD_BRIDGE_X86_COMPILE_FLAGS += \
+		$(BSD_BRIDGE_LINUXKPI_RUNTIME_PM_FLAGS)
+$(OBJ)/arm64-bsd/compat/freebsd/kern/linuxkpi_runtime_pm.bc: \
+		BSD_BRIDGE_ARM64_FRONTEND_FLAGS += \
+		$(BSD_BRIDGE_LINUXKPI_RUNTIME_PM_FLAGS)
 
 ifeq ($(CONFIG_BSD_DRIVER_BRIDGE),y)
 CFLAGS += -DCONFIG_BSD_DRIVER_BRIDGE=1
@@ -1826,7 +1851,20 @@ $(OBJ)/arm64-bsd/upstream/%.obj: \
 .PHONY: display-backend-unit drm-runtime-unit virtgpu-runtime-unit virtio-gpu-damage-unit virtio-gpu-sync-unit pty-runtime-unit tty-session-unit
 .PHONY: xhci-transfer-unit usb-dma-layout-unit
 .PHONY: block-registry-unit netdev-registry-unit native-netdev-unit usb-handoff-unit xhci-capability-unit bsd-driver-build-plan-check bsd-driver-package-registry-check bsd-driver-manifest-check bsd-driver-dependency-report bsd-driver-interface-check bsd-driver-modules bsd-driver-modules-x86_64 bsd-driver-modules-arm64 bsd-bridge-acpica-runtime-compile bsd-bridge-arm64-abi-layout-unit bsd-bridge-arm64-handoff-unit bsd-bridge-x86_64-handoff-unit bsd-bridge-audio-unit bsd-bridge-base-headers-unit bsd-bridge-atomic-unit bsd-bridge-allocator-unit bsd-bridge-block-unit bsd-bridge-bootstrap-unit bsd-bridge-bus-dma-unit bsd-bridge-bus-space-unit bsd-bridge-callout-unit bsd-bridge-cam-unit bsd-bridge-cdev-unit bsd-bridge-config-intrhook-unit bsd-bridge-contigmalloc-unit bsd-bridge-device-property-unit bsd-bridge-driver-adapters-unit bsd-bridge-dwc-hdmi-compile bsd-bridge-environment-unit bsd-bridge-epoch-unit bsd-bridge-evdev-unit bsd-bridge-eventhandler-unit bsd-bridge-fdt-inventory-unit bsd-bridge-firmware-frontends-unit bsd-bridge-firmware-metadata-unit bsd-bridge-framebuffer-unit bsd-bridge-gtaskqueue-unit bsd-bridge-handoff-unit bsd-bridge-hash-unit bsd-bridge-interrupt-unit bsd-bridge-intrng-unit bsd-bridge-kernel-link bsd-bridge-kobj-unit bsd-bridge-kthread-unit bsd-bridge-led-unit bsd-bridge-libkern-sort-unit bsd-bridge-linker-unit bsd-bridge-malloc-unit bsd-bridge-module-unit bsd-bridge-network-unit bsd-bridge-newbus-unit bsd-bridge-ofw-unit bsd-bridge-package-unit bsd-bridge-pci-unit bsd-bridge-platform-unit bsd-bridge-pps-unit bsd-bridge-random-unit bsd-bridge-resource-unit bsd-bridge-rss-unit bsd-bridge-sbuf-sysctl-unit bsd-bridge-selinfo-unit bsd-bridge-sglist-unit bsd-bridge-source-gate bsd-bridge-systm-unit bsd-bridge-sync-unit bsd-bridge-taskqueue-unit bsd-bridge-time-unit bsd-bridge-tty-unit bsd-bridge-videomode-unit bsd-bridge-vmem-unit bsd-bridge-watchdog-unit bsd-bridge-virtio-balloon-compile bsd-bridge-virtio-block-compile bsd-bridge-virtio-console-compile bsd-bridge-virtio-core-compile bsd-bridge-virtio-gpu-compile bsd-bridge-virtio-network-compile bsd-bridge-virtio-pci-compile bsd-bridge-virtio-random-compile bsd-bridge-virtio-scmi-compile bsd-bridge-virtio-transport-compile bsd-bridge-virtqueue-compile bsd-bridge-vm-page-unit
-.PHONY: bsd-bridge-bitstring-unit
+.PHONY: bsd-bridge-bitstring-unit bsd-bridge-linuxkpi-runtime-pm-unit
+
+bsd-bridge-linuxkpi-runtime-pm-unit: \
+		tools/tests/bsd_bridge_linuxkpi_runtime_pm_unit.c \
+		$(SRC)/compat/freebsd/kern/linuxkpi_runtime_pm.c \
+		include/compat/freebsd/edgeos/linuxkpi_runtime_pm.h
+	@mkdir -p $(OUT)/tests
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror \
+		-fsanitize=address,undefined -fno-omit-frame-pointer \
+		-I$(INC) \
+		tools/tests/bsd_bridge_linuxkpi_runtime_pm_unit.c \
+		-o $(OUT)/tests/bsd_bridge_linuxkpi_runtime_pm_unit
+	@ASAN_OPTIONS=detect_leaks=0 \
+		$(OUT)/tests/bsd_bridge_linuxkpi_runtime_pm_unit
 
 display-backend-unit: tools/tests/display_backend_unit.c $(SRC)/display.c \
 		$(SRC)/display_edid.c include/display.h

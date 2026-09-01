@@ -1,7 +1,10 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 
+#ifndef EDGEOS_COMPAT_FREEBSD_NETINET_IP_H
+#define EDGEOS_COMPAT_FREEBSD_NETINET_IP_H
 #ifndef _NETINET_IP_H_
 #define _NETINET_IP_H_
+#endif
 
 #include <stdint.h>
 #include <netinet/in.h>

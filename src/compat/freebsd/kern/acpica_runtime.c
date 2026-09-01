@@ -1157,6 +1157,29 @@ acpi_EvaluateDSM(ACPI_HANDLE handle, const uint8_t *uuid,
         package, out_buffer, ACPI_TYPE_ANY);
 }
 
+UINT64
+acpi_DSMQuery(ACPI_HANDLE handle, const uint8_t *uuid, int revision)
+{
+    ACPI_BUFFER buffer = { ACPI_ALLOCATE_BUFFER, 0 };
+    ACPI_OBJECT *object;
+    UINT64 functions = 0;
+    ACPI_STATUS status;
+    UINT32 length;
+
+    status = acpi_EvaluateDSMTyped(handle, uuid, revision, 0, 0,
+        &buffer, ACPI_TYPE_BUFFER);
+    if (ACPI_FAILURE(status) || !buffer.Pointer)
+        return 0;
+    object = buffer.Pointer;
+    length = object->Buffer.Length;
+    if (length > sizeof(functions))
+        length = sizeof(functions);
+    for (UINT32 index = 0; index < length; ++index)
+        functions |= (UINT64)object->Buffer.Pointer[index] << (index * 8u);
+    AcpiOsFree(buffer.Pointer);
+    return functions;
+}
+
 char *
 acpi_name(ACPI_HANDLE handle)
 {

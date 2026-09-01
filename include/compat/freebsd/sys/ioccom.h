@@ -5,6 +5,7 @@
 #define _SYS_IOCCOM_H_
 
 #define IOCPARM_MASK 0x1fffUL
+#define IOCPARM_MAX (1UL << 13)
 #define IOC_VOID 0x20000000UL
 #define IOC_OUT 0x40000000UL
 #define IOC_IN 0x80000000UL

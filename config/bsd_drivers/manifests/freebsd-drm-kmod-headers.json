@@ -1,0 +1,58 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-drm-kmod-headers",
+  "provider": "freebsd",
+  "package_type": "headers",
+  "description": "FreeBSD drm-kmod 6.6 source inventory for the DRM, TTM, dma-buf, and i915 bridge.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD drm-kmod",
+    "repository": "https://github.com/freebsd/drm-kmod.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "00feac718ac97b1f6dbec8f6f9167d225585b4bd",
+    "branch": "6.6-lts",
+    "version": "6.6-lts"
+  },
+  "source_policy": {
+    "mode": "patched",
+    "allow_inline_patches": true,
+    "allow_unmarked_files": true,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-2-Clause-FreeBSD",
+      "GPL-1.0+ WITH Linux-syscall-note",
+      "GPL-2.0",
+      "GPL-2.0+",
+      "GPL-2.0 OR MIT",
+      "GPL-2.0 or MIT",
+      "GPL-2.0-only",
+      "GPL-2.0-or-later",
+      "GPL-2.0-or-later or MIT",
+      "LicenseRef-Upstream-Unmarked",
+      "MIT",
+      "Public-Domain"
+    ],
+    "license_exceptions": {},
+    "patches": [{
+      "path": "sys/contrib/drm-kmod/drivers/gpu/drm/i915/i915_pmu.h",
+      "upstream_sha256": "2927f5b82b3aa302df6dce922d7ea5eb61e964ef980fc77083326dea9d112ec4",
+      "reason": "Track the i915 no-PMU compatibility selection inside this package's complete drm-kmod source lock."
+    }]
+  },
+  "source_lock": {
+    "paths": [
+      "sys/contrib/drm-kmod"
+    ],
+    "file_count": 2971,
+    "tree_sha256": "fdb235ee58b4da7256022badcca18c123b9accc3588114f6f6588954876469ac"
+  },
+  "generated_interfaces": [],
+  "modules": []
+}

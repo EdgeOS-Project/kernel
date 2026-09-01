@@ -89,3 +89,11 @@ inet_ntop(int family, const void *address, char *buffer,
         return 0;
     return buffer;
 }
+
+char *
+ip6_sprintf(char *buffer, const struct in6_addr *address)
+{
+    if (!buffer || !address)
+        return 0;
+    return inet_ntop(AF_INET6, address, buffer, 64);
+}

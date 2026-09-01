@@ -4,6 +4,15 @@
 #include <sys/types.h>
 #include <dev/psci/smccc.h>
 
+bool
+has_hyp(void)
+{
+    register_t current_el;
+
+    __asm __volatile("mrs %0, CurrentEL" : "=r"(current_el));
+    return (current_el & 0xcul) == 0x8ul;
+}
+
 static int
 arm_smccc_call(int use_hvc, register_t a0, register_t a1, register_t a2,
     register_t a3, register_t a4, register_t a5, register_t a6,

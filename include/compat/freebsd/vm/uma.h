@@ -12,14 +12,20 @@ typedef int (*uma_ctor)(void *, int, void *, int);
 typedef void (*uma_dtor)(void *, int, void *);
 typedef int (*uma_init)(void *, int, int);
 typedef void (*uma_fini)(void *, int);
+typedef int (*uma_import)(void *, void **, int, int, int);
+typedef void (*uma_release)(void *, void **, int);
 
 #define UMA_ALIGN_PTR (sizeof(void *) - 1u)
+#define UMA_ALIGN_CACHE (uma_get_cache_align_mask())
 #define UMA_ZONE_ZINIT 0x0002
 #define UMA_ZONE_NODUMP 0x0004
 
 uma_zone_t uma_zcreate(const char *name, size_t size, uma_ctor ctor,
     uma_dtor dtor, uma_init init, uma_fini fini, unsigned int alignment,
     unsigned int flags);
+uma_zone_t uma_zcache_create(const char *name, int size, uma_ctor ctor,
+    uma_dtor dtor, uma_init init, uma_fini fini, uma_import import,
+    uma_release release, void *argument, int flags);
 void uma_zdestroy(uma_zone_t zone);
 void *uma_zalloc_arg(uma_zone_t zone, void *argument, int flags);
 void uma_zfree_arg(uma_zone_t zone, void *item, void *argument);
@@ -36,5 +42,7 @@ uma_zfree(uma_zone_t zone, void *item)
 void uma_prealloc(uma_zone_t zone, int item_count);
 void uma_zone_reserve(uma_zone_t zone, int item_count);
 int uma_zone_get_cur(uma_zone_t zone);
+int uma_zone_set_max(uma_zone_t zone, int item_count);
+unsigned int uma_get_cache_align_mask(void) __pure;
 
 #endif

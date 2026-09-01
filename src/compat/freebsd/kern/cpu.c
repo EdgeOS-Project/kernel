@@ -39,6 +39,7 @@
 #define BSD_CPU_EOPNOTSUPP 45
 
 unsigned int cpu_power_eax;
+int cpu_clflush_line_size = 64;
 unsigned int cpu_power_ecx;
 unsigned int cpu_id;
 unsigned int cpu_high;
@@ -64,6 +65,8 @@ int smp_tsc;
 int cpu_disable_c2_sleep;
 int cpu_disable_c3_sleep;
 int nmi_flush_l1d_sw;
+vm_paddr_t intel_graphics_stolen_base;
+vm_paddr_t intel_graphics_stolen_size;
 int use_xsave;
 uint64_t xsave_mask;
 extern unsigned long physmem;

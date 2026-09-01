@@ -35,6 +35,7 @@
   "source_lock": {
     "paths": [
       "sys/dev/gpio/gpio_if.m",
+      "sys/dev/gpio/gpioc.c",
       "sys/dev/gpio/gpiobus.c",
       "sys/dev/gpio/gpiobus_if.m",
       "sys/dev/gpio/gpiobus_internal.h",
@@ -42,8 +43,8 @@
       "sys/dev/gpio/ofw_gpiobus.c",
       "sys/dev/ofw/ofw_bus_if.m"
     ],
-    "file_count": 7,
-    "tree_sha256": "97675217370a5ad5a786f830660cc331c8b95ed6b6e596cc48b48c4a80af518e"
+    "file_count": 8,
+    "tree_sha256": "9b7af2056a4e939b61a552f095c0f8bcb95bc210eaa687610ae2efddb9f800a5"
   },
   "generated_interfaces": [
     "sys/dev/gpio/gpio_if.m",
@@ -54,6 +55,7 @@
     {
       "id": "gpio-core",
       "sources": [
+        "sys/dev/gpio/gpioc.c",
         "sys/dev/gpio/gpiobus.c",
         "sys/dev/gpio/ofw_gpiobus.c"
       ],

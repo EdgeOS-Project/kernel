@@ -49,5 +49,7 @@ const void *bsd_linker_image_base(const bsd_linker_image_t *image);
 size_t bsd_linker_image_size(const bsd_linker_image_t *image);
 int bsd_linker_image_records(
     const bsd_linker_image_t *image, bsd_linker_record_set_t *records);
+int bsd_linker_image_resolve_symbol(
+    const bsd_linker_image_t *image, const char *name, uint64_t *address);
 
 #endif

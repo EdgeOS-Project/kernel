@@ -1,0 +1,136 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-linuxkpi-headers",
+  "provider": "freebsd",
+  "package_type": "headers",
+  "description": "FreeBSD LinuxKPI compatibility headers and runtime source inventory required by imported drivers.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "patched",
+    "allow_inline_patches": true,
+    "allow_unmarked_files": true,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-2-Clause OR GPL-2.0",
+      "GPL-2.0 OR MIT",
+      "MIT",
+      "Public-Domain",
+      "(GPL-2.0-only OR BSD-3-Clause)",
+      "LicenseRef-Upstream-Unmarked"
+    ],
+    "license_exceptions": {},
+    "patches": [
+      {
+        "path": "sys/compat/linuxkpi/common/src/linux_compat.c",
+        "upstream_sha256": "c4048961950858c9dfb3e6182d68a1f2980f9f4773377fd6fc49ea14c72483b0",
+        "reason": "Match the Linux 6.6 list_sort comparator const contract selected by the imported LinuxKPI headers."
+      },
+    {
+      "path": "sys/compat/linuxkpi/common/src/linux_current.c",
+      "upstream_sha256": "9cc20e1966c82a91a40f8427ce59503673f3c71566d2a38cad0f7c6ce3a79cd9",
+      "reason": "Report the exact LinuxKPI current allocation stage when the EdgeOS bridge cannot create task or memory-management state."
+    },
+    {
+      "path": "sys/compat/linuxkpi/common/src/linux_skbuff.c",
+      "upstream_sha256": "7fd1f4ee87e2b7fede1873ac661779997c98945abb2a23c6eee1ba84cf9949cc",
+      "reason": "Implement owned linear socket-buffer head and tail expansion required by ath12k transmit encapsulation."
+    },
+    {
+      "path": "sys/compat/linuxkpi/common/src/linux_80211.c",
+      "upstream_sha256": "13ab42cc991d8b9f5480345d4743b71eb8dd76fb75be41ce0a1b9d83c93d86e8",
+      "reason": "Expose the live hardware queue stopped state required by ath12k recovery."
+    },
+    {
+      "path": "sys/compat/linuxkpi/common/include/linux/ieee80211.h",
+      "upstream_sha256": "f0585cbf2057f72d5d0465fb4c2c701738ee2aef37b8093adfb588c75d88d30f",
+      "reason": "Provide the IEEE 802.11 radio-measurement, extended-capability, element, frequency, and block-ack response definitions required by the imported ath11k and ath12k drivers."
+    },
+    {
+      "path": "sys/compat/linuxkpi/common/include/linux/list.h",
+      "upstream_sha256": "2f316d939e7624333a99f9d5a2c6e6c3669fe856c771308958f8c1529e0aa409",
+      "reason": "Expose the canonical Linux list-head initializer and list-cut operation used by ath12k hardware groups and receive reassembly."
+    },
+    {
+      "path": "sys/compat/linuxkpi/common/include/linux/skbuff.h",
+      "upstream_sha256": "48ee688965ec8755975e696502d53fd1231c2d3829a65ac4357ba4c525cebb8e",
+      "reason": "Provide socket-buffer expansion, trailer growth, and fragment-list accounting required by ath12k data paths."
+    },
+    {
+      "path": "sys/compat/linuxkpi/common/include/linux/device.h",
+      "upstream_sha256": "4b0dbfb5781c9475677b156d5865032868f368b37631577a961796efc0449e60",
+      "reason": "Expose the Open Firmware node associated with a LinuxKPI device for ath12k platform and PCI firmware selection."
+    },
+    {
+      "path": "sys/compat/linuxkpi/common/include/linux/rcupdate.h",
+      "upstream_sha256": "73217b12018893a3ad490628d4e708f6da153afd2fa6ebeb01e0cf6f3dedda9d",
+      "reason": "Provide the RCU lock-state compatibility checks used by the imported ath12k driver."
+    },
+    {
+      "path": "sys/compat/linuxkpi/common/include/linux/slab.h",
+      "upstream_sha256": "81c6f36060cb17dd936535cf4da718b52943dddbaa90dee51844b7acbdd4c2e0",
+      "reason": "Correct the checked object-array allocation multiplication used by ath12k data-path setup."
+    },
+    {
+      "path": "sys/compat/linuxkpi/common/include/linux/spinlock.h",
+      "upstream_sha256": "fee5b5b38587735379270c5f347d1bab7bdac58401e09305c7d4544af9024777",
+      "reason": "Provide cleanup-based bottom-half spinlock guards used by ath12k WMI parsing."
+    },
+    {
+      "path": "sys/compat/linuxkpi/common/include/linux/workqueue.h",
+      "upstream_sha256": "e33317897710157a164cf3c8fdf0cb7936771f8f82f34d17c3798a7c451ef340",
+      "reason": "Provide Linux work-container recovery and bottom-half workqueue routing required by ath12k PCI completion handling."
+    },
+    {
+      "path": "sys/compat/linuxkpi/common/include/linux/pm.h",
+      "upstream_sha256": "1772eec5f120cf1b9ca6396a29293c78964f98a30599f1ee4f0267f0fbdfcb05",
+      "reason": "Provide late system-sleep callback initializers and disabled-configuration forms required by ath12k PCI power management."
+    },
+    {
+      "path": "sys/compat/linuxkpi/common/include/linux/pci.h",
+      "upstream_sha256": "89d507a1d8c148a2eecdb858dc1c315597cbd0c8bc08b42cc7f1a6e8c1571cc7",
+      "reason": "Match Linux PCI driver-name constness and expose the CPU-mask type used by ath12k MSI affinity callbacks."
+    },
+    {
+      "path": "sys/compat/linuxkpi/common/include/net/cfg80211.h",
+      "upstream_sha256": "4fd9a1ccfdd152bd083452bd27df774ece99673e25e33a0ebffaf781b9f60ecb",
+      "reason": "Provide the channel power spectral density and per-link station information fields consumed by the imported Qualcomm Wi-Fi 6 and Wi-Fi 7 drivers."
+    },
+    {
+      "path": "sys/compat/linuxkpi/common/include/linux/notifier.h",
+      "upstream_sha256": "5ca597547c379338d18455d672ec03940dfd18cd1a3ac44ba04e28887e1bece1",
+      "reason": "Provide Linux atomic notifier chains required to preserve ath12k panic callback registration."
+    },
+    {
+      "path": "sys/compat/linuxkpi/common/include/net/mac80211.h",
+      "upstream_sha256": "7996c5f881cce101ed3ad0f262209da981d29485ecc48485467050a2315f009d",
+      "reason": "Provide transmit-BSS, local power-constraint, and per-link station statistics interfaces required by the imported ath11k and ath12k drivers."
+      }
+    ]
+  },
+  "source_lock": {
+    "paths": [
+      "sys/compat/linuxkpi"
+    ],
+    "file_count": 458,
+    "tree_sha256": "dcfefa4bbbfddf8a9c1dfd09f76ab64f2b91ece84508916978da10ab65d39578"
+  },
+  "generated_interfaces": [],
+  "modules": []
+}

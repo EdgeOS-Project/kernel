@@ -1354,6 +1354,25 @@ bsd_module_linked_file_count(void)
     return count;
 }
 
+int
+bsd_module_resolve_symbol(const char *name, uint64_t *address)
+{
+    int result = BSD_MODULE_ENOENT;
+
+    if (!name || !address)
+        return BSD_MODULE_EINVAL;
+    linker_guard_lock();
+    for (struct linker_file *file = g_linker_files; file;
+        file = file->next) {
+        if (bsd_linker_image_resolve_symbol(file->image, name, address) == 0) {
+            result = 0;
+            break;
+        }
+    }
+    linker_guard_unlock();
+    return result;
+}
+
 static int
 module_deactivate_all_files(void)
 {

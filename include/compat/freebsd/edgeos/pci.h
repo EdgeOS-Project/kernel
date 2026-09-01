@@ -114,6 +114,7 @@ int bsd_pci_msix_count(device_t device);
 int bsd_pci_msix_table_bar(device_t device);
 int bsd_pci_msix_pba_bar(device_t device);
 int bsd_pci_reprogram_interrupts(void);
+int pci_get_max_payload(device_t device);
 int pci_get_max_read_req(device_t device);
 int pci_set_max_read_req(device_t device, int size);
 void pci_save_state(device_t device);

@@ -36,6 +36,7 @@
 #define ELF_SECTION_ABSOLUTE 0xfff1u
 #define ELF_SECTION_COMMON 0xfff2u
 #define ELF_BIND_WEAK 2u
+#define ELF_BIND_GLOBAL 1u
 #define ELF_RELOC_X86_64_64 1u
 #define ELF_RELOC_X86_64_PC32 2u
 #define ELF_RELOC_X86_64_PLT32 4u
@@ -159,8 +160,17 @@ struct bsd_linker_image {
     uint64_t size;
     uint64_t veneer_offset;
     uint64_t veneer_limit;
+    uint64_t export_offset;
+    uint32_t export_count;
+    uint32_t reserved_exports;
     bsd_linker_record_set_t records;
 };
+
+typedef struct {
+    uint64_t address;
+    uint32_t name_offset;
+    uint32_t reserved;
+} linker_export_t;
 
 typedef struct {
     void *memory;
@@ -442,6 +452,7 @@ resolve_external_symbol(const char *name, unsigned char binding,
         *address = 0;
         return 0;
     }
+    bsd_printf("[bsd-bridge] unresolved module symbol %s\n", name);
     return BSD_LINKER_ERR_SYMBOL;
 }
 
@@ -608,7 +619,11 @@ load_elf_x86_64(const void *object, size_t object_size,
     uint64_t *common_offsets;
     uint64_t workspace_bytes;
     uint64_t image_size = 0;
+    uint64_t export_offset = 0;
+    uint64_t export_names_offset = 0;
+    uint64_t export_names_size = 0;
     uint32_t symbol_count = 0;
+    uint32_t export_count = 0;
     uint32_t symbol_section_index = UINT32_MAX;
     bsd_linker_image_t *image = 0;
     int result = BSD_LINKER_ERR_FORMAT;
@@ -703,6 +718,51 @@ load_elf_x86_64(const void *object, size_t object_size,
         common_offsets[index] = image_size;
         image_size += symbol.size;
     }
+    for (uint32_t index = 0; index < symbol_count; ++index) {
+        elf64_symbol_t symbol;
+        const char *name;
+        uint32_t binding;
+        uint64_t name_bytes;
+
+        if (elf_get_symbol(object, object_size, &symbol_section, index,
+                &symbol) < 0)
+            goto finish;
+        binding = symbol.information >> 4;
+        if ((binding != ELF_BIND_GLOBAL && binding != ELF_BIND_WEAK) ||
+            symbol.section_index == ELF_SECTION_UNDEFINED)
+            continue;
+        if (symbol.section_index != ELF_SECTION_ABSOLUTE &&
+            symbol.section_index != ELF_SECTION_COMMON &&
+            (symbol.section_index >= header.section_header_count ||
+             section_offsets[symbol.section_index] == INVALID_OFFSET))
+            continue;
+        if (string_in_table(
+                (const unsigned char *)object + string_section.offset,
+                string_section.size, symbol.name, &name) < 0)
+            goto finish;
+        if (!name[0])
+            continue;
+        name_bytes = bsd_strlen(name) + 1u;
+        if (export_count == UINT32_MAX ||
+            add_u64(export_names_size, name_bytes,
+                &export_names_size) < 0)
+            goto finish;
+        export_count++;
+    }
+    if (export_count) {
+        uint64_t export_bytes;
+
+        if (align_u64(image_size, sizeof(uint64_t), &image_size) < 0 ||
+            multiply_u64(export_count, sizeof(linker_export_t),
+                &export_bytes) < 0)
+            goto finish;
+        export_offset = image_size;
+        if (add_u64(image_size, export_bytes, &image_size) < 0)
+            goto finish;
+        export_names_offset = image_size;
+        if (add_u64(image_size, export_names_size, &image_size) < 0)
+            goto finish;
+    }
     if (!image_size ||
         image_allocate(image_size, BSD_LINKER_ARCH_X86_64, &image) < 0) {
         result = BSD_LINKER_ERR_MEMORY;
@@ -729,6 +789,52 @@ load_elf_x86_64(const void *object, size_t object_size,
             section.size, 0);
         if (result < 0)
             goto finish;
+    }
+
+    if (export_count) {
+        linker_export_t *exports = (linker_export_t *)(image->base +
+            export_offset);
+        uint64_t name_cursor = export_names_offset;
+        uint32_t export_index = 0;
+
+        for (uint32_t index = 0; index < symbol_count; ++index) {
+            elf64_symbol_t symbol;
+            const char *name;
+            uint32_t binding;
+            uint64_t address;
+            size_t name_bytes;
+
+            if (elf_get_symbol(object, object_size, &symbol_section, index,
+                    &symbol) < 0)
+                goto finish;
+            binding = symbol.information >> 4;
+            if ((binding != ELF_BIND_GLOBAL && binding != ELF_BIND_WEAK) ||
+                symbol.section_index == ELF_SECTION_UNDEFINED)
+                continue;
+            if (symbol.section_index != ELF_SECTION_ABSOLUTE &&
+                symbol.section_index != ELF_SECTION_COMMON &&
+                (symbol.section_index >= header.section_header_count ||
+                 section_offsets[symbol.section_index] == INVALID_OFFSET))
+                continue;
+            if (string_in_table(
+                    (const unsigned char *)object + string_section.offset,
+                    string_section.size, symbol.name, &name) < 0 ||
+                !name[0])
+                goto finish;
+            if (elf_symbol_address(object, object_size, &header,
+                    &symbol_section, &string_section, section_offsets,
+                    common_offsets, image, index, resolver,
+                    resolver_context, &address) < 0)
+                goto finish;
+            name_bytes = bsd_strlen(name) + 1u;
+            exports[export_index].address = address;
+            exports[export_index].name_offset = (uint32_t)name_cursor;
+            bsd_memcpy(image->base + name_cursor, name, name_bytes);
+            name_cursor += name_bytes;
+            export_index++;
+        }
+        image->export_offset = export_offset;
+        image->export_count = export_index;
     }
 
     for (uint32_t index = 0; index < header.section_header_count; ++index) {
@@ -1394,4 +1500,29 @@ bsd_linker_image_records(const bsd_linker_image_t *image,
         return BSD_LINKER_ERR_INVALID;
     *records = image->records;
     return 0;
+}
+
+int
+bsd_linker_image_resolve_symbol(const bsd_linker_image_t *image,
+    const char *name, uint64_t *address)
+{
+    const linker_export_t *exports;
+
+    if (!image || image->magic != BSD_LINKER_IMAGE_MAGIC || !name ||
+        !address || !image->export_count ||
+        image->export_offset >= image->size)
+        return BSD_LINKER_ERR_SYMBOL;
+    exports = (const linker_export_t *)(image->base + image->export_offset);
+    for (uint32_t index = 0; index < image->export_count; ++index) {
+        const char *export_name;
+
+        if (exports[index].name_offset >= image->size)
+            return BSD_LINKER_ERR_FORMAT;
+        export_name = (const char *)image->base + exports[index].name_offset;
+        if (bsd_strcmp(export_name, name) == 0) {
+            *address = exports[index].address;
+            return 0;
+        }
+    }
+    return BSD_LINKER_ERR_SYMBOL;
 }

@@ -123,10 +123,13 @@ extern struct sysctl_oid sysctl___hw_pci;
 extern struct sysctl_oid sysctl___machdep;
 extern struct sysctl_oid sysctl___dev;
 extern struct sysctl_oid sysctl___net;
+extern struct sysctl_oid sysctl___compat;
 extern const char kern_ident[];
 
 #define SYSCTL_DECL(name) extern struct sysctl_oid sysctl__##name
 #define SYSCTL_CHILDREN(oid) (&(oid)->oid_children)
+#define SYSCTL_FOREACH(oid, list) \
+    RB_FOREACH(oid, sysctl_oid_list, list)
 #define SYSCTL_STATIC_CHILDREN(name) (&sysctl__##name.oid_children)
 #define SYSCTL_NODE_CHILDREN(parent, name) \
     sysctl__##parent##_##name.oid_children
@@ -229,6 +232,11 @@ extern const char kern_ident[];
         CTLTYPE_INT | CTLFLAG_MPSAFE | (access), pointer, value, \
         sysctl_handle_int, "I", description, 0)
 
+#define SYSCTL_ADD_OID(context, parent, number, name, kind, argument, \
+    argument_value, handler, format, description) \
+    sysctl_add_oid(context, parent, number, name, kind, argument, \
+        argument_value, handler, format, description, 0)
+
 #define SYSCTL_ADD_UINT(context, parent, number, name, access, pointer, \
     value, description) \
     sysctl_add_oid(context, parent, number, name, \
@@ -239,6 +247,11 @@ extern const char kern_ident[];
     description) \
     sysctl_add_oid(context, parent, number, name, \
         CTLTYPE_NODE | (access), 0, 0, handler, "N", description, 0)
+
+#define SYSCTL_ADD_ROOT_NODE(context, number, name, access, handler, \
+    description) \
+    SYSCTL_ADD_NODE(context, &sysctl__children, number, name, access, \
+        handler, description)
 
 #define SYSCTL_ADD_NODE_WITH_LABEL(context, parent, number, name, access, \
     handler, description, label) \
@@ -258,6 +271,7 @@ extern const char kern_ident[];
         sysctl_handle_64, "QU", description, 0)
 #define SYSCTL_NULL_U64_PTR ((uint64_t *)0)
 #define SYSCTL_NULL_U32_PTR ((uint32_t *)0)
+#define SYSCTL_NULL_INT_PTR ((int *)0)
 
 #define SYSCTL_ADD_QUAD(context, parent, number, name, access, pointer, \
     description) \
@@ -341,6 +355,12 @@ extern const char kern_ident[];
         CTLTYPE_U32 | CTLFLAG_MPSAFE | (access), pointer, value, \
         sysctl_handle_32, "IU", description, 0)
 
+#define SYSCTL_ADD_S32(context, parent, number, name, access, pointer, \
+    value, description) \
+    sysctl_add_oid(context, parent, number, name, \
+        CTLTYPE_S32 | CTLFLAG_MPSAFE | (access), pointer, value, \
+        sysctl_handle_32, "I", description, 0)
+
 #define SYSCTL_ADD_COUNTER_U64(context, parent, number, name, access, \
     pointer, description) \
     sysctl_add_oid(context, parent, number, name, \
@@ -380,6 +400,7 @@ struct sysctl_oid *sysctl_add_oid(struct sysctl_ctx_list *,
     struct sysctl_oid_list *, int, const char *, int, void *, intmax_t,
     int (*)(SYSCTL_HANDLER_ARGS), const char *, const char *, const char *);
 int sysctl_remove_oid(struct sysctl_oid *, int, int);
+int sysctl_remove_name(struct sysctl_oid *, const char *, int, int);
 void sysctl_wlock(void);
 void sysctl_wunlock(void);
 void sysctl_register_oid(struct sysctl_oid *);

@@ -13,6 +13,8 @@ struct linker_file;
 
 int bsd_driver_symbol_resolve(const char *name, uint64_t *address,
     void *context);
+int bsd_driver_kernel_symbol_resolve(const char *name, uint64_t *address);
+size_t bsd_driver_kernel_symbol_count(void);
 size_t bsd_driver_symbol_count(void);
 
 int bsd_driver_module_resolve_path(const char *name, size_t length,

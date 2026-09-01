@@ -19,6 +19,7 @@ struct linker_file {
 typedef struct linker_file *linker_file_t;
 
 #define MODINFO_METADATA 0x8000
+#define LINKER_UNLOAD_NORMAL 0
 
 extern caddr_t preload_kmdp;
 caddr_t preload_search_info(caddr_t metadata, int type);

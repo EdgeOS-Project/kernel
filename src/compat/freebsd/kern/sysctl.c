@@ -123,6 +123,17 @@ struct sysctl_oid sysctl___net = {
     .oid_descr = "network",
 };
 
+struct sysctl_oid sysctl___compat = {
+    .oid_children = RB_INITIALIZER(&sysctl___compat.oid_children),
+    .oid_parent = &sysctl__children,
+    .oid_number = 10,
+    .oid_kind = CTLTYPE_NODE | CTLFLAG_RW | CTLFLAG_MPSAFE,
+    .oid_name = "compat",
+    .oid_fmt = "N",
+    .oid_refcnt = 1,
+    .oid_descr = "compatibility",
+};
+
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
@@ -230,6 +241,8 @@ sysctl_roots_initialize(void)
             &sysctl___dev);
         (void)RB_INSERT(sysctl_oid_list, &sysctl__children,
             &sysctl___net);
+        (void)RB_INSERT(sysctl_oid_list, &sysctl__children,
+            &sysctl___compat);
         g_sysctl_roots_initialized = 1;
     }
     sysctl_unlock();
@@ -397,6 +410,28 @@ sysctl_remove_oid(struct sysctl_oid *oid, int destroy, int recurse)
     if (destroy)
         sysctl_free_oid(oid);
     return 0;
+}
+
+int
+sysctl_remove_name(struct sysctl_oid *parent, const char *name, int destroy,
+    int recurse)
+{
+    struct sysctl_oid *oid;
+
+    if (!parent || !name)
+        return BSD_SYSCTL_EINVAL;
+    RB_FOREACH(oid, sysctl_oid_list, &parent->oid_children) {
+        const char *left = oid->oid_name;
+        const char *right = name;
+
+        while (*left != '\0' && *left == *right) {
+            left++;
+            right++;
+        }
+        if (*left == *right)
+            return sysctl_remove_oid(oid, destroy, recurse);
+    }
+    return BSD_SYSCTL_ENOENT;
 }
 
 int

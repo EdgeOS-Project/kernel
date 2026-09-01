@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 /* Shared kernel environment for imported FreeBSD drivers. */
 
+#include <limits.h>
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -356,6 +357,33 @@ getenv_ulong(const char *name, unsigned long *data)
     if (error || negative)
         return 0;
     *data = parsed;
+    return 1;
+}
+
+int
+bsd_tunable_long_fetch(const char *path, long *data)
+{
+    char *value;
+    unsigned long parsed;
+    int negative;
+    int error;
+
+    if (!data)
+        return 0;
+    value = kern_getenv(path);
+    if (!value)
+        return 0;
+    error = resource_parse_integer(value, &parsed, &negative);
+    freeenv(value);
+    if (error || (!negative && parsed > (unsigned long)LONG_MAX) ||
+        (negative && parsed > (unsigned long)LONG_MAX + 1ul))
+        return 0;
+    if (!negative)
+        *data = (long)parsed;
+    else if (parsed == (unsigned long)LONG_MAX + 1ul)
+        *data = LONG_MIN;
+    else
+        *data = -(long)parsed;
     return 1;
 }
 

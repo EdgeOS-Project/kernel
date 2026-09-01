@@ -1,0 +1,86 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-drm-dmabuf",
+  "provider": "freebsd",
+  "description": "Unmodified FreeBSD drm-kmod dma-buf core imported through the EdgeOS BSD Driver Bridge.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [
+      "CONFIG_DRM=1",
+      "EDGEOS_BSD_LINUXKPI=1",
+      "KBUILD_MODNAME=dmabuf",
+      "LINUXKPI_VERSION=60600",
+      "__FreeBSD__=14"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "drm-kmod"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD drm-kmod",
+    "repository": "https://github.com/freebsd/drm-kmod.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "00feac718ac97b1f6dbec8f6f9167d225585b4bd",
+    "branch": "6.6-lts",
+    "version": "6.6-lts"
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "GPL-2.0-only",
+      "MIT"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/contrib/drm-kmod/drivers/dma-buf/dma-buf-kmod.c",
+      "sys/contrib/drm-kmod/drivers/dma-buf/dma-buf.c",
+      "sys/contrib/drm-kmod/drivers/dma-buf/dma-fence-array.c",
+      "sys/contrib/drm-kmod/drivers/dma-buf/dma-fence-chain.c",
+      "sys/contrib/drm-kmod/drivers/dma-buf/dma-fence-unwrap.c",
+      "sys/contrib/drm-kmod/drivers/dma-buf/dma-fence.c",
+      "sys/contrib/drm-kmod/drivers/dma-buf/dma-resv.c",
+      "sys/contrib/drm-kmod/drivers/dma-buf/sync_file.c"
+    ],
+    "file_count": 8,
+    "tree_sha256": "28bbe3e4862097a98074ecc2fcb60e17dcb0d0f899920aeb0b72440b085877d2"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "dmabuf",
+      "sources": [
+        "sys/contrib/drm-kmod/drivers/dma-buf/dma-buf-kmod.c",
+        "sys/contrib/drm-kmod/drivers/dma-buf/dma-buf.c",
+        "sys/contrib/drm-kmod/drivers/dma-buf/dma-fence-array.c",
+        "sys/contrib/drm-kmod/drivers/dma-buf/dma-fence-chain.c",
+        "sys/contrib/drm-kmod/drivers/dma-buf/dma-fence-unwrap.c",
+        "sys/contrib/drm-kmod/drivers/dma-buf/dma-fence.c",
+        "sys/contrib/drm-kmod/drivers/dma-buf/dma-resv.c",
+        "sys/contrib/drm-kmod/drivers/dma-buf/sync_file.c"
+      ],
+      "capabilities": [
+        "base",
+        "character-device",
+        "memory",
+        "module",
+        "synchronization",
+        "sysctl",
+        "vm"
+      ],
+      "kconfig_requires": [
+        "GRAPHICS_INTEL"
+      ],
+      "build": {
+        "mode": "module"
+      }
+    }
+  ]
+}

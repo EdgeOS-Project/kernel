@@ -53,6 +53,7 @@ int sbuf_printf(struct sbuf *, const char *, ...);
 int sbuf_vprintf(struct sbuf *, const char *, va_list);
 int sbuf_nl_terminate(struct sbuf *);
 int sbuf_putc(struct sbuf *, int);
+void sbuf_hexdump(struct sbuf *, const void *, int, const char *, int);
 void sbuf_set_drain(struct sbuf *, sbuf_drain_func *, void *);
 int sbuf_drain(struct sbuf *);
 int sbuf_trim(struct sbuf *);

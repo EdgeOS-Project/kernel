@@ -13,9 +13,15 @@
 #define SBS_CANTRCVMORE 0x0020
 
 struct socket;
+struct mbuf;
+struct sockaddr;
+typedef int so_upcall_t(struct socket *, void *, int);
 
 struct sockbuf {
     struct mtx *sb_mtx;
+    struct mbuf *sb_mb;
+    struct mbuf *sb_mbtail;
+    struct mbuf *sb_lastrecord;
     short sb_state;
     short sb_flags;
     u_int sb_acc;
@@ -26,6 +32,8 @@ struct sockbuf {
     u_int sb_lowat;
     u_int sb_mbmax;
     sbintime_t sb_timeo;
+    so_upcall_t *sb_upcall;
+    void *sb_upcallarg;
 };
 
 typedef enum {
@@ -39,5 +47,29 @@ typedef enum {
 #define SOCKBUF_OWNED(buffer) mtx_owned(SOCKBUF_MTX(buffer))
 
 int sbwait(struct socket *socket, sb_which which);
+int sbappendaddr(struct sockbuf *, const struct sockaddr *, struct mbuf *,
+    struct mbuf *);
+int sbappendaddr_locked(struct sockbuf *, const struct sockaddr *,
+    struct mbuf *, struct mbuf *);
+void sbappendrecord(struct sockbuf *, struct mbuf *);
+void sbappend(struct sockbuf *, struct mbuf *, int);
+void sbdrop(struct sockbuf *, int);
+void sbdroprecord(struct sockbuf *);
+struct mbuf *sbcreatecontrol(const void *, u_int, int, int, int);
+
+static inline u_int
+sbavail(struct sockbuf *buffer)
+{
+    return buffer->sb_acc;
+}
+
+static inline long
+sbspace(struct sockbuf *buffer)
+{
+    long byte_space = (long)buffer->sb_hiwat - (long)buffer->sb_ccc;
+    long mbuf_space = (long)buffer->sb_mbmax - (long)buffer->sb_mbcnt;
+
+    return byte_space < mbuf_space ? byte_space : mbuf_space;
+}
 
 #endif

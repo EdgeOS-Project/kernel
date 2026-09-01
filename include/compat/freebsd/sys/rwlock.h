@@ -13,6 +13,7 @@
 #define RW_DUPOK 0
 #define RW_NOPROFILE 0
 #define RW_NOWITNESS 0
+#define RW_NEW 0x20
 
 #define RA_UNLOCKED 0
 #define RA_LOCKED 1

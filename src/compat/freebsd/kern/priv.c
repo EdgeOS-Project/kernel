@@ -20,6 +20,7 @@ priv_check(struct thread *thread, int privilege)
     case PRIV_DRIVER:
     case PRIV_CPUCTL_UPDATE:
     case PRIV_CPUCTL_WRMSR:
+    case PRIV_SCHED_SETPRIORITY:
     case PRIV_NET80211_VAP_GETKEY:
     case PRIV_NET80211_VAP_MANAGE:
     case PRIV_NET80211_VAP_SETMAC:

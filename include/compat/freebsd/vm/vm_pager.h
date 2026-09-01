@@ -6,6 +6,13 @@
 
 #include "vm_object.h"
 
+#define VM_PAGER_OK 0
+#define VM_PAGER_BAD 1
+#define VM_PAGER_FAIL 2
+#define VM_PAGER_PEND 3
+#define VM_PAGER_ERROR 4
+#define VM_PAGER_AGAIN 5
+
 struct ucred;
 
 struct cdev_pager_ops {
@@ -31,5 +38,11 @@ vm_object_t cdev_pager_allocate(void *handle, objtype_t type,
     struct ucred *credential);
 vm_object_t cdev_pager_lookup(void *handle);
 void cdev_pager_free_page(vm_object_t object, vm_page_t page);
+void cdev_mgtdev_pager_free_pages(vm_object_t object);
+static inline void
+vm_pager_page_unswapped(vm_page_t page)
+{
+    (void)page;
+}
 
 #endif

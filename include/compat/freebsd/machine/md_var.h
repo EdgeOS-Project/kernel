@@ -32,6 +32,9 @@ extern int nmi_flush_l1d_sw;
 extern int cpu_disable_c2_sleep;
 extern int cpu_disable_c3_sleep;
 extern long Maxmem;
+extern int cpu_clflush_line_size;
+extern vm_paddr_t intel_graphics_stolen_base;
+extern vm_paddr_t intel_graphics_stolen_size;
 extern void (*cpu_idle_hook)(sbintime_t);
 
 bool cpu_mwait_usable(void);

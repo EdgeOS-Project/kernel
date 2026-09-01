@@ -20,6 +20,10 @@
 #ifdef INTRNG
 #include <sys/cpuset.h>
 
+#define INTR_ROOT_IRQ 0
+#define INTR_ROOT_FIQ 1
+#define INTR_ROOT_COUNT 2
+
 int intr_alloc_msi(device_t pci, device_t child, intptr_t xref,
     int count, int maxcount, int *irqs);
 int intr_release_msi(device_t pci, device_t child, intptr_t xref,

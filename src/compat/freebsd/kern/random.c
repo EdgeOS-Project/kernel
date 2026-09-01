@@ -158,6 +158,21 @@ arc4random(void)
     return value;
 }
 
+uint32_t
+arc4random_uniform(uint32_t upper_bound)
+{
+    uint32_t minimum;
+    uint32_t value;
+
+    if (upper_bound < 2u)
+        return 0;
+    minimum = (uint32_t)(-upper_bound) % upper_bound;
+    do {
+        value = arc4random();
+    } while (value < minimum);
+    return value % upper_bound;
+}
+
 unsigned long
 random(void)
 {

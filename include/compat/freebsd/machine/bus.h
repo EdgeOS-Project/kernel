@@ -5,6 +5,7 @@
 #define _MACHINE_BUS_H_
 
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "_bus.h"
@@ -260,6 +261,8 @@ int bus_dma_tag_create(bus_dma_tag_t parent, bus_size_t alignment,
 int bus_dma_tag_destroy(bus_dma_tag_t tag);
 int bus_dma_tag_set_domain(bus_dma_tag_t tag, int domain);
 int bus_dma_tag_set_iommu(bus_dma_tag_t tag, void *iommu, void *domain);
+bool bus_dma_id_mapped(bus_dma_tag_t tag, bus_addr_t physical_address,
+    bus_size_t length);
 void bus_dma_template_init(bus_dma_template_t *template,
     bus_dma_tag_t parent);
 int bus_dma_template_tag(bus_dma_template_t *template,

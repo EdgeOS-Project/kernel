@@ -1916,6 +1916,7 @@ _Static_assert(offsetof(struct edge_linux_sched_attr, sched_util_min) == 48,
 #define EDGE_LINUX_RLIMIT_COUNT 16u
 #define EDGE_LINUX_RLIMIT_STACK 3u
 #define EDGE_LINUX_RLIMIT_MEMLOCK 8u
+#define EDGE_LINUX_RLIMIT_AS 9u
 #define EDGE_LINUX_RLIMIT_NOFILE 7u
 #define EDGE_LINUX_RLIMIT_NICE 13u
 #define EDGE_LINUX_RLIMIT_RTPRIO 14u

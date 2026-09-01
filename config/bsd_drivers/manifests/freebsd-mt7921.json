@@ -1,0 +1,31 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-mt7921",
+  "provider": "freebsd",
+  "description": "FreeBSD LinuxKPI MediaTek mt7921 PCI wireless LAN driver.",
+  "architectures": ["x86_64", "arm64"],
+  "compile": {
+    "definitions": ["CONFIG_ARCH_DMA_ADDR_T_64BIT", "EDGEOS_BSD_LINUXKPI=1", "KBUILD_MODNAME=mt7921", "LINUXKPI_VERSION=70000", "__FreeBSD__=14"],
+    "undefinitions": [],
+    "include_groups": ["linuxkpi", "mt76"]
+  },
+  "upstream": {"project": "FreeBSD", "repository": "https://github.com/freebsd/freebsd-src.git", "root": "src/compat/freebsd/upstream", "vendored": true, "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe", "branch": "main", "version": "16.0-CURRENT", "freebsd_version": 1600019},
+  "source_policy": {"mode": "unmodified", "allow_inline_patches": false, "allowed_licenses": ["BSD-2-Clause", "BSD-3-Clause-Clear", "LicenseRef-Upstream-Unmarked"], "allow_unmarked_files": true, "license_exceptions": {}},
+  "source_lock": {"paths": ["sys/contrib/dev/mediatek/mt76"], "file_count": 214, "tree_sha256": "db5f1ae20663a64d6787e3cfcfe23a4eca0ca1a5f0b0b4f19e44a9f40927d8bb"},
+  "generated_interfaces": [],
+  "modules": [{
+    "id": "mt7921",
+    "sources": [
+      "sys/contrib/dev/mediatek/mt76/mt7921/init.c",
+      "sys/contrib/dev/mediatek/mt76/mt7921/main.c",
+      "sys/contrib/dev/mediatek/mt76/mt7921/mac.c",
+      "sys/contrib/dev/mediatek/mt76/mt7921/mcu.c",
+      "sys/contrib/dev/mediatek/mt76/mt7921/pci.c",
+      "sys/contrib/dev/mediatek/mt76/mt7921/pci_mac.c",
+      "sys/contrib/dev/mediatek/mt76/mt7921/pci_mcu.c",
+      "sys/contrib/dev/mediatek/mt76/mt7921/debugfs.c"
+    ],
+    "capabilities": ["base", "network"],
+    "build": {"mode": "builtin"}
+  }]
+}

@@ -9,4 +9,8 @@
 #define PROT_WRITE 0x02
 #define PROT_EXEC 0x04
 
+#define MAP_SHARED 0x0001
+#define MAP_PRIVATE 0x0002
+#define MAP_COPY MAP_PRIVATE
+
 #endif

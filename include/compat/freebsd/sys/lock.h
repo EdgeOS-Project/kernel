@@ -59,6 +59,16 @@ struct sx {
 };
 #endif
 
+#define sx_lock edgeos_lock.writer
+#define SX_OWNER(value) ((uintptr_t)(value))
+
+static inline struct thread *
+sx_xholder(const struct sx *lock)
+{
+    return (struct thread *)(uintptr_t)__atomic_load_n(
+        &lock->edgeos_lock.writer, __ATOMIC_ACQUIRE);
+}
+
 static inline void
 bsd_sx_lock_object_lock(void *data)
 {

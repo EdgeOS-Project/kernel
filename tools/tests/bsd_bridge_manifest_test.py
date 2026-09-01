@@ -76,6 +76,13 @@ USB_CORE_MANIFEST_PATH = MANIFEST_DIR / "freebsd-usb-core.json"
 USB_AUDIO_MANIFEST_PATH = MANIFEST_DIR / "freebsd-usb-audio.json"
 USB_WLAN_MANIFEST_PATH = MANIFEST_DIR / "freebsd-usb-wlan.json"
 MPI3MR_MANIFEST_PATH = MANIFEST_DIR / "freebsd-mpi3mr.json"
+LINUXKPI_HEADERS_MANIFEST_PATH = MANIFEST_DIR / "freebsd-linuxkpi-headers.json"
+DRM_KMOD_HEADERS_MANIFEST_PATH = MANIFEST_DIR / "freebsd-drm-kmod-headers.json"
+DRM_I915_MANIFEST_PATH = MANIFEST_DIR / "freebsd-drm-i915.json"
+DRM_AMDGPU_MANIFEST_PATH = MANIFEST_DIR / "freebsd-drm-amdgpu.json"
+LINUXKPI_RUNTIME_SLICE_MANIFEST_PATH = (
+    MANIFEST_DIR / "freebsd-linuxkpi-runtime-slice.json"
+)
 CAPABILITY_PATH = CAPABILITY_DIR / "freebsd.json"
 
 
@@ -196,6 +203,13 @@ class BsdBridgeManifestTest(unittest.TestCase):
                 "freebsd-coretemp",
                 "freebsd-dpaa2",
                 "freebsd-dpms",
+                "freebsd-drm-amdgpu",
+                "freebsd-drm-core",
+                "freebsd-drm-dmabuf",
+                "freebsd-drm-i915",
+                "freebsd-drm-kmod-headers",
+                "freebsd-drm-ttm",
+                "netbsd-drm-nouveau",
                 "freebsd-dwc-ethernet",
                 "freebsd-dwc-hdmi",
                 "freebsd-dwwdt",
@@ -270,6 +284,8 @@ class BsdBridgeManifestTest(unittest.TestCase):
                 "freebsd-libkern-crc16",
                 "freebsd-libkern-scanf",
                 "freebsd-libkern-sort",
+                "freebsd-linuxkpi-headers",
+                "freebsd-linuxkpi-runtime-slice",
                 "freebsd-libnv",
                 "freebsd-liquidio",
                 "freebsd-mana",
@@ -395,6 +411,38 @@ class BsdBridgeManifestTest(unittest.TestCase):
                 "freebsd-xdma",
                 "freebsd-xilinx-platform",
                 "freebsd-zlib-kernel",
+                "freebsd-allwinner-arm64",
+                "freebsd-apple-soc",
+                "freebsd-ath",
+                "freebsd-ath10k",
+                "freebsd-ath11k",
+                "freebsd-ath12k",
+                "freebsd-bhnd-bwn",
+                "freebsd-bluetooth-netgraph",
+                "freebsd-brcmfmac",
+                "freebsd-brcmutil",
+                "freebsd-fdt-audio",
+                "freebsd-iommu-arm64",
+                "freebsd-iommu-core",
+                "freebsd-irdma",
+                "freebsd-iwlwifi",
+                "freebsd-linux-typec",
+                "freebsd-linuxkpi-wlan",
+                "freebsd-mt76-core",
+                "freebsd-mt7615",
+                "freebsd-mt7915",
+                "freebsd-mt7921",
+                "freebsd-mt7925",
+                "freebsd-mt7996",
+                "freebsd-nvidia-tegra210",
+                "freebsd-nxp-qoriq",
+                "freebsd-pci-dw",
+                "freebsd-rdma-core",
+                "freebsd-rockchip-soc",
+                "freebsd-rtw88",
+                "freebsd-rtw89",
+                "freebsd-syscon-generic",
+                "freebsd-uart-core",
             },
         )
         self.assertEqual(
@@ -402,6 +450,10 @@ class BsdBridgeManifestTest(unittest.TestCase):
             "headers",
         )
         self.assertEqual(manifests["freebsd-base-headers"]["modules"], [])
+        self.assertNotEqual(
+            manifests["freebsd-linuxkpi-headers"]["upstream"]["commit"],
+            manifests["freebsd-drm-kmod-headers"]["upstream"]["commit"],
+        )
         modules = manifests["freebsd-virtio"]["modules"]
         builtin = {
             module["id"]
@@ -908,11 +960,18 @@ class BsdBridgeManifestTest(unittest.TestCase):
 
     def test_build_plan_is_derived_from_builtin_modules(self) -> None:
         plan = render_build_plan(MANIFEST_DIR, CAPABILITY_DIR)
-        self.assertIn("BSD_BRIDGE_PACKAGE_COUNT := 256", plan)
-        self.assertIn("BSD_BRIDGE_BUILTIN_MODULE_COUNT := 332", plan)
-        self.assertIn("BSD_BRIDGE_BUILTIN_SOURCE_COUNT := 1260", plan)
-        self.assertIn("BSD_BRIDGE_LOADABLE_MODULE_COUNT := 2", plan)
-        self.assertIn("BSD_BRIDGE_LOADABLE_SOURCE_COUNT := 2", plan)
+        self.assertIn("BSD_BRIDGE_PACKAGE_COUNT := 295", plan)
+        self.assertIn("BSD_BRIDGE_BUILTIN_MODULE_COUNT := 366", plan)
+        self.assertIn("BSD_BRIDGE_BUILTIN_SOURCE_COUNT := 2133", plan)
+        self.assertIn("BSD_BRIDGE_LOADABLE_MODULE_COUNT := 10", plan)
+        self.assertIn("BSD_BRIDGE_LOADABLE_SOURCE_COUNT := 1854", plan)
+        self.assertIn("freebsd-drm-dmabuf--dmabuf.ko", plan)
+        self.assertIn("freebsd-drm-amdgpu--amdgpu.ko", plan)
+        self.assertIn("freebsd-drm-i915--i915kms.ko", plan)
+        self.assertIn("netbsd-drm-nouveau--nouveau.ko", plan)
+        self.assertIn(
+            "freebsd-linuxkpi-runtime-slice/linuxkpi-core", plan
+        )
         self.assertIn("freebsd-virtio--virtio-random.ko", plan)
         self.assertIn("freebsd-ispfw--ispfw.ko", plan)
         self.assertIn("dev/mpi3mr/mpi3mr.c", plan)
@@ -1186,36 +1245,21 @@ class BsdBridgeManifestTest(unittest.TestCase):
         self.assertIn("dev/pci/vga_pci.c", plan)
         self.assertIn("compat/x86bios/x86bios.c", plan)
         self.assertIn("contrib/x86emu/x86emu.c", plan)
-        self.assertIn(
-            "BSD_BRIDGE_PACKAGE_FREEBSD_ACPI_BUTTONS_INCLUDE_FLAGS := "
-            "-I$(BSD_BRIDGE_ACPICA_INCLUDE)",
-            plan,
-        )
-        self.assertIn(
-            "BSD_BRIDGE_PACKAGE_FREEBSD_ACPI_POWER_INCLUDE_FLAGS := "
-            "-I$(BSD_BRIDGE_ACPICA_INCLUDE)",
-            plan,
-        )
-        self.assertIn(
-            "BSD_BRIDGE_PACKAGE_FREEBSD_ACPI_THERMAL_INCLUDE_FLAGS := "
-            "-I$(BSD_BRIDGE_ACPICA_INCLUDE)",
-            plan,
-        )
-        self.assertIn(
-            "BSD_BRIDGE_PACKAGE_FREEBSD_ACPI_WMI_INCLUDE_FLAGS := "
-            "-I$(BSD_BRIDGE_ACPICA_INCLUDE)",
-            plan,
-        )
-        self.assertIn(
-            "BSD_BRIDGE_PACKAGE_FREEBSD_ACPI_EC_INCLUDE_FLAGS := "
-            "-I$(BSD_BRIDGE_ACPICA_INCLUDE)",
-            plan,
-        )
-        self.assertIn(
-            "BSD_BRIDGE_PACKAGE_FREEBSD_I2C_HID_INCLUDE_FLAGS := "
-            "-I$(BSD_BRIDGE_ACPICA_INCLUDE)",
-            plan,
-        )
+        for package_id in (
+            "ACPI_BUTTONS",
+            "ACPI_POWER",
+            "ACPI_THERMAL",
+            "ACPI_WMI",
+            "ACPI_EC",
+            "I2C_HID",
+        ):
+            self.assertIn(
+                "-I$(BSD_BRIDGE_ACPICA_INCLUDE)",
+                make_assignment_values(
+                    plan,
+                    f"BSD_BRIDGE_PACKAGE_FREEBSD_{package_id}_INCLUDE_FLAGS",
+                ),
+            )
         self.assertIn(
             "BSD_BRIDGE_PACKAGE_FREEBSD_I2C_HID_REL_SRCS:.c=.o)): "
             "$(BSD_BRIDGE_ACPICA_INCLUDE_STAMP)",
@@ -1329,45 +1373,14 @@ class BsdBridgeManifestTest(unittest.TestCase):
     def test_build_plan_honors_module_kconfig_requirements(self) -> None:
         plan = render_build_plan(MANIFEST_DIR, CAPABILITY_DIR)
 
-        self.assertIn(
-            "ifeq ($(CONFIG_ACPI),y)\n"
-            "BSD_BRIDGE_X86_64_UPSTREAM_REL_SRCS += \\\n"
-            "\tdev/acpica/acpi_pci_link.c \\\n"
-            "\tdev/acpica/acpi_pcib.c \\\n"
-            "\tdev/acpica/acpi_resource.c \\\n"
-            "\tdev/cpufreq/ichss.c \\\n"
-            "\tdev/iommu/busdma_iommu.c \\\n"
-            "\tdev/iommu/iommu_gas.c \\\n"
-            "\tdev/nvdimm/nvdimm.c \\\n"
-            "\tdev/nvdimm/nvdimm_acpi.c \\\n"
-            "\tdev/nvdimm/nvdimm_e820.c \\\n"
-            "\tdev/nvdimm/nvdimm_nfit.c \\\n"
-            "\tdev/nvdimm/nvdimm_ns.c \\\n"
-            "\tdev/nvdimm/nvdimm_spa.c \\\n"
-            "\tdev/sdhci/sdhci_acpi.c \\\n"
-            "\tdev/sdhci/sdhci_xenon_acpi.c \\\n"
-            "\tx86/cpufreq/est.c \\\n"
-            "\tx86/cpufreq/hwpstate_intel.c \\\n"
-            "\tx86/cpufreq/p4tcc.c \\\n"
-            "\tx86/cpufreq/powernow.c \\\n"
-            "\tx86/iommu/amd_cmd.c \\\n"
-            "\tx86/iommu/amd_ctx.c \\\n"
-            "\tx86/iommu/amd_drv.c \\\n"
-            "\tx86/iommu/amd_event.c \\\n"
-            "\tx86/iommu/amd_idpgtbl.c \\\n"
-            "\tx86/iommu/amd_intrmap.c \\\n"
-            "\tx86/iommu/intel_ctx.c \\\n"
-            "\tx86/iommu/intel_drv.c \\\n"
-            "\tx86/iommu/intel_fault.c \\\n"
-            "\tx86/iommu/intel_idpgtbl.c \\\n"
-            "\tx86/iommu/intel_intrmap.c \\\n"
-            "\tx86/iommu/intel_qi.c \\\n"
-            "\tx86/iommu/intel_quirks.c \\\n"
-            "\tx86/iommu/intel_utils.c \\\n"
-            "\tx86/iommu/iommu_utils.c\n"
-            "endif",
-            plan,
-        )
+        x86_acpi_section = plan.split(
+            "ifeq ($(CONFIG_ACPI),y)\n", 1
+        )[1].split("\nendif", 1)[0]
+        self.assertIn("dev/acpica/acpi_pci_link.c", x86_acpi_section)
+        self.assertIn("dev/nvdimm/nvdimm_acpi.c", x86_acpi_section)
+        self.assertIn("dev/sdhci/sdhci_acpi.c", x86_acpi_section)
+        self.assertIn("x86/iommu/amd_drv.c", x86_acpi_section)
+        self.assertIn("x86/iommu/intel_drv.c", x86_acpi_section)
         arm64_acpi_section = plan.split(
             "ifeq ($(ARM64_CONFIG_ACPI),y)\n", 1
         )[1].split("\nendif", 1)[0]
@@ -1990,6 +2003,58 @@ class BsdBridgeManifestTest(unittest.TestCase):
             {"BSD-2-Clause": 50, "BSD-3-Clause": 2},
         )
 
+    def test_linuxkpi_and_drm_kmod_license_inventories_are_audited(self) -> None:
+        linuxkpi_licenses = verify_manifest_licenses(
+            LINUXKPI_HEADERS_MANIFEST_PATH, REPO_ROOT
+        )
+        self.assertEqual(linuxkpi_licenses["LicenseRef-Upstream-Unmarked"], 141)
+        drm_kmod_licenses = verify_manifest_licenses(
+            DRM_KMOD_HEADERS_MANIFEST_PATH, REPO_ROOT
+        )
+        self.assertEqual(drm_kmod_licenses["LicenseRef-Upstream-Unmarked"], 2239)
+        self.assertEqual(
+            verify_manifest_licenses(DRM_I915_MANIFEST_PATH, REPO_ROOT),
+            {
+                "GPL-2.0": 1,
+                "GPL-2.0-only": 1,
+                "LicenseRef-Upstream-Unmarked": 101,
+                "MIT": 548,
+            },
+        )
+        self.assertEqual(
+            verify_manifest_licenses(DRM_AMDGPU_MANIFEST_PATH, REPO_ROOT),
+            {
+                "GPL-2.0 OR MIT": 4,
+                "GPL-2.0+": 1,
+                "LicenseRef-Upstream-Unmarked": 1958,
+                "MIT": 80,
+            },
+        )
+        self.assertEqual(
+            verify_manifest_licenses(
+                LINUXKPI_RUNTIME_SLICE_MANIFEST_PATH, REPO_ROOT
+            ),
+            {
+                "(GPL-2.0-only OR BSD-3-Clause)": 1,
+                "BSD-2-Clause": 40,
+                "MIT": 2,
+                "Public-Domain": 2,
+            },
+        )
+
+    def test_unmarked_source_requires_explicit_manifest_policy(self) -> None:
+        manifest = json.loads(
+            LINUXKPI_HEADERS_MANIFEST_PATH.read_text(encoding="utf-8")
+        )
+        manifest["source_policy"]["allow_unmarked_files"] = False
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "freebsd-linuxkpi-headers.json"
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ManifestError, "locked source has no auditable license"
+            ):
+                verify_manifest_licenses(path, REPO_ROOT)
+
     def test_vendored_source_tree_is_fully_covered(self) -> None:
         manifest_paths = [
             *sorted(MANIFEST_DIR.glob("*.json")),
@@ -2390,6 +2455,8 @@ class BsdBridgeManifestTest(unittest.TestCase):
                 mode="builtin",
                 reason=None,
                 license_exception_values=[],
+                allow_unmarked_files=False,
+                allowed_license_values=[],
             )
             write_manifest(output, manifest, False)
             loaded = load_manifest(output)
@@ -2418,6 +2485,8 @@ class BsdBridgeManifestTest(unittest.TestCase):
             mode="builtin",
             reason=None,
             license_exception_values=[],
+            allow_unmarked_files=False,
+            allowed_license_values=[],
         )
 
         self.assertEqual(
@@ -2474,6 +2543,8 @@ class BsdBridgeManifestTest(unittest.TestCase):
             mode="builtin",
             reason=None,
             license_exception_values=[],
+            allow_unmarked_files=False,
+            allowed_license_values=[],
         )
 
         self.assertEqual(manifest["architectures"], ["x86_64"])

@@ -21,6 +21,7 @@
 #define BSD_FRAMEBUFFER_EINVAL 22
 
 static struct vt_device g_framebuffer_device;
+struct vt_device *main_vd = &g_framebuffer_device;
 static const struct vt_driver *g_framebuffer_driver;
 static void *g_framebuffer_softc;
 static const uint8_t g_empty_glyph[32];

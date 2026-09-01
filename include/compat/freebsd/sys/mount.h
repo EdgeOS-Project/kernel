@@ -4,7 +4,11 @@
 #ifndef _SYS_MOUNT_H_
 #define _SYS_MOUNT_H_
 
-struct mount;
+struct mount {
+    unsigned long mnt_flag;
+};
 struct vnode;
+
+#define MNT_NOEXEC 0x00000004u
 
 #endif

@@ -1,0 +1,83 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-drm-ttm",
+  "provider": "freebsd",
+  "description": "Unmodified FreeBSD drm-kmod TTM memory manager imported through the EdgeOS BSD Driver Bridge.",
+  "architectures": ["x86_64"],
+  "compile": {
+    "definitions": [
+      "CONFIG_64BIT=1", "CONFIG_ACPI=1",
+      "CONFIG_ARCH_HAVE_NMI_SAFE_CMPXCHG=1", "CONFIG_COMPAT=1",
+      "CONFIG_DEBUG_FS=1", "CONFIG_DMI=1", "CONFIG_DRM=1",
+      "CONFIG_MTRR=1", "CONFIG_PCI=1", "CONFIG_PM=1",
+      "CONFIG_PM_SLEEP=1", "CONFIG_SMP=1", "CONFIG_SUSPEND=1",
+      "CONFIG_X86=1", "CONFIG_X86_64=1", "CONFIG_X86_PAT=1",
+      "DRM_SYSCTL_PARAM_PREFIX=_ttm", "EDGEOS_BSD_LINUXKPI=1",
+      "KBUILD_MODNAME=ttm", "LINUXKPI_PARAM_PREFIX=ttm_",
+      "LINUXKPI_VERSION=60600", "__FreeBSD__=14"
+    ],
+    "undefinitions": [],
+    "include_groups": ["drm-kmod"]
+  },
+  "upstream": {
+    "project": "FreeBSD drm-kmod",
+    "repository": "https://github.com/freebsd/drm-kmod.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "00feac718ac97b1f6dbec8f6f9167d225585b4bd",
+    "branch": "6.6-lts",
+    "version": "6.6-lts"
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allow_unmarked_files": true,
+    "allowed_licenses": [
+      "GPL-2.0 OR MIT", "GPL-2.0-or-later",
+      "LicenseRef-Upstream-Unmarked"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/contrib/drm-kmod/drivers/gpu/drm/drm_gem_ttm_helper.c",
+      "sys/contrib/drm-kmod/drivers/gpu/drm/ttm/ttm_bo.c",
+      "sys/contrib/drm-kmod/drivers/gpu/drm/ttm/ttm_bo_util.c",
+      "sys/contrib/drm-kmod/drivers/gpu/drm/ttm/ttm_bo_vm.c",
+      "sys/contrib/drm-kmod/drivers/gpu/drm/ttm/ttm_device.c",
+      "sys/contrib/drm-kmod/drivers/gpu/drm/ttm/ttm_execbuf_util.c",
+      "sys/contrib/drm-kmod/drivers/gpu/drm/ttm/ttm_module.c",
+      "sys/contrib/drm-kmod/drivers/gpu/drm/ttm/ttm_pool.c",
+      "sys/contrib/drm-kmod/drivers/gpu/drm/ttm/ttm_range_manager.c",
+      "sys/contrib/drm-kmod/drivers/gpu/drm/ttm/ttm_resource.c",
+      "sys/contrib/drm-kmod/drivers/gpu/drm/ttm/ttm_sys_manager.c",
+      "sys/contrib/drm-kmod/drivers/gpu/drm/ttm/ttm_tt.c"
+    ],
+    "file_count": 12,
+    "tree_sha256": "5203bc1a126f03a7bba7848a652d696e45903907c3723877f8b2b270b375840f"
+  },
+  "generated_interfaces": [],
+  "modules": [{
+    "id": "ttm",
+    "sources": [
+      "sys/contrib/drm-kmod/drivers/gpu/drm/ttm/ttm_bo.c",
+      "sys/contrib/drm-kmod/drivers/gpu/drm/ttm/ttm_bo_util.c",
+      "sys/contrib/drm-kmod/drivers/gpu/drm/ttm/ttm_bo_vm.c",
+      "sys/contrib/drm-kmod/drivers/gpu/drm/ttm/ttm_execbuf_util.c",
+      "sys/contrib/drm-kmod/drivers/gpu/drm/ttm/ttm_module.c",
+      "sys/contrib/drm-kmod/drivers/gpu/drm/ttm/ttm_pool.c",
+      "sys/contrib/drm-kmod/drivers/gpu/drm/ttm/ttm_device.c",
+      "sys/contrib/drm-kmod/drivers/gpu/drm/ttm/ttm_sys_manager.c",
+      "sys/contrib/drm-kmod/drivers/gpu/drm/ttm/ttm_range_manager.c",
+      "sys/contrib/drm-kmod/drivers/gpu/drm/ttm/ttm_resource.c",
+      "sys/contrib/drm-kmod/drivers/gpu/drm/ttm/ttm_tt.c",
+      "sys/contrib/drm-kmod/drivers/gpu/drm/drm_gem_ttm_helper.c"
+    ],
+    "capabilities": [
+      "base", "memory", "module", "pci", "synchronization",
+      "sysctl", "taskqueue", "vm"
+    ],
+    "kconfig_requires": ["GRAPHICS_INTEL"],
+    "build": {"mode": "module"}
+  }]
+}

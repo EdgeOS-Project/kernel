@@ -144,7 +144,6 @@ def load_catalog(manifest_dir: Path, capability_dir: Path) -> dict[str, Any]:
 
     manifests: list[dict[str, Any]] = []
     package_ids: set[str] = set()
-    provider_upstreams: dict[str, tuple[str, str, str]] = {}
     enabled_sources: dict[tuple[str, str], str] = {}
 
     for path in manifest_paths:
@@ -158,18 +157,6 @@ def load_catalog(manifest_dir: Path, capability_dir: Path) -> dict[str, Any]:
             raise ManifestError(
                 f"package {package_id} has no capability registry for {provider}"
             )
-
-        upstream_key = (
-            manifest["upstream"]["repository"],
-            manifest["upstream"]["root"],
-            manifest["upstream"]["commit"],
-        )
-        previous_upstream = provider_upstreams.get(provider)
-        if previous_upstream is not None and previous_upstream != upstream_key:
-            raise ManifestError(
-                f"provider {provider} packages must use one pinned upstream tree"
-            )
-        provider_upstreams[provider] = upstream_key
 
         registry = registries[provider]
         capabilities = registry["capabilities"]

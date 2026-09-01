@@ -31,21 +31,16 @@
   },
   "source_lock": {
     "paths": [
-      "sys/dev/iicbus/iicbb.c",
-      "sys/dev/iicbus/iicbb_if.m",
       "sys/dev/viapm/viapm.c"
     ],
-    "file_count": 3,
-    "tree_sha256": "f63adefdaa91209818ce245f43f689009c893958d7fd6e841344c4cba85ae0c5"
+    "file_count": 1,
+    "tree_sha256": "4a0d8b090f02f8673947f19b9f6ea27822f3cd2b99e840fe9a649f39d36eafde"
   },
-  "generated_interfaces": [
-    "sys/dev/iicbus/iicbb_if.m"
-  ],
+  "generated_interfaces": [],
   "modules": [
     {
       "id": "viapm",
       "sources": [
-        "sys/dev/iicbus/iicbb.c",
         "sys/dev/viapm/viapm.c"
       ],
       "capabilities": [

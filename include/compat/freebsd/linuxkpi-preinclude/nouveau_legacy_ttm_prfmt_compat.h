@@ -1,0 +1,8 @@
+#ifndef EDGEOS_FREEBSD_LINUXKPI_NOUVEAU_LEGACY_TTM_PRFMT_COMPAT_H
+#define EDGEOS_FREEBSD_LINUXKPI_NOUVEAU_LEGACY_TTM_PRFMT_COMPAT_H
+
+#include "nouveau_legacy_ttm_compat.h"
+
+#undef pr_fmt
+
+#endif

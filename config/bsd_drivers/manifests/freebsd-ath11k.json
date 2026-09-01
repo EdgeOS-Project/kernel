@@ -1,0 +1,127 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-ath11k",
+  "provider": "freebsd",
+  "description": "FreeBSD LinuxKPI Qualcomm Wi-Fi 6 ath11k PCI driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "CONFIG_ATH11K_DEBUG",
+      "CONFIG_ATH11K_PCI",
+      "EDGEOS_BSD_LINUXKPI=1",
+      "EDGEOS_BSD_DRIVER_PROVIDES_WAKEUP",
+      "KBUILD_MODNAME=ath11k",
+      "LINUXKPI_VERSION=70000",
+      "__FreeBSD__=14"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "linuxkpi",
+      "ath11k"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "patched",
+    "allow_inline_patches": true,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "BSD-3-Clause-Clear",
+      "ISC",
+      "LicenseRef-Upstream-Unmarked"
+    ],
+    "allow_unmarked_files": true,
+    "license_exceptions": {},
+    "patches": [
+      {
+        "path": "sys/contrib/dev/athk/ath11k/reg.c",
+        "upstream_sha256": "15d502dd0a5b0e473d1f475ab8928565f90516df2ff5cf4e5c89fb193db0759d",
+        "reason": "Use an exact two-byte regulatory alpha2 initializer so both GCC and Clang accept the fixed-width field."
+      },
+      {
+        "path": "sys/contrib/dev/athk/ath11k/pci.c",
+        "upstream_sha256": "1bf8145e1edfdac29f6b7a41fd5e8ec9d2093aa08d19cff44f05777f6bbdf2f5",
+        "reason": "Remove an unused local left by the FreeBSD import so the driver passes the shared warning-as-error gate."
+      }
+    ]
+  },
+  "source_lock": {
+    "paths": [
+      "sys/contrib/dev/athk/ath11k",
+      "sys/contrib/dev/athk/ath11k/ce.c",
+      "sys/contrib/dev/athk/ath11k/core.c",
+      "sys/contrib/dev/athk/ath11k/dbring.c",
+      "sys/contrib/dev/athk/ath11k/debug.c",
+      "sys/contrib/dev/athk/ath11k/dp.c",
+      "sys/contrib/dev/athk/ath11k/dp_rx.c",
+      "sys/contrib/dev/athk/ath11k/dp_tx.c",
+      "sys/contrib/dev/athk/ath11k/fw.c",
+      "sys/contrib/dev/athk/ath11k/hal.c",
+      "sys/contrib/dev/athk/ath11k/hal_rx.c",
+      "sys/contrib/dev/athk/ath11k/hal_tx.c",
+      "sys/contrib/dev/athk/ath11k/htc.c",
+      "sys/contrib/dev/athk/ath11k/hw.c",
+      "sys/contrib/dev/athk/ath11k/mac.c",
+      "sys/contrib/dev/athk/ath11k/mhi.c",
+      "sys/contrib/dev/athk/ath11k/p2p.c",
+      "sys/contrib/dev/athk/ath11k/pci.c",
+      "sys/contrib/dev/athk/ath11k/pcic.c",
+      "sys/contrib/dev/athk/ath11k/peer.c",
+      "sys/contrib/dev/athk/ath11k/qmi.c",
+      "sys/contrib/dev/athk/ath11k/reg.c",
+      "sys/contrib/dev/athk/ath11k/wmi.c"
+    ],
+    "file_count": 72,
+    "tree_sha256": "bf645c9aeb8a3fb70f6172039a7f8f2013631953f3b79dc0c86b4a4bbf3c60b0"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "ath11k",
+      "sources": [
+        "sys/contrib/dev/athk/ath11k/ce.c",
+        "sys/contrib/dev/athk/ath11k/core.c",
+        "sys/contrib/dev/athk/ath11k/dbring.c",
+        "sys/contrib/dev/athk/ath11k/debug.c",
+        "sys/contrib/dev/athk/ath11k/dp.c",
+        "sys/contrib/dev/athk/ath11k/dp_rx.c",
+        "sys/contrib/dev/athk/ath11k/dp_tx.c",
+        "sys/contrib/dev/athk/ath11k/fw.c",
+        "sys/contrib/dev/athk/ath11k/hal.c",
+        "sys/contrib/dev/athk/ath11k/hal_rx.c",
+        "sys/contrib/dev/athk/ath11k/hal_tx.c",
+        "sys/contrib/dev/athk/ath11k/htc.c",
+        "sys/contrib/dev/athk/ath11k/hw.c",
+        "sys/contrib/dev/athk/ath11k/mac.c",
+        "sys/contrib/dev/athk/ath11k/mhi.c",
+        "sys/contrib/dev/athk/ath11k/p2p.c",
+        "sys/contrib/dev/athk/ath11k/pci.c",
+        "sys/contrib/dev/athk/ath11k/pcic.c",
+        "sys/contrib/dev/athk/ath11k/peer.c",
+        "sys/contrib/dev/athk/ath11k/qmi.c",
+        "sys/contrib/dev/athk/ath11k/reg.c",
+        "sys/contrib/dev/athk/ath11k/wmi.c"
+      ],
+      "capabilities": [
+        "base",
+        "network"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

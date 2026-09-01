@@ -1,0 +1,122 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-rtw89",
+  "provider": "freebsd",
+  "description": "FreeBSD LinuxKPI Realtek rtw89 PCI wireless LAN driver with ACPI support.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "CONFIG_ACPI",
+      "CONFIG_RTW89_DEBUGMSG",
+      "DEV_ACPI=1",
+      "EDGEOS_BSD_FULL_ACPICA=1",
+      "EDGEOS_BSD_LINUXKPI=1",
+      "KBUILD_MODNAME=rtw89",
+      "LINUXKPI_VERSION=70000",
+      "LINUXKPI_WANT_LINUX_ACPI",
+      "__FreeBSD__=14"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "acpica",
+      "linuxkpi",
+      "rtw89"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "GPL-2.0 OR BSD-3-Clause",
+      "LicenseRef-Upstream-Unmarked"
+    ],
+    "allow_unmarked_files": true,
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/contrib/dev/rtw89"
+    ],
+    "file_count": 100,
+    "tree_sha256": "050487f6012ee4a78e5384559bda38d08132faf9e0e5e928ff590352290905cf"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "rtw89",
+      "sources": [
+        "sys/contrib/dev/rtw89/core.c",
+        "sys/contrib/dev/rtw89/chan.c",
+        "sys/contrib/dev/rtw89/mac80211.c",
+        "sys/contrib/dev/rtw89/mac.c",
+        "sys/contrib/dev/rtw89/mac_be.c",
+        "sys/contrib/dev/rtw89/phy.c",
+        "sys/contrib/dev/rtw89/phy_be.c",
+        "sys/contrib/dev/rtw89/fw.c",
+        "sys/contrib/dev/rtw89/cam.c",
+        "sys/contrib/dev/rtw89/efuse.c",
+        "sys/contrib/dev/rtw89/efuse_be.c",
+        "sys/contrib/dev/rtw89/regd.c",
+        "sys/contrib/dev/rtw89/sar.c",
+        "sys/contrib/dev/rtw89/coex.c",
+        "sys/contrib/dev/rtw89/ps.c",
+        "sys/contrib/dev/rtw89/ser.c",
+        "sys/contrib/dev/rtw89/util.c",
+        "sys/contrib/dev/rtw89/rtw8851b.c",
+        "sys/contrib/dev/rtw89/rtw8851b_rfk.c",
+        "sys/contrib/dev/rtw89/rtw8851b_rfk_table.c",
+        "sys/contrib/dev/rtw89/rtw8851b_table.c",
+        "sys/contrib/dev/rtw89/rtw8852a.c",
+        "sys/contrib/dev/rtw89/rtw8852a_rfk.c",
+        "sys/contrib/dev/rtw89/rtw8852a_rfk_table.c",
+        "sys/contrib/dev/rtw89/rtw8852a_table.c",
+        "sys/contrib/dev/rtw89/rtw8852b_common.c",
+        "sys/contrib/dev/rtw89/rtw8852b.c",
+        "sys/contrib/dev/rtw89/rtw8852b_rfk.c",
+        "sys/contrib/dev/rtw89/rtw8852b_rfk_table.c",
+        "sys/contrib/dev/rtw89/rtw8852b_table.c",
+        "sys/contrib/dev/rtw89/rtw8852bt.c",
+        "sys/contrib/dev/rtw89/rtw8852bt_rfk.c",
+        "sys/contrib/dev/rtw89/rtw8852bt_rfk_table.c",
+        "sys/contrib/dev/rtw89/rtw8852c.c",
+        "sys/contrib/dev/rtw89/rtw8852c_rfk.c",
+        "sys/contrib/dev/rtw89/rtw8852c_rfk_table.c",
+        "sys/contrib/dev/rtw89/rtw8852c_table.c",
+        "sys/contrib/dev/rtw89/rtw8922a.c",
+        "sys/contrib/dev/rtw89/rtw8922a_rfk.c",
+        "sys/contrib/dev/rtw89/pci.c",
+        "sys/contrib/dev/rtw89/pci_be.c",
+        "sys/contrib/dev/rtw89/rtw8851be.c",
+        "sys/contrib/dev/rtw89/rtw8852ae.c",
+        "sys/contrib/dev/rtw89/rtw8852be.c",
+        "sys/contrib/dev/rtw89/rtw8852bte.c",
+        "sys/contrib/dev/rtw89/rtw8852ce.c",
+        "sys/contrib/dev/rtw89/rtw8922ae.c",
+        "sys/contrib/dev/rtw89/acpi.c",
+        "sys/contrib/dev/rtw89/debug.c"
+      ],
+      "capabilities": [
+        "base",
+        "network"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

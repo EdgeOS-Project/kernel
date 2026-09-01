@@ -170,6 +170,8 @@ ACPI_STATUS acpi_EvaluateDSMTyped(ACPI_HANDLE handle,
 ACPI_STATUS acpi_EvaluateDSM(ACPI_HANDLE handle, const uint8_t *uuid,
     int revision, UINT64 function, ACPI_OBJECT *package,
     ACPI_BUFFER *out_buffer);
+UINT64 acpi_DSMQuery(ACPI_HANDLE handle, const uint8_t *uuid,
+    int revision);
 ACPI_STATUS acpi_EvaluateOSC(ACPI_HANDLE handle, uint8_t *uuid,
     int revision, int count, uint32_t *capabilities_in,
     uint32_t *capabilities_out, bool query);

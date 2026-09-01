@@ -36,6 +36,8 @@ bsd_cpu_next(int cpu)
 #define CPU_NEXT(cpu) bsd_cpu_next((cpu))
 #define CPU_FOREACH(cpu) \
     for ((cpu) = 0; (cpu) < mp_ncpus; ++(cpu))
+#define CPU_ABSENT(cpu) \
+    ((cpu) < 0 || (cpu) >= mp_ncpus || !CPU_ISSET((cpu), &all_cpus))
 
 typedef void (*smp_rendezvous_func_t)(void *);
 

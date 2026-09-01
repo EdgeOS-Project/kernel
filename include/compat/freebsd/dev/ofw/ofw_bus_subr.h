@@ -86,6 +86,7 @@ int ofw_bus_has_prop(device_t device, const char *property);
 phandle_t ofw_bus_find_compatible(phandle_t node,
     const char *compatible);
 phandle_t ofw_bus_find_child(phandle_t node, const char *name);
+phandle_t ofw_bus_find_iparent(phandle_t node);
 int ofw_bus_find_string_index(phandle_t node, const char *list_name,
     const char *name, int *index);
 int ofw_bus_parse_xref_list_alloc(phandle_t node, const char *list_name,

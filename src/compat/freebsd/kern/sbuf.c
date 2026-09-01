@@ -238,6 +238,52 @@ sbuf_putc(struct sbuf *buffer, int value)
     return sbuf_bcat(buffer, &byte, 1);
 }
 
+void
+sbuf_hexdump(struct sbuf *buffer, const void *data, int length,
+    const char *header, int flags)
+{
+    const unsigned char *bytes = data;
+    int columns = flags & HD_COLUMN_MASK;
+    char delimiter = (char)((flags & HD_DELIM_MASK) >> 8);
+
+    if (!buffer || !bytes || length <= 0)
+        return;
+    if (columns == 0)
+        columns = 16;
+    if (delimiter == 0)
+        delimiter = ' ';
+    for (int offset = 0; offset < length; offset += columns) {
+        if (header)
+            (void)sbuf_cat(buffer, header);
+        if ((flags & HD_OMIT_COUNT) == 0)
+            (void)sbuf_printf(buffer, "%04x  ", offset);
+        if ((flags & HD_OMIT_HEX) == 0) {
+            for (int column = 0; column < columns; ++column) {
+                int index = offset + column;
+
+                if (index < length)
+                    (void)sbuf_printf(buffer, "%c%02x", delimiter,
+                        bytes[index]);
+                else
+                    (void)sbuf_cat(buffer, "   ");
+            }
+        }
+        if ((flags & HD_OMIT_CHARS) == 0) {
+            (void)sbuf_cat(buffer, "  |");
+            for (int column = 0; column < columns; ++column) {
+                int index = offset + column;
+                int value = index < length ? bytes[index] : ' ';
+
+                if (index < length && (value < ' ' || value > '~'))
+                    value = '.';
+                (void)sbuf_putc(buffer, value);
+            }
+            (void)sbuf_putc(buffer, '|');
+        }
+        (void)sbuf_putc(buffer, '\n');
+    }
+}
+
 int
 sbuf_nl_terminate(struct sbuf *buffer)
 {

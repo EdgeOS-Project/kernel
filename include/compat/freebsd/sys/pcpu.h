@@ -8,6 +8,7 @@
 #define _SYS_PCPU_H_
 
 #include <sys/types.h>
+#include <machine/param.h>
 #include "kthread.h"
 #include "../edgeos/kthread.h"
 #if defined(__x86_64__)
@@ -45,6 +46,14 @@ struct pcpu {
 
 struct pcpu *pcpu_find(unsigned int cpu);
 unsigned int bsd_pcpu_current_small_core(void);
+
+static inline int
+bsd_pcpu_current_domain(void)
+{
+    struct pcpu *cpu = pcpu_find(bsd_kthread_current_cpu_id());
+
+    return cpu ? cpu->pc_domain : 0;
+}
 
 static inline unsigned int
 bsd_pcpu_current_cpuid(void)
@@ -100,12 +109,26 @@ bsd_pcpu_current_curpcb(void)
 #define PCPU_SET(member, value) (get_pcpu()->pc_##member = (value))
 #define DPCPU_DEFINE_STATIC(type, name) \
     static type edge_bsd_dpcpu_##name[MAXCPU]
+#define DPCPU_DEFINE(type, name) type edge_bsd_dpcpu_##name[MAXCPU]
+#define DPCPU_DECLARE(type, name) extern type edge_bsd_dpcpu_##name[MAXCPU]
+#define DPCPU_ID_PTR(cpu, name) \
+    (&edge_bsd_dpcpu_##name[(unsigned int)(cpu)])
+#define DPCPU_ID_GET(cpu, name) \
+    (edge_bsd_dpcpu_##name[(unsigned int)(cpu)])
 #define DPCPU_GET(name) \
     (edge_bsd_dpcpu_##name[bsd_pcpu_current_cpuid()])
 #define DPCPU_SET(name, value) \
     (edge_bsd_dpcpu_##name[bsd_pcpu_current_cpuid()] = (value))
+#define DPCPU_PTR(name) (&DPCPU_GET(name))
 #else
 #define PCPU_GET(member) bsd_pcpu_current_##member()
+#define DPCPU_DEFINE_STATIC(type, name) static type name[MAXCPU]
+#define DPCPU_DEFINE(type, name) type name[MAXCPU]
+#define DPCPU_DECLARE(type, name) extern type name[MAXCPU]
+#define DPCPU_ID_PTR(cpu, name) (&(name)[(unsigned int)(cpu)])
+#define DPCPU_ID_GET(cpu, name) ((name)[(unsigned int)(cpu)])
+#define DPCPU_GET(name) ((name)[bsd_pcpu_current_cpuid()])
+#define DPCPU_PTR(name) (&DPCPU_GET(name))
 #endif
 #define PCPU_PTR(member) (&get_pcpu()->pc_##member)
 

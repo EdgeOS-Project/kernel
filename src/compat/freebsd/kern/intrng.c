@@ -19,6 +19,7 @@
 #include <sys/bus.h>
 #include <sys/cpuset.h>
 #include <sys/intr.h>
+#include <sys/interrupt.h>
 #include <sys/kthread.h>
 #include <sys/rman.h>
 #include <sys/stdarg.h>
@@ -1286,6 +1287,40 @@ intr_teardown_irq(device_t device, struct resource *resource, void *cookie)
 }
 
 int
+bsd_intrng_drain_irq(unsigned int irq)
+{
+    struct bsd_intrng_handler *record;
+    struct bsd_intrng_source *source;
+    struct bsd_intrng_map *map;
+    int active;
+
+    map = intrng_map_acquire((u_int)irq);
+    if (!map)
+        return 0;
+    for (;;) {
+        active = 0;
+        intrng_lock();
+        source = map->isrc ? intrng_source_lookup_locked(map->isrc) : 0;
+        if (source) {
+            for (record = source->handlers; record;
+                record = record->next) {
+                if (__atomic_load_n(&record->active,
+                    __ATOMIC_ACQUIRE) != 0) {
+                    active = 1;
+                    break;
+                }
+            }
+        }
+        intrng_unlock();
+        if (!active)
+            break;
+        intrng_relax();
+    }
+    intrng_map_release(map);
+    return 1;
+}
+
+int
 intr_describe_irq(device_t device, struct resource *resource, void *cookie,
     const char *description)
 {
@@ -1443,6 +1478,33 @@ bsd_intrng_resume_irq(device_t device, struct resource *resource)
     if (enable)
         PIC_ENABLE_INTR(source->isrc->isrc_dev, source->isrc);
     return 0;
+}
+
+int
+intr_setaffinity(int id, int which, const cpuset_t *mask)
+{
+    struct bsd_intrng_map *map;
+    cpuset_t active;
+    int error;
+
+    if (which != CPU_WHICH_IRQ || id < 0 || !mask)
+        return BSD_INTRNG_EINVAL;
+    CPU_AND(&active, mask, cpuset_root);
+    if (CPU_EMPTY(&active))
+        return BSD_INTRNG_EINVAL;
+    map = intrng_map_acquire((u_int)id);
+    if (!map || !map->isrc) {
+        if (map)
+            intrng_map_release(map);
+        return BSD_INTRNG_ENOENT;
+    }
+    CPU_COPY(&active, &map->isrc->isrc_cpu);
+    map->isrc->isrc_flags |= INTR_ISRCF_BOUND;
+    error = PIC_BIND_INTR(map->isrc->isrc_dev, map->isrc);
+    if (error != 0)
+        map->isrc->isrc_flags &= ~INTR_ISRCF_BOUND;
+    intrng_map_release(map);
+    return error;
 }
 
 u_int

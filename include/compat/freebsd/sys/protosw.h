@@ -10,6 +10,7 @@ struct domain;
 struct mbuf;
 struct sockaddr;
 struct socket;
+struct sockopt;
 struct thread;
 struct uio;
 
@@ -25,6 +26,11 @@ typedef void pr_close_t(struct socket *);
 typedef int pr_peeraddr_t(struct socket *, struct sockaddr *);
 typedef int pr_sockaddr_t(struct socket *, struct sockaddr *);
 typedef int pr_shutdown_t(struct socket *, enum shutdown_how);
+typedef int pr_ctloutput_t(struct socket *, struct sockopt *);
+typedef int pr_control_t(struct socket *, unsigned long, void *,
+    struct ifnet *, struct thread *);
+typedef int pr_send_t(struct socket *, int, struct mbuf *, struct sockaddr *,
+    struct mbuf *, struct thread *);
 typedef int pr_soreceive_t(struct socket *, struct sockaddr **, struct uio *,
     struct mbuf **, struct mbuf **, int *);
 typedef int pr_sosend_t(struct socket *, struct sockaddr *, struct uio *,
@@ -38,6 +44,7 @@ struct protosw {
     struct domain *pr_domain;
     pr_soreceive_t *pr_soreceive;
     pr_sosend_t *pr_sosend;
+    pr_send_t *pr_send;
     pr_attach_t *pr_attach;
     pr_detach_t *pr_detach;
     pr_connect_t *pr_connect;
@@ -46,7 +53,9 @@ struct protosw {
     pr_bind_t *pr_bind;
     pr_listen_t *pr_listen;
     pr_accept_t *pr_accept;
+    pr_control_t *pr_control;
     pr_abort_t *pr_abort;
+    pr_ctloutput_t *pr_ctloutput;
     pr_peeraddr_t *pr_peeraddr;
     pr_sockaddr_t *pr_sockaddr;
     pr_shutdown_t *pr_shutdown;

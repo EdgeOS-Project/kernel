@@ -1,0 +1,81 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-uart-core",
+  "provider": "freebsd",
+  "description": "Unmodified FreeBSD UART core, TTY integration, FDT bus, and ARM64 discovery framework.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "LicenseRef-Upstream-Unmarked",
+      "Public-Domain"
+    ],
+    "allow_unmarked_files": true,
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/arm64/arm64/ofw_machdep.c",
+      "sys/dev/uart"
+    ],
+    "file_count": 38,
+    "tree_sha256": "86c9c987ff7d86bd6b67eb4279b992d5fd946012417498fb2fc5feda59b5b935"
+  },
+  "generated_interfaces": [
+    "sys/dev/uart/uart_if.m"
+  ],
+  "modules": [
+    {
+      "id": "uart-core",
+      "sources": [
+        "sys/arm64/arm64/ofw_machdep.c",
+        "sys/dev/uart/uart_bus_fdt.c",
+        "sys/dev/uart/uart_core.c",
+        "sys/dev/uart/uart_cpu_arm64.c",
+        "sys/dev/uart/uart_dev_ns8250.c",
+        "sys/dev/uart/uart_subr.c",
+        "sys/dev/uart/uart_tty.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "character-device",
+        "fdt",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "tty",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

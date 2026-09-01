@@ -1,0 +1,7 @@
+#ifndef EDGEOS_FREEBSD_LINUXKPI_ATH12K_ACPI_COMPAT_H
+#define EDGEOS_FREEBSD_LINUXKPI_ATH12K_ACPI_COMPAT_H
+
+#define acpi_install_notify_handler AcpiInstallNotifyHandler
+#define acpi_remove_notify_handler AcpiRemoveNotifyHandler
+
+#endif

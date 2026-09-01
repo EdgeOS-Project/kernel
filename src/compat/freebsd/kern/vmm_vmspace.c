@@ -241,6 +241,16 @@ vm_fault_quick_hold_pages(vm_map_t map, vm_offset_t address,
         address > UINTPTR_MAX - length ||
         (protection & ~VM_PROT_ALL) != 0)
         return 0;
+#ifndef BSD_BRIDGE_HOST_TEST
+    if (!map->edgeos_entries && map->edgeos_address_space != 0) {
+        int page_count;
+
+        if (vm_fault_hold_pages(map, address, length, protection, pages,
+            maximum_pages, &page_count) != 0)
+            return -1;
+        return page_count;
+    }
+#endif
     first = address & ~(vm_offset_t)(PAGE_SIZE - 1u);
     last = (address + length - 1u) & ~(vm_offset_t)(PAGE_SIZE - 1u);
     if ((last - first) / PAGE_SIZE >= (vm_size_t)maximum_pages)

@@ -6,6 +6,7 @@
 
 #include <sys/types.h>
 #include <vm/vm.h>
+#include <sys/queue.h>
 
 #define D_VERSION 0x20011966
 #define D_DISK 0x0002
@@ -54,6 +55,8 @@ struct ucred;
 struct vm_object;
 
 typedef int d_open_t(struct cdev *, int, int, struct thread *);
+struct file;
+typedef int d_fdopen_t(struct cdev *, int, struct thread *, struct file *);
 typedef int d_close_t(struct cdev *, int, int, struct thread *);
 typedef void d_strategy_t(struct bio *);
 typedef int d_read_t(struct cdev *, struct uio *, int);
@@ -71,6 +74,7 @@ typedef void d_priv_dtor_t(void *);
 struct cdevsw {
     int d_version;
     d_open_t *d_open;
+    d_fdopen_t *d_fdopen;
     d_close_t *d_close;
     d_read_t *d_read;
     d_write_t *d_write;
@@ -82,6 +86,7 @@ struct cdevsw {
     d_strategy_t *d_strategy;
     const char *d_name;
     int d_flags;
+    LIST_HEAD(, cdev) d_devs;
 };
 
 struct cdev {
@@ -106,6 +111,7 @@ struct cdev {
     uint8_t edgeos_transition_active;
     uint8_t edgeos_delisted;
     char si_name[128];
+    LIST_ENTRY(cdev) si_list;
 };
 
 struct make_dev_args {
@@ -158,6 +164,8 @@ void dev_ref(struct cdev *device);
 void dev_rel(struct cdev *device);
 struct cdevsw *dev_refthread(struct cdev *device, int *reference);
 void dev_relthread(struct cdev *device, int reference);
+void dev_lock(void);
+void dev_unlock(void);
 const char *devtoname(const struct cdev *device);
 int physread(struct cdev *device, struct uio *uio, int io_flags);
 int physwrite(struct cdev *device, struct uio *uio, int io_flags);
@@ -175,6 +183,15 @@ int clone_create(struct clonedevs **clones, struct cdevsw *driver,
     int *unit, struct cdev **device, int extra);
 
 #define dev2unit(device) ((device)->si_unit)
+static inline uint64_t
+dev2udev(const struct cdev *device)
+{
+    if (!device)
+        return 0;
+    return ((uint64_t)device->si_linux_major << 32) |
+        device->si_linux_minor;
+}
+#define DEVFS_IOSIZE_MAX (1 << 20)
 
 #define DEV_MODULE_ORDERED(name, handler, argument, order)                \
     static moduledata_t name##_mod = {                                    \

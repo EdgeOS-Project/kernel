@@ -4,6 +4,10 @@
 #ifndef _SYS_INTERRUPT_H_
 #define _SYS_INTERRUPT_H_
 
+#include "cpuset.h"
+
+#define CPU_WHICH_IRQ 4
+
 #define SWI_TTY 0
 #define SWI_NET 1
 #define SWI_CAMBIO 2
@@ -24,5 +28,7 @@ int swi_add(struct intr_event **event, const char *name,
     void **cookie);
 void swi_sched(void *cookie, int flags);
 int swi_remove(void *cookie);
+int intr_setaffinity(int id, int which, const cpuset_t *mask);
+void _intr_drain(int irq);
 
 #endif

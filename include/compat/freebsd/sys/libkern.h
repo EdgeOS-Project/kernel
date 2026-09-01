@@ -7,16 +7,49 @@
 #include "systm.h"
 #include <sys/bitcount.h>
 
+#ifndef strchr
+#define strchr(text, character) bsd_strchr((text), (character))
+#endif
+
 #define bitcount16(value) __bitcount16((uint16_t)(value))
 #define bitcount32(value) __bitcount32((uint32_t)(value))
 #define bitcount64(value) __bitcount64((uint64_t)(value))
+#define bitcountl(value) __builtin_popcountl((unsigned long)(value))
 
 typedef int bsd_qsort_compare_t(const void *, const void *);
+typedef int bsd_qsort_r_compare_t(const void *, const void *, void *);
 struct malloc_type;
 void qsort(void *base, size_t count, size_t size,
     bsd_qsort_compare_t *compare);
+void *bsearch(const void *key, const void *base, size_t count,
+    size_t size, bsd_qsort_compare_t *compare);
+static inline void
+qsort_r(void *base, size_t count, size_t size,
+    bsd_qsort_r_compare_t *compare, void *argument)
+{
+    unsigned char *bytes = base;
+
+    if (!bytes || !compare || size == 0)
+        return;
+    for (size_t index = 1; index < count; ++index) {
+        for (size_t cursor = index; cursor > 0; --cursor) {
+            unsigned char *left = bytes + (cursor - 1) * size;
+            unsigned char *right = bytes + cursor * size;
+
+            if (compare(left, right, argument) <= 0)
+                break;
+            for (size_t byte = 0; byte < size; ++byte) {
+                unsigned char temporary = left[byte];
+
+                left[byte] = right[byte];
+                right[byte] = temporary;
+            }
+        }
+    }
+}
 u_long random(void);
 char *strdup_flags(const char *text, struct malloc_type *type, int flags);
+char *strnstr(const char *text, const char *needle, size_t length);
 
 #define LIBKERN_LEN_BCD2BIN 154
 #define LIBKERN_LEN_BIN2BCD 100
@@ -68,6 +101,14 @@ bin2bcd(int binary)
     return (unsigned char)(((binary / 10) << 4) | (binary % 10));
 }
 
+static inline char
+hex2ascii(int hex)
+{
+    KASSERT(hex >= 0 && hex < LIBKERN_LEN_HEX2ASCII,
+        ("invalid hex %d", hex));
+    return (char)(hex < 10 ? '0' + hex : 'a' + (hex - 10));
+}
+
 static inline int
 validbcd(int bcd)
 {
@@ -96,7 +137,11 @@ signed_extend32(uint32_t bitmap, int lsb, int width)
         (31 - (width - 1));
 }
 
-#define ilog2(value) bsd_ilog2((uint64_t)(value))
+#define ilog2(value) \
+    __builtin_choose_expr(__builtin_constant_p(value), \
+        ((uint64_t)(value) < 2 ? 0 : \
+        63 - __builtin_clzll((uint64_t)(value))), \
+        bsd_ilog2((uint64_t)(value)))
 #define order_base_2(value) ilog2(2 * (value) - 1)
 
 #ifndef bitcount

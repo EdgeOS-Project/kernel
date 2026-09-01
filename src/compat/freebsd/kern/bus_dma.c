@@ -23,9 +23,7 @@ typedef unsigned int u_int;
 #include "compat/freebsd/sys/uio.h"
 #include "compat/freebsd/vm/pmap.h"
 #include "compat/freebsd/vm/vm_page.h"
-#if defined(__x86_64__)
 #include "x86/include/busdma_impl.h"
-#endif
 
 #ifndef BSD_BRIDGE_HOST_TEST
 #include "kernel/arch_cpu.h"
@@ -521,6 +519,25 @@ bus_dma_tag_set_iommu(bus_dma_tag_t tag, void *iommu, void *domain)
     return 0;
 }
 
+bool
+bus_dma_id_mapped(bus_dma_tag_t tag, bus_addr_t physical_address,
+    bus_size_t length)
+{
+    bus_addr_t end;
+
+    if (!tag || tag->iommu || tag->iommu_domain || length == 0 ||
+        length > tag->maxsize || length > tag->max_segment_size ||
+        tag->nsegments < 1 ||
+        (physical_address & (tag->alignment - 1)) != 0 ||
+        !range_is_accessible(tag, physical_address, length))
+        return false;
+    end = physical_address + length - 1;
+    if (tag->boundary != 0 &&
+        physical_address / tag->boundary != end / tag->boundary)
+        return false;
+    return true;
+}
+
 __attribute__((weak)) bool
 bus_dma_iommu_set_buswide(device_t device)
 {
@@ -553,7 +570,6 @@ bus_dma_iommu_load_ident(bus_dma_tag_t tag, bus_dmamap_t map,
     return 0;
 }
 
-#if defined(__x86_64__)
 int
 common_bus_dma_tag_create(struct bus_dma_tag_common *parent,
     bus_size_t alignment, bus_addr_t boundary, bus_addr_t lowaddr,
@@ -596,7 +612,6 @@ common_bus_dma_tag_create(struct bus_dma_tag_common *parent,
     *result = tag;
     return 0;
 }
-#endif
 
 int
 bus_dmamap_create(bus_dma_tag_t tag, int flags, bus_dmamap_t *result)

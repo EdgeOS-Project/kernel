@@ -35,23 +35,27 @@
       "sys/dev/iicbus/iic.h",
       "sys/dev/iicbus/iic_recover_bus.c",
       "sys/dev/iicbus/iic_recover_bus.h",
+      "sys/dev/iicbus/iicbb.c",
+      "sys/dev/iicbus/iicbb_if.m",
       "sys/dev/iicbus/iicbus.c",
       "sys/dev/iicbus/iicbus.h",
       "sys/dev/iicbus/iicbus_if.m",
       "sys/dev/iicbus/iiconf.c",
       "sys/dev/iicbus/iiconf.h"
     ],
-    "file_count": 8,
-    "tree_sha256": "7abd998cf47e4e9be53d10bc60be3b8d043edea37a11f72229ff07002c68f08e"
+    "file_count": 10,
+    "tree_sha256": "3910e189097539b5e61b08d0600bafb88d8213a6011f0821caccb4821ae51ca8"
   },
   "generated_interfaces": [
-    "sys/dev/iicbus/iicbus_if.m"
+    "sys/dev/iicbus/iicbus_if.m",
+    "sys/dev/iicbus/iicbb_if.m"
   ],
   "modules": [
     {
       "id": "iicbus-core",
       "sources": [
         "sys/dev/iicbus/iic_recover_bus.c",
+        "sys/dev/iicbus/iicbb.c",
         "sys/dev/iicbus/iicbus.c",
         "sys/dev/iicbus/iiconf.c"
       ],

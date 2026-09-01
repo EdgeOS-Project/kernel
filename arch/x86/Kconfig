@@ -354,6 +354,16 @@ config GRAPHICS_INTEL
     bool "Intel UHD/Iris Xe graphics diagnostics (not a DRM driver)"
     default n
 
+config GRAPHICS_AMD
+    bool "AMD Radeon graphics through the BSD DRM bridge"
+    depends on PCI
+    default n
+
+config GRAPHICS_NVIDIA
+    bool "NVIDIA graphics through the BSD Nouveau DRM bridge"
+    depends on PCI
+    default n
+
 config VMWARE_SVGA
     bool "VMware SVGA graphics driver"
     default y

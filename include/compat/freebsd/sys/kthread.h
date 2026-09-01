@@ -7,8 +7,11 @@
 #ifndef _SYS_KTHREAD_H_
 #define _SYS_KTHREAD_H_
 
+#include <stddef.h>
+
 #include <sys/cdefs.h>
 #include <stdint.h>
+#include "signal.h"
 #ifdef BSD_BRIDGE_HOST_TEST
 #include "../vm/vm_map.h"
 #else
@@ -29,12 +32,28 @@ struct ucred {
 
 struct trapframe;
 struct pcb;
+struct filedesc;
+struct file;
+
+struct syscall_args {
+    int code;
+    uintptr_t args[8];
+};
 
 #ifndef RFSTOPPED
 #define RFSTOPPED (1 << 17)
 #endif
 
 #define TDP_EFIRT 0x00000001u
+#define TDP_ITHREAD 0x00000002u
+#define TDP_KTHREAD 0x00000004u
+#define TDP_NOFAULTING 0x00000080u
+
+#define P_WEXIT 0x00000001u
+
+#ifndef THREAD0_TID
+#define THREAD0_TID 100000
+#endif
 
 struct thread {
 	uintptr_t td_edgeos_cookie;
@@ -44,6 +63,7 @@ struct thread {
 	volatile uint32_t td_lock;
 	int td_priority;
 	int td_tid;
+	char td_name[32];
 	int td_bound_cpu;
 	int td_oncpu;
 	int td_saved_cpu;
@@ -51,10 +71,15 @@ struct thread {
 	unsigned int td_pinned;
 	uint64_t td_affinity_mask;
 	int td_critnest;
+	int td_inhibitors;
 	int td_no_sleeping;
-	volatile int td_ast;
-	volatile int td_owepreempt;
+	int td_ng_outbound;
 	uint32_t td_pflags;
+	sigset_t td_siglist;
+	sigset_t td_sigmask;
+	volatile uint32_t td_ast;
+	volatile uint8_t td_owepreempt;
+	void *td_lkpi_task;
 	struct trapframe *td_intr_frame;
 	struct pcb *td_pcb;
 	uint8_t td_pcb_storage[4096] __attribute__((aligned(16)));
@@ -62,9 +87,22 @@ struct thread {
 	uint32_t td_fpu_depth;
 	uint8_t td_fpu_save[528] __attribute__((aligned(16)));
 	uintptr_t td_retval[2];
+	struct syscall_args td_sa;
+	struct file *td_fpop;
 	struct ucred *td_ucred;
 	struct thread *td_proc_next;
 };
+
+int linux_alloc_current_noop(struct thread *thread, int flags);
+extern int (*lkpi_alloc_current)(struct thread *thread, int flags);
+
+enum {
+	TDA_AST = 0,
+	TDA_SCHED = 7,
+};
+
+#define TDAI(value) (1u << (value))
+#define td_ast_pending(thread, value) (((thread)->td_ast & TDAI(value)) != 0)
 
 struct proc {
 	struct thread *p_edgeos_thread;
@@ -73,10 +111,13 @@ struct proc {
 	struct vmspace *p_vmspace;
 	struct ucred p_ucred_storage;
 	struct ucred *p_ucred;
+	struct filedesc *p_fd;
 	int p_pid;
 	int p_pgid;
 	volatile uint32_t p_lock;
+	uint32_t p_flag;
 	uint32_t p_flag2;
+	sigset_t p_siglist;
 	volatile uint32_t p_pending_signals;
 	char p_comm[32];
 };
@@ -113,6 +154,8 @@ void	kthread_shutdown(void *, int);
 void	kthread_start(const void *);
 int	kthread_suspend(struct thread *, int);
 void	kthread_suspend_check(void);
+
+void bsd_kthread_stack_usage(size_t *, size_t *);
 
 #ifndef curthread
 #define curthread bsd_kthread_current_public()

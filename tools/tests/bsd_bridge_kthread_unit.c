@@ -215,7 +215,8 @@ main(void)
     assert(kthread_add(wait_worker, 0, 0, &wait_thread,
         RFHIGHPID, 0, "wait-worker") == 0);
     assert(wait_thread != 0);
-    assert(wait_thread->td_tid == wait_thread->td_proc->p_pid);
+    assert(wait_thread->td_tid > PID_MAX);
+    assert(wait_thread->td_tid == THREAD0_TID + wait_thread->td_proc->p_pid);
     wait_until(&g_wait_stage, 1);
     bsd_wakeup_one(&g_wait_channel);
     wait_until(&g_wait_stage, 2);

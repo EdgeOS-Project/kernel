@@ -6,7 +6,7 @@
 
 #include <edgeos/systm.h>
 
-#define KERNEL_PANICKED() 0
+#define KERNEL_PANICKED() (panicstr != 0)
 
 #define panic(...) bsd_panic(__VA_ARGS__)
 

@@ -11,6 +11,9 @@
 
 #define SCHEDULER_STOPPED() 0
 #define PRI_MIN 0
+#define SRQ_BORING 0
+#define SW_VOL 0x0001
+#define SWT_RELINQUISH 0x0002
 
 static inline void
 thread_lock(struct thread *thread)
@@ -34,6 +37,14 @@ static inline void
 sched_prio(struct thread *thread, int priority)
 {
     thread->td_priority = priority;
+}
+
+static inline void
+sched_add(struct thread *thread, int flags)
+{
+    (void)flags;
+    thread_unlock(thread);
+    (void)kthread_resume(thread);
 }
 
 static inline void
@@ -105,6 +116,16 @@ static inline void
 sched_relinquish(struct thread *thread)
 {
     (void)thread;
+    bsd_sync_yield_current();
+}
+
+static inline void
+mi_switch(int flags)
+{
+    struct thread *thread = bsd_kthread_current_public();
+
+    (void)flags;
+    thread_unlock(thread);
     bsd_sync_yield_current();
 }
 

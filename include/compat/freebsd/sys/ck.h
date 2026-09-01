@@ -15,8 +15,10 @@
 #define CK_STAILQ_REMOVE STAILQ_REMOVE
 #define CK_STAILQ_FOREACH STAILQ_FOREACH
 
-#define CK_LIST_HEAD LIST_HEAD
-#define CK_LIST_ENTRY LIST_ENTRY
+#define CK_LIST_HEAD(name, type) \
+struct name { struct type *lh_first; }
+#define CK_LIST_ENTRY(type) \
+struct { struct type *le_next; struct type **le_prev; }
 #define CK_LIST_INIT LIST_INIT
 #define CK_LIST_FIRST LIST_FIRST
 #define CK_LIST_NEXT LIST_NEXT
@@ -24,8 +26,10 @@
 #define CK_LIST_REMOVE LIST_REMOVE
 #define CK_LIST_FOREACH LIST_FOREACH
 
-#define CK_SLIST_HEAD SLIST_HEAD
-#define CK_SLIST_ENTRY SLIST_ENTRY
+#define CK_SLIST_HEAD(name, type) \
+struct name { struct type *slh_first; }
+#define CK_SLIST_ENTRY(type) \
+struct { struct type *sle_next; }
 #define CK_SLIST_INIT SLIST_INIT
 #define CK_SLIST_FIRST SLIST_FIRST
 #define CK_SLIST_NEXT SLIST_NEXT

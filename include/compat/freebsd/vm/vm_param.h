@@ -19,6 +19,9 @@
 #define KERN_OUT_OF_BOUNDS       9
 #define KERN_RESTART             10
 
+#define VM_MIN_KERNEL_ADDRESS ((vm_offset_t)0)
+#define VM_MAX_KERNEL_ADDRESS ((vm_offset_t)UINTPTR_MAX)
+
 #if defined(__x86_64__)
 #define VM_PHYSSEG_MAX 63
 #else

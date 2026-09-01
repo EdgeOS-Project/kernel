@@ -22,22 +22,226 @@ ARCHITECTURE_SYMBOLS = {
 }
 INCLUDE_GROUP_FLAGS = {
     "acpica": "-I$(BSD_BRIDGE_ACPICA_INCLUDE)",
+    "ath": "-I$(BSD_BRIDGE_UPSTREAM_SYS)/dev/ath "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/dev/ath/ath_hal "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/dev/ath/ath_hal "
+    "-Wno-shift-negative-value -Wno-enum-conversion",
+    "ath10k": "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/dev/athk/ath10k "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/dev/athk "
+    "-Wno-array-bounds -Wno-ignored-attributes",
+    "ath11k": "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/dev/athk/ath11k "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/dev/athk "
+    "-Wno-array-bounds -Wno-ignored-attributes -Wno-unused-variable "
+    "-Wno-incompatible-pointer-types "
+    "-Wno-unterminated-string-initialization "
+    "-include linux/of.h",
+    "ath12k": "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/dev/athk/ath12k "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/dev/athk "
+    "-Wno-array-bounds -Wno-ignored-attributes -Wno-unused-variable "
+    "-Wno-incompatible-pointer-types "
+    "-Wno-unterminated-string-initialization -include linux/of.h",
+    "bhnd-bwn": "-I$(BSD_BRIDGE_UPSTREAM_SYS)/dev/bhnd "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/dev/bhnd/bcma "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/dev/bhnd/bhndb "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/dev/bhnd/cores/chipc "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/dev/bhnd/cores/chipc/pwrctl "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/dev/bhnd/cores/pci "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/dev/bhnd/cores/pcie2 "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/dev/bhnd/cores/pmu "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/dev/bhnd/nvram "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/dev/bhnd/siba "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/dev/bwn "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/gnu/dev/bwn/phy_n "
+    "-Wno-array-bounds -Wno-shift-negative-value",
+    "brcm80211": "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/dev/broadcom/brcm80211/brcmfmac "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/dev/broadcom/brcm80211/brcmutil "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/dev/broadcom/brcm80211/include "
+    "-Wno-unterminated-string-initialization",
+    "netgraph-bluetooth": "-I$(BSD_BRIDGE_UPSTREAM_SYS)/netgraph/bluetooth/include "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/netgraph/bluetooth/hci "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/netgraph/bluetooth/l2cap "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/netgraph/bluetooth/drivers/ubt "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/netgraph/bluetooth/drivers/ubtbcmfw",
+    "drm-kmod": "-I$(INC)/compat/freebsd/linuxkpi-preinclude "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/linuxkpi/bsd/include "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/compat/linuxkpi/common/include "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/compat/linuxkpi/dummy/include "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/linuxkpi/gplv2/include "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/include "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/include/uapi "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/i915 "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/i915/display "
+    "-include sys/ktr.h",
+    "drm-amd": "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/acp/include "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/amdgpu "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/amdkfd "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/display "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/display/amdgpu_dm "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/display/dc "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/display/dc/clk_mgr "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/display/dc/inc "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/display/dc/inc/hw "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/display/dmub/inc "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/display/include "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/display/modules/hdcp "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/display/modules/inc "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/include "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/include/asic_reg "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/pm "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/pm/inc "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/pm/legacy-dpm "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/pm/powerplay "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/pm/powerplay/inc "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/pm/powerplay/hwmgr "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/pm/powerplay/smumgr "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/pm/swsmu "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/pm/swsmu/inc "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/pm/swsmu/inc/pmfw_if "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/pm/swsmu/smu11 "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/pm/swsmu/smu12 "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/amd/pm/swsmu/smu13 "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/drm-kmod/drivers/gpu/drm/scheduler",
+    "drm-nouveau": "-I$(BSD_BRIDGE_UPSTREAM_SYS)/external/bsd/drm2/dist/drm/nouveau "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/external/bsd/drm2/dist/drm/nouveau/include "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/external/bsd/drm2/dist/drm/nouveau/include/nvkm "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/external/bsd/drm2/dist/drm/nouveau/nvkm "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/external/bsd/drm2/include "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/external/bsd/drm2/include/drm",
+    "drm-nouveau-legacy": "-I$(BSD_BRIDGE_UPSTREAM_SYS)/external/bsd/drm2/dist/include "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/external/bsd/drm2/dist/include/drm",
+    "iwlwifi": "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/dev/iwlwifi "
+    "-Wno-override-init -include iwlwifi_compat.h",
+    "irdma": "-I$(BSD_BRIDGE_UPSTREAM_SYS)/dev/ice",
+    "linuxkpi": "-I$(INC)/compat/freebsd/linuxkpi-preinclude "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/compat/linuxkpi/common/include "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/compat/linuxkpi/dummy/include "
+    "-include linux/kconfig.h -Wno-enum-conversion",
+    "linux-typec": "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/linux-typec/include "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/linux-typec/drivers/usb/typec "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/linux-typec/drivers/usb/typec/tcpm "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/linux-typec/drivers/usb/typec/ucsi",
+    "mt76": "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/dev/mediatek/mt76 "
+    "-Wno-array-bounds -Wno-unused-variable",
+    "ofed": "-I$(BSD_BRIDGE_UPSTREAM_SYS)/ofed/include "
+    "-I$(BSD_BRIDGE_UPSTREAM_SYS)/ofed/include/uapi",
+    "rtw88": "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/dev/rtw88",
+    "rtw89": "-I$(BSD_BRIDGE_UPSTREAM_SYS)/contrib/dev/rtw89 "
+    "-include rtw89_compat.h",
+}
+INCLUDE_GROUP_X86_FLAGS = {
+    "acpica": "",
+    "ath": "-Wno-aggressive-loop-optimizations",
+    "ath10k": "",
+    "ath11k": "",
+    "ath12k": "",
+    "bhnd-bwn": "",
+    "brcm80211": "-Wno-array-bounds",
+    "drm-kmod": "",
+    "drm-amd": "",
+    "drm-nouveau": "",
+    "drm-nouveau-legacy": "",
+    "iwlwifi": "",
+    "irdma": "",
+    "linuxkpi": "",
+    "linux-typec": "-Wno-discarded-qualifiers",
+    "mt76": "",
+    "netgraph-bluetooth": "",
+    "ofed": "-Wno-pointer-arith -Wno-zero-length-bounds",
+    "rtw88": "-Wno-array-bounds",
+    "rtw89": "-Wno-array-bounds",
+}
+INCLUDE_GROUP_POST_FLAGS = {
+    "acpica": "",
+    "ath": "",
+    "ath10k": "",
+    "ath11k": "",
+    "ath12k": "",
+    "bhnd-bwn": "",
+    "brcm80211": "-include brcm80211_compat.h",
+    "drm-kmod": "",
+    "drm-amd": "-include amdgpu_config.h",
+    "drm-nouveau": "-include nouveau_config.h -Wno-return-mismatch",
+    "drm-nouveau-legacy": "",
+    "iwlwifi": "",
+    "irdma": "",
+    "linuxkpi": "",
+    "linux-typec": "-include typec_compat.h",
+    "mt76": "-include mt76_compat.h",
+    "netgraph-bluetooth": "",
+    "ofed": "-include edgeos/ofed_compat.h",
+    "rtw88": "",
+    "rtw89": "",
 }
 INCLUDE_GROUP_ARM64_FLAGS = {
     "acpica": "-U_MSC_VER",
+    "ath": "",
+    "ath10k": "",
+    "ath11k": "",
+    "ath12k": "",
+    "bhnd-bwn": "",
+    "brcm80211": "",
+    "drm-kmod": "",
+    "drm-amd": "",
+    "drm-nouveau": "",
+    "drm-nouveau-legacy": "",
+    "iwlwifi": "-Wno-initializer-overrides",
+    "irdma": "",
+    "linuxkpi": "",
+    "linux-typec": "-Wno-incompatible-pointer-types-discards-qualifiers",
+    "mt76": "",
+    "netgraph-bluetooth": "",
+    "ofed": "-Wno-pointer-arith",
+    "rtw88": "",
+    "rtw89": "",
 }
 INCLUDE_GROUP_PREREQUISITES = {
     "acpica": "$(BSD_BRIDGE_ACPICA_INCLUDE_STAMP)",
+    "ath": "",
+    "ath10k": "",
+    "ath11k": "",
+    "ath12k": "",
+    "bhnd-bwn": "",
+    "brcm80211": "",
+    "drm-kmod": "",
+    "drm-amd": "",
+    "drm-nouveau": "",
+    "drm-nouveau-legacy": "",
+    "iwlwifi": "",
+    "irdma": "",
+    "linuxkpi": "",
+    "linux-typec": "",
+    "mt76": "",
+    "netgraph-bluetooth": "",
+    "ofed": "",
+    "rtw88": "",
+    "rtw89": "",
 }
 COMPILE_OPTION_FLAGS = {
     "constant-width-shifts": "-Wno-shift-count-overflow",
     "external-inline-definitions": "-Dinline=",
     "freebsd-platform-identity": "-U_WIN32 -U_WIN64",
+    "negative-value-shifts": "-Wno-shift-negative-value",
 }
+
+
+def _include_group_sort_key(group: str) -> tuple[int, str]:
+    return (0 if group == "drm-nouveau-legacy" else 1, group)
 
 
 def _make_symbol(value: str) -> str:
     return MAKE_SYMBOL_PATTERN.sub("_", value).upper()
+
+
+def _definition_flag(definition: str) -> str:
+    if definition == "CONFIG_DRM_I915_FORCE_PROBE_WILDCARD":
+        return '-DCONFIG_DRM_I915_FORCE_PROBE=\\\"*\\\"'
+    if definition.startswith("KBUILD_MODNAME="):
+        name, value = definition.split("=", 1)
+        return f'-D{name}=\\\"{value}\\\"'
+    return f"-D{definition}"
 
 
 def _require_make_safe(value: str, field: str) -> None:
@@ -96,14 +300,16 @@ def render_build_plan(manifest_dir: Path, capability_dir: Path) -> str:
     catalog = load_catalog(manifest_dir, capability_dir)
     manifests = catalog["manifests"]
     providers = {manifest["provider"] for manifest in manifests}
-    if providers != {"freebsd"}:
+    unsupported_providers = sorted(providers - {"freebsd", "netbsd"})
+    if unsupported_providers:
         raise ManifestError(
-            "the current BSD personality build supports only FreeBSD packages"
+            "the current BSD personality build does not support providers: "
+            + ", ".join(unsupported_providers)
         )
 
     upstream_roots = {manifest["upstream"]["root"] for manifest in manifests}
     if len(upstream_roots) != 1:
-        raise ManifestError("FreeBSD packages must share one upstream source root")
+        raise ManifestError("BSD packages must share one upstream source root")
     upstream_root = next(iter(upstream_roots))
     _require_make_safe(upstream_root, "upstream.root")
 
@@ -127,7 +333,8 @@ def render_build_plan(manifest_dir: Path, capability_dir: Path) -> str:
     loadable_rules: list[
         tuple[
             str, str, str, tuple[str, ...], tuple[str, ...],
-            tuple[str, ...], frozenset[str]
+            tuple[str, ...], frozenset[str], frozenset[str],
+            tuple[tuple[str, str], ...]
         ]
     ] = []
     generated_by_name: dict[str, tuple[str, set[str]]] = {}
@@ -144,14 +351,14 @@ def render_build_plan(manifest_dir: Path, capability_dir: Path) -> str:
     for manifest in manifests:
         architectures = frozenset(manifest["architectures"])
         definitions = [
-            f"-D{definition}"
+            _definition_flag(definition)
             for definition in sorted(manifest["compile"]["definitions"])
         ] + [
             f"-U{definition}"
             for definition in sorted(manifest["compile"]["undefinitions"])
         ]
         arm64_definitions = definitions + [
-            f"-D{definition}"
+            _definition_flag(definition)
             for definition in sorted(
                 manifest["compile"]["arm64_definitions"]
             )
@@ -164,7 +371,10 @@ def render_build_plan(manifest_dir: Path, capability_dir: Path) -> str:
             COMPILE_OPTION_FLAGS[option]
             for option in sorted(manifest["compile"]["arm64_options"])
         ]
-        include_groups = sorted(manifest["compile"]["include_groups"])
+        include_groups = sorted(
+            manifest["compile"]["include_groups"],
+            key=_include_group_sort_key,
+        )
 
         for relative in manifest["generated_interfaces"]:
             if not relative.startswith("sys/"):
@@ -273,9 +483,24 @@ def render_build_plan(manifest_dir: Path, capability_dir: Path) -> str:
                         source.removeprefix("sys/")
                         for source in module["sources"]
                     ),
-                    tuple(sorted(manifest["compile"]["include_groups"])),
+                    tuple(sorted(
+                        manifest["compile"]["include_groups"],
+                        key=_include_group_sort_key,
+                    )),
                     requirements,
                     architectures,
+                    frozenset(
+                        source.removeprefix("sys/")
+                        for source in manifest["compile"]["x86_fpu_sources"]
+                    ),
+                    tuple(sorted(
+                        (
+                            source.removeprefix("sys/"),
+                            header,
+                        )
+                        for source, header in manifest["compile"]
+                        ["source_preincludes"].items()
+                    )),
                 ))
         package_assignments.append((
             package_symbol,
@@ -284,6 +509,14 @@ def render_build_plan(manifest_dir: Path, capability_dir: Path) -> str:
             include_groups,
             sorted(package_sources),
             architectures,
+            tuple(sorted(
+                (
+                    source.removeprefix("sys/"),
+                    header,
+                )
+                for source, header in manifest["compile"]
+                ["source_preincludes"].items()
+            )),
         ))
 
     lines = [
@@ -353,7 +586,9 @@ def render_build_plan(manifest_dir: Path, capability_dir: Path) -> str:
                 generated_include_groups[filename][architecture]
             ):
                 flags.append(INCLUDE_GROUP_FLAGS[group])
-                if architecture == "arm64":
+                if architecture == "x86_64":
+                    flags.append(INCLUDE_GROUP_X86_FLAGS[group])
+                else:
                     flags.append(INCLUDE_GROUP_ARM64_FLAGS[group])
             compile_mappings.extend(
                 f"{stem}={flag}" for flag in dict.fromkeys(flags)
@@ -386,13 +621,17 @@ def render_build_plan(manifest_dir: Path, capability_dir: Path) -> str:
                     + " ".join(cppflags)
                 )
             include_groups = sorted(
-                generated_include_groups[filename]["x86_64"]
+                generated_include_groups[filename]["x86_64"],
+                key=_include_group_sort_key,
             )
             if include_groups:
                 lines.append(
                     f"{target}: BSD_BRIDGE_SOURCE_INCLUDE_FLAGS += "
                     + " ".join(
                         INCLUDE_GROUP_FLAGS[group]
+                        for group in include_groups
+                    ) + " " + " ".join(
+                        INCLUDE_GROUP_X86_FLAGS[group]
                         for group in include_groups
                     )
                 )
@@ -416,7 +655,8 @@ def render_build_plan(manifest_dir: Path, capability_dir: Path) -> str:
                     + " ".join(cppflags)
                 )
             include_groups = sorted(
-                generated_include_groups[filename]["arm64"]
+                generated_include_groups[filename]["arm64"],
+                key=_include_group_sort_key,
             )
             if include_groups:
                 lines.append(
@@ -537,6 +777,7 @@ def render_build_plan(manifest_dir: Path, capability_dir: Path) -> str:
         include_groups,
         sources,
         architectures,
+        source_preincludes,
     ) in sorted(package_assignments):
         flags_name = f"BSD_BRIDGE_PACKAGE_{package_symbol}_CPPFLAGS"
         arm64_flags_name = (
@@ -556,7 +797,10 @@ def render_build_plan(manifest_dir: Path, capability_dir: Path) -> str:
         ))
         lines.extend(_assignment(
             include_flags_name,
-            [INCLUDE_GROUP_FLAGS[group] for group in include_groups],
+            [INCLUDE_GROUP_FLAGS[group] for group in include_groups] + [
+                INCLUDE_GROUP_X86_FLAGS[group]
+                for group in include_groups
+            ],
         ))
         lines.extend(_assignment(
             arm64_include_flags_name,
@@ -580,10 +824,30 @@ def render_build_plan(manifest_dir: Path, capability_dir: Path) -> str:
                     f"{x86_targets}: BSD_BRIDGE_SOURCE_INCLUDE_FLAGS += "
                     f"$({include_flags_name})"
                 )
-                for group in include_groups:
+                x86_post_flags = " ".join(
+                    INCLUDE_GROUP_POST_FLAGS[group]
+                    for group in include_groups
+                    if INCLUDE_GROUP_POST_FLAGS[group]
+                )
+                if x86_post_flags:
                     lines.append(
                         f"{x86_targets}: "
-                        f"{INCLUDE_GROUP_PREREQUISITES[group]}"
+                        "BSD_BRIDGE_SOURCE_POST_INCLUDE_FLAGS += "
+                        f"{x86_post_flags}"
+                    )
+                for group in include_groups:
+                    prerequisite = INCLUDE_GROUP_PREREQUISITES[group]
+                    if prerequisite:
+                        lines.append(f"{x86_targets}: {prerequisite}")
+                for relative, header in source_preincludes:
+                    x86_target = (
+                        "$(OBJ)/compat/freebsd/upstream/"
+                        f"{relative.removesuffix('.c')}.o"
+                    )
+                    lines.append(
+                        f"{x86_target}: "
+                        "BSD_BRIDGE_SOURCE_POST_INCLUDE_FLAGS += "
+                        f"-include {header}"
                     )
             if "arm64" in architectures:
                 arm64_targets = (
@@ -598,10 +862,30 @@ def render_build_plan(manifest_dir: Path, capability_dir: Path) -> str:
                     f"{arm64_targets}: BSD_BRIDGE_SOURCE_INCLUDE_FLAGS += "
                     f"$({arm64_include_flags_name})"
                 )
-                for group in include_groups:
+                arm64_post_flags = " ".join(
+                    INCLUDE_GROUP_POST_FLAGS[group]
+                    for group in include_groups
+                    if INCLUDE_GROUP_POST_FLAGS[group]
+                )
+                if arm64_post_flags:
                     lines.append(
                         f"{arm64_targets}: "
-                        f"{INCLUDE_GROUP_PREREQUISITES[group]}"
+                        "BSD_BRIDGE_SOURCE_POST_INCLUDE_FLAGS += "
+                        f"{arm64_post_flags}"
+                    )
+                for group in include_groups:
+                    prerequisite = INCLUDE_GROUP_PREREQUISITES[group]
+                    if prerequisite:
+                        lines.append(f"{arm64_targets}: {prerequisite}")
+                for relative, header in source_preincludes:
+                    arm64_target = (
+                        "$(OBJ)/arm64-bsd/upstream/"
+                        f"{relative.removesuffix('.c')}.obj"
+                    )
+                    lines.append(
+                        f"{arm64_target}: "
+                        "BSD_BRIDGE_SOURCE_POST_INCLUDE_FLAGS += "
+                        f"-include {header}"
                     )
 
     for (
@@ -612,6 +896,8 @@ def render_build_plan(manifest_dir: Path, capability_dir: Path) -> str:
         include_groups,
         _requirements,
         architectures,
+        x86_fpu_sources,
+        source_preincludes,
     ) in sorted(loadable_rules):
         flags_name = f"BSD_BRIDGE_PACKAGE_{package_symbol}_CPPFLAGS"
         arm64_flags_name = (
@@ -653,11 +939,23 @@ def render_build_plan(manifest_dir: Path, capability_dir: Path) -> str:
             lines.extend(_assignment(x86_objects_name, x86_objects))
             for relative, x86_object in zip(relatives, x86_objects):
                 source = f"$(BSD_BRIDGE_UPSTREAM_SYS)/{relative}"
+                source_flags = "$(BSD_BRIDGE_X86_MODULE_COMPILE_FLAGS)"
+                if relative in x86_fpu_sources:
+                    source_flags += " -msse2 -mfpmath=sse"
+                source_preinclude = dict(source_preincludes).get(relative)
+                if source_preinclude:
+                    source_flags += f" -include {source_preinclude}"
                 lines.extend([
                     f"{x86_object}: BSD_BRIDGE_SOURCE_CPPFLAGS += "
                     f"$({flags_name})",
                     f"{x86_object}: BSD_BRIDGE_SOURCE_INCLUDE_FLAGS += "
                     f"$({include_flags_name})",
+                    f"{x86_object}: BSD_BRIDGE_SOURCE_POST_INCLUDE_FLAGS += "
+                    + " ".join(
+                        INCLUDE_GROUP_POST_FLAGS[group]
+                        for group in include_groups
+                        if INCLUDE_GROUP_POST_FLAGS[group]
+                    ),
                     f"{x86_object}: {source} {generated_stamp} "
                     "$(AUTOCONF_H) "
                     + " ".join(
@@ -665,8 +963,7 @@ def render_build_plan(manifest_dir: Path, capability_dir: Path) -> str:
                         for group in include_groups
                     ),
                     "\t@mkdir -p $(dir $@)",
-                    "\t$(CC) $(BSD_BRIDGE_X86_MODULE_COMPILE_FLAGS) "
-                    "-c $< -o $@",
+                    f"\t$(CC) {source_flags} -c $< -o $@",
                 ])
             lines.extend([
                 f"{x86_output}: $({x86_objects_name})",

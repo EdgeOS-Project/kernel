@@ -122,7 +122,7 @@ typedef kernel_vm_area_t edge_user_vma_t;
 
 typedef kernel_process_usage_t process_rusage_snapshot_t;
 
-typedef struct task_struct {
+typedef struct edge_task_struct {
     int pid;
     int ppid;
     int parent_tid;
@@ -338,12 +338,12 @@ typedef struct task_struct {
     uint64_t context_generation;
     uint64_t consumed_context_generation;
     int assigned_cpu;
-    struct task_struct *rq_prev;
-    struct task_struct *rq_next;
-    struct task_struct *parent;
-    struct task_struct *first_child;
-    struct task_struct *sibling_prev;
-    struct task_struct *sibling_next;
+    struct edge_task_struct *rq_prev;
+    struct edge_task_struct *rq_next;
+    struct edge_task_struct *parent;
+    struct edge_task_struct *first_child;
+    struct edge_task_struct *sibling_prev;
+    struct edge_task_struct *sibling_next;
     /*
      * Resolved path used by Linux-compatible /proc/<pid>/exe readlink.
      * Keep this kernel-owned metadata; do not infer userland/rootfs paths in

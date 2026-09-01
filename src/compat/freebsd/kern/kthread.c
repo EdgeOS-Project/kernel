@@ -15,7 +15,9 @@
 #include "compat/freebsd/edgeos/kthread.h"
 #include "compat/freebsd/edgeos/systm.h"
 #include "compat/freebsd/sys/kthread.h"
+#include "compat/freebsd/sys/eventhandler.h"
 #include "compat/freebsd/sys/mutex.h"
+#include "compat/freebsd/sys/sx.h"
 #include "sys/boottime.h"
 
 #define BSD_KTHREAD_MAX 64u
@@ -35,6 +37,7 @@
 extern int hz;
 
 void (*hwt_hook)(struct thread *thread, int function, void *argument);
+struct sx allproc_lock;
 
 typedef enum {
     BSD_KTHREAD_FREE = 0,
@@ -100,6 +103,8 @@ static pthread_mutex_t g_kthread_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_kthread_condition = PTHREAD_COND_INITIALIZER;
 static bsd_kthread_record_t g_kthreads[BSD_KTHREAD_MAX];
 static bsd_kthread_channel_t g_channels[BSD_KTHREAD_CHANNEL_MAX];
+static struct thread g_bootstrap_thread;
+static struct proc g_bootstrap_process;
 static _Thread_local bsd_kthread_record_t *g_current_kthread;
 static _Thread_local struct thread *g_public_thread_override;
 static uint8_t g_kthread_initialized;
@@ -186,7 +191,18 @@ bsd_kthread_runtime_initialize(void)
     if (!g_kthread_initialized) {
         memset(g_kthreads, 0, sizeof(g_kthreads));
         memset(g_channels, 0, sizeof(g_channels));
+        memset(&g_bootstrap_thread, 0, sizeof(g_bootstrap_thread));
+        memset(&g_bootstrap_process, 0, sizeof(g_bootstrap_process));
+        kthread_bind_process(&g_bootstrap_process, &g_bootstrap_thread, 0);
+        g_bootstrap_thread.td_tid = THREAD0_TID;
+        g_bootstrap_process.p_pid = 0;
+        g_bootstrap_process.p_pgid = 0;
+        (void)bsd_strlcpy(g_bootstrap_thread.td_name, "kernel",
+            sizeof(g_bootstrap_thread.td_name));
+        (void)bsd_strlcpy(g_bootstrap_process.p_comm, "kernel",
+            sizeof(g_bootstrap_process.p_comm));
         g_public_thread_override = 0;
+        sx_init(&allproc_lock, "allproc");
         g_kthread_initialized = 1;
     }
     pthread_mutex_unlock(&g_kthread_lock);
@@ -214,7 +230,9 @@ struct thread *
 bsd_kthread_current_public(void)
 {
     struct thread *worker = bsd_kthread_current_token();
-    struct thread *current = worker ? worker : g_public_thread_override;
+    struct thread *current = worker ? worker :
+        (g_public_thread_override ? g_public_thread_override :
+        &g_bootstrap_thread);
 
     if (current)
         current->td_oncpu = (int)bsd_kthread_current_cpu_id();
@@ -559,12 +577,14 @@ kthread_create_common(void (*function)(void *), void *argument,
         BSD_KTHREAD_MAGIC ^ (uintptr_t)&record->process;
     record->process.p_pid = (int)(record - g_kthreads) + 1;
     record->process.p_pgid = record->process.p_pid;
-    record->public_thread.td_tid = record->process.p_pid;
+    record->public_thread.td_tid = THREAD0_TID + record->process.p_pid;
     record->entry = function;
     record->argument = argument;
     record->state = (flags & BSD_KTHREAD_RFSTOPPED) != 0 ?
         BSD_KTHREAD_SUSPENDED : BSD_KTHREAD_RUNNABLE;
     (void)bsd_strlcpy(record->name, name, sizeof(record->name));
+    (void)bsd_strlcpy(record->public_thread.td_name, name,
+        sizeof(record->public_thread.td_name));
     (void)bsd_strlcpy(record->process.p_comm, name,
         sizeof(record->process.p_comm));
     *thread_out = &record->public_thread;
@@ -613,6 +633,8 @@ typedef struct {
 
 static bsd_kthread_record_t g_kthreads[BSD_KTHREAD_MAX];
 static bsd_kthread_channel_t g_channels[BSD_KTHREAD_CHANNEL_MAX];
+static struct thread g_bootstrap_threads[BSD_KTHREAD_CPU_MAX];
+static struct proc g_bootstrap_processes[BSD_KTHREAD_CPU_MAX];
 static cpu_context_t g_host_contexts[BSD_KTHREAD_CPU_MAX];
 static bsd_kthread_record_t *g_current_kthreads[BSD_KTHREAD_CPU_MAX];
 static struct thread *g_public_thread_overrides[BSD_KTHREAD_CPU_MAX];
@@ -918,7 +940,28 @@ bsd_kthread_runtime_initialize(void)
         bsd_memset((void *)g_deferred_wakeup_channels, 0,
             sizeof(g_deferred_wakeup_channels));
         g_deferred_wakeup_overflow = 0;
+        bsd_memset(g_bootstrap_threads, 0, sizeof(g_bootstrap_threads));
+        bsd_memset(g_bootstrap_processes, 0,
+            sizeof(g_bootstrap_processes));
+        for (uint32_t cpu = 0; cpu < BSD_KTHREAD_CPU_MAX; ++cpu) {
+            kthread_bind_process(&g_bootstrap_processes[cpu],
+                &g_bootstrap_threads[cpu], 0);
+            g_bootstrap_threads[cpu].td_tid = THREAD0_TID + (int)cpu;
+            g_bootstrap_threads[cpu].td_bound_cpu = (int)cpu;
+            g_bootstrap_threads[cpu].td_oncpu = (int)cpu;
+            g_bootstrap_threads[cpu].td_saved_cpu = (int)cpu;
+            g_bootstrap_threads[cpu].td_pin_saved_bound_cpu = (int)cpu;
+            g_bootstrap_threads[cpu].td_affinity_mask =
+                UINT64_C(1) << cpu;
+            g_bootstrap_processes[cpu].p_pid = 0;
+            g_bootstrap_processes[cpu].p_pgid = 0;
+            (void)bsd_strlcpy(g_bootstrap_threads[cpu].td_name, "kernel",
+                sizeof(g_bootstrap_threads[cpu].td_name));
+            (void)bsd_strlcpy(g_bootstrap_processes[cpu].p_comm, "kernel",
+                sizeof(g_bootstrap_processes[cpu].p_comm));
+        }
         g_pump_epoch = 1;
+        sx_init(&allproc_lock, "allproc");
         __atomic_store_n(&g_kthread_initialized, 1, __ATOMIC_RELEASE);
     }
     kthread_unlock(state);
@@ -942,12 +985,14 @@ bsd_kthread_current_token(void)
 struct thread *
 bsd_kthread_current_public(void)
 {
+    uint32_t cpu = kthread_cpu();
     struct thread *worker = bsd_kthread_current_token();
     struct thread *current = worker ? worker :
-        g_public_thread_overrides[kthread_cpu()];
+        (g_public_thread_overrides[cpu] ? g_public_thread_overrides[cpu] :
+        &g_bootstrap_threads[cpu]);
 
     if (current)
-        current->td_oncpu = (int)kthread_cpu();
+        current->td_oncpu = (int)cpu;
     return current;
 }
 
@@ -1357,10 +1402,12 @@ kthread_create_common(void (*function)(void *), void *argument,
         BSD_KTHREAD_MAGIC ^ (uintptr_t)&record->process;
     record->process.p_pid = (int)(record - g_kthreads) + 1;
     record->process.p_pgid = record->process.p_pid;
-    record->public_thread.td_tid = record->process.p_pid;
+    record->public_thread.td_tid = THREAD0_TID + record->process.p_pid;
     record->entry = function;
     record->argument = argument;
     (void)bsd_strlcpy(record->name, name, sizeof(record->name));
+    (void)bsd_strlcpy(record->public_thread.td_name, name,
+        sizeof(record->public_thread.td_name));
     (void)bsd_strlcpy(record->process.p_comm, name,
         sizeof(record->process.p_comm));
     error = kthread_context_initialize(record, extra_pages);
@@ -1378,6 +1425,41 @@ kthread_create_common(void (*function)(void *), void *argument,
 }
 
 #endif
+
+void
+bsd_kthread_stack_usage(size_t *total, size_t *used)
+{
+#ifdef BSD_BRIDGE_HOST_TEST
+    if (total)
+        *total = BSD_KTHREAD_DEFAULT_STACK_PAGES * BSD_KTHREAD_PAGE_SIZE;
+    if (used)
+        *used = 0;
+#else
+    bsd_kthread_record_t *record =
+        (bsd_kthread_record_t *)bsd_kthread_current_token();
+    uintptr_t stack_pointer = (uintptr_t)&record;
+    uintptr_t stack_bottom;
+    uintptr_t stack_top;
+    size_t stack_size;
+
+    if (!record || !record->stack || record->stack_pages == 0) {
+        if (total)
+            *total = BSD_KTHREAD_DEFAULT_STACK_PAGES *
+                BSD_KTHREAD_PAGE_SIZE;
+        if (used)
+            *used = 0;
+        return;
+    }
+    stack_bottom = (uintptr_t)record->stack;
+    stack_size = (size_t)record->stack_pages * BSD_KTHREAD_PAGE_SIZE;
+    stack_top = stack_bottom + stack_size;
+    if (total)
+        *total = stack_size;
+    if (used)
+        *used = stack_pointer >= stack_bottom && stack_pointer <= stack_top ?
+            (size_t)(stack_top - stack_pointer) : 0;
+#endif
+}
 
 int
 bsd_kthread_join(struct thread *thread)
@@ -1448,6 +1530,8 @@ kthread_exit(void)
 
     if (!record)
         bsd_bridge_panic_stop();
+    record->process.p_flag |= P_WEXIT;
+    EVENTHANDLER_INVOKE(thread_dtor, &record->public_thread);
 #ifdef BSD_BRIDGE_HOST_TEST
     pthread_mutex_lock(&g_kthread_lock);
     record->state = BSD_KTHREAD_EXITED;
@@ -1795,6 +1879,74 @@ pfind(int pid)
         bsd_proc_unlock(&record->process);
     }
     return 0;
+}
+
+struct thread *
+tdfind(int tid, int pid)
+{
+    struct thread *current = bsd_kthread_current_public();
+
+    if (current && current->td_proc && current->td_tid == tid &&
+        (pid == -1 || current->td_proc->p_pid == pid)) {
+        bsd_proc_lock(current->td_proc);
+        return current;
+    }
+    for (uint32_t index = 0; index < BSD_KTHREAD_MAX; ++index) {
+        bsd_kthread_record_t *record = &g_kthreads[index];
+
+        if (record->state == BSD_KTHREAD_FREE ||
+            record->state == BSD_KTHREAD_EXITED ||
+            record->public_thread.td_tid != tid ||
+            (pid != -1 && record->process.p_pid != pid))
+            continue;
+        bsd_proc_lock(&record->process);
+        if (record->state != BSD_KTHREAD_FREE &&
+            record->state != BSD_KTHREAD_EXITED &&
+            record->public_thread.td_tid == tid &&
+            (pid == -1 || record->process.p_pid == pid))
+            return &record->public_thread;
+        bsd_proc_unlock(&record->process);
+    }
+    return 0;
+}
+
+struct proc *
+bsd_proc_first(void)
+{
+    for (uint32_t index = 0; index < BSD_KTHREAD_MAX; ++index) {
+        if (g_kthreads[index].state != BSD_KTHREAD_FREE &&
+            g_kthreads[index].state != BSD_KTHREAD_EXITED)
+            return &g_kthreads[index].process;
+    }
+    return 0;
+}
+
+struct proc *
+bsd_proc_next(struct proc *process)
+{
+    uint32_t index;
+
+    if (!process)
+        return bsd_proc_first();
+    for (index = 0; index < BSD_KTHREAD_MAX; ++index) {
+        if (&g_kthreads[index].process == process)
+            break;
+    }
+    if (index == BSD_KTHREAD_MAX)
+        return 0;
+    for (++index; index < BSD_KTHREAD_MAX; ++index) {
+        if (g_kthreads[index].state != BSD_KTHREAD_FREE &&
+            g_kthreads[index].state != BSD_KTHREAD_EXITED)
+            return &g_kthreads[index].process;
+    }
+    return 0;
+}
+
+void
+thread_reap_barrier(void)
+{
+    bsd_kthread_pump();
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
 }
 
 void

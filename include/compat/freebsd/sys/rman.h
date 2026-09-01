@@ -53,6 +53,10 @@ struct resource {
     bus_space_tag_t r_bustag;
     bus_space_handle_t r_bushandle;
     void *r_virtual;
+    uint64_t start;
+    uint64_t end;
+    const char *name;
+    unsigned long flags;
 };
 
 struct _device;

@@ -78,6 +78,7 @@ random_harvest_direct(const void *entropy, unsigned int size,
 
 void arc4rand(void *buffer, unsigned int length, int reseed);
 uint32_t arc4random(void);
+uint32_t arc4random_uniform(uint32_t upper_bound);
 void arc4random_buf(void *buffer, size_t length);
 void read_random(void *buffer, unsigned int length);
 

@@ -62,6 +62,8 @@ struct fb_info {
 #define FB_FLAG_NOWRITE 2
 #define FB_FLAG_MEMATTR 4
 
+#define FBTYPE_PCIMISC 13
+
 #define FBTYPE_GET_STRIDE(info) ((info)->fb_size / (info)->fb_height)
 #define FBTYPE_GET_BPP(info) ((info)->fb_bpp)
 #define FBTYPE_GET_BYTESPP(info) ((info)->fb_bpp / 8)

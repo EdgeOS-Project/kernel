@@ -83,6 +83,12 @@ typedef struct acpi_subtable_header {
 #define ACPI_SUCCESS(status) ((status) == AE_OK)
 #define ACPI_FAILURE(status) ((status) != AE_OK)
 #define ACPI_NAMESEG_SIZE 4
+#define ACPI_STATE_S0 ((UINT8)0)
+#define ACPI_STATE_S1 ((UINT8)1)
+#define ACPI_STATE_S2 ((UINT8)2)
+#define ACPI_STATE_S3 ((UINT8)3)
+#define ACPI_STATE_S4 ((UINT8)4)
+#define ACPI_STATE_S5 ((UINT8)5)
 
 void AcpiOsFree(void *memory);
 ACPI_STATUS AcpiEvaluateObject(ACPI_HANDLE object, const char *path,

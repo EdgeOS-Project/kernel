@@ -76,6 +76,7 @@ int pci_enable_aspm;
 #define BSD_PCIE_CAPABILITY_ROOT_PORT 0x0040u
 #define BSD_PCIE_CAPABILITY_FLR 0x10000000u
 #define BSD_PCIE_CONTROL_INITIATE_FLR 0x8000u
+#define BSD_PCIE_MAX_PAYLOAD_MASK 0x00e0u
 #define BSD_PCIE_STATUS_TRANSACTION_PENDING 0x0020u
 #define BSD_PCIE_CAPABILITY_2_COMPLETION_TIMEOUT_RANGES 0x0000000fu
 #define BSD_PCIE_CONTROL_2_COMPLETION_TIMEOUT_MASK 0x000fu
@@ -226,6 +227,8 @@ static bsd_pci_backend_ops_t g_pci_operations;
 static volatile unsigned int g_pci_init_guard;
 static uint8_t g_pci_initialized;
 int cfgmech = BSD_PCI_CFGMECH_PCIE;
+u_int first_msi_irq;
+u_int num_msi_irqs;
 
 extern struct kobjop_desc device_probe_desc;
 extern struct kobjop_desc device_attach_desc;
@@ -571,6 +574,78 @@ device_t
 pci_find_bsf(uint8_t bus, uint8_t slot, uint8_t function_number)
 {
     return pci_find_dbsf(0, bus, slot, function_number);
+}
+
+static device_t
+pci_find_class_below(device_t parent, uint8_t class_code, int subclass,
+    device_t from, int *past_from)
+{
+    device_t *children = 0;
+    device_t found = 0;
+    int count = 0;
+
+    if (!parent || device_get_children(parent, &children, &count) != 0)
+        return 0;
+    for (int index = 0; index < count && !found; ++index) {
+        device_t child = children[index];
+
+        if (pci_parent_is_bus(parent)) {
+            bsd_pci_function_t *function = pci_function(child);
+
+            if (child == from) {
+                *past_from = 1;
+            } else if (*past_from && function &&
+                function->class_code == class_code &&
+                (subclass < 0 || function->subclass == (uint8_t)subclass)) {
+                found = child;
+                break;
+            }
+        }
+        found = pci_find_class_below(child, class_code, subclass, from,
+            past_from);
+    }
+    if (children)
+        bsd_free(children, M_TEMP);
+    return found;
+}
+
+device_t
+pci_find_class_from(uint8_t class_code, uint8_t subclass, device_t from)
+{
+    int past_from = from == 0;
+
+    return pci_find_class_below(root_bus, class_code, subclass, from,
+        &past_from);
+}
+
+device_t
+pci_find_base_class_from(uint8_t class_code, device_t from)
+{
+    int past_from = from == 0;
+
+    return pci_find_class_below(root_bus, class_code, -1, from,
+        &past_from);
+}
+
+int
+bus_translate_resource(device_t child, int type, rman_res_t start,
+    rman_res_t *translated)
+{
+    if (!child || !translated)
+        return BSD_PCI_EINVAL;
+    (void)type;
+    *translated = start;
+    return 0;
+}
+
+struct resource *
+pci_reserve_map(device_t device, device_t child, int type, int rid,
+    rman_res_t start, rman_res_t end, rman_res_t count, u_int resource_count,
+    u_int flags)
+{
+    (void)device;
+    (void)resource_count;
+    return bus_alloc_resource(child, type, rid, start, end, count, flags);
 }
 
 static uint32_t
@@ -1071,6 +1146,22 @@ pcie_flr(device_t device, unsigned int max_delay, bool force)
     pcie_pause_milliseconds("pcieflr",
         100u + (unsigned int)completion_delay);
     return true;
+}
+
+int
+pci_get_max_payload(device_t device)
+{
+    int capability;
+    uint16_t control;
+    unsigned int field;
+
+    if (bsd_pci_find_capability(device, BSD_PCI_CAP_EXPRESS, 0,
+        &capability) != 0)
+        return 0;
+    control = (uint16_t)bsd_pci_read_config(device,
+        capability + BSD_PCIE_DEVICE_CONTROL, 2);
+    field = (control & BSD_PCIE_MAX_PAYLOAD_MASK) >> 5;
+    return 1 << (field + 7u);
 }
 
 int

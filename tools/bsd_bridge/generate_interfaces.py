@@ -71,7 +71,40 @@ def generate_interfaces(
                 raise ManifestError(
                     f"FreeBSD generated database is missing: {source}"
                 )
-            if database == "miidevs":
+            if database == "bhnd-nvram-map":
+                awk_script = upstream_root / GENERATED_DATABASES[database][2]
+                database_outputs = []
+                for name, option in (
+                    ("bhnd_nvram_map.h", "-h"),
+                    ("bhnd_nvram_map_data.h", "-d"),
+                ):
+                    try:
+                        result = subprocess.run(
+                            [
+                                "awk",
+                                "-f",
+                                str(awk_script),
+                                "--",
+                                source_relative,
+                                option,
+                                "-o",
+                                "-",
+                            ],
+                            cwd=upstream_root,
+                            check=True,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            text=True,
+                        )
+                    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+                        detail = getattr(exc, "stderr", "") or str(exc)
+                        raise ManifestError(
+                            f"BHND NVRAM map generation failed: {detail.strip()}"
+                        ) from exc
+                    generated = temporary_path / name
+                    generated.write_text(result.stdout, encoding="utf-8")
+                    database_outputs.append(generated)
+            elif database == "miidevs":
                 database_outputs = generate_miidevs_header(
                     source, temporary_path
                 )

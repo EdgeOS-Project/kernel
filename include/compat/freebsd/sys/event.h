@@ -50,6 +50,10 @@ struct knote {
 struct knlist {
     struct knote *edgeos_head;
     struct mtx *edgeos_mutex;
+    void *edgeos_lock;
+    void (*edgeos_lock_fn)(void *);
+    void (*edgeos_unlock_fn)(void *);
+    void (*edgeos_assert_fn)(void *, int);
 };
 
 void knote(struct knlist *list, long hint, int flags);
@@ -58,6 +62,9 @@ void knlist_add(struct knlist *list, struct knote *note, int locked);
 void knlist_remove(struct knlist *list, struct knote *note, int locked);
 int knlist_empty(struct knlist *list);
 void knlist_init_mtx(struct knlist *list, struct mtx *mutex);
+void knlist_init(struct knlist *list, void *lock,
+    void (*lock_fn)(void *), void (*unlock_fn)(void *),
+    void (*assert_fn)(void *, int));
 void knlist_destroy(struct knlist *list);
 void knlist_cleardel(struct knlist *list, struct thread *thread,
     int locked, int delete_notes);

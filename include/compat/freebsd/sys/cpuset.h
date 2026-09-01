@@ -20,6 +20,8 @@ typedef struct _cpuset {
 #define BSD_CPUSET_WORDS \
     ((unsigned int)(sizeof(cpuset_t) / sizeof(unsigned long)))
 
+extern cpuset_t *cpuset_root;
+
 static inline void
 bsd_cpuset_zero(volatile cpuset_t *set)
 {

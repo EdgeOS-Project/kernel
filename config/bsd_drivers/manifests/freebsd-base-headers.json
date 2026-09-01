@@ -23,8 +23,8 @@
     "freebsd_version": 1600019
   },
   "source_policy": {
-    "mode": "unmodified",
-    "allow_inline_patches": false,
+    "mode": "patched",
+    "allow_inline_patches": true,
     "allowed_licenses": [
       "BSD-1-Clause",
       "BSD-2-Clause",
@@ -64,7 +64,14 @@
         "license": "BSD-2-Clause",
         "evidence": "The FreeBSD top-level COPYRIGHT applies its compilation license."
       }
-    }
+    },
+    "patches": [
+      {
+        "path": "sys/net80211/ieee80211_radiotap.h",
+        "upstream_sha256": "b039bd09145a1649140ca5ae01f9923307fd6acb3179fa35f62cc0e0915a9cdd",
+        "reason": "Complete the EHT radiotap masks and typed mask groups consumed by the imported ath12k Wi-Fi 7 monitor path."
+      }
+    ]
   },
   "source_lock": {
     "paths": [
@@ -253,7 +260,7 @@
       "sys/sys/watchdog.h"
     ],
     "file_count": 183,
-    "tree_sha256": "ae54ac16c1ec92d23aaee6c4fb1390da26a07412f862331e5d9132b3e4d1a29c"
+    "tree_sha256": "0e7d62a0145f6652ce8ad937a94dfeeeb1bef6ca907849e26dcba29876580b44"
   },
   "generated_interfaces": [],
   "generated_databases": [],

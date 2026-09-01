@@ -181,11 +181,14 @@ bsd_driver_symbol_resolve(const char *name, uint64_t *address,
             return 0;
         }
     }
-    return -1;
+    if (bsd_driver_kernel_symbol_resolve(name, address) == 0)
+        return 0;
+    return bsd_module_resolve_symbol(name, address);
 }
 
 size_t
 bsd_driver_symbol_count(void)
 {
-    return sizeof(g_driver_symbols) / sizeof(g_driver_symbols[0]);
+    return sizeof(g_driver_symbols) / sizeof(g_driver_symbols[0]) +
+        bsd_driver_kernel_symbol_count();
 }

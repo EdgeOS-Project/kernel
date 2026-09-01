@@ -4,4 +4,8 @@
 #ifndef _NETINET_IP_VAR_H_
 #define _NETINET_IP_VAR_H_
 
+#define V_ipport_firstauto 49152
+#define V_ipport_lastauto 65535
+#define V_ip_defttl 64
+
 #endif

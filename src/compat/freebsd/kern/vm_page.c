@@ -12,6 +12,7 @@
 #include "compat/freebsd/edgeos/vm_page.h"
 #include "compat/freebsd/sys/kthread.h"
 #include "compat/freebsd/sys/domainset.h"
+#include "compat/freebsd/sys/systm.h"
 typedef unsigned int u_int;
 typedef unsigned long u_long;
 #include <sys/vmmeter.h>
@@ -21,6 +22,7 @@ typedef unsigned long u_long;
 #include "compat/freebsd/vm/vm_param.h"
 #include "compat/freebsd/vm/vm_extern.h"
 #include "compat/freebsd/vm/pmap.h"
+#include "compat/freebsd/vm/vm_phys.h"
 #include "compat/freebsd/sys/sglist.h"
 
 #if (defined(__aarch64__) || defined(EDGEOS_BSD_ARM64)) && \
@@ -31,6 +33,7 @@ typedef unsigned long u_long;
 #ifndef BSD_BRIDGE_HOST_TEST
 #include "kernel/linux_errno.h"
 #include "kernel/mm_runtime.h"
+#include "kernel/proc_maps.h"
 #include "kernel/process_runtime.h"
 #include "mm/arch_vm.h"
 #endif
@@ -38,7 +41,7 @@ typedef unsigned long u_long;
 #define BSD_VM_PAGE_ALLOWED_FLAGS \
     (VM_ALLOC_CLASS_MASK | VM_ALLOC_NOWAIT | VM_ALLOC_WAITOK | \
      VM_ALLOC_WIRED | VM_ALLOC_ZERO | VM_ALLOC_NOBUSY | VM_ALLOC_NODUMP | \
-     VM_ALLOC_NOCREAT | VM_ALLOC_WAITFAIL)
+     VM_ALLOC_NOCREAT | VM_ALLOC_WAITFAIL | VM_ALLOC_NORECLAIM)
 
 void
 pmap_allow_2m_x_ept_recalculate(void)
@@ -49,10 +52,36 @@ pmap_allow_2m_x_ept_recalculate(void)
 
 vm_page_t bogus_page;
 struct pmap edgeos_kernel_pmap;
+static struct vm_object edgeos_kernel_object_storage;
+vm_object_t kernel_object = &edgeos_kernel_object_storage;
 struct vmmeter vm_cnt = {
     .v_page_size = 4096u,
 };
 u_long vm_user_wire_count;
+
+int
+vm_fault_disable_pagefaults(void)
+{
+    struct thread *thread = bsd_kthread_current_public();
+    int saved_flags;
+
+    if (!thread)
+        return 0;
+    saved_flags = (int)thread->td_pflags;
+    thread->td_pflags |= TDP_NOFAULTING;
+    return saved_flags;
+}
+
+void
+vm_fault_enable_pagefaults(int saved_flags)
+{
+    struct thread *thread = bsd_kthread_current_public();
+
+    if (!thread)
+        return;
+    thread->td_pflags = (thread->td_pflags & ~TDP_NOFAULTING) |
+        ((uint32_t)saved_flags & TDP_NOFAULTING);
+}
 
 struct bsd_pmap_mapping {
     struct bsd_pmap_mapping *next;
@@ -417,6 +446,23 @@ struct bsd_vm_page_run {
 static SLIST_HEAD(, vm_page) g_physical_pages =
     SLIST_HEAD_INITIALIZER(g_physical_pages);
 static volatile uint32_t g_physical_pages_guard;
+static volatile unsigned long g_physical_page_count;
+struct bsd_fictitious_page {
+    struct vm_page page;
+    SLIST_ENTRY(bsd_fictitious_page) range_link;
+};
+
+struct bsd_fictitious_range {
+    vm_paddr_t start;
+    vm_paddr_t end;
+    vm_memattr_t memory_attribute;
+    SLIST_HEAD(, bsd_fictitious_page) pages;
+    SLIST_ENTRY(bsd_fictitious_range) range_link;
+};
+
+static SLIST_HEAD(, bsd_fictitious_range) g_fictitious_ranges =
+    SLIST_HEAD_INITIALIZER(g_fictitious_ranges);
+static volatile uint32_t g_fictitious_ranges_guard;
 static TAILQ_HEAD(, vm_object) g_device_pager_objects =
     TAILQ_HEAD_INITIALIZER(g_device_pager_objects);
 static volatile uint32_t g_device_pager_guard;
@@ -436,6 +482,35 @@ static void
 physical_pages_unlock(void)
 {
     __atomic_store_n(&g_physical_pages_guard, 0u, __ATOMIC_RELEASE);
+}
+
+static void
+fictitious_ranges_lock(void)
+{
+    while (__atomic_exchange_n(&g_fictitious_ranges_guard, 1u,
+        __ATOMIC_ACQUIRE) != 0) {
+        while (__atomic_load_n(&g_fictitious_ranges_guard,
+            __ATOMIC_RELAXED) != 0)
+            __atomic_signal_fence(__ATOMIC_ACQUIRE);
+    }
+}
+
+static void
+fictitious_ranges_unlock(void)
+{
+    __atomic_store_n(&g_fictitious_ranges_guard, 0u, __ATOMIC_RELEASE);
+}
+
+static vm_page_t
+physical_page_lookup_locked(vm_paddr_t physical_address)
+{
+    vm_page_t page;
+
+    SLIST_FOREACH(page, &g_physical_pages, physical_link) {
+        if (page->phys_addr == physical_address)
+            return page;
+    }
+    return 0;
 }
 
 static void
@@ -460,6 +535,8 @@ physical_pages_insert(vm_page_t page)
 {
     physical_pages_lock();
     SLIST_INSERT_HEAD(&g_physical_pages, page, physical_link);
+    (void)__atomic_add_fetch(&g_physical_page_count, 1ul,
+        __ATOMIC_RELAXED);
     physical_pages_unlock();
 }
 
@@ -474,6 +551,8 @@ physical_pages_remove(vm_page_t page)
         if (*link != page)
             continue;
         *link = SLIST_NEXT(page, physical_link);
+        (void)__atomic_sub_fetch(&g_physical_page_count, 1ul,
+            __ATOMIC_RELAXED);
         break;
     }
     physical_pages_unlock();
@@ -604,6 +683,8 @@ vm_page_object_insert(vm_object_t object, vm_page_t page,
         __ATOMIC_RELAXED);
 }
 
+static void vm_page_object_remove(vm_object_t object, vm_page_t page);
+
 int
 vm_page_insert(vm_page_t page, vm_object_t object, vm_pindex_t index)
 {
@@ -613,6 +694,35 @@ vm_page_insert(vm_page_t page, vm_object_t object, vm_pindex_t index)
         return 1;
     vm_page_object_insert(object, page, index);
     return 0;
+}
+
+void
+vm_page_remove(vm_page_t page)
+{
+    if (page && page->object)
+        vm_page_object_remove(page->object, page);
+}
+
+void
+vm_page_replace(vm_page_t page, vm_object_t object, vm_pindex_t index,
+    vm_page_t old_page)
+{
+    if (!page || !object)
+        return;
+    if (old_page && old_page->object == object)
+        vm_page_remove(old_page);
+    (void)vm_page_insert(page, object, index);
+    if (old_page && old_page != page)
+        vm_page_free(old_page);
+}
+
+unsigned int
+vm_free_count(void)
+{
+    unsigned long allocated = __atomic_load_n(&g_physical_page_count,
+        __ATOMIC_RELAXED);
+
+    return physmem > allocated ? (unsigned int)(physmem - allocated) : 0;
 }
 
 static void
@@ -838,12 +948,140 @@ PHYS_TO_VM_PAGE(vm_paddr_t physical_address)
     if ((physical_address & (PAGE_SIZE - 1u)) != 0)
         return 0;
     physical_pages_lock();
-    SLIST_FOREACH(page, &g_physical_pages, physical_link) {
-        if (page->phys_addr == physical_address)
-            break;
-    }
+    page = physical_page_lookup_locked(physical_address);
     physical_pages_unlock();
-    return page;
+    if (page)
+        return page;
+    return vm_phys_fictitious_to_vm_page(physical_address);
+}
+
+int
+vm_phys_fictitious_reg_range(vm_paddr_t start, vm_paddr_t end,
+    vm_memattr_t memory_attribute)
+{
+    struct bsd_fictitious_range *range;
+    struct bsd_fictitious_range *existing;
+
+    if (start == 0 || start >= end ||
+        (start & (PAGE_SIZE - 1u)) != 0 ||
+        (end & (PAGE_SIZE - 1u)) != 0)
+        return 22;
+    range = bsd_kmalloc(sizeof(*range), BSD_M_WAITOK | BSD_M_ZERO);
+    if (!range)
+        return 12;
+    range->start = start;
+    range->end = end;
+    range->memory_attribute = memory_attribute;
+    SLIST_INIT(&range->pages);
+    fictitious_ranges_lock();
+    SLIST_FOREACH(existing, &g_fictitious_ranges, range_link) {
+        if (start < existing->end && existing->start < end) {
+            fictitious_ranges_unlock();
+            bsd_kfree(range);
+            return 17;
+        }
+    }
+    SLIST_INSERT_HEAD(&g_fictitious_ranges, range, range_link);
+    fictitious_ranges_unlock();
+    return 0;
+}
+
+void
+vm_phys_fictitious_unreg_range(vm_paddr_t start, vm_paddr_t end)
+{
+    struct bsd_fictitious_range **link;
+    struct bsd_fictitious_range *range = 0;
+    struct bsd_fictitious_page *page;
+
+    fictitious_ranges_lock();
+    for (link = &SLIST_FIRST(&g_fictitious_ranges); *link;
+        link = &SLIST_NEXT(*link, range_link)) {
+        if ((*link)->start != start || (*link)->end != end)
+            continue;
+        range = *link;
+        *link = SLIST_NEXT(range, range_link);
+        break;
+    }
+    if (!range) {
+        fictitious_ranges_unlock();
+        return;
+    }
+    while ((page = SLIST_FIRST(&range->pages)) != 0) {
+        SLIST_REMOVE_HEAD(&range->pages, range_link);
+        physical_pages_remove(&page->page);
+        bsd_kfree(page);
+    }
+    fictitious_ranges_unlock();
+    bsd_kfree(range);
+}
+
+vm_page_t
+vm_phys_fictitious_to_vm_page(vm_paddr_t physical_address)
+{
+    struct bsd_fictitious_range *range;
+    struct bsd_fictitious_page *candidate;
+    struct bsd_fictitious_page *page;
+    vm_memattr_t memory_attribute = VM_MEMATTR_DEFAULT;
+    int found = 0;
+
+    if ((physical_address & (PAGE_SIZE - 1u)) != 0)
+        return 0;
+    fictitious_ranges_lock();
+    SLIST_FOREACH(range, &g_fictitious_ranges, range_link) {
+        if (physical_address >= range->start &&
+            physical_address < range->end) {
+            memory_attribute = range->memory_attribute;
+            found = 1;
+            break;
+        }
+    }
+    fictitious_ranges_unlock();
+    if (!found)
+        return 0;
+    candidate = bsd_kmalloc(sizeof(*candidate),
+        BSD_M_WAITOK | BSD_M_ZERO);
+    if (!candidate)
+        return 0;
+    vm_page_initfake(&candidate->page, physical_address,
+        memory_attribute);
+    candidate->page.edgeos_flags |= EDGEOS_VM_PAGE_FICTITIOUS;
+
+    fictitious_ranges_lock();
+    SLIST_FOREACH(range, &g_fictitious_ranges, range_link) {
+        if (physical_address < range->start ||
+            physical_address >= range->end)
+            continue;
+        SLIST_FOREACH(page, &range->pages, range_link) {
+            if (page->page.phys_addr == physical_address) {
+                fictitious_ranges_unlock();
+                bsd_kfree(candidate);
+                return &page->page;
+            }
+        }
+        physical_pages_lock();
+        {
+            vm_page_t existing =
+                physical_page_lookup_locked(physical_address);
+
+            if (existing) {
+                physical_pages_unlock();
+                fictitious_ranges_unlock();
+                bsd_kfree(candidate);
+                return existing;
+            }
+        }
+        SLIST_INSERT_HEAD(&range->pages, candidate, range_link);
+        SLIST_INSERT_HEAD(&g_physical_pages, &candidate->page,
+            physical_link);
+        (void)__atomic_add_fetch(&g_physical_page_count, 1ul,
+            __ATOMIC_RELAXED);
+        physical_pages_unlock();
+        fictitious_ranges_unlock();
+        return &candidate->page;
+    }
+    fictitious_ranges_unlock();
+    bsd_kfree(candidate);
+    return 0;
 }
 
 void
@@ -883,6 +1121,15 @@ vm_page_direct_map(vm_page_t page)
         &mapping) != 0)
         return 0;
     return mapping;
+}
+
+void
+pmap_copy_page(vm_page_t source, vm_page_t destination)
+{
+    vm_page_t source_pages[1] = { source };
+    vm_page_t destination_pages[1] = { destination };
+
+    pmap_copy_pages(source_pages, 0, destination_pages, 0, PAGE_SIZE);
 }
 
 void
@@ -994,7 +1241,8 @@ vm_page_getfake(vm_paddr_t physical_address,
 void
 vm_page_putfake(vm_page_t page)
 {
-    if (!page || (page->edgeos_flags & EDGEOS_VM_PAGE_FAKE) == 0)
+    if (!page || (page->edgeos_flags & EDGEOS_VM_PAGE_FAKE) == 0 ||
+        (page->edgeos_flags & EDGEOS_VM_PAGE_FICTITIOUS) != 0)
         return;
     bsd_kfree(page);
 }
@@ -1233,7 +1481,8 @@ vm_pager_allocate(objtype_t type, void *handle, vm_ooffset_t size,
 
     (void)protection;
     (void)credential;
-    if ((type != OBJT_PHYS && type != OBJT_SG) || size == 0 ||
+    if ((type != OBJT_SWAP && type != OBJT_PHYS && type != OBJT_SG) ||
+        size == 0 ||
         (type == OBJT_SG && !handle) ||
         (offset & (PAGE_SIZE - 1u)) != 0 ||
         size > UINT64_MAX - (PAGE_SIZE - 1u) - offset)
@@ -1351,6 +1600,23 @@ cdev_pager_free_page(vm_object_t object, vm_page_t page)
         (object->type != OBJT_DEVICE && object->type != OBJT_MGTDEVICE))
         return;
     vm_page_object_remove(object, page);
+}
+
+void
+cdev_mgtdev_pager_free_pages(vm_object_t object)
+{
+    vm_page_t page;
+    vm_page_t next;
+
+    if (!object || object->type != OBJT_MGTDEVICE)
+        return;
+    VM_OBJECT_WLOCK(object);
+    for (page = TAILQ_FIRST(&object->pages); page; page = next) {
+        next = TAILQ_NEXT(page, object_link);
+        pmap_remove_all(page);
+        vm_page_remove(page);
+    }
+    VM_OBJECT_WUNLOCK(object);
 }
 
 int
@@ -1497,6 +1763,47 @@ vm_page_grab(vm_object_t object, vm_pindex_t index, int flags)
     return page;
 }
 
+int
+vm_page_grab_valid(vm_page_t *result, vm_object_t object,
+    vm_pindex_t index, int flags)
+{
+    vm_page_t page;
+
+    if (!result)
+        return VM_PAGER_BAD;
+    *result = 0;
+    page = vm_page_grab(object, index, flags);
+    if (!page)
+        return VM_PAGER_FAIL;
+    if (page->valid != VM_PAGE_BITS_ALL)
+        pmap_zero_page(page);
+    *result = page;
+    return VM_PAGER_OK;
+}
+
+void
+vm_object_page_remove(vm_object_t object, vm_pindex_t start,
+    vm_pindex_t end, int flags)
+{
+    vm_page_t page;
+    vm_page_t next;
+
+    if (!object || end < start)
+        return;
+    for (page = TAILQ_FIRST(&object->pages); page; page = next) {
+        next = TAILQ_NEXT(page, object_link);
+        if (page->pindex < start)
+            continue;
+        if (page->pindex >= end)
+            break;
+        if ((flags & OBJPR_CLEANONLY) != 0 && page->dirty != 0)
+            continue;
+        if (vm_page_wired(page))
+            continue;
+        vm_page_free(page);
+    }
+}
+
 bool
 vm_page_unwire(vm_page_t page, uint8_t queue)
 {
@@ -1586,6 +1893,7 @@ struct proc *
 bsd_curproc(void)
 {
     struct thread *thread = bsd_kthread_current_public();
+    kernel_proc_vma_accounting_t accounting;
     kernel_proc_task_view_t view;
     kernel_process_task_handle_t task;
     uint64_t address_space = 0;
@@ -1601,6 +1909,14 @@ bsd_curproc(void)
     thread->td_proc->p_vmspace = &thread->td_proc->p_edgeos_vmspace;
     thread->td_proc->p_vmspace->vm_map.edgeos_address_space =
         address_space;
+    thread->td_proc->p_vmspace->vm_map.size = 0;
+    if (address_space != 0 &&
+        kernel_proc_vma_account(view.tgid > 0 ? view.tgid : view.tid,
+            &accounting) == 0)
+        thread->td_proc->p_vmspace->vm_map.size =
+            accounting.virtual_size_bytes;
+    thread->td_proc->p_vmspace->vm_map.pmap =
+        &thread->td_proc->p_vmspace->vm_pmap;
     thread->td_proc->p_vmspace->vm_pmap.edgeos_address_space =
         address_space;
     return thread->td_proc;
@@ -1841,6 +2157,105 @@ pmap_extract(pmap_t pmap, vm_offset_t virtual_address)
         (uint64_t)virtual_address, &physical_address, 0) != 0)
         return 0;
     return physical_address;
+}
+
+vm_page_t
+pmap_extract_and_hold(pmap_t pmap, vm_offset_t virtual_address,
+    vm_prot_t protection)
+{
+    vm_page_t page;
+    vm_paddr_t physical_address;
+
+    (void)protection;
+    physical_address = pmap_extract(pmap, virtual_address) &
+        ~(vm_paddr_t)(PAGE_SIZE - 1u);
+    if (physical_address == 0)
+        return 0;
+    page = PHYS_TO_VM_PAGE(physical_address);
+    if (page) {
+        vm_page_wire(page);
+        return page;
+    }
+    page = bsd_kmalloc(sizeof(*page), BSD_M_NOWAIT | BSD_M_ZERO);
+    if (!page)
+        return 0;
+    page->a.queue = PQ_NONE;
+    page->oflags = VPO_UNMANAGED;
+    page->phys_addr = physical_address;
+    page->edgeos_page = PHYS_TO_DMAP(physical_address);
+    page->edgeos_flags = EDGEOS_VM_PAGE_USER_HOLD;
+    page->ref_count = 1;
+    return page;
+}
+
+static bool
+pmap_has_page(pmap_t pmap, vm_page_t page)
+{
+    struct bsd_pmap_mapping *mapping;
+    vm_paddr_t physical_address;
+
+    if (!pmap || !page)
+        return false;
+    physical_address = VM_PAGE_TO_PHYS(page) &
+        ~(vm_paddr_t)(PAGE_SIZE - 1u);
+    pmap_lock(pmap);
+    for (mapping = pmap->edgeos_mappings; mapping;
+         mapping = mapping->next) {
+        if (mapping->physical_address == physical_address) {
+            pmap_unlock(pmap);
+            return true;
+        }
+    }
+    pmap_unlock(pmap);
+    return false;
+}
+
+bool
+pmap_page_is_mapped(vm_page_t page)
+{
+    struct thread *thread;
+
+    if (pmap_has_page(kernel_pmap, page))
+        return true;
+    thread = bsd_kthread_current_public();
+    return thread && thread->td_proc && thread->td_proc->p_vmspace &&
+        pmap_has_page(&thread->td_proc->p_vmspace->vm_pmap, page);
+}
+
+void
+pmap_remove_all(vm_page_t page)
+{
+    struct thread *thread;
+    struct pmap *pmap;
+    struct bsd_pmap_mapping **link;
+    vm_paddr_t physical_address;
+
+    if (!page)
+        return;
+    physical_address = VM_PAGE_TO_PHYS(page) &
+        ~(vm_paddr_t)(PAGE_SIZE - 1u);
+    thread = bsd_kthread_current_public();
+    for (int pass = 0; pass < 2; ++pass) {
+        pmap = pass == 0 ? kernel_pmap :
+            (thread && thread->td_proc && thread->td_proc->p_vmspace ?
+            &thread->td_proc->p_vmspace->vm_pmap : 0);
+        if (!pmap)
+            continue;
+        pmap_lock(pmap);
+        for (link = &pmap->edgeos_mappings; *link;) {
+            struct bsd_pmap_mapping *mapping = *link;
+
+            if (mapping->physical_address != physical_address) {
+                link = &mapping->next;
+                continue;
+            }
+            *link = mapping->next;
+            if (mapping->wired && mapping->page)
+                (void)vm_page_unwire_noq(mapping->page);
+            bsd_free(mapping, M_DEVBUF);
+        }
+        pmap_unlock(pmap);
+    }
 }
 
 int
@@ -2476,6 +2891,103 @@ no_memory:
 fault:
     vm_page_release_descriptors(pages, held);
     return EDGE_LINUX_EFAULT;
+}
+
+int
+vm_mmap_object(vm_map_t map, vm_offset_t *address, vm_size_t size,
+    vm_prot_t protection, vm_prot_t maximum_protection, int flags,
+    vm_object_t object, vm_ooffset_t offset, int write_counted,
+    struct thread *thread)
+{
+    vm_offset_t mapped = 0;
+    uint32_t arch_protection = 0;
+
+    (void)flags;
+    (void)write_counted;
+    (void)thread;
+    if (!map || !map->edgeos_address_space || !address || !*address ||
+        !object || size == 0 || (offset & (PAGE_SIZE - 1u)) != 0 ||
+        (protection & ~maximum_protection) != 0 ||
+        *address > UINTPTR_MAX - size)
+        return 22;
+    if ((protection & VM_PROT_READ) != 0)
+        arch_protection |= ARCH_VM_PROT_READ;
+    if ((protection & VM_PROT_WRITE) != 0)
+        arch_protection |= ARCH_VM_PROT_WRITE;
+    if ((protection & VM_PROT_EXECUTE) != 0)
+        arch_protection |= ARCH_VM_PROT_EXEC;
+    for (mapped = 0; mapped < size; mapped += PAGE_SIZE) {
+        vm_ooffset_t object_offset = offset + mapped;
+        vm_page_t page = vm_page_lookup(object,
+            OFF_TO_IDX(object_offset));
+        vm_paddr_t physical_address;
+
+        if (page) {
+            physical_address = VM_PAGE_TO_PHYS(page);
+        } else if (vm_object_pager_physical_address(object,
+            object_offset, &physical_address) != 0) {
+            goto fail;
+        }
+        if (arch_vm_map_user_page(map->edgeos_address_space,
+            *address + mapped, physical_address, arch_protection) != 0)
+            goto fail;
+    }
+    vm_object_reference(object);
+    return 0;
+
+fail:
+    if (mapped != 0)
+        (void)arch_vm_unmap_user_range(map->edgeos_address_space,
+            *address, mapped);
+    return 14;
+}
+
+int
+vm_map_find(vm_map_t map, vm_object_t object, vm_ooffset_t offset,
+    vm_offset_t *address, vm_size_t size, vm_offset_t maximum_address,
+    int find_space, vm_prot_t protection, vm_prot_t maximum_protection,
+    int inheritance)
+{
+    kernel_mm_map_request_t request;
+    int64_t mapped_address;
+    int result;
+
+    (void)maximum_address;
+    (void)find_space;
+    if (!map || !map->edgeos_address_space || !address || !object ||
+        size == 0 || inheritance != MAP_INHERIT_SHARE ||
+        map->edgeos_address_space != arch_mm_current_address_space())
+        return KERN_INVALID_ARGUMENT;
+
+    request.address = *address;
+    request.length = size;
+    request.protection = 0;
+    if ((protection & VM_PROT_READ) != 0)
+        request.protection |= KERNEL_MM_PROT_READ;
+    if ((protection & VM_PROT_WRITE) != 0)
+        request.protection |= KERNEL_MM_PROT_WRITE;
+    if ((protection & VM_PROT_EXECUTE) != 0)
+        request.protection |= KERNEL_MM_PROT_EXEC;
+    request.flags = KERNEL_MM_MAP_SHARED | KERNEL_MM_MAP_ANONYMOUS;
+    request.descriptor = -1;
+    request.reserved = 0;
+    request.offset = 0;
+    mapped_address = kernel_mm_map(&request);
+    if (mapped_address < 0)
+        return mapped_address == -EDGE_LINUX_ENOMEM ?
+            KERN_NO_SPACE : KERN_FAILURE;
+
+    *address = (vm_offset_t)mapped_address;
+    result = vm_mmap_object(map, address, size, protection,
+        maximum_protection, 0, object, offset, 0, curthread);
+    if (result != 0) {
+        (void)kernel_mm_unmap_range(*address, size);
+        *address = 0;
+        return result == 14 ? KERN_INVALID_ADDRESS :
+            KERN_INVALID_ARGUMENT;
+    }
+    map->size += size;
+    return KERN_SUCCESS;
 }
 
 void

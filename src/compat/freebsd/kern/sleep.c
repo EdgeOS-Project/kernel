@@ -1,13 +1,19 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 /* FreeBSD delay and sleep-channel services on the shared worker runtime. */
 
+#include <stdbool.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 #include "compat/freebsd/edgeos/kthread.h"
 #include "compat/freebsd/edgeos/sleep.h"
 #include "compat/freebsd/edgeos/sync.h"
+#include "compat/freebsd/edgeos/systm.h"
 #include "compat/freebsd/sys/mutex.h"
 #include "sys/boottime.h"
+#include <sys/sleepqueue.h>
+
+struct sbuf;
 
 #define BSD_SLEEP_C_ABSOLUTE 0x0200
 #define BSD_SLEEP_EINTR 4
@@ -127,6 +133,192 @@ bsd_sbt_to_ticks(int64_t sleep_time)
     return ticks > INT32_MAX ? INT32_MAX : (int)ticks;
 }
 
+#define BSD_SLEEPQ_CONTEXT_COUNT 64u
+
+struct bsd_sleepq_context {
+    void *thread;
+    const void *channel;
+    uint64_t generation;
+    int timeout_ticks;
+};
+
+static volatile unsigned int g_sleepq_guard;
+static struct bsd_sleepq_context
+    g_sleepq_contexts[BSD_SLEEPQ_CONTEXT_COUNT];
+
+static void
+sleepq_guard_lock(void)
+{
+    while (__atomic_exchange_n(&g_sleepq_guard, 1u,
+        __ATOMIC_ACQUIRE) != 0)
+        bsd_sync_yield_current();
+}
+
+static void
+sleepq_guard_unlock(void)
+{
+    __atomic_store_n(&g_sleepq_guard, 0u, __ATOMIC_RELEASE);
+}
+
+static struct bsd_sleepq_context *
+sleepq_current_context(int create)
+{
+    void *thread = bsd_kthread_current_token();
+    struct bsd_sleepq_context *available = 0;
+    struct bsd_sleepq_context *result = 0;
+
+    if (!thread)
+        return 0;
+    sleepq_guard_lock();
+    for (unsigned int index = 0; index < BSD_SLEEPQ_CONTEXT_COUNT; ++index) {
+        if (g_sleepq_contexts[index].thread == thread) {
+            result = &g_sleepq_contexts[index];
+            break;
+        }
+        if (!available && !g_sleepq_contexts[index].thread)
+            available = &g_sleepq_contexts[index];
+    }
+    if (!result && create && available) {
+        available->thread = thread;
+        result = available;
+    }
+    sleepq_guard_unlock();
+    return result;
+}
+
+static void
+sleepq_context_clear(struct bsd_sleepq_context *context)
+{
+    if (!context)
+        return;
+    sleepq_guard_lock();
+    context->thread = 0;
+    context->channel = 0;
+    context->generation = 0;
+    context->timeout_ticks = 0;
+    sleepq_guard_unlock();
+}
+
+void
+init_sleepqueues(void)
+{
+    bsd_memset(g_sleepq_contexts, 0, sizeof(g_sleepq_contexts));
+}
+
+void
+sleepq_lock(const void *channel)
+{
+    struct bsd_sleepq_context *context = sleepq_current_context(1);
+
+    if (!context)
+        return;
+    context->channel = channel;
+    context->generation = bsd_kthread_wakeup_generation(channel);
+    context->timeout_ticks = 0;
+}
+
+void
+sleepq_release(const void *channel)
+{
+    struct bsd_sleepq_context *context = sleepq_current_context(0);
+
+    if (context && context->channel == channel)
+        sleepq_context_clear(context);
+}
+
+void
+sleepq_add(const void *channel, struct lock_object *lock,
+    const char *message, int flags, int queue)
+{
+    struct bsd_sleepq_context *context = sleepq_current_context(1);
+
+    (void)lock;
+    (void)message;
+    (void)flags;
+    (void)queue;
+    if (!context)
+        return;
+    if (context->channel != channel) {
+        context->channel = channel;
+        context->generation = bsd_kthread_wakeup_generation(channel);
+    }
+}
+
+void
+sleepq_set_timeout_sbt(const void *channel, sbintime_t sleep_time,
+    sbintime_t precision, int flags)
+{
+    struct bsd_sleepq_context *context = sleepq_current_context(1);
+
+    (void)precision;
+    (void)flags;
+    if (!context)
+        return;
+    context->channel = channel;
+    context->timeout_ticks = bsd_sbt_to_ticks(sleep_time);
+}
+
+static int
+sleepq_wait_common(const void *channel, int timed)
+{
+    struct bsd_sleepq_context *context = sleepq_current_context(0);
+    uint64_t generation = context && context->channel == channel ?
+        context->generation : bsd_kthread_wakeup_generation(channel);
+    int timeout_ticks = timed && context && context->channel == channel ?
+        context->timeout_ticks : 0;
+    int result;
+
+    sleepq_context_clear(context);
+    result = bsd_kthread_sleep_generation(channel, generation, timeout_ticks);
+    return result;
+}
+
+void
+sleepq_wait(const void *channel, int priority)
+{
+    (void)priority;
+    (void)sleepq_wait_common(channel, 0);
+}
+
+int
+sleepq_wait_sig(const void *channel, int priority)
+{
+    (void)priority;
+    return sleepq_wait_common(channel, 0);
+}
+
+int
+sleepq_timedwait(const void *channel, int priority)
+{
+    (void)priority;
+    return sleepq_wait_common(channel, 1);
+}
+
+int
+sleepq_timedwait_sig(const void *channel, int priority)
+{
+    (void)priority;
+    return sleepq_wait_common(channel, 1);
+}
+
+void
+sleepq_signal(const void *channel, int flags, int priority, int queue)
+{
+    (void)flags;
+    (void)priority;
+    (void)queue;
+    bsd_kthread_wakeup(channel, 1);
+}
+
+void
+sleepq_broadcast(const void *channel, int flags, int priority, int queue)
+{
+    (void)flags;
+    (void)priority;
+    (void)queue;
+    bsd_kthread_wakeup(channel, 0);
+}
+
 int
 bsd_msleep_sbt(const void *channel, struct mtx *mutex, int priority,
     const char *wait_message, int64_t sleep_time, int64_t precision,
@@ -195,4 +387,16 @@ void
 bsd_wakeup_one(const void *channel)
 {
     bsd_kthread_wakeup(channel, 1);
+}
+
+int
+sleepq_sbuf_print_stacks(struct sbuf *buffer, const void *channel, int queue,
+    int *stack_count)
+{
+    (void)buffer;
+    (void)channel;
+    (void)queue;
+    if (stack_count != 0)
+        *stack_count = 0;
+    return 0;
 }

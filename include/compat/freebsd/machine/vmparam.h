@@ -17,5 +17,6 @@
 #define ADDR_IS_KERNEL(address) \
     ((((uint64_t)(address)) & (UINT64_C(1) << 55)) != 0)
 #endif
+#define VM_MAXUSER_ADDRESS ((vm_offset_t)0x0000800000000000ULL)
 
 #endif

@@ -1,12 +1,9 @@
-/* SPDX-License-Identifier: MPL-2.0 */
-/* Build policy for FreeBSD stack-trace consumers. */
+/* SPDX-License-Identifier: BSD-2-Clause */
+/* Stack capture is provided by the EdgeOS BSD bridge runtime. */
 
-#ifndef EDGEOS_COMPAT_FREEBSD_OPT_STACK_H
-#define EDGEOS_COMPAT_FREEBSD_OPT_STACK_H
+#ifndef _OPT_STACK_H_
+#define _OPT_STACK_H_
 
-/*
- * Stack snapshots are intentionally omitted until the shared unwinder is
- * exposed through the BSD bridge.  Core failpoint behavior remains enabled.
- */
+#define STACK 1
 
 #endif

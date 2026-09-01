@@ -21,6 +21,16 @@
 
 extern struct mtx Giant;
 
+#define DROP_GIANT() \
+    int _giant_lock_count = 0; \
+    while (mtx_owned(&Giant)) { \
+        mtx_unlock(&Giant); \
+        ++_giant_lock_count; \
+    }
+#define PICKUP_GIANT() \
+    while (_giant_lock_count-- > 0) \
+        mtx_lock(&Giant)
+
 struct mtx_pool;
 extern struct mtx_pool *mtxpool_sleep;
 struct mtx *mtx_pool_find(struct mtx_pool *pool, void *pointer);
@@ -91,6 +101,13 @@ static inline void
 mtx_lock(struct mtx *mutex)
 {
     bsd_mutex_lock(&mutex->edgeos_mutex);
+}
+
+static inline void
+mtx_lock_flags(struct mtx *mutex, int options)
+{
+    (void)options;
+    mtx_lock(mutex);
 }
 
 static inline void

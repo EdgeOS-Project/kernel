@@ -2,14 +2,21 @@
 /* Core runtime helpers for the EdgeOS FreeBSD driver bridge. */
 
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdarg.h>
+#include <string.h>
 
 #ifdef BSD_BRIDGE_HOST_TEST
 #include <stdio.h>
 #include <stdlib.h>
 #else
 #include "kernel/system_runtime.h"
+int process_getpid(void);
+int process_read_user_memory(int pid, uint64_t source, void *destination,
+    uint64_t length);
+int process_write_user_memory(int pid, uint64_t destination,
+    const void *source, uint64_t length);
 void printf(const char *format, ...);
 #endif
 
@@ -19,6 +26,8 @@ void printf(const char *format, ...);
 #include "compat/freebsd/sys/_callout.h"
 #include "compat/freebsd/sys/cpuset.h"
 #include "compat/freebsd/sys/domainset.h"
+#include "compat/freebsd/sys/memrange.h"
+#include "compat/freebsd/sys/stack.h"
 
 struct malloc_type;
 
@@ -33,14 +42,17 @@ typedef struct {
 } bsd_format_output_t;
 
 int hz = 1000;
+int stathz = 1000;
 const int osreldate = 200008;
 const char osrelease[] = EDGEOS_KERNEL_RELEASE;
 const char ostype[] = "EdgeOS";
 const char kern_ident[] = "EDGEOS";
 int tick = 1000;
 volatile int ticks;
+unsigned long jiffies;
 volatile long ticksl;
 int bootverbose;
+int boothowto;
 int cold;
 int kdb_active;
 int rebooting;
@@ -51,6 +63,44 @@ int mp_maxid = 0;
 int smp_threads_per_core = 1;
 int smp_started = 1;
 int vm_guest;
+
+int
+linux_alloc_current_noop(struct thread *thread, int flags)
+{
+    (void)thread;
+    (void)flags;
+    return 0;
+}
+
+int (*lkpi_alloc_current)(struct thread *thread, int flags) =
+    linux_alloc_current_noop;
+
+void
+stack_save(struct stack *stack)
+{
+    if (!stack)
+        return;
+    stack->depth = 0;
+}
+
+void
+stack_print(const struct stack *stack)
+{
+    int index;
+
+    if (!stack)
+        return;
+    for (index = 0; index < stack->depth && index < STACK_MAX; index++)
+        printf("%p\n", (void *)(uintptr_t)stack->pcs[index]);
+}
+
+int
+mem_range_attr_set(struct mem_range_desc *descriptor, int *action)
+{
+    (void)descriptor;
+    (void)action;
+    return 45;
+}
 
 #define BSD_SYSTM_ENODEV 19
 
@@ -63,6 +113,7 @@ sysbeep(int frequency, sbintime_t duration)
 }
 
 cpuset_t all_cpus = { .__bits = { 1ul } };
+cpuset_t *cpuset_root = &all_cpus;
 cpuset_t cpuset_domain[1] = { { .__bits = { 1ul } } };
 cpuset_t hlt_cpus_mask = { .__bits = { 0ul } };
 struct domainset domainset_prefer[1] = {
@@ -409,6 +460,18 @@ bsd_memset(void *destination, int value, size_t length)
     return destination;
 }
 
+void
+explicit_bzero(void *buffer, size_t length)
+{
+    volatile unsigned char *bytes = buffer;
+
+    while (length != 0) {
+        *bytes++ = 0;
+        --length;
+    }
+    __asm__ __volatile__("" : : "r"(buffer) : "memory");
+}
+
 void *
 bsd_memcpy(void *destination, const void *source, size_t length)
 {
@@ -510,6 +573,14 @@ bsd_strchr(const char *text, int character)
 }
 
 char *
+bsd_strchrnul(const char *text, int character)
+{
+    char *match = bsd_strchr(text, character);
+
+    return match ? match : (char *)(uintptr_t)(text + bsd_strlen(text));
+}
+
+char *
 bsd_strcpy(char *destination, const char *source)
 {
     char *result = destination;
@@ -559,6 +630,27 @@ bsd_strstr(const char *text, const char *needle)
         ++text;
     }
     return 0;
+}
+
+char *
+strnstr(const char *text, const char *needle, size_t length)
+{
+    size_t needle_length;
+
+    if (!text || !needle)
+        return NULL;
+    needle_length = strlen(needle);
+    if (needle_length == 0)
+        return (char *)text;
+    if (needle_length > length)
+        return NULL;
+    for (size_t offset = 0; offset + needle_length <= length; ++offset) {
+        if (text[offset] == '\0')
+            break;
+        if (memcmp(text + offset, needle, needle_length) == 0)
+            return (char *)(text + offset);
+    }
+    return NULL;
 }
 
 char *
@@ -1181,6 +1273,8 @@ bsd_log(int priority, const char *format, ...)
     va_end(arguments);
 }
 
+const char *panicstr;
+
 int
 bsd_printf(const char *format, ...)
 {
@@ -1198,6 +1292,7 @@ bsd_panic(const char *format, ...)
 {
     va_list arguments;
 
+    panicstr = format;
     bsd_printf("[bsd-bridge] panic: ");
     va_start(arguments, format);
     (void)bsd_vprintf(format, arguments);
@@ -1205,6 +1300,14 @@ bsd_panic(const char *format, ...)
     bsd_printf("\n");
     bsd_bridge_panic_stop();
     __builtin_unreachable();
+}
+
+int
+doadump(bool textdump)
+{
+    (void)textdump;
+    bsd_printf("[bsd-bridge] kernel dump storage is unavailable\n");
+    return 95;
 }
 
 int
@@ -1414,6 +1517,36 @@ bsd_copyout(const void *source, void *destination, size_t length)
 }
 
 int
+copyin_nofault(const void *source, void *destination, size_t length)
+{
+#if defined(BSD_BRIDGE_HOST_TEST) || defined(EDGEOS_BSD_ARM64)
+    return bsd_copyin(source, destination, length);
+#else
+    if ((!source || !destination) && length != 0)
+        return 14;
+    if (length != 0 && process_read_user_memory(process_getpid(),
+        (uint64_t)(uintptr_t)source, destination, length) < 0)
+        return 14;
+    return 0;
+#endif
+}
+
+int
+copyout_nofault(const void *source, void *destination, size_t length)
+{
+#if defined(BSD_BRIDGE_HOST_TEST) || defined(EDGEOS_BSD_ARM64)
+    return bsd_copyout(source, destination, length);
+#else
+    if ((!source || !destination) && length != 0)
+        return 14;
+    if (length != 0 && process_write_user_memory(process_getpid(),
+        (uint64_t)(uintptr_t)destination, source, length) < 0)
+        return 14;
+    return 0;
+#endif
+}
+
+int
 bsd_copyinstr(const void *source, void *destination, size_t capacity,
     size_t *copied)
 {
@@ -1461,6 +1594,20 @@ int
 bsd_suword32(void *destination, uint32_t value)
 {
     return bsd_copyout(&value, destination, sizeof(value)) == 0 ? 0 : -1;
+}
+
+int
+bsd_suword64(void *destination, uint64_t value)
+{
+    return bsd_copyout(&value, destination, sizeof(value)) == 0 ? 0 : -1;
+}
+
+int
+bsd_subyte(void *destination, int value)
+{
+    uint8_t byte = (uint8_t)value;
+
+    return bsd_copyout(&byte, destination, sizeof(byte)) == 0 ? 0 : -1;
 }
 
 void
@@ -1513,6 +1660,30 @@ int
 bsd_ffs(int value)
 {
     return value == 0 ? 0 : __builtin_ctz((unsigned int)value) + 1;
+}
+
+void *
+bsearch(const void *key, const void *base_pointer, size_t count,
+    size_t size, int (*compare)(const void *, const void *))
+{
+    const unsigned char *base = base_pointer;
+
+    if (!key || !base || !compare || size == 0)
+        return 0;
+    while (count != 0) {
+        size_t middle = count >> 1;
+        const void *candidate = base + middle * size;
+        int order = compare(key, candidate);
+
+        if (order == 0)
+            return (void *)(uintptr_t)candidate;
+        if (order > 0) {
+            base = (const unsigned char *)candidate + size;
+            count--;
+        }
+        count >>= 1;
+    }
+    return 0;
 }
 
 int

@@ -53,6 +53,7 @@ int bsd_interrupt_unregister_raw(void *backend_cookie);
 int bsd_intrng_resource_is_mapped(const struct resource *resource);
 int bsd_intrng_suspend_irq(device_t device, struct resource *resource);
 int bsd_intrng_resume_irq(device_t device, struct resource *resource);
+int bsd_intrng_drain_irq(unsigned int irq);
 int intr_activate_irq(device_t device, struct resource *resource);
 int intr_deactivate_irq(device_t device, struct resource *resource);
 int intr_setup_irq(device_t device, struct resource *resource,

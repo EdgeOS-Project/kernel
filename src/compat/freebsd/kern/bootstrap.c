@@ -255,6 +255,12 @@ bsd_bridge_bootstrap(const bsd_bridge_bootstrap_options_t *options)
     error = bsd_module_provide("ether", 1);
     if (error)
         return bootstrap_finish_failure(error);
+    error = bsd_module_provide("mem", 1);
+    if (error)
+        return bootstrap_finish_failure(error);
+    error = bsd_module_provide("iic", 1);
+    if (error)
+        return bootstrap_finish_failure(error);
     error = bsd_module_provide("random_device", 1);
     if (error)
         return bootstrap_finish_failure(error);

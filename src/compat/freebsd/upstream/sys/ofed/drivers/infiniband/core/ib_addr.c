@@ -1,0 +1,1017 @@
+/*-
+ * SPDX-License-Identifier: BSD-2-Clause OR GPL-2.0
+ *
+ * Copyright (c) 2005 Voltaire Inc.  All rights reserved.
+ * Copyright (c) 2002-2005, Network Appliance, Inc. All rights reserved.
+ * Copyright (c) 1999-2019, Mellanox Technologies, Inc. All rights reserved.
+ * Copyright (c) 2005 Intel Corporation.  All rights reserved.
+ *
+ * This software is available to you under a choice of one of two
+ * licenses.  You may choose to be licensed under the terms of the GNU
+ * General Public License (GPL) Version 2, available from the file
+ * COPYING in the main directory of this source tree, or the
+ * OpenIB.org BSD license below:
+ *
+ *     Redistribution and use in source and binary forms, with or
+ *     without modification, are permitted provided that the following
+ *     conditions are met:
+ *
+ *      - Redistributions of source code must retain the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer.
+ *
+ *      - Redistributions in binary form must reproduce the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer in the documentation and/or other materials
+ *        provided with the distribution.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
+#include <sys/cdefs.h>
+#include <linux/mutex.h>
+#include <linux/slab.h>
+#include <linux/workqueue.h>
+#include <linux/module.h>
+#include <net/if_llatbl.h>
+#include <net/route.h>
+#include <net/route/nhop.h>
+#include <net/netevent.h>
+#include <rdma/ib_addr.h>
+#include <rdma/ib_cache.h>
+#include <rdma/ib_sa.h>
+#include <rdma/ib.h>
+
+#include <netinet/in_fib.h>
+#include <netinet/if_ether.h>
+#include <netinet/ip_var.h>
+#include <netinet6/scope6_var.h>
+#include <netinet6/in6_pcb.h>
+#include <netinet6/in6_fib.h>
+
+#include "core_priv.h"
+
+struct addr_req {
+	struct list_head list;
+	struct sockaddr_storage src_addr;
+	struct sockaddr_storage dst_addr;
+	struct rdma_dev_addr *addr;
+	void *context;
+	void (*callback)(int status, struct sockaddr *src_addr,
+			 struct rdma_dev_addr *addr, void *context);
+	unsigned long timeout;
+	struct delayed_work work;
+	bool resolve_by_gid_attr;	/* Consider gid attr in resolve phase */
+	int status;
+};
+
+static DEFINE_SPINLOCK(lock);
+static LIST_HEAD(req_list);
+static struct workqueue_struct *addr_wq;
+
+int rdma_addr_size(const struct sockaddr *addr)
+{
+	switch (addr->sa_family) {
+	case AF_INET:
+		return sizeof(struct sockaddr_in);
+	case AF_INET6:
+		return sizeof(struct sockaddr_in6);
+	case AF_IB:
+		return sizeof(struct sockaddr_ib);
+	default:
+		return 0;
+	}
+}
+EXPORT_SYMBOL(rdma_addr_size);
+
+int rdma_addr_size_in6(struct sockaddr_in6 *addr)
+{
+	int ret = rdma_addr_size((struct sockaddr *) addr);
+
+	return ret <= sizeof(*addr) ? ret : 0;
+}
+EXPORT_SYMBOL(rdma_addr_size_in6);
+
+int rdma_addr_size_kss(struct sockaddr_storage *addr)
+{
+	int ret = rdma_addr_size((struct sockaddr *) addr);
+
+	return ret <= sizeof(*addr) ? ret : 0;
+}
+EXPORT_SYMBOL(rdma_addr_size_kss);
+
+static inline void
+rdma_copy_addr_sub(u8 *dst, const u8 *src, unsigned min, unsigned max)
+{
+	if (min > max)
+		min = max;
+	memcpy(dst, src, min);
+	memset(dst + min, 0, max - min);
+}
+
+/**
+ * rdma_copy_src_l2_addr - Copy netdevice source addresses
+ * @dev_addr:	Destination address pointer where to copy the addresses
+ * @dev:	Netdevice whose source addresses to copy
+ *
+ * rdma_copy_src_l2_addr() copies source addresses from the specified netdevice.
+ * This includes unicast address, broadcast address, device type and
+ * interface index.
+ */
+void rdma_copy_src_l2_addr(struct rdma_dev_addr *dev_addr,
+			   const if_t dev)
+{
+	int dev_type = if_gettype(dev);
+
+	/* check for loopback device */
+	if (if_getflags(dev) & IFF_LOOPBACK) {
+		dev_addr->dev_type = ARPHRD_ETHER;
+		memset(dev_addr->src_dev_addr, 0, MAX_ADDR_LEN);
+		memset(dev_addr->broadcast, 0, MAX_ADDR_LEN);
+		memset(dev_addr->dst_dev_addr, 0, MAX_ADDR_LEN);
+		dev_addr->bound_dev_if = if_getindex(dev);
+		return;
+	} else if (dev_type == IFT_INFINIBAND)
+		dev_addr->dev_type = ARPHRD_INFINIBAND;
+	else if (dev_type == IFT_ETHER || dev_type == IFT_L2VLAN)
+		dev_addr->dev_type = ARPHRD_ETHER;
+	else
+		dev_addr->dev_type = 0;
+	rdma_copy_addr_sub(dev_addr->src_dev_addr, if_getlladdr(dev),
+			   if_getaddrlen(dev), MAX_ADDR_LEN);
+	rdma_copy_addr_sub(dev_addr->broadcast, if_getbroadcastaddr(dev),
+			   if_getaddrlen(dev), MAX_ADDR_LEN);
+	dev_addr->bound_dev_if = if_getindex(dev);
+}
+EXPORT_SYMBOL(rdma_copy_src_l2_addr);
+
+static if_t
+rdma_find_ndev_for_src_ip_rcu(struct vnet *net, const struct sockaddr *src_in)
+{
+	if_t dev = NULL;
+	int ret = -EADDRNOTAVAIL;
+
+	switch (src_in->sa_family) {
+#ifdef INET
+	case AF_INET:
+		dev = ip_ifp_find(net,
+			((const struct sockaddr_in *)src_in)->sin_addr.s_addr);
+		if (dev)
+			ret = 0;
+		break;
+#endif
+#ifdef INET6
+	case AF_INET6:
+		dev = ip6_ifp_find(net,
+			((const struct sockaddr_in6 *)src_in)->sin6_addr, 0);
+		if (dev)
+			ret = 0;
+		break;
+#endif
+	}
+	return ret ? ERR_PTR(ret) : dev;
+}
+
+int rdma_translate_ip(const struct sockaddr *addr,
+		      struct rdma_dev_addr *dev_addr)
+{
+	if_t dev;
+	int ret = 0;
+
+	if (dev_addr->bound_dev_if) {
+		dev = dev_get_by_index(dev_addr->net, dev_addr->bound_dev_if);
+		if (!dev)
+			return -ENODEV;
+	} else {
+		rcu_read_lock();
+		dev = rdma_find_ndev_for_src_ip_rcu(dev_addr->net, addr);
+		rcu_read_unlock();
+		if (IS_ERR(dev))
+			return PTR_ERR(dev);
+	}
+
+	/* disallow connections through 127.0.0.1 itself */
+	if (if_getflags(dev) & IFF_LOOPBACK)
+		ret = -EINVAL;
+	else
+		rdma_copy_src_l2_addr(dev_addr, dev);
+	dev_put(dev);
+	return ret;
+}
+EXPORT_SYMBOL(rdma_translate_ip);
+
+static void set_timeout(struct addr_req *req, unsigned long time)
+{
+	unsigned long delay;
+
+	delay = time - jiffies;
+	if (delay <= 0)
+		delay = 1;
+	else if (delay > hz)
+		delay = hz;
+
+	mod_delayed_work(addr_wq, &req->work, delay);
+}
+
+static void queue_req(struct addr_req *req)
+{
+	spin_lock_bh(&lock);
+	list_add_tail(&req->list, &req_list);
+	set_timeout(req, req->timeout);
+	spin_unlock_bh(&lock);
+}
+
+#if defined(INET) || defined(INET6)
+static int addr_resolve_multi(u8 *edst, if_t ifp, struct sockaddr *dst_in)
+{
+	struct sockaddr *llsa;
+	struct sockaddr_dl sdl;
+	int error;
+
+	sdl.sdl_len = sizeof(sdl);
+	llsa = (struct sockaddr *)&sdl;
+
+	error = if_resolvemulti(ifp, &llsa, dst_in);
+	if (error == 0) {
+		rdma_copy_addr_sub(edst, LLADDR((struct sockaddr_dl *)llsa),
+		    if_getaddrlen(ifp), MAX_ADDR_LEN);
+	}
+	return (error);
+}
+#endif
+
+#ifdef INET
+static int addr4_resolve(struct sockaddr *src_sock,
+			 const struct sockaddr *dst_sock,
+			 struct rdma_dev_addr *addr,
+			 u8 *edst,
+			 if_t *ifpp)
+{
+	struct sockaddr_in *src_in = (struct sockaddr_in *)src_sock;
+	const struct sockaddr_in *dst_in =
+			(const struct sockaddr_in *)dst_sock;
+	enum {
+		ADDR_VALID = 0,
+		ADDR_SRC_ANY = 1,
+		ADDR_DST_ANY = 2,
+	};
+	struct sockaddr_in dst_tmp = *dst_in;
+	in_port_t src_port;
+	struct sockaddr *saddr = NULL;
+	struct nhop_object *nh;
+	if_t ifp;
+	int error;
+	int type;
+
+	NET_EPOCH_ASSERT();
+
+	/* set VNET, if any */
+	CURVNET_SET(addr->net);
+
+	/* set default TTL limit */
+	addr->hoplimit = V_ip_defttl;
+
+	type = ADDR_VALID;
+	if (src_in->sin_addr.s_addr == INADDR_ANY)
+		type |= ADDR_SRC_ANY;
+	if (dst_tmp.sin_addr.s_addr == INADDR_ANY)
+		type |= ADDR_DST_ANY;
+
+	/*
+	 * Make sure the socket address length field is set.
+	 */
+	dst_tmp.sin_len = sizeof(dst_tmp);
+
+	/* Step 1 - lookup destination route if any */
+	switch (type) {
+	case ADDR_VALID:
+	case ADDR_SRC_ANY:
+		/* regular destination route lookup */
+		nh = fib4_lookup(RT_DEFAULT_FIB, dst_tmp.sin_addr,0,NHR_NONE,0);
+		if (nh == NULL) {
+			error = EHOSTUNREACH;
+			goto done;
+		}
+		break;
+	default:
+		error = ENETUNREACH;
+		goto done;
+	}
+
+	/* Step 2 - find outgoing network interface */
+	switch (type) {
+	case ADDR_VALID:
+		/* get source interface */
+		if (addr->bound_dev_if != 0) {
+			ifp = dev_get_by_index(addr->net, addr->bound_dev_if);
+		} else {
+			ifp = ip_ifp_find(addr->net, src_in->sin_addr.s_addr);
+		}
+
+		/* check source interface */
+		if (ifp == NULL) {
+			error = ENETUNREACH;
+			goto done;
+		} else if (if_getflags(ifp) & IFF_LOOPBACK) {
+			/*
+			 * Source address cannot be a loopback device.
+			 */
+			error = EHOSTUNREACH;
+			goto error_put_ifp;
+		} else if (if_getflags(nh->nh_ifp) & IFF_LOOPBACK) {
+			if (memcmp(&src_in->sin_addr, &dst_in->sin_addr,
+			    sizeof(src_in->sin_addr))) {
+				/*
+				 * Destination is loopback, but source
+				 * and destination address is not the
+				 * same.
+				 */
+				error = EHOSTUNREACH;
+				goto error_put_ifp;
+			}
+			/* get destination network interface from route */
+			dev_put(ifp);
+			ifp = nh->nh_ifp;
+			dev_hold(ifp);
+		} else if (ifp != nh->nh_ifp) {
+			/*
+			 * Source and destination interfaces are
+			 * different.
+			 */
+			error = ENETUNREACH;
+			goto error_put_ifp;
+		}
+		break;
+	case ADDR_SRC_ANY:
+		/* check for loopback device */
+		if (if_getflags(nh->nh_ifp) & IFF_LOOPBACK)
+			saddr = (struct sockaddr *)&dst_tmp;
+		else
+			saddr = nh->nh_ifa->ifa_addr;
+
+		/* get destination network interface from route */
+		ifp = nh->nh_ifp;
+		dev_hold(ifp);
+		break;
+	default:
+		break;
+	}
+
+	/*
+	 * Step 3 - resolve destination MAC address
+	 */
+	if (dst_tmp.sin_addr.s_addr == INADDR_BROADCAST) {
+		rdma_copy_addr_sub(edst, if_getbroadcastaddr(ifp),
+		    if_getaddrlen(ifp), MAX_ADDR_LEN);
+		error = 0;
+	} else if (IN_MULTICAST(ntohl(dst_tmp.sin_addr.s_addr))) {
+		bool is_gw = (nh->nh_flags & NHF_GATEWAY) != 0;
+		error = addr_resolve_multi(edst, ifp, (struct sockaddr *)&dst_tmp);
+		if (error != 0)
+			goto error_put_ifp;
+		else if (is_gw)
+			addr->network = RDMA_NETWORK_IPV4;
+	} else if (if_getflags(ifp) & IFF_LOOPBACK) {
+		memset(edst, 0, MAX_ADDR_LEN);
+		error = 0;
+	} else {
+		bool is_gw = (nh->nh_flags & NHF_GATEWAY) != 0;
+		memset(edst, 0, MAX_ADDR_LEN);
+#ifdef INET6
+		if (is_gw && nh->gw_sa.sa_family == AF_INET6)
+			error = nd6_resolve(ifp, LLE_SF(AF_INET, is_gw), NULL,
+			    &nh->gw_sa, edst, NULL, NULL);
+		else
+#endif
+			error = arpresolve(ifp, is_gw, NULL, is_gw ?
+			    &nh->gw_sa : (const struct sockaddr *)&dst_tmp,
+			    edst, NULL, NULL);
+
+		if (error != 0)
+			goto error_put_ifp;
+		else if (is_gw)
+			addr->network = RDMA_NETWORK_IPV4;
+	}
+
+	/*
+	 * Step 4 - update source address, if any
+	 */
+	if (saddr != NULL) {
+		src_port = src_in->sin_port;
+		memcpy(src_in, saddr, rdma_addr_size(saddr));
+		src_in->sin_port = src_port;	/* preserve port number */
+	}
+
+	*ifpp = ifp;
+
+	goto done;
+
+error_put_ifp:
+	dev_put(ifp);
+done:
+	CURVNET_RESTORE();
+
+	if (error == EWOULDBLOCK || error == EAGAIN)
+		error = ENODATA;
+	return (-error);
+}
+#else
+static int addr4_resolve(struct sockaddr *src_sock,
+			 const struct sockaddr *dst_sock,
+			 struct rdma_dev_addr *addr,
+			 u8 *edst,
+			 if_t *ifpp)
+{
+	return -EADDRNOTAVAIL;
+}
+#endif
+
+#ifdef INET6
+static int addr6_resolve(struct sockaddr *src_sock,
+			 const struct sockaddr *dst_sock,
+			 struct rdma_dev_addr *addr,
+			 u8 *edst,
+			 if_t *ifpp)
+{
+	struct sockaddr_in6 *src_in = (struct sockaddr_in6 *)src_sock;
+	const struct sockaddr_in6 *dst_in =
+				(const struct sockaddr_in6 *)dst_sock;
+	enum {
+		ADDR_VALID = 0,
+		ADDR_SRC_ANY = 1,
+		ADDR_DST_ANY = 2,
+	};
+	struct sockaddr_in6 dst_tmp = *dst_in;
+	in_port_t src_port;
+	struct sockaddr *saddr = NULL;
+	struct nhop_object *nh;
+	if_t ifp;
+	int error;
+	int type;
+
+	NET_EPOCH_ASSERT();
+
+	/* set VNET, if any */
+	CURVNET_SET(addr->net);
+
+	/* set default TTL limit */
+	addr->hoplimit = V_ip_defttl;
+
+	type = ADDR_VALID;
+	if (ipv6_addr_any(&src_in->sin6_addr))
+		type |= ADDR_SRC_ANY;
+	if (ipv6_addr_any(&dst_tmp.sin6_addr))
+		type |= ADDR_DST_ANY;
+
+	/*
+	 * Make sure the socket address length field is set.
+	 */
+	dst_tmp.sin6_len = sizeof(dst_tmp);
+
+	/*
+	 * Make sure the scope ID gets embedded, else nd6_resolve() will
+	 * not find the record.
+	 */
+	dst_tmp.sin6_scope_id = addr->bound_dev_if;
+	sa6_embedscope(&dst_tmp, 0);
+
+	/* Step 1 - lookup destination route if any */
+	switch (type) {
+	case ADDR_VALID:
+		/* sanity check for IPv4 addresses */
+		if (ipv6_addr_v4mapped(&src_in->sin6_addr) !=
+		    ipv6_addr_v4mapped(&dst_tmp.sin6_addr)) {
+			error = EAFNOSUPPORT;
+			goto done;
+		}
+		/* FALLTHROUGH */
+	case ADDR_SRC_ANY:
+		/* regular destination route lookup */
+		nh = fib6_lookup(RT_DEFAULT_FIB, &dst_in->sin6_addr,
+		    addr->bound_dev_if, NHR_NONE, 0);
+		if (nh == NULL) {
+			error = EHOSTUNREACH;
+			goto done;
+		}
+		break;
+	default:
+		error = ENETUNREACH;
+		goto done;
+	}
+
+	/* Step 2 - find outgoing network interface */
+	switch (type) {
+	case ADDR_VALID:
+		/* get source interface */
+		if (addr->bound_dev_if != 0) {
+			ifp = dev_get_by_index(addr->net, addr->bound_dev_if);
+		} else {
+			ifp = ip6_ifp_find(addr->net, src_in->sin6_addr, 0);
+		}
+
+		/* check source interface */
+		if (ifp == NULL) {
+			error = ENETUNREACH;
+			goto done;
+		} else if (if_getflags(ifp) & IFF_LOOPBACK) {
+			/*
+			 * Source address cannot be a loopback device.
+			 */
+			error = EHOSTUNREACH;
+			goto error_put_ifp;
+		} else if (if_getflags(nh->nh_ifp) & IFF_LOOPBACK) {
+			if (memcmp(&src_in->sin6_addr, &dst_in->sin6_addr,
+			    sizeof(src_in->sin6_addr))) {
+				/*
+				 * Destination is loopback, but source
+				 * and destination address is not the
+				 * same.
+				 */
+				error = EHOSTUNREACH;
+				goto error_put_ifp;
+			}
+			/* get destination network interface from route */
+			dev_put(ifp);
+			ifp = nh->nh_ifp;
+			dev_hold(ifp);
+		} else if (ifp != nh->nh_ifp) {
+			/*
+			 * Source and destination interfaces are
+			 * different.
+			 */
+			error = ENETUNREACH;
+			goto error_put_ifp;
+		}
+		break;
+	case ADDR_SRC_ANY:
+		/* check for loopback device */
+		if (if_getflags(nh->nh_ifp) & IFF_LOOPBACK)
+			saddr = (struct sockaddr *)&dst_tmp;
+		else
+			saddr = nh->nh_ifa->ifa_addr;
+
+		/* get destination network interface from route */
+		ifp = nh->nh_ifp;
+		dev_hold(ifp);
+		break;
+	default:
+		break;
+	}
+
+	/*
+	 * Step 3 - resolve destination MAC address
+	 */
+	if (IN6_IS_ADDR_MULTICAST(&dst_tmp.sin6_addr)) {
+		bool is_gw = (nh->nh_flags & NHF_GATEWAY) != 0;
+		error = addr_resolve_multi(edst, ifp,
+		    (struct sockaddr *)&dst_tmp);
+		if (error != 0)
+			goto error_put_ifp;
+		else if (is_gw)
+			addr->network = RDMA_NETWORK_IPV6;
+	} else if (if_getflags(nh->nh_ifp) & IFF_LOOPBACK) {
+		memset(edst, 0, MAX_ADDR_LEN);
+		error = 0;
+	} else {
+		bool is_gw = (nh->nh_flags & NHF_GATEWAY) != 0;
+		memset(edst, 0, MAX_ADDR_LEN);
+		error = nd6_resolve(ifp, LLE_SF(AF_INET6, is_gw), NULL,
+		    is_gw ? &nh->gw_sa : (const struct sockaddr *)&dst_tmp,
+		    edst, NULL, NULL);
+		if (error != 0)
+			goto error_put_ifp;
+		else if (is_gw)
+			addr->network = RDMA_NETWORK_IPV6;
+	}
+
+	/*
+	 * Step 4 - update source address, if any
+	 */
+	if (saddr != NULL) {
+		src_port = src_in->sin6_port;
+		memcpy(src_in, saddr, rdma_addr_size(saddr));
+		src_in->sin6_port = src_port;	/* preserve port number */
+	}
+
+	*ifpp = ifp;
+
+	goto done;
+
+error_put_ifp:
+	dev_put(ifp);
+done:
+	CURVNET_RESTORE();
+
+	if (error == EWOULDBLOCK || error == EAGAIN)
+		error = ENODATA;
+	return (-error);
+}
+#else
+static int addr6_resolve(struct sockaddr *src_sock,
+			 const struct sockaddr *dst_sock,
+			 struct rdma_dev_addr *addr,
+			 u8 *edst,
+			 if_t *ifpp)
+{
+	return -EADDRNOTAVAIL;
+}
+#endif
+
+static int addr_resolve_neigh(if_t dev,
+			      const struct sockaddr *dst_in,
+			      u8 *edst,
+			      struct rdma_dev_addr *addr,
+			      unsigned int ndev_flags)
+{
+	int ret = 0;
+
+	if (ndev_flags & IFF_LOOPBACK) {
+		/*
+		 * Binding to a loopback device is not allowed. Make
+		 * sure the destination device address is global by
+		 * clearing the bound device interface:
+		 */
+		if (addr->bound_dev_if == if_getindex(dev))
+			addr->bound_dev_if = 0;
+
+		memcpy(addr->dst_dev_addr, addr->src_dev_addr, MAX_ADDR_LEN);
+	} else {
+		if (!(ndev_flags & IFF_NOARP)) {
+			/* If the device doesn't do ARP internally */
+			memcpy(addr->dst_dev_addr, edst, MAX_ADDR_LEN);
+		}
+        }
+
+	return ret;
+}
+
+static int copy_src_l2_addr(struct rdma_dev_addr *dev_addr,
+			    const struct sockaddr *dst_in,
+			    if_t ndev)
+{
+	int ret = 0;
+
+	if (if_getflags(ndev) & IFF_LOOPBACK)
+		ret = rdma_translate_ip(dst_in, dev_addr);
+	else
+		rdma_copy_src_l2_addr(dev_addr, ndev);
+
+	return ret;
+}
+
+static int rdma_set_src_addr_rcu(struct rdma_dev_addr *dev_addr,
+				 unsigned int *ndev_flags,
+				 const struct sockaddr *dst_in,
+				 if_t ndev)
+{
+	*ndev_flags = if_getflags(ndev);
+	/* A physical device must be the RDMA device to use */
+	if (if_getflags(ndev) & IFF_LOOPBACK) {
+		/*
+		 * RDMA (IB/RoCE, iWarp) doesn't run on lo interface or
+		 * loopback IP address. So if route is resolved to loopback
+		 * interface, translate that to a real ndev based on non
+		 * loopback IP address.
+		 */
+		ndev = rdma_find_ndev_for_src_ip_rcu(dev_net(ndev), dst_in);
+		if (!ndev)
+			return -ENODEV;
+	}
+
+	return copy_src_l2_addr(dev_addr, dst_in, ndev);
+}
+
+static int set_addr_netns_by_gid_rcu(struct rdma_dev_addr *addr)
+{
+	if_t ndev;
+
+	ndev = rdma_read_gid_attr_ndev_rcu(addr->sgid_attr);
+	if (IS_ERR(ndev))
+		return PTR_ERR(ndev);
+
+	/*
+	 * Since we are holding the rcu, reading net and ifindex
+	 * are safe without any additional reference; because
+	 * change_net_namespace() in net/core/ib_dev.c does rcu sync
+	 * after it changes the state to IFF_DOWN and before
+	 * updating netdev fields {net, ifindex}.
+	 */
+	addr->net = dev_net(ndev);
+	addr->bound_dev_if = if_getindex(ndev);
+	return 0;
+}
+
+static void rdma_addr_set_net_defaults(struct rdma_dev_addr *addr)
+{
+	addr->net = &init_net;
+	addr->bound_dev_if = 0;
+}
+
+static int addr_resolve(struct sockaddr *src_in,
+			const struct sockaddr *dst_in,
+			struct rdma_dev_addr *addr,
+			bool resolve_by_gid_attr)
+{
+	struct epoch_tracker et;
+	if_t ndev = NULL;
+	u8 edst[MAX_ADDR_LEN];
+	unsigned int ndev_flags = 0;
+	int ret;
+
+	if (dst_in->sa_family != src_in->sa_family)
+		return -EINVAL;
+
+	NET_EPOCH_ENTER(et);
+	if (resolve_by_gid_attr) {
+		if (!addr->sgid_attr) {
+			NET_EPOCH_EXIT(et);
+			pr_warn_ratelimited("%s: missing gid_attr\n", __func__);
+			return -EINVAL;
+		}
+		/*
+		 * If the request is for a specific gid attribute of the
+		 * rdma_dev_addr, derive net from the netdevice of the
+		 * GID attribute.
+		 */
+		ret = set_addr_netns_by_gid_rcu(addr);
+		if (ret) {
+			NET_EPOCH_EXIT(et);
+			return ret;
+		}
+	}
+	switch (src_in->sa_family) {
+	case AF_INET:
+		ret = addr4_resolve(src_in, dst_in, addr, edst, &ndev);
+		break;
+	case AF_INET6:
+		ret = addr6_resolve(src_in, dst_in, addr, edst, &ndev);
+		break;
+	default:
+		ret = -EADDRNOTAVAIL;
+		break;
+	}
+	if (ret) {
+		NET_EPOCH_EXIT(et);
+		goto done;
+	}
+	ret = rdma_set_src_addr_rcu(addr, &ndev_flags, dst_in, ndev);
+	NET_EPOCH_EXIT(et);
+
+	/* store MAC addresses and check for loopback */
+	if (!ret)
+		ret = addr_resolve_neigh(ndev, dst_in, edst, addr, ndev_flags);
+
+	/* set belonging VNET, if any */
+	addr->net = dev_net(ndev);
+	dev_put(ndev);
+done:
+	/*
+	 * Clear the addr net to go back to its original state, only if it was
+	 * derived from GID attribute in this context.
+	 */
+	if (resolve_by_gid_attr)
+		rdma_addr_set_net_defaults(addr);
+	return ret;
+}
+
+static void process_one_req(struct work_struct *_work)
+{
+	struct addr_req *req;
+	struct sockaddr *src_in, *dst_in;
+
+	req = container_of(_work, struct addr_req, work.work);
+
+	if (req->status == -ENODATA) {
+		src_in = (struct sockaddr *)&req->src_addr;
+		dst_in = (struct sockaddr *)&req->dst_addr;
+		req->status = addr_resolve(src_in, dst_in, req->addr,
+					   req->resolve_by_gid_attr);
+		if (req->status && time_after_eq(jiffies, req->timeout)) {
+			req->status = -ETIMEDOUT;
+		} else if (req->status == -ENODATA) {
+			/* requeue the work for retrying again */
+			spin_lock_bh(&lock);
+			if (!list_empty(&req->list))
+				set_timeout(req, req->timeout);
+			spin_unlock_bh(&lock);
+			return;
+		}
+	}
+
+	req->callback(req->status, (struct sockaddr *)&req->src_addr,
+		req->addr, req->context);
+	req->callback = NULL;
+
+	spin_lock_bh(&lock);
+	if (!list_empty(&req->list)) {
+		/*
+		 * Although the work will normally have been canceled by the
+		 * workqueue, it can still be requeued as long as it is on the
+		 * req_list.
+		 */
+		cancel_delayed_work(&req->work);
+		list_del_init(&req->list);
+		kfree(req);
+	}
+	spin_unlock_bh(&lock);
+}
+
+int rdma_resolve_ip(struct sockaddr *src_addr, const struct sockaddr *dst_addr,
+		    struct rdma_dev_addr *addr, int timeout_ms,
+		    void (*callback)(int status, struct sockaddr *src_addr,
+				     struct rdma_dev_addr *addr, void *context),
+		    bool resolve_by_gid_attr,
+		    void *context)
+{
+	struct sockaddr *src_in, *dst_in;
+	struct addr_req *req;
+	int ret = 0;
+
+	req = kzalloc(sizeof *req, GFP_KERNEL);
+	if (!req)
+		return -ENOMEM;
+
+	src_in = (struct sockaddr *) &req->src_addr;
+	dst_in = (struct sockaddr *) &req->dst_addr;
+
+	if (src_addr) {
+		if (src_addr->sa_family != dst_addr->sa_family) {
+			ret = -EINVAL;
+			goto err;
+		}
+
+		memcpy(src_in, src_addr, rdma_addr_size(src_addr));
+	} else {
+		src_in->sa_family = dst_addr->sa_family;
+	}
+
+	memcpy(dst_in, dst_addr, rdma_addr_size(dst_addr));
+	req->addr = addr;
+	req->callback = callback;
+	req->context = context;
+	req->resolve_by_gid_attr = resolve_by_gid_attr;
+	INIT_DELAYED_WORK(&req->work, process_one_req);
+
+	req->status = addr_resolve(src_in, dst_in, addr,
+				   req->resolve_by_gid_attr);
+	switch (req->status) {
+	case 0:
+		req->timeout = jiffies;
+		queue_req(req);
+		break;
+	case -ENODATA:
+		req->timeout = msecs_to_jiffies(timeout_ms) + jiffies;
+		queue_req(req);
+		break;
+	default:
+		ret = req->status;
+		goto err;
+	}
+	return ret;
+err:
+	kfree(req);
+	return ret;
+}
+EXPORT_SYMBOL(rdma_resolve_ip);
+
+int roce_resolve_route_from_path(struct sa_path_rec *rec,
+				 const struct ib_gid_attr *attr)
+{
+	union rdma_sockaddr sgid, dgid;
+	struct rdma_dev_addr dev_addr = {};
+	int ret;
+
+	if (rec->roce.route_resolved)
+		return 0;
+
+	rdma_gid2ip(&sgid._sockaddr, &rec->sgid);
+	rdma_gid2ip(&dgid._sockaddr, &rec->dgid);
+
+	if (sgid._sockaddr.sa_family != dgid._sockaddr.sa_family)
+		return -EINVAL;
+
+	if (!attr || !attr->ndev)
+		return -EINVAL;
+
+	dev_addr.net = &init_net;
+	dev_addr.sgid_attr = attr;
+
+	ret = addr_resolve(&sgid._sockaddr, &dgid._sockaddr,
+			   &dev_addr, true);
+	if (ret)
+		return ret;
+
+	if ((dev_addr.network == RDMA_NETWORK_IPV4 ||
+	     dev_addr.network == RDMA_NETWORK_IPV6) &&
+	    rec->rec_type != SA_PATH_REC_TYPE_ROCE_V2)
+		return -EINVAL;
+
+	rec->roce.route_resolved = true;
+	return 0;
+}
+
+/**
+ * rdma_addr_cancel - Cancel resolve ip request
+ * @addr:	Pointer to address structure given previously
+ *		during rdma_resolve_ip().
+ * rdma_addr_cancel() is synchronous function which cancels any pending
+ * request if there is any.
+ */
+void rdma_addr_cancel(struct rdma_dev_addr *addr)
+{
+	struct addr_req *req, *temp_req;
+	struct addr_req *found = NULL;
+
+	spin_lock_bh(&lock);
+	list_for_each_entry_safe(req, temp_req, &req_list, list) {
+		if (req->addr == addr) {
+			/*
+			 * Removing from the list means we take ownership of
+			 * the req
+			 */
+			list_del_init(&req->list);
+			found = req;
+			break;
+		}
+	}
+	spin_unlock_bh(&lock);
+
+	if (!found)
+		return;
+
+	/*
+	 * sync canceling the work after removing it from the req_list
+	 * guarentees no work is running and none will be started.
+	 */
+	cancel_delayed_work_sync(&found->work);
+	kfree(found);
+}
+EXPORT_SYMBOL(rdma_addr_cancel);
+
+struct resolve_cb_context {
+	struct completion comp;
+	int status;
+};
+
+static void resolve_cb(int status, struct sockaddr *src_addr,
+	     struct rdma_dev_addr *addr, void *context)
+{
+	((struct resolve_cb_context *)context)->status = status;
+	complete(&((struct resolve_cb_context *)context)->comp);
+}
+
+int rdma_addr_find_l2_eth_by_grh(const union ib_gid *sgid,
+				 const union ib_gid *dgid,
+				 u8 *dmac, const struct ib_gid_attr *sgid_attr,
+				 int *hoplimit)
+{
+	struct rdma_dev_addr dev_addr;
+	struct resolve_cb_context ctx;
+	union rdma_sockaddr sgid_addr, dgid_addr;
+	int ret;
+
+	rdma_gid2ip(&sgid_addr._sockaddr, sgid);
+	rdma_gid2ip(&dgid_addr._sockaddr, dgid);
+
+	memset(&dev_addr, 0, sizeof(dev_addr));
+	dev_addr.net = &init_net;
+	dev_addr.sgid_attr = sgid_attr;
+
+	init_completion(&ctx.comp);
+	ret = rdma_resolve_ip(&sgid_addr._sockaddr, &dgid_addr._sockaddr,
+			      &dev_addr, 1000, resolve_cb, true, &ctx);
+	if (ret)
+		return ret;
+
+	wait_for_completion(&ctx.comp);
+
+	ret = ctx.status;
+	if (ret)
+		return ret;
+
+	memcpy(dmac, dev_addr.dst_dev_addr, ETH_ALEN);
+	*hoplimit = dev_addr.hoplimit;
+	return 0;
+}
+
+int addr_init(void)
+{
+	addr_wq = alloc_ordered_workqueue("ib_addr", WQ_MEM_RECLAIM);
+	if (!addr_wq)
+		return -ENOMEM;
+
+	return 0;
+}
+
+void addr_cleanup(void)
+{
+	destroy_workqueue(addr_wq);
+	WARN_ON(!list_empty(&req_list));
+}

@@ -15,6 +15,7 @@
 #define HD_OMIT_CHARS (1 << 18)
 
 struct mtx;
+struct thread;
 struct malloc_type;
 struct unrhdr {
     int low;
@@ -45,6 +46,7 @@ size_t bsd_strlen(const char *text);
 size_t bsd_strnlen(const char *text, size_t maximum);
 char *bsd_strrchr(const char *text, int character);
 char *bsd_strchr(const char *text, int character);
+char *bsd_strchrnul(const char *text, int character);
 char *bsd_strcpy(char *destination, const char *source);
 char *bsd_strncpy(char *destination, const char *source, size_t length);
 char *bsd_strcat(char *destination, const char *source);
@@ -76,11 +78,15 @@ uint64_t bsd_strtouq(const char *text, char **end, int base);
 int64_t bsd_strtoq(const char *text, char **end, int base);
 int bsd_copyin(const void *source, void *destination, size_t length);
 int bsd_copyout(const void *source, void *destination, size_t length);
+int copyin_nofault(const void *source, void *destination, size_t length);
+int copyout_nofault(const void *source, void *destination, size_t length);
 int bsd_copyinstr(const void *source, void *destination, size_t capacity,
     size_t *copied);
 int bsd_fueword(const void *source, long *value);
 int bsd_fueword32(const void *source, uint32_t *value);
 int bsd_suword16(void *destination, uint16_t value);
+int bsd_suword64(void *destination, uint64_t value);
+int bsd_subyte(void *destination, int value);
 int bsd_suword32(void *destination, uint32_t value);
 void bsd_critical_enter(void);
 void bsd_critical_exit(void);
@@ -98,5 +104,8 @@ uint64_t bsd_roundup_power_of_two(uint64_t value);
 uint64_t bsd_rounddown_power_of_two(uint64_t value);
 
 void bsd_bridge_panic_stop(void) __attribute__((noreturn));
+
+extern int (*lkpi_alloc_current)(struct thread *thread, int flags);
+int linux_alloc_current_noop(struct thread *thread, int flags);
 
 #endif

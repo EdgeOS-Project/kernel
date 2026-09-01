@@ -22,14 +22,20 @@
  */
 #define PID_MAX 99999
 #define NO_PID (PID_MAX + 1)
+#ifndef THREAD0_TID
 #define THREAD0_TID NO_PID
+#endif
 #define P2_HWT 0x00000001u
 
 /* FreeBSD AST index used by the VMM run loop for process suspension. */
 #define TDA_SUSPEND 17
+#ifndef TDAI
 #define TDAI(ast) (1u << (ast))
+#endif
+#ifndef td_ast_pending
 #define td_ast_pending(thread, ast) \
     (((thread)->td_ast & (int)TDAI(ast)) != 0)
+#endif
 
 static inline int
 thread_check_susp(struct thread *thread, bool sleep)
@@ -42,6 +48,10 @@ thread_check_susp(struct thread *thread, bool sleep)
 
 struct proc *bsd_curproc(void);
 struct proc *pfind(int pid);
+struct thread *tdfind(int tid, int pid);
+struct proc *bsd_proc_first(void);
+struct proc *bsd_proc_next(struct proc *process);
+void thread_reap_barrier(void);
 void bsd_proc_lock(struct proc *process);
 void bsd_proc_unlock(struct proc *process);
 int bsd_proc_lock_owned(const struct proc *process);
@@ -60,6 +70,11 @@ int securelevel_gt(struct ucred *credential, int level);
 #define FOREACH_THREAD_IN_PROC(process, thread) \
     for ((thread) = (process)->p_edgeos_thread; (thread) != 0; \
         (thread) = (thread)->td_proc_next)
+#define FOREACH_PROC_IN_SYSTEM(process) \
+    for ((process) = bsd_proc_first(); (process) != 0; \
+        (process) = bsd_proc_next((process)))
+
+extern struct sx allproc_lock;
 
 #define THREAD_NO_SLEEPING() do { \
 	curthread->td_no_sleeping++; \

@@ -4,11 +4,7 @@
 #ifndef EDGEOS_COMPAT_FREEBSD_SYS_SYSENT_H
 #define EDGEOS_COMPAT_FREEBSD_SYS_SYSENT_H
 
-/*
- * Some mature FreeBSD drivers include this header through their control
- * path without using any syscall-vector definitions. Keep the namespace
- * available while Linux-visible syscall policy remains in EdgeOS common
- * kernel code.
- */
+#define SV_ABI_FREEBSD 9
+#define SV_PROC_ABI(process) SV_ABI_FREEBSD
 
 #endif

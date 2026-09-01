@@ -9,6 +9,7 @@
 #include <sys/queue.h>
 #include <sys/sockbuf.h>
 #include <sys/socket.h>
+#include <sys/sockopt.h>
 #include <sys/sx.h>
 
 TAILQ_HEAD(accept_queue, socket);
@@ -20,6 +21,7 @@ struct socket {
     short so_type;
     short so_state;
     void *so_pcb;
+    void *so_vnet;
     struct protosw *so_proto;
     short so_timeo;
     u_short so_error;
@@ -39,6 +41,16 @@ struct socket {
     u_int sol_qlimit;
 };
 
+struct ucred;
+struct thread;
+int socreate(int family, struct socket **result, int type, int protocol,
+    struct ucred *credential, struct thread *thread);
+int soclose(struct socket *socket);
+int soreserve(struct socket *socket, u_long send_size, u_long receive_size);
+void sorwakeup(struct socket *socket);
+void soroverflow(struct socket *socket);
+void soroverflow_locked(struct socket *socket);
+
 #define SS_ISCONNECTED 0x0002
 #define SS_ISCONNECTING 0x0004
 #define SS_ISDISCONNECTING 0x0008
@@ -51,6 +63,11 @@ struct socket {
 #define SOCK_OWNED(socket) mtx_owned(&(socket)->so_lock)
 
 #define SOLISTENING(socket) (((socket)->so_options & SO_ACCEPTCONN) != 0)
+#define SOLISTEN_LOCK(socket) SOCK_LOCK(socket)
+#define SOLISTEN_UNLOCK(socket) SOCK_UNLOCK(socket)
+
+#define SU_OK 0
+#define SU_ISCONNECTED 1
 
 #define SOCK_RECVBUF_LOCK(socket) mtx_lock(&(socket)->so_rcv_mtx)
 #define SOCK_RECVBUF_UNLOCK(socket) mtx_unlock(&(socket)->so_rcv_mtx)
@@ -72,8 +89,21 @@ int soiolock(struct socket *socket, struct sx *lock, int flags);
 void soiounlock(struct sx *lock);
 int solisten_proto_check(struct socket *socket);
 void solisten_proto(struct socket *socket, int backlog);
+void solisten_proto_abort(struct socket *socket);
 struct socket *sonewconn(struct socket *listener, int connection_status);
 int sodisconnect(struct socket *socket);
+int sobind(struct socket *, struct sockaddr *, struct thread *);
+int soconnect(struct socket *, struct sockaddr *, struct thread *);
+int solisten(struct socket *, int, struct thread *);
+int solisten_dequeue(struct socket *, struct socket **, int);
+int soaccept(struct socket *, struct sockaddr *);
+int sosetopt(struct socket *, struct sockopt *);
+int soreceive(struct socket *, struct sockaddr **, struct uio *,
+    struct mbuf **, struct mbuf **, int *);
+int soreadable(struct socket *);
+int sowriteable(struct socket *);
+void soupcall_set(struct socket *, sb_which, so_upcall_t, void *);
+void soupcall_clear(struct socket *, sb_which);
 void soisconnecting(struct socket *socket);
 void soisconnected(struct socket *socket);
 void soisdisconnecting(struct socket *socket);
@@ -81,6 +111,7 @@ void soisdisconnected(struct socket *socket);
 void socantsendmore(struct socket *socket);
 void socantrcvmore(struct socket *socket);
 void sorwakeup_locked(struct socket *socket);
+void sowwakeup(struct socket *socket);
 void sowwakeup_locked(struct socket *socket);
 
 #endif

@@ -108,6 +108,10 @@ pmap_invalidate_cpu_mask(pmap_t pmap)
 uint64_t bsd_pmap_kextract(uintptr_t virtual_value);
 void *bsd_pmap_phys_to_dmap(vm_paddr_t physical_address);
 vm_paddr_t pmap_extract(pmap_t pmap, vm_offset_t virtual_address);
+vm_page_t pmap_extract_and_hold(pmap_t pmap, vm_offset_t virtual_address,
+    vm_prot_t protection);
+bool pmap_page_is_mapped(vm_page_t page);
+void pmap_remove_all(vm_page_t page);
 int pmap_enter(pmap_t pmap, vm_offset_t virtual_address, vm_page_t page,
     vm_prot_t protection, unsigned int flags, int8_t page_size_index);
 int pmap_pinit(pmap_t pmap);
@@ -123,6 +127,7 @@ int bsd_pmap_kva_extract(vm_offset_t address,
     vm_paddr_t *physical_address);
 int bsd_pmap_sync_device_mapping(void *address, vm_size_t size,
     int to_device);
+void pmap_copy_page(vm_page_t source, vm_page_t destination);
 void pmap_copy_pages(vm_page_t source_pages[], vm_offset_t source_offset,
     vm_page_t destination_pages[], vm_offset_t destination_offset,
     int transfer_size);
@@ -162,6 +167,17 @@ extern void (*pmap_stage2_invalidate_range)(uint64_t vttbr,
     vm_offset_t start, vm_offset_t end, bool final_only);
 extern void (*pmap_stage2_invalidate_all)(uint64_t vttbr);
 #endif
+
+#define PMAP_HAS_DMAP 1
+#define PHYS_IN_DMAP(physical_address) \
+    (bsd_pmap_phys_to_dmap((vm_paddr_t)(physical_address)) != 0)
+
+static inline void
+pmap_page_set_memattr(vm_page_t page, vm_memattr_t memory_attribute)
+{
+    if (page)
+        page->a.act_count = (uint8_t)memory_attribute;
+}
 
 #define PMAP_ENTER_NOSLEEP 0x00000100u
 #define PMAP_ENTER_WIRED 0x00000200u

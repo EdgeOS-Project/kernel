@@ -18,6 +18,50 @@
     (TH_FIN | TH_SYN | TH_RST | TH_PUSH | TH_ACK | TH_URG | TH_ECE | \
      TH_CWR | TH_AE)
 
+#ifdef EDGEOS_BSD_LINUXKPI
+#ifndef _LINUXKPI_LINUX_TCP_H
+#define _LINUXKPI_LINUX_TCP_H
+#define EDGEOS_LINUX_TCP_STRUCT_ONLY 1
+struct tcphdr {
+    uint16_t source;
+    uint16_t dest;
+    uint32_t th_seq;
+    uint32_t th_ack;
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    uint8_t th_x2 : 4;
+    uint8_t doff : 4;
+#else
+    uint8_t doff : 4;
+    uint8_t th_x2 : 4;
+#endif
+    uint8_t th_flags;
+    uint16_t th_win;
+    uint16_t check;
+    uint16_t th_urg;
+};
+#endif
+#define th_sport source
+#define th_dport dest
+#define th_off doff
+#define th_sum check
+#define th_urp th_urg
+
+static inline uint16_t
+tcp_get_flags(const struct tcphdr *header)
+{
+    return header ?
+        ((uint16_t)header->th_x2 << 8) | header->th_flags : 0;
+}
+
+static inline void
+tcp_set_flags(struct tcphdr *header, uint16_t flags)
+{
+    if (!header)
+        return;
+    header->th_x2 = (uint8_t)((flags >> 8) & 0x0f);
+    header->th_flags = (uint8_t)(flags & 0xff);
+}
+#else
 struct tcphdr {
     uint16_t th_sport;
     uint16_t th_dport;
@@ -51,5 +95,6 @@ tcp_set_flags(struct tcphdr *header, uint16_t flags)
     header->th_x2 = (uint8_t)((flags >> 8) & 0x0f);
     header->th_flags = (uint8_t)(flags & 0xff);
 }
+#endif
 
 #endif

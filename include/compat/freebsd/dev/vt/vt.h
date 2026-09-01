@@ -114,7 +114,11 @@ struct vt_device {
     term_char_t *vd_drawn;
     term_color_t *vd_drawnfg;
     term_color_t *vd_drawnbg;
+    struct vt_window *vd_grabwindow;
+    bool *vd_pos_to_flush;
 };
+
+extern struct vt_device *main_vd;
 
 #define VTBUF_GET_FIELD(buffer, row, column) \
     ((buffer)->vb_rows[((buffer)->vb_curroffset + (row)) % \

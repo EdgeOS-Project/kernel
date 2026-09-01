@@ -4,7 +4,9 @@
 #ifndef _MACHINE_CPUFUNC_H_
 #define _MACHINE_CPUFUNC_H_
 
+#include <stddef.h>
 #include <sys/stdint.h>
+#include <sys/types.h>
 
 #define readb(location) (*(volatile uint8_t *)(location))
 #define readw(location) (*(volatile uint16_t *)(location))
@@ -33,6 +35,26 @@ breakpoint(void)
 }
 
 #if defined(__aarch64__) || defined(EDGEOS_BSD_ARM64)
+static __inline void
+cpu_dcache_wb_range(void *address, size_t size)
+{
+    uintptr_t cursor;
+    uintptr_t end;
+    uint64_t ctr;
+    uintptr_t line_size;
+
+    if (!address || size == 0)
+        return;
+    __asm__ __volatile__("mrs %0, ctr_el0" : "=r"(ctr));
+    line_size = (uintptr_t)4u << ((ctr >> 16) & 0xfu);
+    cursor = (uintptr_t)address & ~(line_size - 1u);
+    end = ((uintptr_t)address + size + line_size - 1u) &
+        ~(line_size - 1u);
+    for (; cursor < end; cursor += line_size)
+        __asm__ __volatile__("dc cvac, %0" : : "r"(cursor) : "memory");
+    __asm__ __volatile__("dsb ish" : : : "memory");
+}
+
 static __inline register_t
 intr_disable(void)
 {
@@ -101,6 +123,18 @@ static __inline void
 clts(void)
 {
     __asm__ __volatile__("clts");
+}
+
+static __inline void
+clflush(unsigned long address)
+{
+    __asm__ __volatile__("clflush (%0)" : : "r"(address) : "memory");
+}
+
+static __inline void
+clflushopt(unsigned long address)
+{
+    __asm__ __volatile__("clflushopt (%0)" : : "r"(address) : "memory");
 }
 
 static __inline void

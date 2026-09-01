@@ -1,0 +1,140 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-allwinner-arm64",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Allwinner A64, H5, H6, and H616 ARM64 platform driver set.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT",
+      "INTRNG"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "GPL-2.0",
+      "GPL-2.0-only",
+      "ISC",
+      "LicenseRef-Upstream-Unmarked",
+      "MIT"
+    ],
+    "allow_unmarked_files": true,
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/arm/allwinner",
+      "sys/dev/clk/allwinner",
+      "sys/dev/spibus/controller/allwinner/aw_spi.c",
+      "sys/contrib/device-tree/include/dt-bindings/clock/sun50i-a64-ccu.h",
+      "sys/contrib/device-tree/include/dt-bindings/clock/sun50i-h6-ccu.h",
+      "sys/contrib/device-tree/include/dt-bindings/clock/sun50i-h6-r-ccu.h",
+      "sys/contrib/device-tree/include/dt-bindings/clock/sun50i-h616-ccu.h",
+      "sys/contrib/device-tree/include/dt-bindings/clock/sun8i-de2.h",
+      "sys/contrib/device-tree/include/dt-bindings/clock/sun8i-h3-ccu.h",
+      "sys/contrib/device-tree/include/dt-bindings/clock/sun8i-r-ccu.h",
+      "sys/contrib/device-tree/include/dt-bindings/reset/sun50i-a64-ccu.h",
+      "sys/contrib/device-tree/include/dt-bindings/reset/sun50i-h6-ccu.h",
+      "sys/contrib/device-tree/include/dt-bindings/reset/sun50i-h6-r-ccu.h",
+      "sys/contrib/device-tree/include/dt-bindings/reset/sun50i-h616-ccu.h",
+      "sys/contrib/device-tree/include/dt-bindings/reset/sun8i-de2.h",
+      "sys/contrib/device-tree/include/dt-bindings/reset/sun8i-h3-ccu.h",
+      "sys/contrib/device-tree/include/dt-bindings/reset/sun8i-r-ccu.h"
+    ],
+    "file_count": 121,
+    "tree_sha256": "60a010250d60f60f6c3f1233b7599066dc87f4b29317080f0630ef5a5292e915"
+  },
+  "generated_interfaces": [
+    "sys/arm/allwinner/sunxi_dma_if.m"
+  ],
+  "modules": [
+    {
+      "id": "allwinner-arm64",
+      "sources": [
+        "sys/arm/allwinner/a10_codec.c",
+        "sys/arm/allwinner/a31_dmac.c",
+        "sys/arm/allwinner/a33_codec.c",
+        "sys/arm/allwinner/a64/sun50i_a64_acodec.c",
+        "sys/arm/allwinner/aw_cir.c",
+        "sys/arm/allwinner/aw_gpio.c",
+        "sys/arm/allwinner/aw_i2s.c",
+        "sys/arm/allwinner/aw_mmc.c",
+        "sys/arm/allwinner/aw_nmi.c",
+        "sys/arm/allwinner/aw_r_intc.c",
+        "sys/arm/allwinner/aw_rsb.c",
+        "sys/arm/allwinner/aw_rtc.c",
+        "sys/arm/allwinner/aw_sid.c",
+        "sys/arm/allwinner/aw_syscon.c",
+        "sys/arm/allwinner/aw_timer.c",
+        "sys/arm/allwinner/aw_thermal.c",
+        "sys/arm/allwinner/aw_usb3phy.c",
+        "sys/arm/allwinner/aw_usbphy.c",
+        "sys/arm/allwinner/aw_wdog.c",
+        "sys/arm/allwinner/axp81x.c",
+        "sys/arm/allwinner/if_awg.c",
+        "sys/arm/allwinner/a64/a64_padconf.c",
+        "sys/arm/allwinner/a64/a64_r_padconf.c",
+        "sys/arm/allwinner/h3/h3_padconf.c",
+        "sys/arm/allwinner/h3/h3_r_padconf.c",
+        "sys/arm/allwinner/h6/h6_padconf.c",
+        "sys/arm/allwinner/h6/h6_r_padconf.c",
+        "sys/arm/allwinner/h616/h616_padconf.c",
+        "sys/arm/allwinner/h616/h616_r_padconf.c",
+        "sys/dev/clk/allwinner/aw_ccung.c",
+        "sys/dev/clk/allwinner/aw_clk_frac.c",
+        "sys/dev/clk/allwinner/aw_clk_m.c",
+        "sys/dev/clk/allwinner/aw_clk_mipi.c",
+        "sys/dev/clk/allwinner/aw_clk_nkmp.c",
+        "sys/dev/clk/allwinner/aw_clk_nm.c",
+        "sys/dev/clk/allwinner/aw_clk_nmm.c",
+        "sys/dev/clk/allwinner/aw_clk_np.c",
+        "sys/dev/clk/allwinner/aw_clk_prediv_mux.c",
+        "sys/dev/clk/allwinner/ccu_a64.c",
+        "sys/dev/clk/allwinner/ccu_de2.c",
+        "sys/dev/clk/allwinner/ccu_h3.c",
+        "sys/dev/clk/allwinner/ccu_h6.c",
+        "sys/dev/clk/allwinner/ccu_h6_r.c",
+        "sys/dev/clk/allwinner/ccu_h616.c",
+        "sys/dev/clk/allwinner/ccu_sun8i_r.c",
+        "sys/dev/spibus/controller/allwinner/aw_spi.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "usb"
+      ],
+      "kconfig_requires": [
+        "DEVICE_TREE"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

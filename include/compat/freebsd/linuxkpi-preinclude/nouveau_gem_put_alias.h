@@ -1,0 +1,6 @@
+#ifndef EDGEOS_FREEBSD_LINUXKPI_NOUVEAU_GEM_PUT_ALIAS_H
+#define EDGEOS_FREEBSD_LINUXKPI_NOUVEAU_GEM_PUT_ALIAS_H
+
+#define drm_gem_object_put_unlocked edgeos_drm_gem_object_put_unlocked
+
+#endif

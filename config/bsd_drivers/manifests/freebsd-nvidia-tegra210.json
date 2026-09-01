@@ -1,0 +1,115 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-nvidia-tegra210",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD NVIDIA Tegra210 ARM64 platform driver set.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT",
+      "INTRNG"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "GPL-2.0",
+      "GPL-2.0-only",
+      "ISC",
+      "LicenseRef-Upstream-Unmarked",
+      "MIT"
+    ],
+    "allow_unmarked_files": true,
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/arm/nvidia",
+      "sys/arm64/nvidia",
+      "sys/contrib/device-tree/include/dt-bindings/clock/tegra210-car.h",
+      "sys/contrib/device-tree/include/dt-bindings/gpio/gpio.h",
+      "sys/contrib/device-tree/include/dt-bindings/mfd/max77620.h",
+      "sys/contrib/device-tree/include/dt-bindings/pinctrl/pinctrl-tegra-xusb.h",
+      "sys/contrib/device-tree/include/dt-bindings/reset/tegra210-car.h",
+      "sys/contrib/device-tree/include/dt-bindings/thermal/tegra124-soctherm.h",
+      "sys/dev/ic/ns16550.h",
+      "sys/dev/iicbus/ofw_iicbus_if.m"
+    ],
+    "file_count": 40,
+    "tree_sha256": "51a2bc7d762c7161fe139e1740d91309a33a5af86123aa1d32cc46d3caa5bc18"
+  },
+  "generated_interfaces": [
+    "sys/arm/nvidia/tegra_soctherm_if.m",
+    "sys/dev/iicbus/ofw_iicbus_if.m"
+  ],
+  "modules": [
+    {
+      "id": "nvidia-tegra210",
+      "sources": [
+        "sys/arm/nvidia/tegra_abpmisc.c",
+        "sys/arm/nvidia/tegra_ahci.c",
+        "sys/arm/nvidia/tegra_efuse.c",
+        "sys/arm/nvidia/tegra_ehci.c",
+        "sys/arm/nvidia/tegra_gpio.c",
+        "sys/arm/nvidia/tegra_i2c.c",
+        "sys/arm/nvidia/tegra_lic.c",
+        "sys/arm/nvidia/tegra_mc.c",
+        "sys/arm/nvidia/tegra_pcie.c",
+        "sys/arm/nvidia/tegra_sdhci.c",
+        "sys/arm/nvidia/tegra_soctherm.c",
+        "sys/arm/nvidia/tegra_uart.c",
+        "sys/arm/nvidia/tegra_usbphy.c",
+        "sys/arm/nvidia/tegra_xhci.c",
+        "sys/arm64/nvidia/tegra210/max77620.c",
+        "sys/arm64/nvidia/tegra210/max77620_gpio.c",
+        "sys/arm64/nvidia/tegra210/max77620_regulators.c",
+        "sys/arm64/nvidia/tegra210/max77620_rtc.c",
+        "sys/arm64/nvidia/tegra210/tegra210_car.c",
+        "sys/arm64/nvidia/tegra210/tegra210_clk_per.c",
+        "sys/arm64/nvidia/tegra210/tegra210_clk_pll.c",
+        "sys/arm64/nvidia/tegra210/tegra210_clk_super.c",
+        "sys/arm64/nvidia/tegra210/tegra210_coretemp.c",
+        "sys/arm64/nvidia/tegra210/tegra210_cpufreq.c",
+        "sys/arm64/nvidia/tegra210/tegra210_pinmux.c",
+        "sys/arm64/nvidia/tegra210/tegra210_pmc.c",
+        "sys/arm64/nvidia/tegra210/tegra210_xusbpadctl.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "usb"
+      ],
+      "kconfig_requires": [
+        "DEVICE_TREE"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

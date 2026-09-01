@@ -29,6 +29,7 @@
 #define BSD_CALLOUT_SOURCE_HZ EDGE_KERNEL_TIMER_HZ
 extern int hz;
 extern volatile int ticks;
+extern unsigned long jiffies;
 extern volatile long ticksl;
 
 sbintime_t tick_sbt = SBT_1S / 1000;
@@ -528,6 +529,8 @@ bsd_callout_process_timer_tick(void)
     if (advance < 1)
         advance = 1;
     current = __atomic_add_fetch(&ticks, advance, __ATOMIC_RELAXED);
+    (void)__atomic_add_fetch(&jiffies, (unsigned long)advance,
+        __ATOMIC_RELAXED);
     __atomic_store_n(&ticksl, (long)current, __ATOMIC_RELAXED);
     if (bsd_callout_runtime_is_initialized())
         callout_process(callout_now());

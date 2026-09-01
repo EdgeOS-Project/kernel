@@ -45,7 +45,8 @@ typedef struct {
     uint8_t initialized;
 } bsd_interrupt_runtime_t;
 
-typedef struct {
+typedef struct bsd_interrupt_cookie {
+    struct bsd_interrupt_cookie *registry_next;
     device_t device;
     struct resource *resource;
     driver_filter_t *filter;
@@ -56,6 +57,7 @@ typedef struct {
     struct taskqueue *thread_queue;
     int flags;
     volatile unsigned int active;
+    volatile unsigned int drain_refs;
     volatile uint8_t tearing_down;
     volatile uint8_t suspended;
     volatile uint8_t deferred_masked;
@@ -72,6 +74,63 @@ struct intr_event *clk_intr_event;
 
 static bsd_interrupt_runtime_t g_interrupt_runtime;
 static volatile unsigned int g_interrupt_init_guard;
+static volatile unsigned int g_interrupt_registry_guard;
+static bsd_interrupt_cookie_t *g_interrupt_cookies;
+
+static void
+interrupt_registry_lock(void)
+{
+    while (__atomic_test_and_set(&g_interrupt_registry_guard,
+        __ATOMIC_ACQUIRE)) {
+#if defined(__x86_64__)
+        __asm__ __volatile__("pause");
+#elif defined(__aarch64__)
+        __asm__ __volatile__("yield");
+#endif
+    }
+}
+
+static void
+interrupt_registry_unlock(void)
+{
+    __atomic_clear(&g_interrupt_registry_guard, __ATOMIC_RELEASE);
+}
+
+static void
+interrupt_registry_add(bsd_interrupt_cookie_t *cookie)
+{
+    interrupt_registry_lock();
+    cookie->registry_next = g_interrupt_cookies;
+    g_interrupt_cookies = cookie;
+    interrupt_registry_unlock();
+}
+
+static void
+interrupt_registry_remove(bsd_interrupt_cookie_t *cookie)
+{
+    bsd_interrupt_cookie_t **cursor;
+
+    interrupt_registry_lock();
+    for (cursor = &g_interrupt_cookies; *cursor;
+        cursor = &(*cursor)->registry_next) {
+        if (*cursor == cookie) {
+            *cursor = cookie->registry_next;
+            cookie->registry_next = 0;
+            break;
+        }
+    }
+    interrupt_registry_unlock();
+}
+
+static void
+interrupt_relax(void)
+{
+#if defined(__x86_64__)
+    __asm__ __volatile__("pause");
+#elif defined(__aarch64__)
+    __asm__ __volatile__("yield");
+#endif
+}
 
 #if !defined(BSD_BRIDGE_HOST_TEST) || \
     defined(BSD_BRIDGE_INTRNG_HOST_TEST)
@@ -487,6 +546,7 @@ bsd_interrupt_setup_direct(device_t device, struct resource *resource,
         bsd_free(cookie, M_DEVBUF);
         return result;
     }
+    interrupt_registry_add(cookie);
     *cookie_out = cookie;
     return 0;
 }
@@ -524,8 +584,10 @@ bsd_interrupt_teardown_direct(device_t device, struct resource *resource,
     if (__atomic_exchange_n(&cookie->tearing_down, 1,
         __ATOMIC_ACQ_REL))
         return BSD_INTERRUPT_EBUSY;
+    interrupt_registry_remove(cookie);
     result = bsd_resource_disable_interrupt(resource);
     if (result != 0) {
+        interrupt_registry_add(cookie);
         __atomic_store_n(&cookie->tearing_down, 0, __ATOMIC_RELEASE);
         return result;
     }
@@ -533,9 +595,12 @@ bsd_interrupt_teardown_direct(device_t device, struct resource *resource,
         g_interrupt_runtime.operations.context, cookie->backend_cookie);
     if (result != 0) {
         (void)bsd_resource_enable_interrupt(resource);
+        interrupt_registry_add(cookie);
         __atomic_store_n(&cookie->tearing_down, 0, __ATOMIC_RELEASE);
         return result;
     }
+    while (__atomic_load_n(&cookie->drain_refs, __ATOMIC_ACQUIRE) != 0)
+        interrupt_relax();
     if (cookie->thread_queue) {
         bsd_taskqueue_worker_drain(
             cookie->thread_queue, &cookie->deferred_task);
@@ -543,16 +608,44 @@ bsd_interrupt_teardown_direct(device_t device, struct resource *resource,
         cookie->thread_queue = 0;
     }
     while (__atomic_load_n(&cookie->active, __ATOMIC_ACQUIRE) != 0) {
-#if defined(__x86_64__)
-        __asm__ __volatile__("pause");
-#elif defined(__aarch64__)
-        __asm__ __volatile__("yield");
-#endif
+        interrupt_relax();
     }
     if (!rman_claim_irq_cookie(resource, cookie, 0))
         return BSD_INTERRUPT_EBUSY;
     bsd_free(cookie, M_DEVBUF);
     return 0;
+}
+
+void
+_intr_drain(int irq)
+{
+    bsd_interrupt_cookie_t *cookie;
+
+    if (irq < 0)
+        return;
+    if (bsd_intrng_drain_irq((unsigned int)irq))
+        return;
+
+    cookie = 0;
+    interrupt_registry_lock();
+    for (cookie = g_interrupt_cookies; cookie;
+        cookie = cookie->registry_next) {
+        if (rman_get_start(cookie->resource) == (rman_res_t)irq &&
+            !__atomic_load_n(&cookie->tearing_down, __ATOMIC_ACQUIRE)) {
+            __atomic_add_fetch(&cookie->drain_refs, 1,
+                __ATOMIC_ACQ_REL);
+            break;
+        }
+    }
+    interrupt_registry_unlock();
+    if (!cookie)
+        return;
+    if (cookie->thread_queue)
+        bsd_taskqueue_worker_drain(cookie->thread_queue,
+            &cookie->deferred_task);
+    while (__atomic_load_n(&cookie->active, __ATOMIC_ACQUIRE) != 0)
+        interrupt_relax();
+    __atomic_sub_fetch(&cookie->drain_refs, 1, __ATOMIC_ACQ_REL);
 }
 
 int

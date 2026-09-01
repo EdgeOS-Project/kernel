@@ -16,6 +16,7 @@
 int getenv_uint64(const char *name, uint64_t *data);
 int getenv_int(const char *name, int *data);
 int bsd_tunable_str_fetch(const char *path, char *value, size_t capacity);
+int bsd_tunable_long_fetch(const char *path, long *value);
 
 enum sysinit_sub_id {
     SI_SUB_DUMMY = 0x0000000,
@@ -156,6 +157,9 @@ bsd_tunable_ulong_fetch(const char *path, unsigned long *value)
 #define TUNABLE_ULONG(path, value)
 #define TUNABLE_ULONG_FETCH(path, value) \
     bsd_tunable_ulong_fetch((path), (value))
+#define TUNABLE_LONG(path, value)
+#define TUNABLE_LONG_FETCH(path, value) \
+    bsd_tunable_long_fetch((path), (value))
 
 typedef void (*sysinit_nfunc_t)(void *);
 typedef void (*sysinit_cfunc_t)(const void *);

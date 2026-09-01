@@ -1,0 +1,104 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-rtw88",
+  "provider": "freebsd",
+  "description": "FreeBSD LinuxKPI Realtek rtw88 PCI wireless LAN driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "CONFIG_RTW88_DEBUG",
+      "CONFIG_RTW88_DEBUGFS",
+      "EDGEOS_BSD_LINUXKPI=1",
+      "KBUILD_MODNAME=rtw88",
+      "LINUXKPI_VERSION=70000",
+      "__FreeBSD__=14"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "linuxkpi",
+      "rtw88"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "GPL-2.0 OR BSD-3-Clause",
+      "LicenseRef-Upstream-Unmarked"
+    ],
+    "allow_unmarked_files": true,
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/contrib/dev/rtw88"
+    ],
+    "file_count": 99,
+    "tree_sha256": "8078942deed436dc9f9ed28082dfcb1ad01775a4afdf3d3482f6a233275f7df1"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "rtw88",
+      "sources": [
+        "sys/contrib/dev/rtw88/main.c",
+        "sys/contrib/dev/rtw88/bf.c",
+        "sys/contrib/dev/rtw88/coex.c",
+        "sys/contrib/dev/rtw88/debug.c",
+        "sys/contrib/dev/rtw88/efuse.c",
+        "sys/contrib/dev/rtw88/fw.c",
+        "sys/contrib/dev/rtw88/mac.c",
+        "sys/contrib/dev/rtw88/mac80211.c",
+        "sys/contrib/dev/rtw88/phy.c",
+        "sys/contrib/dev/rtw88/ps.c",
+        "sys/contrib/dev/rtw88/regd.c",
+        "sys/contrib/dev/rtw88/rx.c",
+        "sys/contrib/dev/rtw88/sar.c",
+        "sys/contrib/dev/rtw88/sec.c",
+        "sys/contrib/dev/rtw88/tx.c",
+        "sys/contrib/dev/rtw88/util.c",
+        "sys/contrib/dev/rtw88/rtw8723x.c",
+        "sys/contrib/dev/rtw88/rtw8703b.c",
+        "sys/contrib/dev/rtw88/rtw8703b_tables.c",
+        "sys/contrib/dev/rtw88/rtw8723d.c",
+        "sys/contrib/dev/rtw88/rtw8723d_table.c",
+        "sys/contrib/dev/rtw88/rtw8814a.c",
+        "sys/contrib/dev/rtw88/rtw8814a_table.c",
+        "sys/contrib/dev/rtw88/rtw8821c.c",
+        "sys/contrib/dev/rtw88/rtw8821c_table.c",
+        "sys/contrib/dev/rtw88/rtw8822b.c",
+        "sys/contrib/dev/rtw88/rtw8822b_table.c",
+        "sys/contrib/dev/rtw88/rtw8822c.c",
+        "sys/contrib/dev/rtw88/rtw8822c_table.c",
+        "sys/contrib/dev/rtw88/pci.c",
+        "sys/contrib/dev/rtw88/rtw8723de.c",
+        "sys/contrib/dev/rtw88/rtw8814ae.c",
+        "sys/contrib/dev/rtw88/rtw8821ce.c",
+        "sys/contrib/dev/rtw88/rtw8822be.c",
+        "sys/contrib/dev/rtw88/rtw8822ce.c"
+      ],
+      "capabilities": [
+        "base",
+        "network"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

@@ -22,6 +22,7 @@
 #define ETHERMIN (ETHER_MIN_LEN - ETHER_HDR_LEN - ETHER_CRC_LEN)
 #define ETHERMTU_JUMBO (ETHER_MAX_LEN_JUMBO - ETHER_HDR_LEN - ETHER_CRC_LEN)
 #define EVL_VLID_MASK 0x0fff
+#define EVL_PRI_MASK 0xe000
 #define EVL_VLANOFTAG(tag) ((tag) & EVL_VLID_MASK)
 #define EVL_PRIOFTAG(tag) (((tag) >> 13) & 7)
 #define EVL_CFIOFTAG(tag) (((tag) >> 12) & 1)
@@ -30,6 +31,7 @@
         ((vlid) & EVL_VLID_MASK))
 
 #define ETHERTYPE_IP 0x0800
+#define ETHERTYPE_8023 0x0004
 #define ETHERTYPE_ARP 0x0806
 #define ETHERTYPE_AARP 0x80f3
 #define ETHERTYPE_IPX 0x8137

@@ -4,6 +4,9 @@
 #ifndef _SYS_KTR_H_
 #define _SYS_KTR_H_
 
+#define KTR_DEV 0x00000004u
+#define KTR_SPARE3 0x20000000u
+
 /*
  * Imported drivers use CTR calls for optional diagnostic tracing.  EdgeOS
  * does not define KTR for production builds, matching FreeBSD's default

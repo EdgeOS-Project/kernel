@@ -15,20 +15,50 @@ class ManifestError(ValueError):
 
 MANIFEST_SCHEMA_VERSION = 2
 SUPPORTED_ARCHITECTURES = frozenset({"x86_64", "arm64"})
-SUPPORTED_INCLUDE_GROUPS = frozenset({"acpica"})
+SUPPORTED_INCLUDE_GROUPS = frozenset({
+    "acpica",
+    "ath",
+    "ath10k",
+    "ath11k",
+    "ath12k",
+    "bhnd-bwn",
+    "brcm80211",
+    "drm-amd",
+    "drm-kmod",
+    "drm-nouveau",
+    "drm-nouveau-legacy",
+    "iwlwifi",
+    "irdma",
+    "linuxkpi",
+    "linux-typec",
+    "mt76",
+    "netgraph-bluetooth",
+    "ofed",
+    "rtw88",
+    "rtw89",
+})
 SUPPORTED_COMPILE_OPTIONS = frozenset({
     "constant-width-shifts",
     "external-inline-definitions",
     "freebsd-platform-identity",
+    "negative-value-shifts",
 })
 SUPPORTED_KCONFIG_REQUIREMENTS = frozenset({
     "ACPI",
     "DEVICE_TREE",
+    "GRAPHICS_AMD",
+    "GRAPHICS_INTEL",
+    "GRAPHICS_NVIDIA",
 })
 MODULE_BUILD_MODES = frozenset({"builtin", "module", "disabled"})
 SOURCE_POLICY_MODES = frozenset({"unmodified", "patched"})
 PACKAGE_TYPES = frozenset({"driver", "headers", "subsystem"})
 GENERATED_DATABASES = {
+    "bhnd-nvram-map": (
+        "sys/dev/bhnd/nvram/nvram_map",
+        "sys/dev/bhnd/tools/nvram_map_gen.sh",
+        "sys/dev/bhnd/tools/nvram_map_gen.awk",
+    ),
     "miidevs": (
         "sys/dev/mii/miidevs",
     ),
@@ -41,6 +71,7 @@ DEFINE_PATTERN = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_]*(?:=[A-Za-z0-9_.+:/-]+)?$"
 )
 UNDEFINE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+HEADER_PATTERN = re.compile(r"^[A-Za-z0-9_./+-]+\.h$")
 
 
 def _require_mapping(value: Any, field: str) -> dict[str, Any]:
@@ -187,6 +218,33 @@ def load_manifest(path: Path) -> dict[str, Any]:
             f"{', '.join(unknown_arm64_options)}"
         )
     compile_config["arm64_options"] = arm64_options
+    x86_fpu_sources = _require_string_list(
+        compile_config.get("x86_fpu_sources", []),
+        "compile.x86_fpu_sources",
+        allow_empty=True,
+    )
+    for index, source in enumerate(x86_fpu_sources):
+        validate_relative_path(source, f"compile.x86_fpu_sources[{index}]")
+        if not source.startswith("sys/") or not source.endswith(".c"):
+            raise ManifestError(
+                "compile.x86_fpu_sources entries must be C sources below sys/"
+            )
+    compile_config["x86_fpu_sources"] = x86_fpu_sources
+    source_preincludes = _require_mapping(
+        compile_config.get("source_preincludes", {}),
+        "compile.source_preincludes",
+    )
+    for source, header in source_preincludes.items():
+        validate_relative_path(source, "compile.source_preincludes key")
+        if not source.startswith("sys/") or not source.endswith(".c"):
+            raise ManifestError(
+                "compile.source_preincludes keys must be C sources below sys/"
+            )
+        if not isinstance(header, str) or not HEADER_PATTERN.fullmatch(header):
+            raise ManifestError(
+                f"compile.source_preincludes[{source}] must be a safe header"
+            )
+    compile_config["source_preincludes"] = source_preincludes
     include_groups = _require_string_list(
         compile_config.get("include_groups", []),
         "compile.include_groups",
@@ -273,6 +331,10 @@ def load_manifest(path: Path) -> dict[str, Any]:
     source_policy["allowed_licenses"] = _require_string_list(
         source_policy.get("allowed_licenses"), "source_policy.allowed_licenses"
     )
+    allow_unmarked_files = source_policy.get("allow_unmarked_files", False)
+    if not isinstance(allow_unmarked_files, bool):
+        raise ManifestError("source_policy.allow_unmarked_files must be a boolean")
+    source_policy["allow_unmarked_files"] = allow_unmarked_files
     raw_exceptions = _require_mapping(
         source_policy.get("license_exceptions", {}),
         "source_policy.license_exceptions",

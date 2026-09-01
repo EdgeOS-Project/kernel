@@ -15,6 +15,8 @@
 #define OBJT_DEVICE 4
 #define OBJT_MGTDEVICE 5
 #define OBJT_DEAD 6
+#define OBJPR_CLEANONLY 0x01
+#define OBJ_UNMANAGED 0x0001u
 #define OFF_TO_IDX(offset) \
     ((vm_pindex_t)(((vm_ooffset_t)(offset)) >> PAGE_SHIFT))
 #define IDX_TO_OFF(index) \
@@ -34,6 +36,7 @@ struct vm_object {
     };
     volatile uint32_t resident_page_count;
     objtype_t type;
+    unsigned int flags;
     vm_memattr_t memattr;
     void *handle;
     union {
@@ -52,6 +55,8 @@ struct vm_object {
 
 typedef struct vm_object *vm_object_t;
 
+extern vm_object_t kernel_object;
+
 vm_object_t vm_object_allocate(int type, vm_pindex_t size);
 void vm_object_deallocate(vm_object_t object);
 void vm_object_reference(vm_object_t object);
@@ -61,6 +66,8 @@ int vm_object_wowned(vm_object_t object);
 int vm_object_pager_physical_address(vm_object_t object,
     vm_ooffset_t offset, vm_paddr_t *physical_address);
 int vm_object_set_memattr(vm_object_t object, vm_memattr_t memattr);
+void vm_object_page_remove(vm_object_t object, vm_pindex_t start,
+    vm_pindex_t end, int flags);
 
 #define VM_OBJECT_WLOCK(object) vm_object_wlock((object))
 #define VM_OBJECT_WUNLOCK(object) vm_object_wunlock((object))

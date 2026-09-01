@@ -149,12 +149,16 @@ if_alloc(unsigned char type)
 {
     if_t ifp;
 
-    if (type != IFT_ETHER && type != IFT_OTHER && type != IFT_MBIM)
+    if (type != IFT_ETHER && type != IFT_OTHER && type != IFT_MBIM &&
+        type != IFT_L2VLAN && type != IFT_INFINIBAND &&
+        type != IFT_INFINIBANDLAG)
         return 0;
     ifp = bsd_malloc(sizeof(*ifp), M_DEVBUF, M_NOWAIT | M_ZERO);
     if (!ifp)
         return 0;
     ifp->if_type = type;
+    ifp->if_addrlen = type == IFT_INFINIBAND ? 20 : ETHER_ADDR_LEN;
+    ifp->if_pcp = IFNET_PCP_NONE;
     ifp->if_mtu = ETHERMTU;
     ifp->if_send_limit = IFQ_MAXLEN;
     ifp->if_link_state = LINK_STATE_UNKNOWN;
@@ -987,6 +991,20 @@ if_foreach_llmaddr(if_t ifp, iflladdr_cb_t callback, void *argument)
 }
 
 unsigned int
+if_foreach_addr_type(if_t ifp, int family, if_addr_cb_t callback,
+    void *argument)
+{
+    struct ifaddr *ifa;
+
+    if (!ifp || !callback)
+        return 0;
+    ifa = ifp->if_addr;
+    if (!ifa || !ifa->ifa_addr || ifa->ifa_addr->sa_family != family)
+        return 0;
+    return callback(argument, ifa, 0);
+}
+
+unsigned int
 if_llmaddr_count(if_t ifp)
 {
     (void)ifp;
@@ -1011,6 +1029,139 @@ ifnet_byindex(unsigned int index)
     if (index == 0 || index >= BSD_IFNET_INDEX_MAX)
         return 0;
     return __atomic_load_n(&g_ifnet_by_index[index], __ATOMIC_ACQUIRE);
+}
+
+if_t
+if_iter_start(struct if_iter *iterator)
+{
+    if (!iterator)
+        return 0;
+    iterator->context[0] = (void *)(uintptr_t)1;
+    return if_iter_next(iterator);
+}
+
+if_t
+if_iter_next(struct if_iter *iterator)
+{
+    unsigned int index;
+
+    if (!iterator)
+        return 0;
+    index = (unsigned int)(uintptr_t)iterator->context[0];
+    while (index < BSD_IFNET_INDEX_MAX) {
+        if_t ifp = ifnet_byindex(index++);
+
+        iterator->context[0] = (void *)(uintptr_t)index;
+        if (ifp)
+            return ifp;
+    }
+    iterator->context[0] = 0;
+    return 0;
+}
+
+void
+if_iter_finish(struct if_iter *iterator)
+{
+    if (iterator)
+        iterator->context[0] = 0;
+}
+
+if_t
+ifnet_byindex_ref(unsigned int index)
+{
+    if_t ifp = ifnet_byindex(index);
+
+    if (ifp)
+        if_ref(ifp);
+    return ifp;
+}
+
+int
+if_gettype(const if_t ifp)
+{
+    return ifp ? ifp->if_type : IFT_OTHER;
+}
+
+uint8_t
+if_getaddrlen(if_t ifp)
+{
+    return ifp ? ifp->if_addrlen : 0;
+}
+
+uint8_t
+if_getpcp(if_t ifp)
+{
+    return ifp ? ifp->if_pcp : IFNET_PCP_NONE;
+}
+
+struct ifaddr *
+ifa_ifwithaddr(const struct sockaddr *address)
+{
+    unsigned int index;
+
+    if (!address)
+        return 0;
+    for (index = 1; index < BSD_IFNET_INDEX_MAX; ++index) {
+        if_t ifp = ifnet_byindex(index);
+        struct ifaddr *ifa = ifp ? ifp->if_addr : 0;
+
+        if (ifa && ifa->ifa_addr && ifa->ifa_addr->sa_family ==
+            address->sa_family)
+            return ifa;
+    }
+    return 0;
+}
+
+int
+if_resolvemulti(if_t ifp, struct sockaddr **link_address,
+    const struct sockaddr *address)
+{
+    (void)ifp;
+    (void)address;
+    if (link_address)
+        *link_address = 0;
+    return BSD_IFNET_EOPNOTSUPP;
+}
+
+int
+if_addmulti(if_t ifp, const struct sockaddr *address, void *membership)
+{
+    (void)ifp;
+    (void)address;
+    (void)membership;
+    return 0;
+}
+
+int
+if_delmulti(if_t ifp, const struct sockaddr *address)
+{
+    (void)ifp;
+    (void)address;
+    return 0;
+}
+
+int
+arpresolve(struct ifnet *ifp, int is_gateway, struct mbuf *mbuf,
+    const struct sockaddr *destination, unsigned char *link_address,
+    uint32_t *flags, struct llentry **entry)
+{
+    (void)ifp;
+    (void)is_gateway;
+    (void)mbuf;
+    (void)destination;
+    (void)link_address;
+    (void)flags;
+    (void)entry;
+    return BSD_IFNET_EOPNOTSUPP;
+}
+
+int
+nd6_resolve(struct ifnet *ifp, int gateway_flags, struct mbuf *mbuf,
+    const struct sockaddr *destination, unsigned char *link_address,
+    uint32_t *flags, struct llentry **entry)
+{
+    return arpresolve(ifp, gateway_flags, mbuf, destination, link_address,
+        flags, entry);
 }
 
 void if_setinitfn(if_t ifp, if_init_fn_t callback)
@@ -1041,6 +1192,12 @@ void if_settransmitfn(if_t ifp, if_transmit_fn_t callback)
 {
     if (ifp)
         ifp->if_transmit_callback = callback;
+}
+
+if_transmit_fn_t
+if_gettransmitfn(if_t ifp)
+{
+    return ifp ? ifp->if_transmit_callback : 0;
 }
 
 void if_setinputfn(if_t ifp, if_input_fn_t callback)

@@ -22,6 +22,8 @@ typedef uint8_t vm_prot_t;
 #define VM_PROT_RW          (VM_PROT_READ | VM_PROT_WRITE)
 #define VM_PROT_DEFAULT     VM_PROT_ALL
 
+#define VM_MAXUSER_ADDRESS ((vm_offset_t)0x0000800000000000ULL)
+
 typedef int objtype_t;
 
 extern int vm_ndomains;

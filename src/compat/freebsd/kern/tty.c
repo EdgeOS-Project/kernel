@@ -256,6 +256,20 @@ cdev_unlock(uint64_t state)
     interrupt_restore(state);
 }
 
+static uint64_t g_dev_public_lock_state;
+
+void
+dev_lock(void)
+{
+    g_dev_public_lock_state = cdev_lock();
+}
+
+void
+dev_unlock(void)
+{
+    cdev_unlock(g_dev_public_lock_state);
+}
+
 static uint32_t
 cdev_session_hash(uint64_t identity)
 {
@@ -494,6 +508,7 @@ cdev_register(struct cdev *device)
     }
     if (result != BSD_EINVAL && available != BSD_CDEV_MAX_NODES) {
         g_cdev_nodes[available] = device;
+        LIST_INSERT_HEAD(&device->si_devsw->d_devs, device, si_list);
         device->si_flags |= SI_NAMED;
         device->edgeos_delisted = 0;
         if (device->si_parent) {
@@ -531,6 +546,7 @@ cdev_unregister(struct cdev *device)
             candidate->si_parent != device))
             continue;
         g_cdev_nodes[index] = 0;
+        LIST_REMOVE(candidate, si_list);
         candidate->si_flags &= ~SI_NAMED;
         candidate->edgeos_delisted = 1;
         found = 1;

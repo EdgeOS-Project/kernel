@@ -4,6 +4,7 @@
 #ifndef EDGEOS_COMPAT_FREEBSD_MACHINE_MACHDEP_H
 #define EDGEOS_COMPAT_FREEBSD_MACHINE_MACHDEP_H
 
+#include <machine/armreg.h>
 #include <arm64/include/machdep.h>
 
 #endif

@@ -180,6 +180,34 @@ int arch_vm_map_user_page(uint64_t address_space, uint64_t virtual_address,
         (protection & ARCH_VM_PROT_WRITE) != 0);
 }
 
+int arch_vm_unmap_user_range(uint64_t address_space, uint64_t virtual_address,
+                             uint64_t length) {
+    task_t *task = process_current_task();
+
+    if (!task || (task->cr3 & X86_VM_PTE_ADDRESS) !=
+                     (address_space & X86_VM_PTE_ADDRESS))
+        return -1;
+    process_user_mmap_unmap(task, virtual_address, length);
+    return 0;
+}
+
+int arch_vm_unmap_user_page_if_physical(uint64_t address_space,
+                                        uint64_t virtual_address,
+                                        uint64_t physical_address) {
+    task_t *task = process_current_task();
+    int backing_index;
+
+    if (!task || (task->cr3 & X86_VM_PTE_ADDRESS) !=
+                     (address_space & X86_VM_PTE_ADDRESS))
+        return -1;
+    backing_index = process_user_mmap_backing_page_index(
+        (const void *)(uintptr_t)physical_address);
+    if (backing_index < 0)
+        return -1;
+    return process_user_mmap_unmap_page_if_backing(task, virtual_address,
+                                                    backing_index);
+}
+
 int arch_mm_resolve_user_page(uint64_t address_space, uint64_t address,
                               uint32_t access) {
     task_t *task = process_current_task();

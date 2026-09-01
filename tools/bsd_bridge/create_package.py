@@ -125,6 +125,8 @@ def create_package_manifest(
     mode: str,
     reason: str | None,
     license_exception_values: list[str],
+    allow_unmarked_files: bool,
+    allowed_license_values: list[str],
 ) -> dict[str, Any]:
     """Return a complete manifest after validating the selected sources."""
 
@@ -196,6 +198,9 @@ def create_package_manifest(
         normalized_sources + normalized_interfaces + normalized_lock_paths
     ))
     allowed_licenses = set(template["source_policy"]["allowed_licenses"])
+    allowed_licenses.update(allowed_license_values)
+    if allow_unmarked_files:
+        allowed_licenses.add("LicenseRef-Upstream-Unmarked")
     exceptions = {
         path: details
         for path, details in
@@ -219,6 +224,8 @@ def create_package_manifest(
         relative = path.relative_to(upstream_root).as_posix()
         detected = detect_source_license(path)
         declared = exceptions.get(relative, {}).get("license", detected)
+        if declared is None and allow_unmarked_files:
+            continue
         if declared is None or not _license_expression_is_covered(
             declared, allowed_licenses
         ):
@@ -249,6 +256,7 @@ def create_package_manifest(
             "mode": "unmodified",
             "allow_inline_patches": False,
             "allowed_licenses": sorted(allowed_licenses),
+            "allow_unmarked_files": allow_unmarked_files,
             "license_exceptions": exceptions,
         },
         "source_lock": {
@@ -325,6 +333,17 @@ def main() -> int:
         metavar="PATH=LICENSE=EVIDENCE",
     )
     parser.add_argument(
+        "--allow-unmarked-files",
+        action="store_true",
+        help="allow locked files without a standalone license marker",
+    )
+    parser.add_argument(
+        "--allowed-license",
+        action="append",
+        default=[],
+        help="extend the template's accepted SPDX license expressions",
+    )
+    parser.add_argument(
         "--template-manifest",
         type=Path,
         default=Path("config/bsd_drivers/manifests/freebsd-virtio.json"),
@@ -374,6 +393,8 @@ def main() -> int:
             mode=arguments.mode,
             reason=arguments.reason,
             license_exception_values=arguments.license_exception,
+            allow_unmarked_files=arguments.allow_unmarked_files,
+            allowed_license_values=arguments.allowed_license,
         )
         if arguments.dry_run:
             json.dump(manifest, sys.stdout, indent=2)

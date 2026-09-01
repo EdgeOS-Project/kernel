@@ -21,6 +21,9 @@ struct m_tag;
 #ifndef MHLEN
 #define MHLEN 192
 #endif
+#ifndef MLEN
+#define MLEN MHLEN
+#endif
 #ifndef MINCLSIZE
 #define MINCLSIZE (MHLEN + 1)
 #endif
@@ -42,6 +45,8 @@ struct m_tag;
 
 #define MT_DATA 1
 #define MT_HEADER MT_DATA
+#define MT_SONAME 8
+#define MT_CONTROL 14
 #define M_COPYALL 1000000000
 
 #define M_EXT 0x00000001u

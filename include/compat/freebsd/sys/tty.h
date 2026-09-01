@@ -98,6 +98,7 @@ void tty_init_console(struct tty *tty, speed_t speed);
 #define tty_opened(tty) (((tty)->t_flags & TF_OPENED) != 0)
 #define tty_gone(tty) (((tty)->t_flags & TF_GONE) != 0)
 #define tty_softc(tty) ((tty)->t_devswsoftc)
+#define tty_getlock(tty) ((tty)->t_mtx)
 
 int ttydisc_rint(struct tty *tty, char byte, int flags);
 size_t ttydisc_rint_simple(struct tty *tty, const void *buffer,

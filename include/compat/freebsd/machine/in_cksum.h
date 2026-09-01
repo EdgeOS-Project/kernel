@@ -30,5 +30,6 @@ in_pseudo(uint32_t first, uint32_t second, uint32_t third)
 
 int in6_cksum_pseudo(struct ip6_hdr *header, uint32_t length,
     uint8_t protocol, uint16_t checksum);
+unsigned int in_cksum_hdr(const void *header);
 
 #endif

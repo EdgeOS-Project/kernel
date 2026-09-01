@@ -1,0 +1,102 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-iommu-arm64",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD ARM64 generic IOMMU core and SMMU driver with ACPI and FDT frontends.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT",
+      "DEV_ACPI",
+      "EDGEOS_BSD_FULL_IOMMU",
+      "EDGEOS_BSD_FULL_ACPICA",
+      "INTRNG"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "acpica"
+    ],
+    "source_preincludes": {
+      "sys/arm64/iommu/iommu.c": "edgeos/arm64_iommu.h",
+      "sys/arm64/iommu/iommu_pmap.c": "edgeos/arm64_iommu.h",
+      "sys/arm64/iommu/smmu.c": "edgeos/arm64_iommu.h",
+      "sys/arm64/iommu/smmu_acpi.c": "edgeos/arm64_iommu.h",
+      "sys/arm64/iommu/smmu_fdt.c": "edgeos/arm64_iommu.h",
+      "sys/arm64/iommu/smmu_quirks.c": "edgeos/arm64_iommu.h"
+    }
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "public-domain"
+    ],
+    "license_exceptions": {
+      "sys/arm64/include/iommu.h": {
+        "license": "public-domain",
+        "evidence": "The complete retained header explicitly states that the file is in the public domain."
+      }
+    }
+  },
+  "source_lock": {
+    "paths": [
+      "sys/arm64/iommu",
+      "sys/arm64/include/iommu.h",
+      "sys/arm64/include/pte.h"
+    ],
+    "file_count": 14,
+    "tree_sha256": "0785a7a7bac2d434f04267631f463dedfae40402575617ade063f293f2360548"
+  },
+  "generated_interfaces": [
+    "sys/arm64/iommu/iommu_if.m"
+  ],
+  "modules": [
+    {
+      "id": "iommu-arm64",
+      "sources": [
+        "sys/arm64/iommu/iommu.c",
+        "sys/arm64/iommu/iommu_pmap.c",
+        "sys/arm64/iommu/smmu.c",
+        "sys/arm64/iommu/smmu_acpi.c",
+        "sys/arm64/iommu/smmu_fdt.c",
+        "sys/arm64/iommu/smmu_quirks.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "fdt",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "vm"
+      ],
+      "kconfig_requires": [
+        "ACPI"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

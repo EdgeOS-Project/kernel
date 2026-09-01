@@ -165,6 +165,7 @@ def verify_manifest_licenses(
     source_policy = manifest["source_policy"]
     allowed = set(source_policy["allowed_licenses"])
     exceptions = source_policy["license_exceptions"]
+    allow_unmarked_files = source_policy["allow_unmarked_files"]
     used_exceptions: set[str] = set()
     counts: Counter[str] = Counter()
 
@@ -173,12 +174,15 @@ def verify_manifest_licenses(
         license_id = detect_source_license(path)
         exception = exceptions.get(relative)
         if license_id is None:
-            if exception is None:
+            if exception is None and allow_unmarked_files:
+                license_id = "LicenseRef-Upstream-Unmarked"
+            elif exception is None:
                 raise ManifestError(
                     f"locked source has no auditable license: {relative}"
                 )
-            license_id = exception["license"]
-            used_exceptions.add(relative)
+            else:
+                license_id = exception["license"]
+                used_exceptions.add(relative)
         elif exception is not None:
             raise ManifestError(
                 f"license exception is unnecessary for {relative}"

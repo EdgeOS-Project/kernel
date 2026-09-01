@@ -48,7 +48,7 @@
 #error "Unsupported EdgeOS FreeBSD driver bridge architecture"
 #endif
 
-/* EdgeOS owns SMP scheduling but imported subsystems still need per-CPU slots. */
+/* EdgeOS owns scheduling; imported VMM and driver code need upstream-sized slots. */
 #ifndef MAXCPU
 #define MAXCPU 1024
 #endif

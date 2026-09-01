@@ -1,0 +1,133 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-linux-typec",
+  "provider": "freebsd",
+  "description": "Linux Type-C, USB Power Delivery, TCPM, TCPCI, UCSI, mux, retimer, and alternate-mode drivers hosted by the FreeBSD LinuxKPI bridge.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "CONFIG_ACPI=1",
+      "CONFIG_OF=1",
+      "CONFIG_TYPEC=1",
+      "CONFIG_TYPEC_DP_ALTMODE=1",
+      "CONFIG_TYPEC_TCPM=1",
+      "CONFIG_TYPEC_TBT_ALTMODE=1",
+      "CONFIG_UCSI=1",
+      "EDGEOS_BSD_LINUXKPI=1",
+      "KBUILD_MODNAME=typec",
+      "LINUXKPI_VERSION=70000",
+      "__FreeBSD__=14"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "acpica",
+      "drm-kmod",
+      "linux-typec",
+      "linuxkpi"
+    ]
+  },
+  "upstream": {
+    "project": "Linux",
+    "repository": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "2c7c88a412aa6d09cd04b414211b4ef8553b5309",
+    "branch": "master",
+    "version": "7.2-rc"
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "GPL-2.0",
+      "GPL-2.0+",
+      "GPL-2.0-only",
+      "GPL-2.0-only OR BSD-2-Clause",
+      "GPL-2.0-or-later",
+      "LicenseRef-Upstream-Unmarked"
+    ],
+    "allow_unmarked_files": true,
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/contrib/linux-typec"
+    ],
+    "file_count": 97,
+    "tree_sha256": "58f45835cc5ef42aafadbf91843c795a0dfc5418f34eac844a3b46215a0fc125"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "linux-typec-stack",
+      "sources": [
+        "sys/contrib/linux-typec/drivers/usb/typec/altmodes/displayport.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/altmodes/nvidia.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/altmodes/thunderbolt.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/anx7411.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/bus.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/class.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/hd3ss3220.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/mode_selection.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/mux/fsa4480.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/mux/gpio-sbu-mux.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/mux/intel_pmc_mux.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/mux/it5205.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/mux/nb7vpq904m.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/mux/pi3usb30532.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/mux/ps883x.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/mux/ptn36502.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/mux/tusb1046.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/mux/wcd939x-usbss.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/mux.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/pd.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/port-mapper.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/retimer.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/rt1719.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/stusb160x.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/tcpm/fusb302.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/tcpm/maxim_contaminant.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/tcpm/qcom/qcom_pmic_typec.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/tcpm/qcom/qcom_pmic_typec_pdphy.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/tcpm/qcom/qcom_pmic_typec_pdphy_stub.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/tcpm/qcom/qcom_pmic_typec_port.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/tcpm/tcpci.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/tcpm/tcpci_maxim_core.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/tcpm/tcpci_mt6360.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/tcpm/tcpci_mt6370.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/tcpm/tcpci_rt1711h.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/tcpm/tcpm.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/tcpm/wcove.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/tipd/core.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/tipd/trace.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/ucsi/cros_ec_ucsi.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/ucsi/debugfs.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/ucsi/displayport.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/ucsi/psy.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/ucsi/thunderbolt.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/ucsi/trace.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/ucsi/ucsi.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/ucsi/ucsi_acpi.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/ucsi/ucsi_ccg.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/ucsi/ucsi_glink.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/ucsi/ucsi_huawei_gaokun.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/ucsi/ucsi_stm32g0.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/ucsi/ucsi_yoga_c630.c",
+        "sys/contrib/linux-typec/drivers/usb/typec/wusb3801.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "fdt",
+        "usb"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

@@ -17,4 +17,20 @@
 #define S_IWOTH 0000002
 #define S_IXOTH 0000001
 
+#define S_IFREG 0100000
+#define S_IFCHR 0020000
+
+struct stat {
+    uint64_t st_dev;
+    uint64_t st_ino;
+    mode_t st_mode;
+    nlink_t st_nlink;
+    uid_t st_uid;
+    gid_t st_gid;
+    uint64_t st_rdev;
+    off_t st_size;
+    int64_t st_blocks;
+    int32_t st_blksize;
+};
+
 #endif

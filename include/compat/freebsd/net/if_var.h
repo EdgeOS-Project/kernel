@@ -55,10 +55,16 @@ typedef int (*if_transmit_fn_t)(if_t, struct mbuf *);
 typedef uint64_t (*if_get_counter_t)(if_t, ift_counter);
 typedef unsigned int iflladdr_cb_t(void *, struct sockaddr_dl *,
     unsigned int);
+typedef unsigned int if_addr_cb_t(void *, struct ifaddr *, unsigned int);
+
+struct if_iter {
+    void *context[4];
+};
 
 #define IF_DUNIT_NONE (-1)
 #define IFNET_EVENT_UP 0
 #define IFNET_EVENT_DOWN 1
+#define IFNET_EVENT_PCP 2
 #define IFNET_EVENT_UPDATE_BAUDRATE 3
 
 struct ifnet {
@@ -67,6 +73,8 @@ struct ifnet {
     unsigned int if_dunit;
     unsigned int if_index;
     uint8_t if_type;
+    uint8_t if_addrlen;
+    uint8_t if_pcp;
     uint8_t if_mac[6];
     uint16_t if_header_length;
     int if_flags;
@@ -119,6 +127,9 @@ struct ifaddr {
     uint16_t ifa_flags;
     volatile uint32_t ifa_refcount;
 };
+
+#define IFADDR_EVENT_ADD 0
+#define IFADDR_EVENT_DEL 1
 
 #define if_init if_init_callback
 #define if_ioctl if_ioctl_callback
@@ -196,10 +207,24 @@ unsigned int if_foreach_lladdr(if_t ifp, iflladdr_cb_t callback,
     void *argument);
 unsigned int if_foreach_llmaddr(if_t ifp, iflladdr_cb_t callback,
     void *argument);
+unsigned int if_foreach_addr_type(if_t ifp, int family,
+    if_addr_cb_t callback, void *argument);
 unsigned int if_llmaddr_count(if_t ifp);
 bool if_maddr_empty(if_t ifp);
 struct ifaddr *if_getifaddr(const if_t ifp);
 if_t ifnet_byindex(unsigned int index);
+if_t ifnet_byindex_ref(unsigned int index);
+int if_gettype(const if_t ifp);
+uint8_t if_getaddrlen(if_t ifp);
+uint8_t if_getpcp(if_t ifp);
+struct ifaddr *ifa_ifwithaddr(const struct sockaddr *address);
+int if_resolvemulti(if_t ifp, struct sockaddr **link_address,
+    const struct sockaddr *address);
+if_t if_iter_start(struct if_iter *iterator);
+if_t if_iter_next(struct if_iter *iterator);
+void if_iter_finish(struct if_iter *iterator);
+int if_addmulti(if_t ifp, const struct sockaddr *address, void *membership);
+int if_delmulti(if_t ifp, const struct sockaddr *address);
 int ifhwioctl(unsigned long command, if_t ifp, char *data,
     struct thread *thread);
 
@@ -222,6 +247,7 @@ void if_setioctlfn(if_t ifp, if_ioctl_fn_t callback);
 void if_setstartfn(if_t ifp, if_start_fn_t callback);
 if_start_fn_t if_getstartfn(if_t ifp);
 void if_settransmitfn(if_t ifp, if_transmit_fn_t callback);
+if_transmit_fn_t if_gettransmitfn(if_t ifp);
 void if_setinputfn(if_t ifp, if_input_fn_t callback);
 if_input_fn_t if_getinputfn(if_t ifp);
 void if_setoutputfn(if_t ifp, if_output_fn_t callback);

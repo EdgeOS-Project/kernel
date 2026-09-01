@@ -5,6 +5,14 @@
 #define _SYS_MALLOC_H_
 
 #include <edgeos/malloc.h>
+#include <edgeos/allocator.h>
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#ifndef M_PCB
+#define M_PCB M_DEVBUF
+#endif
 
 #define malloc(size, type, flags) bsd_malloc((size), (type), (flags))
 #define mallocarray(count, size, type, flags) \
@@ -13,6 +21,20 @@
     bsd_malloc_aligned((size), (alignment), (type), (flags))
 #define malloc_domainset(size, type, domainset, flags) \
     bsd_malloc((size), (type), (flags))
+#define malloc_usable_size(allocation) \
+    bsd_kmalloc_usable_size((allocation))
+
+static inline size_t
+malloc_size(size_t size)
+{
+    return size;
+}
+
+static inline bool
+WOULD_OVERFLOW(size_t count, size_t size)
+{
+    return count != 0 && size > SIZE_MAX / count;
+}
 #define contigmalloc(size, type, flags, low, high, alignment, boundary) \
     bsd_contigmalloc((size), (type), (flags), (low), (high), \
         (alignment), (boundary))

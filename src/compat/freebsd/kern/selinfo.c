@@ -17,6 +17,20 @@ knlist_init_mtx(struct knlist *list, struct mtx *mutex)
 }
 
 void
+knlist_init(struct knlist *list, void *lock, void (*lock_fn)(void *),
+    void (*unlock_fn)(void *), void (*assert_fn)(void *, int))
+{
+    if (!list)
+        return;
+    list->edgeos_head = 0;
+    list->edgeos_mutex = 0;
+    list->edgeos_lock = lock;
+    list->edgeos_lock_fn = lock_fn;
+    list->edgeos_unlock_fn = unlock_fn;
+    list->edgeos_assert_fn = assert_fn;
+}
+
+void
 knlist_add(struct knlist *list, struct knote *note, int locked)
 {
     struct knote *current;
@@ -79,6 +93,10 @@ knlist_destroy(struct knlist *list)
         return;
     knlist_cleardel(list, 0, 0, 0);
     list->edgeos_mutex = 0;
+    list->edgeos_lock = 0;
+    list->edgeos_lock_fn = 0;
+    list->edgeos_unlock_fn = 0;
+    list->edgeos_assert_fn = 0;
 }
 
 int

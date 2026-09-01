@@ -25,6 +25,21 @@ in6_checksum_load_word(const uint8_t *bytes)
     return word;
 }
 
+unsigned int
+in_cksum_hdr(const void *header)
+{
+    const uint8_t *bytes = header;
+    uint32_t sum = 0;
+
+    if (!bytes)
+        return 0;
+    for (unsigned int offset = 0; offset < 20; offset += 2)
+        sum += in6_checksum_load_word(bytes + offset);
+    sum = (sum & UINT32_C(0xffff)) + (sum >> 16);
+    sum = (sum & UINT32_C(0xffff)) + (sum >> 16);
+    return (unsigned int)(~sum & UINT32_C(0xffff));
+}
+
 int
 in6_cksum_pseudo(struct ip6_hdr *header, uint32_t length,
     uint8_t protocol, uint16_t checksum)

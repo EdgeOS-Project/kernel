@@ -24,6 +24,8 @@ enum test_event {
     TEST_KEYBOARD_DRIVERS,
     TEST_PCI_PROVIDER,
     TEST_ETHER_PROVIDER,
+    TEST_MEM_PROVIDER,
+    TEST_IIC_PROVIDER,
     TEST_RANDOM_PROVIDER,
     TEST_RANDOMDEV_PROVIDER,
     TEST_RANDOM_HARVEST_PROVIDER,
@@ -42,7 +44,7 @@ enum test_event {
     TEST_PCI_ATTACH,
 };
 
-static int g_events[31];
+static int g_events[33];
 static size_t g_event_count;
 static int g_allocator_ready;
 static int g_sync_ready;
@@ -285,6 +287,8 @@ bsd_module_provide(const char *name, int version)
     } providers[] = {
         { "pci", TEST_PCI_PROVIDER },
         { "ether", TEST_ETHER_PROVIDER },
+        { "mem", TEST_MEM_PROVIDER },
+        { "iic", TEST_IIC_PROVIDER },
         { "random_device", TEST_RANDOM_PROVIDER },
         { "randomdev", TEST_RANDOMDEV_PROVIDER },
         { "random_harvestq", TEST_RANDOM_HARVEST_PROVIDER },
@@ -380,6 +384,8 @@ main(void)
         TEST_KEYBOARD_DRIVERS,
         TEST_PCI_PROVIDER,
         TEST_ETHER_PROVIDER,
+        TEST_MEM_PROVIDER,
+        TEST_IIC_PROVIDER,
         TEST_RANDOM_PROVIDER,
         TEST_RANDOMDEV_PROVIDER,
         TEST_RANDOM_HARVEST_PROVIDER,

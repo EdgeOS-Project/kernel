@@ -1,0 +1,114 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-rockchip-soc",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Rockchip ARM64 platform driver set.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT",
+      "INTRNG"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "GPL-2.0-only",
+      "ISC",
+      "LicenseRef-Upstream-Unmarked",
+      "MIT"
+    ],
+    "allow_unmarked_files": true,
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/arm64/rockchip",
+      "sys/contrib/device-tree/include/dt-bindings/phy/phy.h",
+      "sys/arm64/rockchip/rk3328_codec.c",
+      "sys/arm64/rockchip/rk3399_emmcphy.c",
+      "sys/arm64/rockchip/rk3568_combphy.c",
+      "sys/arm64/rockchip/rk3568_pcie.c",
+      "sys/arm64/rockchip/rk3568_pciephy.c",
+      "sys/arm64/rockchip/rk_gpio.c",
+      "sys/arm64/rockchip/rk_grf.c",
+      "sys/arm64/rockchip/rk_grf_gpio.c",
+      "sys/arm64/rockchip/rk_i2s.c",
+      "sys/arm64/rockchip/rk_iodomain.c",
+      "sys/arm64/rockchip/rk_otp.c",
+      "sys/arm64/rockchip/rk_otp_if.m",
+      "sys/arm64/rockchip/rk_pcie.c",
+      "sys/arm64/rockchip/rk_pcie_phy.c",
+      "sys/arm64/rockchip/rk_pinctrl.c",
+      "sys/arm64/rockchip/rk_pmu.c",
+      "sys/arm64/rockchip/rk_tsadc.c",
+      "sys/arm64/rockchip/rk_tsadc_if.m",
+      "sys/arm64/rockchip/rk_typec_phy.c",
+      "sys/arm64/rockchip/rk_usb2phy.c",
+      "sys/arm64/rockchip/rk_usbphy.c"
+    ],
+    "file_count": 23,
+    "tree_sha256": "aae81186825c75730ddde5fea2ceeadbdc25308621877dd36c8525f8d12af907"
+  },
+  "generated_interfaces": [
+    "sys/arm64/rockchip/rk_tsadc_if.m"
+  ],
+  "modules": [
+    {
+      "id": "rockchip-soc",
+      "sources": [
+        "sys/arm64/rockchip/rk3328_codec.c",
+        "sys/arm64/rockchip/rk3399_emmcphy.c",
+        "sys/arm64/rockchip/rk3568_combphy.c",
+        "sys/arm64/rockchip/rk3568_pcie.c",
+        "sys/arm64/rockchip/rk3568_pciephy.c",
+        "sys/arm64/rockchip/rk_gpio.c",
+        "sys/arm64/rockchip/rk_grf.c",
+        "sys/arm64/rockchip/rk_grf_gpio.c",
+        "sys/arm64/rockchip/rk_i2s.c",
+        "sys/arm64/rockchip/rk_iodomain.c",
+        "sys/arm64/rockchip/rk_pcie.c",
+        "sys/arm64/rockchip/rk_pcie_phy.c",
+        "sys/arm64/rockchip/rk_pinctrl.c",
+        "sys/arm64/rockchip/rk_pmu.c",
+        "sys/arm64/rockchip/rk_tsadc.c",
+        "sys/arm64/rockchip/rk_typec_phy.c",
+        "sys/arm64/rockchip/rk_usb2phy.c",
+        "sys/arm64/rockchip/rk_usbphy.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}
