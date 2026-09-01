@@ -28,4 +28,8 @@
 #define num_pages(value) \
     ((vm_offset_t)((((vm_offset_t)(value)) + PAGE_MASK) >> PAGE_SHIFT))
 
+#if defined(__x86_64__)
+#define VM_MAXUSER_ADDRESS_LA48 UINT64_C(0x0000800000000000)
+#endif
+
 #endif

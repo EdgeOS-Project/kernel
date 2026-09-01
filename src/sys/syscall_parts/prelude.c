@@ -46,6 +46,10 @@
 #include "kernel/linux_abi.h"
 #include "kernel/linux_errno.h"
 #include "kernel/anonymous_fd.h"
+#include "kernel/edge_kvm_runtime.h"
+#include "kernel/edge_vfio_runtime.h"
+#include "kernel/edge_vhost_runtime.h"
+#include "kernel/edge_iommufd_runtime.h"
 #include "kernel/bpf_runtime.h"
 #include "kernel/event_runtime.h"
 #include "kernel/exec_runtime.h"
@@ -1541,6 +1545,18 @@ typedef enum {
     FD_SECCOMP,
     FD_ZCRX,
     FD_DRM_SYNC,
+    FD_KVM_VM,
+    FD_KVM_VCPU,
+    FD_KVM_DEVICE,
+    FD_VFIO_CONTAINER,
+    FD_VFIO_GROUP,
+    FD_VFIO_DEVICE,
+    FD_VHOST_NET,
+    FD_VHOST_SCSI,
+    FD_VHOST_VSOCK,
+    FD_VHOST_VDPA,
+    FD_IOMMUFD,
+    FD_KVM_STATS,
 } edge_fd_kind_t;
 
 typedef struct {
@@ -1563,6 +1579,7 @@ typedef struct {
     uint8_t namespace_kind;
     uint8_t namespace_padding[2];
     uint32_t namespace_id;
+    uint32_t vhost_device_id;
     uint64_t pos;
     vfs_inode_t inode;
     vfs_superblock_t *sb;
@@ -1979,7 +1996,8 @@ typedef struct {
     int used;
     uint8_t secret;
     uint8_t huge_shift;
-    uint8_t reserved[2];
+    uint8_t guest_memfd;
+    uint8_t reserved;
     uint32_t descriptor_refs;
     uint32_t mapping_refs;
     int id;
@@ -3012,12 +3030,12 @@ static int socket_pending_count(const edge_socket_t *listener);
 static void fd_wake_socket_waiters(int sock_id);
 static void fd_wake_socket_waiters_events(int sock_id, uint16_t events);
 static void fd_wake_pipe_waiters(int pipe_id);
-static void fd_wake_eventfd_read_waiters(int eventfd_id);
-static void fd_wake_eventfd_write_waiters(int eventfd_id);
-static void fd_wake_timerfd_waiters(int timerfd_id);
+static int fd_wake_eventfd_read_waiters(int eventfd_id);
+static int fd_wake_eventfd_write_waiters(int eventfd_id);
+static int fd_wake_timerfd_waiters(int timerfd_id);
 static void fd_wake_pidfd_waiters(int target_pid);
-static void fd_wake_fd_owner_tasks(int fd_owner_pid, task_t *current,
-                                   const char *source);
+static int fd_wake_fd_owner_tasks(int fd_owner_pid, task_t *current,
+                                  const char *source);
 static void fd_wake_tun_description(uint64_t description_identity);
 static int gui_wake_trace_task(const task_t *t);
 static inline void wait_poll_yield_step(void);
@@ -3086,6 +3104,7 @@ static int file_ref_get(int id);
 static int file_ref_put(int id);
 static uint64_t file_ref_identity(int id);
 static edge_memfd_t *memfd_get(int id);
+static int memfd_entry_is_guest(const edge_fd_t *entry);
 static void memfd_add_ref(int id);
 static void memfd_drop_ref(int id);
 static void memfd_destroy_if_unreferenced(edge_memfd_t *mf);

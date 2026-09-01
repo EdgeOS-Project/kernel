@@ -91,6 +91,7 @@ struct acpi_prw_data {
 #define ACPI_ADR_PCI_SLOT(address) (((address) & 0xffff0000) >> 16)
 #define ACPI_ADR_PCI_FUNC(address) ((address) & 0xffff)
 #define ACPI_DEV_DOMAIN_UNKNOWN (-1)
+#define ACPI_DEV_BASE_ORDER 100
 #define ACPI_CAP_PERF_MSRS (1 << 0)
 #define ACPI_CAP_C1_IO_HALT (1 << 1)
 #define ACPI_CAP_THR_MSRS (1 << 2)

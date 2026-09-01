@@ -51,10 +51,13 @@
 void spinlock_enter(void);
 void spinlock_exit(void);
 
+#ifndef _SYS__SX_H_
+#define _SYS__SX_H_
 struct sx {
     struct lock_object lock_object;
     bsd_rwlock_t edgeos_lock;
 };
+#endif
 
 static inline void
 bsd_sx_lock_object_lock(void *data)

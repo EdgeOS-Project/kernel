@@ -7,6 +7,7 @@
 #include "kernel/linux_errno.h"
 #include "kernel/linux_utsname.h"
 #include "kernel/syslog_runtime.h"
+#include "serial_console.h"
 #include "string.h"
 #include "sys/boottime.h"
 #include "sys/spinlock.h"
@@ -306,10 +307,14 @@ int bootlog_format_linux_version(char *buf, uint32_t max) {
 
 void bootlog_init(void) {
     char version[256];
+    serial_console_write_raw('A');
     bootlog_ensure_ready();
+    serial_console_write_raw('B');
     if (bootlog_format_version(version, sizeof(version)) >= 0) {
+        serial_console_write_raw('C');
         bootlog_stage(version);
     }
+    serial_console_write_raw('D');
 }
 
 void bootlog_stage(const char *msg) {
@@ -319,10 +324,14 @@ void bootlog_stage(const char *msg) {
     uint64_t timestamp_us;
     uint64_t flags;
 
+    serial_console_write_raw('J');
     bootlog_ensure_ready();
+    serial_console_write_raw('K');
     timestamp_us = boottime_monotonic_us();
+    serial_console_write_raw('L');
     n = format_kmsg_line(line, sizeof(line), msg, timestamp_us,
                          &text_offset);
+    serial_console_write_raw('M');
     if (n < 0) {
         /*
          * Long records should never corrupt the ring.  Preserve a clear marker
@@ -336,13 +345,18 @@ void bootlog_stage(const char *msg) {
         if (n < 0) return;
     }
 
+    serial_console_write_raw('E');
     console_kernel_log_putstr(line);
+    serial_console_write_raw('F');
 
     flags = spin_lock_irqsave(&g_bootlog_lock);
+    serial_console_write_raw('G');
     bootlog_record_append_locked(line, (uint32_t)n, text_offset,
                                  timestamp_us, 6u);
     spin_unlock_irqrestore(&g_bootlog_lock, flags);
+    serial_console_write_raw('H');
     kernel_syslog_notify_data();
+    serial_console_write_raw('I');
 }
 
 void bootlog_append_raw(const char *s, uint32_t n) {

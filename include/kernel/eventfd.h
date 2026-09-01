@@ -17,11 +17,22 @@ typedef struct kernel_eventfd_state {
 
 typedef int (*kernel_eventfd_copy_value_fn)(void *context, uint64_t value);
 typedef int (*kernel_eventfd_load_value_fn)(void *context, uint64_t *value);
+typedef void (*kernel_eventfd_observer_fn)(void *context, int event_id);
+typedef void (*kernel_eventfd_state_changed_fn)(void *context, int event_id);
 
 int kernel_eventfd_create(uint32_t initial_value, int semaphore);
 int kernel_eventfd_retain(int event_id);
 void kernel_eventfd_release(int event_id);
 int kernel_eventfd_query(int event_id, kernel_eventfd_state_t *state);
+int kernel_eventfd_observer_register(int event_id,
+                                     kernel_eventfd_observer_fn callback,
+                                     void *context);
+int kernel_eventfd_observer_unregister(int event_id,
+                                       kernel_eventfd_observer_fn callback,
+                                       void *context);
+int kernel_eventfd_state_backend_register(
+    kernel_eventfd_state_changed_fn callback, void *context);
+int kernel_eventfd_consume_value(int event_id, uint64_t *value);
 
 /*
  * A zero result is an internal wait disposition, never a userspace-visible

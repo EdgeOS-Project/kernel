@@ -81,13 +81,24 @@ def import_sources(
     for relative in manifest["source_lock"]["paths"]:
         source = source_root / relative
         target = target_root / relative
-        if target.exists():
-            raise ManifestError(
-                f"refusing to replace existing vendored source path: {target}"
-            )
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(source, target, copy_function=shutil.copy2)
-        copied += sum(path.is_file() for path in target.rglob("*"))
+        sources = [source] if source.is_file() else [
+            path for path in source.rglob("*") if path.is_file()
+        ]
+        for source_file in sources:
+            suffix = Path() if source.is_file() else source_file.relative_to(source)
+            target_file = target / suffix if suffix.parts else target
+            if target_file.exists():
+                if not target_file.is_file() or (
+                    target_file.read_bytes() != source_file.read_bytes()
+                ):
+                    raise ManifestError(
+                        "refusing to replace modified vendored source file: "
+                        f"{target_file}"
+                    )
+                continue
+            target_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_file, target_file)
+            copied += 1
     return copied
 
 

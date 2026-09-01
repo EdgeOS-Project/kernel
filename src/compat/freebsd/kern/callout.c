@@ -27,7 +27,6 @@
 #define BSD_CALLOUT_CANCELLED 0x2000
 #define BSD_CALLOUT_DRAINING 0x4000
 #define BSD_CALLOUT_SOURCE_HZ EDGE_KERNEL_TIMER_HZ
-
 extern int hz;
 extern volatile int ticks;
 extern volatile long ticksl;
@@ -41,7 +40,6 @@ static void *g_callout_worker_token;
 static struct mtx g_callout_giant;
 static volatile uint32_t g_callout_runtime_state;
 static uint8_t g_callout_wait_channel;
-
 static uint64_t
 callout_interrupt_save_disable(void)
 {
@@ -268,7 +266,8 @@ callout_take_due_locked(sbintime_t now, int direct)
         int is_direct =
             (callout->c_iflags & CALLOUT_DIRECT) != 0;
 
-        if (is_direct == direct) {
+        if (is_direct == direct &&
+            (callout->c_iflags & BSD_CALLOUT_RUNNING) == 0) {
             callout_list_remove_locked(callout);
             callout->c_iflags |= BSD_CALLOUT_RUNNING;
             return callout;
@@ -530,6 +529,13 @@ bsd_callout_process_timer_tick(void)
         advance = 1;
     current = __atomic_add_fetch(&ticks, advance, __ATOMIC_RELAXED);
     __atomic_store_n(&ticksl, (long)current, __ATOMIC_RELAXED);
+    if (bsd_callout_runtime_is_initialized())
+        callout_process(callout_now());
+}
+
+void
+bsd_callout_process_timer_poll(void)
+{
     if (bsd_callout_runtime_is_initialized())
         callout_process(callout_now());
 }

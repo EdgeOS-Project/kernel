@@ -22,6 +22,29 @@ edgeos_arm64_kernel_entry:
 
 1:      mov     x2, #(1 << 31)
         msr     hcr_el2, x2
+        mov     x2, #3
+        msr     cnthctl_el2, x2
+        msr     cntvoff_el2, xzr
+        adrp    x3, edgeos_arm64_booted_from_el2
+        add     x3, x3, :lo12:edgeos_arm64_booted_from_el2
+        mov     w4, #1
+        str     w4, [x3]
+        adrp    x3, hyp_stub_vectors
+        add     x3, x3, :lo12:hyp_stub_vectors
+        msr     vbar_el2, x3
+        /*
+         * FreeBSD's non-VHE bhyve entry stubs execute through physical
+         * identity addresses.  UEFI may leave EL2 translation enabled, so
+         * retire that firmware-owned translation regime before entering the
+         * EdgeOS EL1 kernel.  The EFI image and handoff tables are identity
+         * addressed at this point and EL1 already owns its translation
+         * tables.
+         */
+        dsb     sy
+        mrs     x5, sctlr_el2
+        bic     x5, x5, #1
+        msr     sctlr_el2, x5
+        isb
         mov     x2, #0x3c5
         msr     spsr_el2, x2
         adr     x2, 2f
@@ -65,6 +88,17 @@ edgeos_arm64_secondary_entry:
         b.ne    4f
         mov     x1, #(1 << 31)
         msr     hcr_el2, x1
+        mov     x1, #3
+        msr     cnthctl_el2, x1
+        msr     cntvoff_el2, xzr
+        adrp    x2, hyp_stub_vectors
+        add     x2, x2, :lo12:hyp_stub_vectors
+        msr     vbar_el2, x2
+        dsb     sy
+        mrs     x2, sctlr_el2
+        bic     x2, x2, #1
+        msr     sctlr_el2, x2
+        isb
         mov     x1, #0x3c5
         msr     spsr_el2, x1
         adr     x1, 4f

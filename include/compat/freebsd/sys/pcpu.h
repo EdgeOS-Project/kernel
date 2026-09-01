@@ -10,9 +10,15 @@
 #include <sys/types.h>
 #include "kthread.h"
 #include "../edgeos/kthread.h"
+#if defined(__x86_64__)
+#include <machine/segments.h>
+#include <machine/pcb.h>
+#include <arch/x86_64/gdt.h>
+#endif
 
 struct _device;
 typedef struct _device *device_t;
+struct pmap;
 
 /*
  * Driver-facing CPU devices only require the stable logical CPU identifier.
@@ -27,6 +33,14 @@ struct pcpu {
     int pc_domain;
     uint64_t pc_clock;
     device_t pc_device;
+#if defined(__x86_64__)
+    struct pcb pc_pcb_storage;
+    void *pc_tssp;
+    uint64_t *pc_gdt;
+#elif defined(__aarch64__) || defined(EDGEOS_BSD_ARM64)
+    struct pmap *pc_curvmpmap;
+    struct thread *pc_fpcurthread;
+#endif
 };
 
 struct pcpu *pcpu_find(unsigned int cpu);
@@ -42,6 +56,57 @@ bsd_pcpu_current_cpuid(void)
     return bsd_kthread_current_cpu_id();
 }
 
+static inline struct pcpu *
+get_pcpu(void)
+{
+    return pcpu_find(bsd_pcpu_current_cpuid());
+}
+
+#if defined(__x86_64__)
+static inline struct system_segment_descriptor *
+bsd_pcpu_current_tss(void)
+{
+    return (struct system_segment_descriptor *)
+        gdt_current_tss_descriptor();
+}
+
+static inline void *
+bsd_pcpu_current_tssp(void)
+{
+    struct pcpu *pcpu = get_pcpu();
+
+    if (!pcpu)
+        return 0;
+    if (!pcpu->pc_tssp)
+        pcpu->pc_tssp = gdt_current_tss();
+    return pcpu->pc_tssp;
+}
+
+static inline struct pcb *
+bsd_pcpu_current_curpcb(void)
+{
+    struct pcpu *pcpu = get_pcpu();
+
+    return pcpu ? &pcpu->pc_pcb_storage : 0;
+}
+
+#ifndef curpcb
+#define curpcb bsd_pcpu_current_curpcb()
+#endif
+#endif
+
+#if defined(__aarch64__) || defined(EDGEOS_BSD_ARM64)
+#define PCPU_GET(member) (get_pcpu()->pc_##member)
+#define PCPU_SET(member, value) (get_pcpu()->pc_##member = (value))
+#define DPCPU_DEFINE_STATIC(type, name) \
+    static type edge_bsd_dpcpu_##name[MAXCPU]
+#define DPCPU_GET(name) \
+    (edge_bsd_dpcpu_##name[bsd_pcpu_current_cpuid()])
+#define DPCPU_SET(name, value) \
+    (edge_bsd_dpcpu_##name[bsd_pcpu_current_cpuid()] = (value))
+#else
 #define PCPU_GET(member) bsd_pcpu_current_##member()
+#endif
+#define PCPU_PTR(member) (&get_pcpu()->pc_##member)
 
 #endif

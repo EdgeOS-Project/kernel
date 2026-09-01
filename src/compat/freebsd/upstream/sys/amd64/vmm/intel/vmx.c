@@ -879,6 +879,21 @@ vmx_modinit(int ipinum)
 		TUNABLE_INT_FETCH("hw.vmm.vmx.cap.virtual_interrupt_delivery",
 		    &virtual_interrupt_delivery);
 	}
+#ifdef EDGEOS_BSD_BRIDGE
+	/*
+	 * Nested VMX hosts may enumerate APIC virtualization controls without
+	 * providing a reliable TPR shadow or posted-interrupt wakeup path to the
+	 * L1 hypervisor.  Use CR8 exits and architectural VM-entry interrupt
+	 * injection when EdgeOS itself is a guest.
+	 */
+	if ((cpu_feature2 & CPUID2_HV) != 0) {
+		tpr_shadowing = 0;
+		virtual_interrupt_delivery = 0;
+		procbased_ctls &= ~PROCBASED_USE_TPR_SHADOW;
+		procbased_ctls |= PROCBASED_CR8_LOAD_EXITING |
+		    PROCBASED_CR8_STORE_EXITING;
+	}
+#endif
 
 	if (virtual_interrupt_delivery) {
 		procbased_ctls |= PROCBASED_USE_TPR_SHADOW;
@@ -2709,6 +2724,19 @@ vmx_exit_process(struct vmx *vmx, struct vmx_vcpu *vcpu, struct vm_exit *vmexit)
 			return (1);
 		}
 
+		if (intr_vec == IDT_DB &&
+		    (vcpu->cap.set & (1 << VM_CAP_DB_EXIT))) {
+			uint64_t dr6 = vmexit->u.vmx.exit_qualification &
+			    (UINT64_C(0xf) | DBREG_DR6_BD | DBREG_DR6_BS);
+
+			vmexit->exitcode = VM_EXITCODE_DB;
+			vmexit->inst_length = 0;
+			vmexit->u.dbg.trace_trap = 0;
+			vmexit->u.dbg.pushf_intercept = 0;
+			vmexit->u.dbg.dr6 = DBREG_DR6_RESERVED1 | dr6;
+			break;
+		}
+
 		/*
 		 * If the hypervisor has requested user exits for
 		 * debug exceptions, bounce them out to userland.
@@ -3047,8 +3075,23 @@ vmx_run(void *vcpui, register_t rip, pmap_t pmap, struct vm_eventinfo *evinfo)
 	uint32_t exit_reason;
 	struct region_descriptor gdtr, idtr;
 	uint16_t ldt_sel;
+#ifdef EDGEOS_BSD_BRIDGE
+	uint64_t current_vmcs;
+	struct vmx *edgeos_vmx;
+	struct vcpu *edgeos_host_vcpu;
+	struct vmcs *edgeos_vmcs;
+	struct apic_page *edgeos_apic_page;
+	struct pir_desc *edgeos_pir_desc;
+#endif
 
 	vcpu = vcpui;
+#ifdef EDGEOS_BSD_BRIDGE
+	edgeos_vmx = vcpu->vmx;
+	edgeos_host_vcpu = vcpu->vcpu;
+	edgeos_vmcs = vcpu->vmcs;
+	edgeos_apic_page = vcpu->apic_page;
+	edgeos_pir_desc = vcpu->pir_desc;
+#endif
 	vmx = vcpu->vmx;
 	vmcs = vcpu->vmcs;
 	vmxctx = &vcpu->ctx;
@@ -3192,6 +3235,19 @@ vmx_run(void *vcpui, register_t rip, pmap_t pmap, struct vm_eventinfo *evinfo)
 		vmx_run_trace(vcpu);
 		rc = vmx_enter_guest(vmxctx, vmx, launched);
 
+#ifdef EDGEOS_BSD_BRIDGE
+		/*
+		 * Nested VMX implementations may transiently expose guest MSR values
+		 * through the immutable vCPU header on VM-exit.  Restore the header
+		 * before any exit handler dereferences its host objects.
+		 */
+		vcpu->vmx = edgeos_vmx;
+		vcpu->vcpu = edgeos_host_vcpu;
+		vcpu->vmcs = edgeos_vmcs;
+		vcpu->apic_page = edgeos_apic_page;
+		vcpu->pir_desc = edgeos_pir_desc;
+#endif
+
 		vmx_pmap_deactivate(vmx, pmap);
 		vmx_dr_leave_guest(vmxctx);
 		vmx_msr_guest_exit_tsc_aux(vmx, vcpu);
@@ -3199,6 +3255,24 @@ vmx_run(void *vcpui, register_t rip, pmap_t pmap, struct vm_eventinfo *evinfo)
 		bare_lgdt(&gdtr);
 		lidt(&idtr);
 		lldt(ldt_sel);
+
+#ifdef EDGEOS_BSD_BRIDGE
+		/*
+		 * A nested VMX host may clear the current VMCS while servicing an
+		 * L1 host interrupt.  In that case VMRESUME reports instruction
+		 * error 5 even after the VMCS has been made current again.  Retry
+		 * the entry with VMLAUNCH; all guest state remains in the VMCS and
+		 * vmxctx, and a failing VMLAUNCH follows the normal error path.
+		 */
+		if (rc == VMX_VMRESUME_ERROR &&
+		    vmxctx->inst_fail_status == VM_FAIL_VALID &&
+		    vmcs_instruction_error() == VMRESUME_WITH_NON_LAUNCHED_VMCS) {
+			enable_intr();
+			launched = 0;
+			handled = HANDLED;
+			continue;
+		}
+#endif
 
 		/* Collect some information for VM exit processing */
 		vmexit->rip = rip = vmcs_guest_rip();
@@ -3220,6 +3294,20 @@ vmx_run(void *vcpui, register_t rip, pmap_t pmap, struct vm_eventinfo *evinfo)
 		launched = 1;
 		vmx_exit_trace(vcpu, rip, exit_reason, handled);
 		rip = vmexit->rip;
+#ifdef EDGEOS_BSD_BRIDGE
+		/*
+		 * EdgeOS may service a host interrupt between nested VM exits and
+		 * the next entry.  Reload the VMCS before VMRESUME so a host-side
+		 * scheduling boundary cannot leave nested VMX without a current
+		 * VMCS.
+		 */
+		if (handled) {
+			vmptrst(&current_vmcs);
+			if (current_vmcs != vtophys(vmcs) &&
+			    vmptrld(vmcs) != 0)
+				panic("vmx_run: unable to reload vmcs %p", vmcs);
+		}
+#endif
 	} while (handled);
 
 	/*
@@ -3237,6 +3325,13 @@ vmx_run(void *vcpui, register_t rip, pmap_t pmap, struct vm_eventinfo *evinfo)
 
 	VMCLEAR(vmcs);
 	vmx_msr_guest_exit(vcpu);
+#ifdef EDGEOS_BSD_BRIDGE
+	vcpu->vmx = edgeos_vmx;
+	vcpu->vcpu = edgeos_host_vcpu;
+	vcpu->vmcs = edgeos_vmcs;
+	vcpu->apic_page = edgeos_apic_page;
+	vcpu->pir_desc = edgeos_pir_desc;
+#endif
 
 	return (0);
 }
@@ -3574,7 +3669,9 @@ vmx_getcap(void *vcpui, int type, int *retval)
 			ret = 0;
 		break;
 	case VM_CAP_BPT_EXIT:
+	case VM_CAP_DB_EXIT:
 	case VM_CAP_IPI_EXIT:
+	case VM_CAP_MASK_HWINTR:
 		ret = 0;
 		break;
 	default:
@@ -3661,13 +3758,15 @@ vmx_setcap(void *vcpui, int type, int val)
 		}
 		break;
 	case VM_CAP_BPT_EXIT:
+	case VM_CAP_DB_EXIT:
 		retval = 0;
 
 		/* Don't change the bitmap if we are tracing all exceptions. */
 		if (vcpu->cap.exc_bitmap != 0xffffffff) {
 			pptr = &vcpu->cap.exc_bitmap;
 			baseval = *pptr;
-			flag = (1 << IDT_BP);
+			flag = type == VM_CAP_BPT_EXIT ?
+			    (1 << IDT_BP) : (1 << IDT_DB);
 			reg = VMCS_EXCEPTION_BITMAP;
 		}
 		break;

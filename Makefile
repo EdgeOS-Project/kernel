@@ -84,6 +84,154 @@ edge-kvm-object-unit: tools/tests/edge_kvm_object_unit.c \
 		-o $(OUT)/tests/edge_kvm_object_sanitize
 	@ASAN_OPTIONS=detect_leaks=0 $(OUT)/tests/edge_kvm_object_sanitize
 
+.PHONY: edge-vfio-object-unit
+
+edge-vfio-object-unit: tools/tests/edge_vfio_object_unit.c \
+		$(SRC)/kernel/edge_vfio_object.c \
+		include/kernel/edge_vfio_abi.h \
+		include/kernel/edge_vfio_object.h
+	@mkdir -p $(OUT)/tests
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fno-builtin \
+		-DEDGEOS_HOST_TEST -iquote $(INC) \
+		tools/tests/edge_vfio_object_unit.c \
+		$(SRC)/kernel/edge_vfio_object.c \
+		-o $(OUT)/tests/edge_vfio_object_unit
+	@$(OUT)/tests/edge_vfio_object_unit
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fno-builtin \
+		-fsanitize=address,undefined -fno-omit-frame-pointer \
+		-DEDGEOS_HOST_TEST -iquote $(INC) \
+		tools/tests/edge_vfio_object_unit.c \
+		$(SRC)/kernel/edge_vfio_object.c \
+		-o $(OUT)/tests/edge_vfio_object_sanitize
+	@ASAN_OPTIONS=detect_leaks=0 $(OUT)/tests/edge_vfio_object_sanitize
+
+.PHONY: edge-vfio-runtime-unit
+
+edge-vfio-runtime-unit: tools/tests/edge_vfio_runtime_unit.c \
+		$(SRC)/kernel/edge_vfio_object.c \
+		$(SRC)/kernel/edge_vfio_runtime.c \
+		$(SRC)/kernel/edge_iommufd_runtime.c
+	@mkdir -p $(OUT)/tests
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fno-builtin \
+		-DEDGEOS_HOST_TEST -iquote $(INC) \
+		tools/tests/edge_vfio_runtime_unit.c \
+		$(SRC)/kernel/edge_vfio_object.c \
+		$(SRC)/kernel/edge_vfio_runtime.c \
+		$(SRC)/kernel/edge_iommufd_runtime.c \
+		-o $(OUT)/tests/edge_vfio_runtime_unit
+	@$(OUT)/tests/edge_vfio_runtime_unit
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fno-builtin \
+		-fsanitize=address,undefined -fno-omit-frame-pointer \
+		-DEDGEOS_HOST_TEST -iquote $(INC) \
+		tools/tests/edge_vfio_runtime_unit.c \
+		$(SRC)/kernel/edge_vfio_object.c \
+		$(SRC)/kernel/edge_vfio_runtime.c \
+		$(SRC)/kernel/edge_iommufd_runtime.c \
+		-o $(OUT)/tests/edge_vfio_runtime_sanitize
+	@ASAN_OPTIONS=detect_leaks=0 $(OUT)/tests/edge_vfio_runtime_sanitize
+
+.PHONY: edge-vfio-object-cross-compile
+
+edge-vfio-object-cross-compile: syncconfig arm64-syncconfig
+	@mkdir -p $(OUT)/tests
+	@$(CC) -std=gnu11 -O2 -ffreestanding -fno-builtin \
+		-fno-stack-protector -Wall -Wextra -Werror \
+		-I$(INC) -I$(SRC) -include $(AUTOCONF_H) \
+		-c $(SRC)/kernel/edge_vfio_object.c \
+		-o $(OUT)/tests/edge_vfio_object_x86_64.o
+	@$(AARCH64_CC) -std=gnu11 -O2 -ffreestanding -fno-builtin \
+		-fno-stack-protector -mgeneral-regs-only -Wall -Wextra -Werror \
+		-I$(INC) -I$(SRC) -include $(ARM64_AUTOCONF_H) \
+		-c $(SRC)/kernel/edge_vfio_object.c \
+		-o $(OUT)/tests/edge_vfio_object_arm64.o
+	@printf 'edge_vfio_object_cross_compile: PASS\n'
+
+.PHONY: edge-vfio-runtime-cross-compile
+
+edge-vfio-runtime-cross-compile: syncconfig arm64-syncconfig
+	@mkdir -p $(OUT)/tests
+	@$(CC) -std=gnu11 -O2 -ffreestanding -fno-builtin \
+		-fno-stack-protector -Wall -Wextra -Werror \
+		-I$(INC) -I$(SRC) -include $(AUTOCONF_H) \
+		-c $(SRC)/kernel/edge_vfio_runtime.c \
+		-o $(OUT)/tests/edge_vfio_runtime_x86_64.o
+	@$(AARCH64_CC) -std=gnu11 -O2 -ffreestanding -fno-builtin \
+		-fno-stack-protector -mgeneral-regs-only -Wall -Wextra -Werror \
+		-I$(INC) -I$(SRC) -include $(ARM64_AUTOCONF_H) \
+		-c $(SRC)/kernel/edge_vfio_runtime.c \
+		-o $(OUT)/tests/edge_vfio_runtime_arm64.o
+	@printf 'edge_vfio_runtime_cross_compile: PASS\n'
+
+.PHONY: edge-vhost-runtime-unit
+
+edge-vhost-runtime-unit: tools/tests/edge_vhost_runtime_unit.c \
+		$(SRC)/kernel/edge_vhost_runtime.c
+	@mkdir -p $(OUT)/tests
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fno-builtin \
+		-DEDGEOS_HOST_TEST -iquote $(INC) \
+		tools/tests/edge_vhost_runtime_unit.c \
+		$(SRC)/kernel/edge_vhost_runtime.c \
+		-o $(OUT)/tests/edge_vhost_runtime_unit
+	@$(OUT)/tests/edge_vhost_runtime_unit
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fno-builtin \
+		-fsanitize=address,undefined -fno-omit-frame-pointer \
+		-DEDGEOS_HOST_TEST -iquote $(INC) \
+		tools/tests/edge_vhost_runtime_unit.c \
+		$(SRC)/kernel/edge_vhost_runtime.c \
+		-o $(OUT)/tests/edge_vhost_runtime_sanitize
+	@ASAN_OPTIONS=detect_leaks=0 $(OUT)/tests/edge_vhost_runtime_sanitize
+
+.PHONY: edge-vhost-runtime-cross-compile
+
+edge-vhost-runtime-cross-compile: syncconfig arm64-syncconfig
+	@mkdir -p $(OUT)/tests
+	@$(CC) -std=gnu11 -O2 -ffreestanding -fno-builtin \
+		-fno-stack-protector -Wall -Wextra -Werror \
+		-I$(INC) -I$(SRC) -include $(AUTOCONF_H) \
+		-c $(SRC)/kernel/edge_vhost_runtime.c \
+		-o $(OUT)/tests/edge_vhost_runtime_x86_64.o
+	@$(AARCH64_CC) -std=gnu11 -O2 -ffreestanding -fno-builtin \
+		-fno-stack-protector -mgeneral-regs-only -Wall -Wextra -Werror \
+		-I$(INC) -I$(SRC) -include $(ARM64_AUTOCONF_H) \
+		-c $(SRC)/kernel/edge_vhost_runtime.c \
+		-o $(OUT)/tests/edge_vhost_runtime_arm64.o
+	@printf 'edge_vhost_runtime_cross_compile: PASS\n'
+
+.PHONY: edge-iommufd-runtime-unit
+
+edge-iommufd-runtime-unit: tools/tests/edge_iommufd_runtime_unit.c \
+		$(SRC)/kernel/edge_iommufd_runtime.c
+	@mkdir -p $(OUT)/tests
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fno-builtin \
+		-DEDGEOS_HOST_TEST -iquote $(INC) \
+		tools/tests/edge_iommufd_runtime_unit.c \
+		$(SRC)/kernel/edge_iommufd_runtime.c \
+		-o $(OUT)/tests/edge_iommufd_runtime_unit
+	@$(OUT)/tests/edge_iommufd_runtime_unit
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fno-builtin \
+		-fsanitize=address,undefined -fno-omit-frame-pointer \
+		-DEDGEOS_HOST_TEST -iquote $(INC) \
+		tools/tests/edge_iommufd_runtime_unit.c \
+		$(SRC)/kernel/edge_iommufd_runtime.c \
+		-o $(OUT)/tests/edge_iommufd_runtime_sanitize
+	@ASAN_OPTIONS=detect_leaks=0 $(OUT)/tests/edge_iommufd_runtime_sanitize
+
+.PHONY: edge-iommufd-runtime-cross-compile
+
+edge-iommufd-runtime-cross-compile: syncconfig arm64-syncconfig
+	@mkdir -p $(OUT)/tests
+	@$(CC) -std=gnu11 -O2 -ffreestanding -fno-builtin \
+		-fno-stack-protector -Wall -Wextra -Werror \
+		-I$(INC) -I$(SRC) -include $(AUTOCONF_H) \
+		-c $(SRC)/kernel/edge_iommufd_runtime.c \
+		-o $(OUT)/tests/edge_iommufd_runtime_x86_64.o
+	@$(AARCH64_CC) -std=gnu11 -O2 -ffreestanding -fno-builtin \
+		-fno-stack-protector -mgeneral-regs-only -Wall -Wextra -Werror \
+		-I$(INC) -I$(SRC) -include $(ARM64_AUTOCONF_H) \
+		-c $(SRC)/kernel/edge_iommufd_runtime.c \
+		-o $(OUT)/tests/edge_iommufd_runtime_arm64.o
+	@printf 'edge_iommufd_runtime_cross_compile: PASS\n'
+
 .PHONY: edge-kvm-object-cross-compile
 
 edge-kvm-object-cross-compile: syncconfig arm64-syncconfig
@@ -99,6 +247,22 @@ edge-kvm-object-cross-compile: syncconfig arm64-syncconfig
 		-c $(SRC)/kernel/edge_kvm_object.c \
 		-o $(OUT)/tests/edge_kvm_object_arm64.o
 	@printf 'edge_kvm_object_cross_compile: PASS\n'
+
+.PHONY: edge-kvm-runtime-cross-compile
+
+edge-kvm-runtime-cross-compile: syncconfig arm64-syncconfig
+	@mkdir -p $(OUT)/tests
+	@$(CC) -std=gnu11 -O2 -ffreestanding -fno-builtin \
+		-fno-stack-protector -Wall -Wextra -Werror \
+		-I$(INC) -I$(SRC) -include $(AUTOCONF_H) \
+		-c $(SRC)/kernel/edge_kvm_runtime.c \
+		-o $(OUT)/tests/edge_kvm_runtime_x86_64.o
+	@$(AARCH64_CC) -std=gnu11 -O2 -ffreestanding -fno-builtin \
+		-fno-stack-protector -mgeneral-regs-only -Wall -Wextra -Werror \
+		-I$(INC) -I$(SRC) -include $(ARM64_AUTOCONF_H) \
+		-c $(SRC)/kernel/edge_kvm_runtime.c \
+		-o $(OUT)/tests/edge_kvm_runtime_arm64.o
+	@printf 'edge_kvm_runtime_cross_compile: PASS\n'
 
 .PHONY: edge-kvm-abi-unit
 
@@ -147,6 +311,183 @@ edge-kvm-facade-unit: tools/tests/edge_kvm_facade_unit.c \
 		$(SRC)/kernel/edge_kvm_object.c \
 		-o $(OUT)/tests/edge_kvm_facade_sanitize
 	@ASAN_OPTIONS=detect_leaks=0 $(OUT)/tests/edge_kvm_facade_sanitize
+
+.PHONY: edge-kvm-runtime-unit
+
+edge-kvm-runtime-unit: tools/tests/edge_kvm_runtime_unit.c \
+		$(SRC)/kernel/edge_kvm_capability.c \
+		$(SRC)/kernel/edge_kvm_facade.c \
+		$(SRC)/kernel/edge_kvm_object.c \
+		$(SRC)/kernel/edge_kvm_runtime.c
+	@mkdir -p $(OUT)/tests
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fno-builtin \
+		-DEDGEOS_HOST_TEST -iquote $(INC) \
+		tools/tests/edge_kvm_runtime_unit.c \
+		$(SRC)/kernel/edge_kvm_capability.c \
+		$(SRC)/kernel/edge_kvm_facade.c \
+		$(SRC)/kernel/edge_kvm_object.c \
+		$(SRC)/kernel/edge_kvm_runtime.c \
+		-o $(OUT)/tests/edge_kvm_runtime_unit
+	@$(OUT)/tests/edge_kvm_runtime_unit
+	@$(HOST_CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fno-builtin \
+		-fsanitize=address,undefined -fno-omit-frame-pointer \
+		-DEDGEOS_HOST_TEST -iquote $(INC) \
+		tools/tests/edge_kvm_runtime_unit.c \
+		$(SRC)/kernel/edge_kvm_capability.c \
+		$(SRC)/kernel/edge_kvm_facade.c \
+		$(SRC)/kernel/edge_kvm_object.c \
+		$(SRC)/kernel/edge_kvm_runtime.c \
+		-o $(OUT)/tests/edge_kvm_runtime_sanitize
+	@ASAN_OPTIONS=detect_leaks=0 $(OUT)/tests/edge_kvm_runtime_sanitize
+
+EDGE_KVM_ARM64_GUEST_ELF := $(OUT)/tests/edge-kvm-arm64-guest.elf
+EDGE_KVM_ARM64_QEMU_INIT := $(OUT)/tests/edge-kvm-arm64-qemu-init
+EDGE_KVM_ARM64_LINUX_INIT := $(OUT)/tests/edge-kvm-arm64-linux-init
+EDGE_KVM_ARM64_LINUX_QEMU_INIT := \
+	$(OUT)/tests/edge-kvm-arm64-linux-qemu-init
+EDGE_KVM_ARM64_MIGRATION_GUEST := \
+	$(OUT)/tests/edge-kvm-arm64-migration-guest.elf
+EDGE_KVM_ARM64_MIGRATION_INIT := \
+	$(OUT)/tests/edge-kvm-arm64-migration-init
+EDGE_KVM_X86_UAPI_PROBE := $(OUT)/tests/edge-kvm-uapi-probe
+EDGE_VIRTUALIZATION_PERIPHERAL_PROBE := \
+	$(OUT)/tests/edge-virtualization-peripheral-probe
+EDGE_KVM_X86_MIGRATION_GUEST := $(OUT)/tests/edge-kvm-x86-migration-guest.img
+EDGE_KVM_X86_MIGRATION_GUEST_OBJ := $(OUT)/tests/edge-kvm-x86-migration-guest.o
+EDGE_KVM_X86_MIGRATION_INIT := $(OUT)/tests/edge-kvm-x86-migration-init
+EDGE_KVM_X86_LINUX_INIT := $(OUT)/tests/edge-kvm-x86-linux-init
+EDGE_KVM_X86_LINUX_QEMU_INIT := $(OUT)/tests/edge-kvm-x86-linux-qemu-init
+
+.PHONY: edge-kvm-arm64-acceptance-payload
+
+edge-kvm-arm64-acceptance-payload: \
+		tools/tests/edge_kvm_arm64_guest.S \
+		tools/tests/edge_kvm_arm64_guest.ld \
+		tools/tests/edge_kvm_arm64_qemu_init.ld \
+		tools/tests/edge_kvm_arm64_qemu_init.c
+	@mkdir -p $(OUT)/tests
+	@$(AARCH64_CC) -nostdlib -static -ffreestanding -fno-builtin \
+		-fno-stack-protector -mgeneral-regs-only \
+		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,--strip-all \
+		-Wl,-T,tools/tests/edge_kvm_arm64_guest.ld \
+		tools/tests/edge_kvm_arm64_guest.S \
+		-o $(EDGE_KVM_ARM64_GUEST_ELF)
+	@$(AARCH64_CC) -nostdlib -static -ffreestanding -fno-builtin \
+		-fno-stack-protector -mgeneral-regs-only \
+		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,--strip-all \
+		-Wl,-T,tools/tests/edge_kvm_arm64_qemu_init.ld \
+		tools/tests/edge_kvm_arm64_qemu_init.c \
+		-o $(EDGE_KVM_ARM64_QEMU_INIT)
+	@printf 'edge_kvm_arm64_acceptance_payload: PASS\n'
+
+.PHONY: edge-kvm-arm64-migration-payload
+
+edge-kvm-arm64-migration-payload: \
+		tools/tests/edge_kvm_arm64_migration_guest.S \
+		tools/tests/edge_kvm_arm64_guest.ld \
+		tools/tests/edge_kvm_arm64_migration_init.c \
+		tools/tests/edge_kvm_arm64_qemu_init.ld
+	@mkdir -p $(OUT)/tests
+	@$(AARCH64_CC) -nostdlib -static -ffreestanding -fno-builtin \
+		-fno-stack-protector -mgeneral-regs-only \
+		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,--strip-all \
+		-Wl,-T,tools/tests/edge_kvm_arm64_guest.ld \
+		tools/tests/edge_kvm_arm64_migration_guest.S \
+		-o $(EDGE_KVM_ARM64_MIGRATION_GUEST)
+	@$(AARCH64_CC) -nostdlib -static -ffreestanding -fno-builtin \
+		-fno-stack-protector -mgeneral-regs-only \
+		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,--strip-all \
+		-Wl,-T,tools/tests/edge_kvm_arm64_qemu_init.ld \
+		tools/tests/edge_kvm_arm64_migration_init.c \
+		-o $(EDGE_KVM_ARM64_MIGRATION_INIT)
+	@printf 'edge_kvm_arm64_migration_payload: PASS\n'
+
+.PHONY: edge-kvm-arm64-linux-benchmark-payload
+
+edge-kvm-arm64-linux-benchmark-payload: \
+		tools/tests/edge_kvm_arm64_linux_benchmark_init.c \
+		tools/tests/edge_kvm_arm64_linux_qemu_init.c \
+		tools/tests/edge_kvm_arm64_qemu_init.ld
+	@mkdir -p $(OUT)/tests
+	@$(AARCH64_CC) -nostdlib -static -O2 -ffreestanding -fno-builtin \
+		-fno-stack-protector -mgeneral-regs-only \
+		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,--strip-all \
+		-Wl,-T,tools/tests/edge_kvm_arm64_qemu_init.ld \
+		tools/tests/edge_kvm_arm64_linux_benchmark_init.c \
+		-o $(EDGE_KVM_ARM64_LINUX_INIT)
+	@$(AARCH64_CC) -nostdlib -static -O2 -ffreestanding -fno-builtin \
+		-fno-stack-protector -mgeneral-regs-only \
+		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,--strip-all \
+		-Wl,-T,tools/tests/edge_kvm_arm64_qemu_init.ld \
+		tools/tests/edge_kvm_arm64_linux_qemu_init.c \
+		-o $(EDGE_KVM_ARM64_LINUX_QEMU_INIT)
+	@printf 'edge_kvm_arm64_linux_benchmark_payload: PASS\n'
+
+.PHONY: edge-kvm-x86-uapi-probe
+
+edge-kvm-x86-uapi-probe: tools/tests/edge_kvm_uapi_probe.c
+	@mkdir -p $(OUT)/tests
+	@x86_64-elf-gcc -nostdlib -static -O2 -ffreestanding -fno-builtin \
+		-fno-stack-protector -mno-red-zone -mgeneral-regs-only \
+		-Wall -Wextra -Werror -Wl,--build-id=none \
+		tools/tests/edge_kvm_uapi_probe.c \
+		-o $(EDGE_KVM_X86_UAPI_PROBE)
+	@printf 'edge_kvm_x86_uapi_probe: PASS\n'
+
+.PHONY: edge-virtualization-peripheral-probe
+
+edge-virtualization-peripheral-probe: \
+		tools/tests/edge_virtualization_peripheral_probe.c
+	@mkdir -p $(OUT)/tests
+	@x86_64-elf-gcc -nostdlib -static -O2 -ffreestanding -fno-builtin \
+		-fno-stack-protector -mno-red-zone -mgeneral-regs-only \
+		-Wall -Wextra -Werror -Wl,--build-id=none \
+		tools/tests/edge_virtualization_peripheral_probe.c \
+		-o $(EDGE_VIRTUALIZATION_PERIPHERAL_PROBE)
+	@printf 'edge_virtualization_peripheral_probe: PASS\n'
+
+.PHONY: edge-kvm-x86-migration-payload
+
+edge-kvm-x86-migration-payload: \
+		tools/tests/edge_kvm_x86_migration_guest.S \
+		tools/tests/edge_kvm_x86_migration_guest.ld \
+		tools/tests/edge_kvm_x86_migration_init.c \
+		tools/tests/edge_kvm_x86_migration_init.ld
+	@mkdir -p $(OUT)/tests
+	@x86_64-elf-as --32 tools/tests/edge_kvm_x86_migration_guest.S \
+		-o $(EDGE_KVM_X86_MIGRATION_GUEST_OBJ)
+	@x86_64-elf-ld -m elf_i386 --build-id=none \
+		-T tools/tests/edge_kvm_x86_migration_guest.ld \
+		$(EDGE_KVM_X86_MIGRATION_GUEST_OBJ) \
+		-o $(EDGE_KVM_X86_MIGRATION_GUEST)
+	@x86_64-elf-gcc -nostdlib -static -ffreestanding -fno-builtin \
+		-fno-stack-protector -mno-red-zone \
+		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,--strip-all \
+		-Wl,-T,tools/tests/edge_kvm_x86_migration_init.ld \
+		tools/tests/edge_kvm_x86_migration_init.c \
+		-o $(EDGE_KVM_X86_MIGRATION_INIT)
+	@printf 'edge_kvm_x86_migration_payload: PASS\n'
+
+.PHONY: edge-kvm-x86-linux-benchmark-payload
+
+edge-kvm-x86-linux-benchmark-payload: \
+		tools/tests/edge_kvm_x86_linux_benchmark_init.c \
+		tools/tests/edge_kvm_x86_linux_qemu_init.c \
+		tools/tests/freestanding_linux.ld
+	@mkdir -p $(OUT)/tests
+	@x86_64-elf-gcc -nostdlib -static -O2 -ffreestanding -fno-builtin \
+		-fno-stack-protector -mno-red-zone -mgeneral-regs-only \
+		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,--strip-all \
+		-Wl,-T,tools/tests/freestanding_linux.ld \
+		tools/tests/edge_kvm_x86_linux_benchmark_init.c \
+		-o $(EDGE_KVM_X86_LINUX_INIT)
+	@x86_64-elf-gcc -nostdlib -static -O2 -ffreestanding -fno-builtin \
+		-fno-stack-protector -mno-red-zone -mgeneral-regs-only \
+		-Wall -Wextra -Werror -Wl,--build-id=none -Wl,--strip-all \
+		-Wl,-T,tools/tests/freestanding_linux.ld \
+		tools/tests/edge_kvm_x86_linux_qemu_init.c \
+		-o $(EDGE_KVM_X86_LINUX_QEMU_INIT)
+	@printf 'edge_kvm_x86_linux_benchmark_payload: PASS\n'
 AUTOCONF_H := $(INC)/generated/autoconf.h
 VDSO_OUT := $(OUT)/vdso
 VDSO_GENERATED := $(OUT)/generated
@@ -446,6 +787,7 @@ ARM64_UEFI_GENERATED_INCLUDES := $(SRC)/kernel/linux_syscall_tables.inc
 ARM64_INITRAMFS = $(ARM64_OUT)/initramfs.img
 ARM64_INITRAMFS_ESP = $(OUT)/edgeos-arm64-initramfs.img
 ARM64_INITRAMFS_ESP_SIZE_MB ?= 320
+ARM64_INITRAMFS_CMDLINE ?= config/cmdline-arm64-initramfs
 ARM64_RPI4_ESP = $(OUT)/edgeos-arm64-rpi4.img
 ARM64_RPI4_ESP_SIZE_MB ?= 256
 ARM64_RPI5_ESP = $(OUT)/edgeos-arm64-rpi5.img
@@ -474,6 +816,11 @@ BSD_DRIVER_CAPABILITY_DIR := config/bsd_drivers/capabilities
 BSD_DRIVER_MANIFESTS := $(sort $(wildcard $(BSD_DRIVER_MANIFEST_DIR)/*.json))
 BSD_VMM_MANIFEST_DIR := config/bsd_vmm/manifests
 BSD_VMM_MANIFESTS := $(sort $(wildcard $(BSD_VMM_MANIFEST_DIR)/*.json))
+BSD_VMM_MANIFEST_DEFINITIONS := \
+	VMM_KEEP_STATS \
+	EDGEOS_BHYVE_HOST_IRQ_REENTER
+BSD_VMM_MANIFEST_CPPFLAGS := \
+	$(addprefix -D,$(BSD_VMM_MANIFEST_DEFINITIONS))
 BSD_DRIVER_CAPABILITY_REGISTRIES := \
 	$(sort $(wildcard $(BSD_DRIVER_CAPABILITY_DIR)/*.json))
 BSD_BRIDGE_GENERATED := $(OUT)/bsd_bridge/generated
@@ -640,6 +987,7 @@ BSD_BRIDGE_RUNTIME_SRCS := \
 	$(SRC)/compat/freebsd/kern/uma.c \
 	$(SRC)/compat/freebsd/kern/uuid.c \
 	$(SRC)/compat/freebsd/kern/vm_page.c \
+	$(SRC)/compat/freebsd/kern/vmm_vmspace.c \
 	$(SRC)/compat/freebsd/kern/vm_kern.c \
 	$(SRC)/compat/freebsd/kern/vmem.c \
 	$(SRC)/compat/freebsd/kern/watchdog.c \
@@ -655,6 +1003,7 @@ BSD_BRIDGE_X86_ARCH_SRCS := \
 	$(SRC)/compat/freebsd/kern/pvclock.c
 BSD_BRIDGE_ARM64_ARCH_SRCS := \
 	$(SRC)/compat/freebsd/arch/arm64/bcm2712_sdhci.c \
+	$(SRC)/compat/freebsd/arch/arm64/cpu_regs.c \
 	$(SRC)/compat/freebsd/arch/arm64/fpu.c \
 	$(SRC)/compat/freebsd/arch/arm64/handoff.c \
 	$(SRC)/compat/freebsd/arch/arm64/interrupt.c \
@@ -744,6 +1093,100 @@ BSD_BRIDGE_ARM64_DEPS := \
 	$(BSD_BRIDGE_ARM64_GENERATED_BCS) $(BSD_BRIDGE_ARM64_UPSTREAM_BCS) \
 	$(BSD_BRIDGE_ARM64_ACPICA_CORE_BCS) $(BSD_BRIDGE_ARM64_ACPICA_OS_BCS)
 BSD_BRIDGE_GENERATED_STAMP := $(BSD_BRIDGE_GENERATED)/.stamp
+BSD_VMM_SVM_ASSYM_H := $(BSD_BRIDGE_GENERATED)/svm_assym.h
+BSD_VMM_VMX_ASSYM_H := $(BSD_BRIDGE_GENERATED)/vmx_assym.h
+BSD_VMM_HYP_ASSYM_H := $(BSD_BRIDGE_GENERATED)/hyp_assym.h
+BSD_VMM_ARM64_HYP_DIR := $(OBJ)/arm64-bsd/upstream/arm64/vmm
+BSD_VMM_ARM64_HYP_GENASSYM_O := \
+	$(BSD_VMM_ARM64_HYP_DIR)/hyp_genassym.elf.o
+BSD_VMM_ARM64_NVHE_O := $(BSD_VMM_ARM64_HYP_DIR)/vmm_nvhe.elf.o
+BSD_VMM_ARM64_NVHE_EXCEPTION_O := \
+	$(BSD_VMM_ARM64_HYP_DIR)/vmm_nvhe_exception.elf.o
+BSD_VMM_ARM64_HYP_BLOB_FULL := \
+	$(BSD_VMM_ARM64_HYP_DIR)/vmm_hyp_blob.elf.full
+BSD_VMM_ARM64_HYP_BLOB_ELF := \
+	$(BSD_VMM_ARM64_HYP_DIR)/vmm_hyp_blob.elf
+BSD_VMM_ARM64_HYP_BLOB_BIN := \
+	$(BSD_VMM_ARM64_HYP_DIR)/vmm_hyp_blob.bin
+BSD_VMM_SVM_CORE_X86_OBJS := \
+	$(OBJ)/compat/freebsd/kern/vm_page.o \
+	$(OBJ)/compat/freebsd/kern/vmm_vmspace.o \
+	$(OBJ)/compat/freebsd/upstream/dev/vmm/vmm_mem.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/vmm_mem_machdep.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/amd/npt.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/amd/svm.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/amd/svm_msr.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/amd/vmcb.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/amd/svm_support.o
+BSD_VMM_BHYVE_X86_OBJS := \
+	$(BSD_VMM_SVM_CORE_X86_OBJS) \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/amd/amdvi_hw.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/amd/amdviiommu.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/amd/ivrs_drv.o \
+	$(OBJ)/compat/freebsd/generated/ivhd_if.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/intel/ept.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/intel/vmcs.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/intel/vmx.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/intel/vmx_msr.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/intel/vmx_support.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/intel/vtd.o \
+	$(OBJ)/compat/freebsd/kern/edge_kvm_bhyve_x86.o \
+	$(OBJ)/compat/freebsd/kern/edge_vfio_bhyve_x86.o \
+	$(OBJ)/compat/freebsd/upstream/libkern/bcd.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/vmm_host.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/vmm_instruction_emul.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/vmm_ioport.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/vmm_lapic.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/vmm_snapshot.o \
+	$(OBJ)/compat/freebsd/upstream/dev/vmm/vmm_stat.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/vmm_util.o \
+	$(OBJ)/compat/freebsd/upstream/dev/vmm/vmm_vm.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/vmm.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/x86.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/io/iommu.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/io/ppt.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/io/vatpic.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/io/vatpit.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/io/vhpet.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/io/vioapic.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/io/vlapic.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/io/vpmtmr.o \
+	$(OBJ)/compat/freebsd/upstream/amd64/vmm/io/vrtc.o
+# The Edge KVM facade replaces FreeBSD's vmm_dev.c cdev ABI.
+BSD_VMM_BHYVE_ARM64_BCS := \
+	$(OBJ)/arm64-bsd/compat/freebsd/kern/edge_kvm_bhyve_arm64.bc \
+	$(OBJ)/arm64-bsd/compat/freebsd/arch/arm64/vmm_host.bc \
+	$(OBJ)/arm64-bsd/compat/freebsd/kern/vm_page.bc \
+	$(OBJ)/arm64-bsd/compat/freebsd/kern/vmm_vmspace.bc \
+	$(OBJ)/arm64-bsd/generated/vgic_if.bc \
+	$(OBJ)/arm64-bsd/upstream/dev/vmm/vmm_mem.bc \
+	$(OBJ)/arm64-bsd/upstream/dev/vmm/vmm_stat.bc \
+	$(OBJ)/arm64-bsd/upstream/dev/vmm/vmm_vm.bc \
+	$(OBJ)/arm64-bsd/upstream/arm64/vmm/vmm.bc \
+	$(OBJ)/arm64-bsd/upstream/arm64/vmm/vmm_arm64.bc \
+	$(OBJ)/arm64-bsd/upstream/arm64/vmm/vmm_dev_machdep.bc \
+	$(OBJ)/arm64-bsd/upstream/arm64/vmm/vmm_instruction_emul.bc \
+	$(OBJ)/arm64-bsd/upstream/arm64/vmm/vmm_mmu.bc \
+	$(OBJ)/arm64-bsd/upstream/arm64/vmm/vmm_reset.bc \
+	$(OBJ)/arm64-bsd/upstream/arm64/vmm/vmm_vhe.bc \
+	$(OBJ)/arm64-bsd/upstream/arm64/vmm/io/vgic.bc \
+	$(OBJ)/arm64-bsd/upstream/arm64/vmm/io/vgic_v3.bc \
+	$(OBJ)/arm64-bsd/upstream/arm64/vmm/io/vtimer.bc
+BSD_VMM_BHYVE_ARM64_ASM_OBJS := \
+	$(OBJ)/arm64-bsd/upstream/arm64/arm64/hyp_stub.obj \
+	$(OBJ)/arm64-bsd/upstream/arm64/vmm/vmm_call.obj \
+	$(OBJ)/arm64-bsd/upstream/arm64/vmm/vmm_vhe_exception.obj \
+	$(OBJ)/arm64-bsd/upstream/arm64/vmm/vmm_hyp_el2.obj
+BSD_VMM_BHYVE_ARM64_OBJS := \
+	$(BSD_VMM_BHYVE_ARM64_BCS:.bc=.obj) \
+	$(BSD_VMM_BHYVE_ARM64_ASM_OBJS)
+
+$(BSD_VMM_BHYVE_X86_OBJS): \
+		BSD_BRIDGE_SOURCE_CPPFLAGS += $(BSD_VMM_MANIFEST_CPPFLAGS)
+$(BSD_VMM_BHYVE_ARM64_BCS): \
+		BSD_BRIDGE_SOURCE_CPPFLAGS += $(BSD_VMM_MANIFEST_CPPFLAGS)
+$(BSD_VMM_BHYVE_X86_OBJS) $(BSD_VMM_BHYVE_ARM64_BCS): \
+		$(BSD_VMM_MANIFESTS)
 # The bridge is a FreeBSD kernel target even when GCC itself runs on Linux.
 # Host OS macros select incompatible ACPICA and libc-facing header branches.
 BSD_BRIDGE_X86_COMPILE_FLAGS = \
@@ -789,6 +1232,25 @@ BSD_BRIDGE_ARM64_FRONTEND_FLAGS = \
 	-include $(INC)/compat/freebsd/edgeos/arm64_coff_varargs.h \
 	$(BSD_BRIDGE_ARM64_COMMON_SOURCE_FLAGS) \
 	$(BSD_BRIDGE_ARM64_TARGET_FLAGS)
+
+$(OBJ)/arm64-bsd/upstream/arm64/vmm/%.bc: \
+		BSD_BRIDGE_ARM64_FRONTEND_FLAGS += \
+		-include $(INC)/compat/freebsd/sys/systm.h \
+		-I$(BSD_BRIDGE_UPSTREAM_SYS)/arm64/vmm \
+		-I$(BSD_BRIDGE_UPSTREAM_SYS)/arm64/vmm/io
+$(OBJ)/arm64-bsd/upstream/dev/vmm/%.bc: \
+		BSD_BRIDGE_ARM64_FRONTEND_FLAGS += \
+		-include $(INC)/compat/freebsd/sys/systm.h \
+		-I$(BSD_BRIDGE_UPSTREAM_SYS)/arm64/vmm \
+		-I$(BSD_BRIDGE_UPSTREAM_SYS)/arm64/vmm/io
+$(OBJ)/arm64-bsd/compat/freebsd/kern/edge_kvm_bhyve_arm64.bc: \
+		BSD_BRIDGE_ARM64_FRONTEND_FLAGS += \
+		-include $(INC)/compat/freebsd/sys/systm.h \
+		-I$(BSD_BRIDGE_UPSTREAM_SYS)/arm64/vmm \
+		-I$(BSD_BRIDGE_UPSTREAM_SYS)/arm64/vmm/io
+$(OBJ)/arm64-bsd/compat/freebsd/kern/edge_kvm_bhyve_arm64.bc: \
+		$(INC)/kernel/edge_kvm_abi.h \
+		$(INC)/kernel/edge_kvm_object.h
 BSD_BRIDGE_X86_MODULE_COMPILE_FLAGS = \
 	$(BSD_BRIDGE_X86_COMPILE_FLAGS) -mcmodel=large \
 	-DEDGEOS_BSD_LOADABLE_MODULE=1
@@ -813,10 +1275,21 @@ OBJS += $(BSD_BRIDGE_X86_ACPICA_CORE_OBJS) \
 	$(BSD_BRIDGE_X86_ACPICA_OS_OBJS)
 endif
 
+ifeq ($(CONFIG_EDGE_KVM_BHYVE),y)
+# The complete x86 bhyve backend is built into the kernel behind EdgeOS's
+# KVM facade.  Filter bridge objects already selected by package manifests so
+# each shared compatibility provider is linked exactly once.
+OBJS += $(filter-out $(OBJS),$(BSD_VMM_BHYVE_X86_OBJS))
+endif
+
 ifeq ($(ARM64_CONFIG_BSD_DRIVER_BRIDGE),y)
 ARM64_VERSION_CFLAGS += -DCONFIG_BSD_DRIVER_BRIDGE=1
 ARM64_UEFI_SRCS += $(BSD_BRIDGE_ARM64_RUNTIME_OBJS) \
 	$(BSD_BRIDGE_ARM64_GENERATED_OBJS) $(BSD_BRIDGE_ARM64_UPSTREAM_OBJS)
+endif
+
+ifeq ($(ARM64_CONFIG_EDGE_KVM_BHYVE),y)
+ARM64_UEFI_SRCS += $(BSD_VMM_BHYVE_ARM64_OBJS)
 endif
 
 ifeq ($(ARM64_CONFIG_BSD_DRIVER_ACPICA),y)
@@ -967,6 +1440,214 @@ $(OBJ)/compat/freebsd/upstream/%.o: \
 	@mkdir -p $(dir $@)
 	$(CC) $(BSD_BRIDGE_X86_COMPILE_FLAGS) -Wa,--noexecstack \
 		-DLOCORE -x assembler-with-cpp -c $< -o $@
+
+$(OBJ)/compat/freebsd/upstream/amd64/vmm/%.o: \
+		BSD_BRIDGE_X86_COMPILE_FLAGS += \
+		-include $(INC)/compat/freebsd/sys/systm.h \
+		-I$(BSD_BRIDGE_UPSTREAM_SYS)/amd64/vmm \
+		-I$(BSD_BRIDGE_UPSTREAM_SYS)/amd64/vmm/io \
+		-I$(BSD_BRIDGE_UPSTREAM_SYS)/amd64/vmm/amd \
+		-I$(BSD_BRIDGE_UPSTREAM_SYS)/amd64/vmm/intel
+
+$(OBJ)/compat/freebsd/kern/edge_kvm_bhyve_x86.o: \
+		BSD_BRIDGE_X86_COMPILE_FLAGS += \
+		-I$(BSD_BRIDGE_UPSTREAM_SYS)/amd64/vmm \
+		-I$(BSD_BRIDGE_UPSTREAM_SYS)/amd64/vmm/amd \
+		-I$(BSD_BRIDGE_UPSTREAM_SYS)/amd64/vmm/intel
+
+$(OBJ)/compat/freebsd/kern/edge_vfio_bhyve_x86.o: \
+		BSD_BRIDGE_X86_COMPILE_FLAGS += \
+		-I$(BSD_BRIDGE_UPSTREAM_SYS)/amd64/vmm \
+		-I$(BSD_BRIDGE_UPSTREAM_SYS)/amd64/vmm/io
+
+$(OBJ)/compat/freebsd/upstream/amd64/vmm/x86.o: \
+		BSD_BRIDGE_X86_COMPILE_FLAGS += \
+		-Wno-unterminated-string-initialization \
+		-Dx86_emulate_cpuid=edge_bhyve_upstream_x86_emulate_cpuid
+
+$(OBJ)/compat/freebsd/upstream/amd64/vmm/vmm_lapic.o: \
+		BSD_BRIDGE_X86_COMPILE_FLAGS += \
+		-Dvlapic_set_apicbase=edge_kvm_bhyve_vlapic_set_apicbase
+
+$(OBJ)/compat/freebsd/upstream/amd64/vmm/intel/vmx.o \
+$(OBJ)/compat/freebsd/upstream/amd64/vmm/amd/svm.o: \
+		BSD_BRIDGE_X86_COMPILE_FLAGS += \
+		-Dvm_mem_allocated=edge_kvm_bhyve_mem_allocated
+
+$(OBJ)/compat/freebsd/upstream/amd64/vmm/intel/vmx_msr.o: \
+		BSD_BRIDGE_X86_COMPILE_FLAGS += \
+		-Dvmx_rdmsr=edge_bhyve_upstream_vmx_rdmsr \
+		-Dvmx_wrmsr=edge_bhyve_upstream_vmx_wrmsr
+
+$(OBJ)/compat/freebsd/upstream/amd64/vmm/amd/svm_msr.o: \
+		BSD_BRIDGE_X86_COMPILE_FLAGS += \
+		-Dsvm_rdmsr=edge_bhyve_upstream_svm_rdmsr \
+		-Dsvm_wrmsr=edge_bhyve_upstream_svm_wrmsr
+
+$(OBJ)/compat/freebsd/upstream/dev/vmm/%.o: \
+		BSD_BRIDGE_X86_COMPILE_FLAGS += \
+		-include $(INC)/compat/freebsd/sys/systm.h
+
+$(BSD_VMM_SVM_ASSYM_H): \
+		$(OBJ)/compat/freebsd/upstream/amd64/vmm/amd/svm_genassym.o \
+		$(BSD_BRIDGE_UPSTREAM_SYS)/kern/genassym.sh
+	@mkdir -p $(dir $@)
+	NM=$(NM) sh $(BSD_BRIDGE_UPSTREAM_SYS)/kern/genassym.sh \
+		-o $@ $<
+
+$(OBJ)/compat/freebsd/upstream/amd64/vmm/amd/svm_genassym.o: \
+		BSD_BRIDGE_X86_COMPILE_FLAGS += -fcommon
+
+$(OBJ)/compat/freebsd/upstream/amd64/vmm/amd/svm_support.o: \
+		BSD_BRIDGE_X86_COMPILE_FLAGS += \
+		-Dsvm_launch=edge_bhyve_upstream_svm_launch
+
+$(OBJ)/compat/freebsd/upstream/amd64/vmm/amd/svm_support.o: \
+		$(BSD_BRIDGE_UPSTREAM_SYS)/amd64/vmm/amd/svm_support.S \
+		$(BSD_VMM_SVM_ASSYM_H) $(AUTOCONF_H) | bsd-bridge-source-gate
+	@mkdir -p $(dir $@)
+	$(CC) $(subst -include $(INC)/compat/freebsd/sys/systm.h,,\
+		$(BSD_BRIDGE_X86_COMPILE_FLAGS)) -Wa,--noexecstack \
+		-DLOCORE -x assembler-with-cpp -c $< -o $@
+
+$(BSD_VMM_VMX_ASSYM_H): \
+		$(OBJ)/compat/freebsd/upstream/amd64/vmm/intel/vmx_genassym.o \
+		$(BSD_BRIDGE_UPSTREAM_SYS)/kern/genassym.sh
+	@mkdir -p $(dir $@)
+	NM=$(NM) sh $(BSD_BRIDGE_UPSTREAM_SYS)/kern/genassym.sh \
+		-o $@ $<
+
+$(OBJ)/compat/freebsd/upstream/amd64/vmm/intel/vmx_genassym.o: \
+		BSD_BRIDGE_X86_COMPILE_FLAGS += -fcommon
+
+$(OBJ)/compat/freebsd/upstream/amd64/vmm/intel/vmx_support.o: \
+		$(BSD_BRIDGE_UPSTREAM_SYS)/amd64/vmm/intel/vmx_support.S \
+		$(BSD_VMM_VMX_ASSYM_H) $(AUTOCONF_H) | bsd-bridge-source-gate
+	@mkdir -p $(dir $@)
+	$(CC) $(subst -include $(INC)/compat/freebsd/sys/systm.h,,\
+		$(BSD_BRIDGE_X86_COMPILE_FLAGS)) -Wa,--noexecstack \
+		-DLOCORE -x assembler-with-cpp -c $< -o $@
+
+$(BSD_VMM_HYP_ASSYM_H): $(BSD_VMM_ARM64_HYP_GENASSYM_O) \
+		$(BSD_BRIDGE_UPSTREAM_SYS)/kern/genassym.sh
+	@mkdir -p $(dir $@)
+	NM=$(LLVM_NM) sh $(BSD_BRIDGE_UPSTREAM_SYS)/kern/genassym.sh \
+		-o $@ $<
+
+$(BSD_VMM_ARM64_HYP_GENASSYM_O): \
+		$(BSD_BRIDGE_UPSTREAM_SYS)/arm64/vmm/hyp_genassym.c \
+		$(BSD_BRIDGE_GENERATED_STAMP) $(ARM64_AUTOCONF_H) | \
+		bsd-bridge-source-gate
+	@mkdir -p $(dir $@)
+	$(ARM64_EFI_CC) $(BSD_BRIDGE_ARM64_FRONTEND_FLAGS) -fcommon \
+		-include $(INC)/compat/freebsd/sys/systm.h \
+		-I$(BSD_BRIDGE_UPSTREAM_SYS)/arm64/vmm -c $< -o $@
+
+$(OBJ)/arm64-bsd/upstream/arm64/vmm/vmm_vhe_exception.obj: \
+		$(BSD_VMM_HYP_ASSYM_H)
+
+$(BSD_VMM_ARM64_NVHE_EXCEPTION_O): \
+		$(BSD_BRIDGE_UPSTREAM_SYS)/arm64/vmm/vmm_nvhe_exception.S \
+		$(BSD_BRIDGE_UPSTREAM_SYS)/arm64/vmm/vmm_hyp_exception.S \
+		$(BSD_VMM_HYP_ASSYM_H) $(ARM64_AUTOCONF_H) | \
+		bsd-bridge-source-gate
+	@mkdir -p $(dir $@)
+	$(ARM64_EFI_CC) -target aarch64-unknown-freebsd \
+		-D_KERNEL -DEDGEOS_BSD_BRIDGE -DEDGEOS_BSD_ARM64=1 \
+		$(BSD_BRIDGE_SOURCE_CPPFLAGS) \
+		-I$(INC)/compat/freebsd -I$(BSD_BRIDGE_GENERATED) \
+		-I$(BSD_BRIDGE_UPSTREAM_SYS) -I$(INC) \
+		-include $(ARM64_AUTOCONF_H) \
+		-DLOCORE -fpie -x assembler-with-cpp \
+		-I$(BSD_BRIDGE_UPSTREAM_SYS)/arm64/vmm -c $< -o $@
+
+$(BSD_VMM_ARM64_NVHE_O): \
+		BSD_BRIDGE_SOURCE_CPPFLAGS += $(BSD_VMM_MANIFEST_CPPFLAGS)
+$(BSD_VMM_ARM64_NVHE_O): \
+		$(BSD_BRIDGE_UPSTREAM_SYS)/arm64/vmm/vmm_nvhe.c \
+		$(BSD_BRIDGE_UPSTREAM_SYS)/arm64/vmm/vmm_hyp.c \
+		$(BSD_BRIDGE_GENERATED_STAMP) $(ARM64_AUTOCONF_H) \
+		$(BSD_VMM_MANIFESTS) | \
+		bsd-bridge-source-gate
+	@mkdir -p $(dir $@)
+	$(ARM64_EFI_CC) \
+		$(filter-out -DEDGEOS_BSD_COFF_TARGET=1 -ffunction-sections \
+		-fdata-sections,$(BSD_BRIDGE_ARM64_FRONTEND_FLAGS)) \
+		-fpie -include $(INC)/compat/freebsd/sys/systm.h \
+		-I$(BSD_BRIDGE_UPSTREAM_SYS)/arm64/vmm \
+		-I$(BSD_BRIDGE_UPSTREAM_SYS)/arm64/vmm/io -c $< -o $@
+
+$(BSD_VMM_ARM64_HYP_BLOB_FULL): $(BSD_VMM_ARM64_NVHE_EXCEPTION_O) \
+		$(BSD_VMM_ARM64_NVHE_O) \
+		$(BSD_BRIDGE_UPSTREAM_SYS)/conf/ldscript.arm64 \
+		$(BSD_BRIDGE_UPSTREAM_SYS)/conf/debuginfo.ldscript
+	@mkdir -p $(dir $@)
+	$(AARCH64_LD) -m aarch64elf -Bdynamic \
+		-L$(BSD_BRIDGE_UPSTREAM_SYS)/conf \
+		-T$(BSD_BRIDGE_UPSTREAM_SYS)/conf/ldscript.arm64 \
+		--no-warn-mismatch --warn-common --export-dynamic \
+		--dynamic-linker /red/herring -X -o $@ \
+		$(BSD_VMM_ARM64_NVHE_EXCEPTION_O) $(BSD_VMM_ARM64_NVHE_O) \
+		--defsym=_start=0x0 --defsym=text_start=0x0
+
+$(BSD_VMM_ARM64_HYP_BLOB_ELF): $(BSD_VMM_ARM64_HYP_BLOB_FULL)
+	$(AARCH64_OBJCOPY) --strip-debug $< $@
+
+$(BSD_VMM_ARM64_HYP_BLOB_BIN): $(BSD_VMM_ARM64_HYP_BLOB_ELF)
+	$(AARCH64_OBJCOPY) --output-target=binary $< $@
+
+$(OBJ)/arm64-bsd/upstream/arm64/vmm/vmm_hyp_el2.obj: \
+		$(BSD_BRIDGE_UPSTREAM_SYS)/arm64/vmm/vmm_hyp_el2.S \
+		$(BSD_VMM_ARM64_HYP_BLOB_BIN) $(ARM64_AUTOCONF_H) | \
+		bsd-bridge-source-gate
+	@mkdir -p $(dir $@)
+	$(ARM64_EFI_CC) $(BSD_BRIDGE_ARM64_COMPILE_FLAGS) \
+		-Wa,-I,$(dir $(BSD_VMM_ARM64_HYP_BLOB_BIN)) \
+		-DLOCORE -x assembler-with-cpp -c $< -o $@
+
+$(BSD_BRIDGE_GENERATED)/ivhd_if.c \
+$(BSD_BRIDGE_GENERATED)/ivhd_if.h: \
+		$(CONFIG)/bsd_vmm/manifests/freebsd-vmm.json \
+		$(BSD_BRIDGE_UPSTREAM_SYS)/amd64/vmm/amd/ivhd_if.m \
+		tools/bsd_bridge/generate_interfaces.py
+	@python3 tools/bsd_bridge/generate_interfaces.py \
+		--manifest $(CONFIG)/bsd_vmm/manifests/freebsd-vmm.json \
+		--output $(BSD_BRIDGE_GENERATED)
+
+$(OBJ)/compat/freebsd/upstream/amd64/vmm/amd/amdvi_hw.o \
+$(OBJ)/compat/freebsd/upstream/amd64/vmm/amd/amdviiommu.o: \
+		$(BSD_BRIDGE_GENERATED)/ivhd_if.h
+
+$(OBJ)/compat/freebsd/upstream/amd64/vmm/amd/amdvi_hw.o \
+$(OBJ)/compat/freebsd/upstream/amd64/vmm/amd/amdviiommu.o \
+$(OBJ)/compat/freebsd/upstream/amd64/vmm/amd/ivrs_drv.o: \
+		BSD_BRIDGE_X86_COMPILE_FLAGS += -DEDGEOS_BSD_FULL_ACPICA
+
+$(OBJ)/compat/freebsd/upstream/amd64/vmm/intel/vtd.o: \
+		BSD_BRIDGE_X86_COMPILE_FLAGS += -DEDGEOS_BSD_FULL_ACPICA
+
+.PHONY: bsd-vmm-svm-core-x86-compile
+bsd-vmm-svm-core-x86-compile: $(BSD_VMM_SVM_CORE_X86_OBJS)
+	@echo "bsd-vmm-svm-core-x86-compile: PASS"
+
+.PHONY: bsd-vmm-bhyve-x86-compile
+bsd-vmm-bhyve-x86-compile: $(BSD_VMM_BHYVE_X86_OBJS)
+	@echo "bsd-vmm-bhyve-x86-compile: PASS"
+
+.PHONY: bsd-vmm-bhyve-x86-link-audit
+bsd-vmm-bhyve-x86-link-audit: bsd-vmm-bhyve-x86-compile
+	@mkdir -p $(OUT)/tests
+	$(LD) -r $(BSD_VMM_BHYVE_X86_OBJS) \
+		-o $(OUT)/tests/edge-kvm-bhyve-x86-combined.o
+	$(NM) -u $(OUT)/tests/edge-kvm-bhyve-x86-combined.o | \
+		awk '{ print $$2 }' | sort -u > \
+		$(OUT)/tests/edge-kvm-bhyve-x86-undefined.txt
+	@echo "bsd-vmm-bhyve-x86-link-audit: PASS"
+
+.PHONY: bsd-vmm-bhyve-arm64-compile
+bsd-vmm-bhyve-arm64-compile: $(BSD_VMM_BHYVE_ARM64_BCS) \
+		$(BSD_VMM_BHYVE_ARM64_ASM_OBJS)
+	@echo "bsd-vmm-bhyve-arm64-compile: PASS"
 
 $(OBJ)/compat/freebsd/upstream/dev/virtio/network/if_vtnet.o: \
 		BSD_BRIDGE_X86_COMPILE_FLAGS += $(BSD_BRIDGE_VTNET_GCC_WARNINGS)
@@ -3566,7 +4247,8 @@ bsd-bridge-taskqueue-unit: tools/tests/bsd_bridge_taskqueue_unit.c $(SRC)/compat
 	@mkdir -p $(OUT)/tests
 	@$(HOST_CC) -std=gnu11 -Wall -Wextra -Werror -pthread \
 		-D_POSIX_C_SOURCE=200112L -DBSD_BRIDGE_HOST_TEST \
-		-D_KERNEL -DEDGEOS_BSD_BRIDGE -iquote $(INC) -iquote $(SRC) \
+		-D_KERNEL -DEDGEOS_BSD_BRIDGE -idirafter $(INC)/compat/freebsd \
+		-iquote $(INC) -iquote $(SRC) \
 		tools/tests/bsd_bridge_taskqueue_unit.c \
 		$(SRC)/compat/freebsd/kern/allocator.c \
 		$(SRC)/compat/freebsd/kern/callout.c \
@@ -3580,7 +4262,8 @@ bsd-bridge-taskqueue-unit: tools/tests/bsd_bridge_taskqueue_unit.c $(SRC)/compat
 	@$(HOST_CC) -std=gnu11 -O1 -g -Wall -Wextra -Werror -pthread \
 		-D_POSIX_C_SOURCE=200112L -DBSD_BRIDGE_HOST_TEST \
 		-D_KERNEL -DEDGEOS_BSD_BRIDGE -fsanitize=address,undefined \
-		-fno-omit-frame-pointer -iquote $(INC) -iquote $(SRC) \
+		-fno-omit-frame-pointer -idirafter $(INC)/compat/freebsd \
+		-iquote $(INC) -iquote $(SRC) \
 		tools/tests/bsd_bridge_taskqueue_unit.c \
 		$(SRC)/compat/freebsd/kern/allocator.c \
 		$(SRC)/compat/freebsd/kern/callout.c \
@@ -3683,7 +4366,8 @@ bsd-bridge-callout-unit: tools/tests/bsd_bridge_callout_unit.c $(SRC)/compat/fre
 	@mkdir -p $(OUT)/tests
 	@$(HOST_CC) -std=gnu11 -Wall -Wextra -Werror -pthread \
 		-D_POSIX_C_SOURCE=200112L -DBSD_BRIDGE_HOST_TEST \
-		-D_KERNEL -DEDGEOS_BSD_BRIDGE -iquote $(INC) -iquote $(SRC) \
+		-D_KERNEL -DEDGEOS_BSD_BRIDGE -idirafter $(INC)/compat/freebsd \
+		-iquote $(INC) -iquote $(SRC) \
 		tools/tests/bsd_bridge_callout_unit.c \
 		$(SRC)/compat/freebsd/kern/allocator.c \
 		$(SRC)/compat/freebsd/kern/callout.c \
@@ -3696,7 +4380,8 @@ bsd-bridge-callout-unit: tools/tests/bsd_bridge_callout_unit.c $(SRC)/compat/fre
 	@$(HOST_CC) -std=gnu11 -O1 -g -Wall -Wextra -Werror -pthread \
 		-D_POSIX_C_SOURCE=200112L -DBSD_BRIDGE_HOST_TEST \
 		-D_KERNEL -DEDGEOS_BSD_BRIDGE -fsanitize=address,undefined \
-		-fno-omit-frame-pointer -iquote $(INC) -iquote $(SRC) \
+		-fno-omit-frame-pointer -idirafter $(INC)/compat/freebsd \
+		-iquote $(INC) -iquote $(SRC) \
 		tools/tests/bsd_bridge_callout_unit.c \
 		$(SRC)/compat/freebsd/kern/allocator.c \
 		$(SRC)/compat/freebsd/kern/callout.c \
@@ -3889,7 +4574,7 @@ bsd-bridge-tty-unit: bsd-bridge-pps-unit tools/tests/bsd_bridge_tty_unit.c $(SRC
 		-c $(SRC)/compat/freebsd/kern/tty.c \
 		-o $(OUT)/tests/bsd_bridge_tty_arm64_coff.obj
 
-bsd-bridge-vm-page-unit: tools/tests/bsd_bridge_vm_page_unit.c $(SRC)/compat/freebsd/kern/vm_page.c include/compat/freebsd/edgeos/vm_page.h include/compat/freebsd/vm/vm.h include/compat/freebsd/vm/vm_page.h
+bsd-bridge-vm-page-unit: tools/tests/bsd_bridge_vm_page_unit.c $(SRC)/compat/freebsd/kern/vm_page.c $(SRC)/compat/freebsd/kern/vmm_vmspace.c include/compat/freebsd/edgeos/vm_page.h include/compat/freebsd/vm/vm.h include/compat/freebsd/vm/vm_page.h
 	@mkdir -p $(OUT)/tests
 	@$(HOST_CC) -std=gnu11 -Wall -Wextra -Werror \
 		-D_POSIX_C_SOURCE=200112L -DBSD_BRIDGE_HOST_TEST \
@@ -3898,6 +4583,7 @@ bsd-bridge-vm-page-unit: tools/tests/bsd_bridge_vm_page_unit.c $(SRC)/compat/fre
 		tools/tests/bsd_bridge_vm_page_unit.c \
 		$(SRC)/compat/freebsd/kern/allocator.c \
 		$(SRC)/compat/freebsd/kern/vm_page.c \
+		$(SRC)/compat/freebsd/kern/vmm_vmspace.c \
 		$(SRC)/compat/freebsd/kern/systm.c \
 		-o $(OUT)/tests/bsd_bridge_vm_page_unit
 	@$(OUT)/tests/bsd_bridge_vm_page_unit
@@ -3909,6 +4595,7 @@ bsd-bridge-vm-page-unit: tools/tests/bsd_bridge_vm_page_unit.c $(SRC)/compat/fre
 		tools/tests/bsd_bridge_vm_page_unit.c \
 		$(SRC)/compat/freebsd/kern/allocator.c \
 		$(SRC)/compat/freebsd/kern/vm_page.c \
+		$(SRC)/compat/freebsd/kern/vmm_vmspace.c \
 		$(SRC)/compat/freebsd/kern/systm.c \
 		-o $(OUT)/tests/bsd_bridge_vm_page_sanitize
 	@ASAN_OPTIONS=detect_leaks=0 \
@@ -4287,6 +4974,15 @@ posix-mq-runtime-unit: tools/tests/posix_mq_runtime_unit.c \
 		$(SRC)/kernel/posix_mq_runtime.c \
 		-o $(OUT)/tests/posix_mq_runtime_unit
 	@$(OUT)/tests/posix_mq_runtime_unit
+
+eventfd-runtime-unit: tools/tests/eventfd_runtime_unit.c \
+		$(SRC)/kernel/eventfd.c include/kernel/eventfd.h
+	@mkdir -p $(OUT)/tests
+	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fno-builtin \
+		-DEDGEOS_HOST_TEST -iquote $(INC) \
+		tools/tests/eventfd_runtime_unit.c $(SRC)/kernel/eventfd.c \
+		-o $(OUT)/tests/eventfd_runtime_unit
+	@$(OUT)/tests/eventfd_runtime_unit
 
 aio-runtime-unit: tools/tests/aio_runtime_unit.c \
 		$(SRC)/kernel/aio_runtime.c $(SRC)/kernel/eventfd.c \
@@ -5266,7 +5962,7 @@ $(ARM64_INITRAMFS): $(INITRAMFS_TOOL) $(INITRAMFS_BASE_MANIFEST) FORCE
 		--exclude '*/.DS_Store' \
 		--compression $(INITRAMFS_COMPRESSION)
 
-$(ARM64_INITRAMFS_ESP): $(ARM64_UEFI_EFI) $(ARM64_INITRAMFS) config/startup-arm64-initramfs.nsh config/cmdline-arm64-initramfs
+$(ARM64_INITRAMFS_ESP): $(ARM64_UEFI_EFI) $(ARM64_INITRAMFS) config/startup-arm64-initramfs.nsh $(ARM64_INITRAMFS_CMDLINE)
 	@mkdir -p $(ARM64_OUT)
 	@rm -f $@
 	@dd if=/dev/zero of=$@ bs=1048576 count=0 seek=$(ARM64_INITRAMFS_ESP_SIZE_MB) >/dev/null 2>&1
@@ -5274,7 +5970,7 @@ $(ARM64_INITRAMFS_ESP): $(ARM64_UEFI_EFI) $(ARM64_INITRAMFS) config/startup-arm6
 	mmd -i $@ ::/EFI ::/EFI/BOOT ::/boot
 	mcopy -i $@ $(ARM64_UEFI_EFI) ::/EFI/BOOT/BOOTAA64.EFI
 	mcopy -i $@ config/startup-arm64-initramfs.nsh ::/startup.nsh
-	mcopy -i $@ config/cmdline-arm64-initramfs ::/boot/cmdline
+	mcopy -i $@ $(ARM64_INITRAMFS_CMDLINE) ::/boot/cmdline
 	mcopy -i $@ $(ARM64_INITRAMFS) ::/boot/initramfs.img
 
 # QEMU's Raspberry Pi SD controller requires a power-of-two card capacity.

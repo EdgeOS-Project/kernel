@@ -9,6 +9,7 @@
 
 extern uint64_t tsc_freq;
 extern int tsc_is_invariant;
+extern int smp_tsc;
 
 #ifndef DELAY
 #define DELAY(microseconds) bsd_delay(microseconds)

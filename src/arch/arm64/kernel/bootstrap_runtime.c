@@ -37,6 +37,10 @@
 #include "kernel/exec_runtime.h"
 #include "kernel/exec_payload.h"
 #include "kernel/eventfd.h"
+#include "kernel/edge_kvm_runtime.h"
+#include "kernel/edge_vfio_runtime.h"
+#include "kernel/edge_vhost_runtime.h"
+#include "kernel/edge_iommufd_runtime.h"
 #include "kernel/fbdev_runtime.h"
 #include "kernel/fd_runtime.h"
 #include "kernel/fd_table_runtime.h"
@@ -906,6 +910,17 @@ static uint32_t g_fd_table_reserve_count;
 #define KERNEL_FD_SECCOMP 28u
 #define KERNEL_FD_ZCRX 29u
 #define KERNEL_FD_DRM_SYNC 30u
+#define KERNEL_FD_KVM_VM 31u
+#define KERNEL_FD_KVM_VCPU 32u
+#define KERNEL_FD_KVM_DEVICE 33u
+#define KERNEL_FD_VFIO_CONTAINER 34u
+#define KERNEL_FD_VFIO_GROUP 35u
+#define KERNEL_FD_VFIO_DEVICE 36u
+#define KERNEL_FD_VHOST_NET 37u
+#define KERNEL_FD_IOMMUFD 38u
+#define KERNEL_FD_VHOST_SCSI 39u
+#define KERNEL_FD_VHOST_VSOCK 40u
+#define KERNEL_FD_KVM_STATS 41u
 
 #define ARM64_EPOLL_SOURCE_FILE_KMSG          0x00000001u
 #define ARM64_EPOLL_SOURCE_FILE_DRM_CARD      0x00000002u
@@ -9819,7 +9834,8 @@ edge_linux_seek_result_t arch_vfs_seek_descriptor(
     } else if (file->kind == KERNEL_FD_NULL ||
                file->kind == KERNEL_FD_EVENT ||
                file->kind == KERNEL_FD_TIMER ||
-               file->kind == KERNEL_FD_SIGNALFD) {
+               file->kind == KERNEL_FD_SIGNALFD ||
+               file->kind == KERNEL_FD_KVM_STATS) {
         state.capabilities = EDGE_LINUX_SEEK_NOOP;
     } else {
         return whence > EDGE_LINUX_SEEK_HOLE ?
@@ -10708,7 +10724,9 @@ static void timerfd_runtime_state_changed(int32_t timer_id);
 static void anonymous_fd_runtime_state_changed(
     void *context, kernel_anonymous_fd_kind_t kind, int32_t object_id) {
     (void)context;
-    if (kind == KERNEL_ANONYMOUS_FD_TIMER) {
+    if (kind == KERNEL_ANONYMOUS_FD_EVENT) {
+        /* Eventfd counter transitions are handled by the common wake pass. */
+    } else if (kind == KERNEL_ANONYMOUS_FD_TIMER) {
         timerfd_runtime_state_changed(object_id);
         /*
          * timerfd_settime() can move an armed timer earlier without making it
@@ -10736,6 +10754,590 @@ static const kernel_anonymous_fd_backend_ops_t
         .object_id = arm64_anonymous_fd_object_id,
         .state_changed = anonymous_fd_runtime_state_changed,
     };
+
+static kernel_edge_kvm_file_kind_t
+arm64_edge_kvm_file_kind(uint8_t kind)
+{
+    if (kind == KERNEL_FD_KVM_VM)
+        return KERNEL_EDGE_KVM_FILE_VM;
+    if (kind == KERNEL_FD_KVM_VCPU)
+        return KERNEL_EDGE_KVM_FILE_VCPU;
+    return KERNEL_EDGE_KVM_FILE_DEVICE;
+}
+
+static int
+arm64_edge_kvm_descriptor_install(void *context,
+    kernel_edge_kvm_file_kind_t kind, edge_kvm_handle_t handle)
+{
+    kernel_task_t *task = current_task();
+    bootstrap_fd_t *entry;
+    uint32_t allocation_limit;
+    uint32_t descriptor;
+    int result;
+
+    (void)context;
+    if (!task || (kind != KERNEL_EDGE_KVM_FILE_VM &&
+        kind != KERNEL_EDGE_KVM_FILE_VCPU &&
+        kind != KERNEL_EDGE_KVM_FILE_DEVICE))
+        return -LINUX_EINVAL;
+    if (handle.slot > UINT16_MAX)
+        return -LINUX_EOVERFLOW;
+    allocation_limit = fd_allocation_limit_for_task(task);
+    for (descriptor = 0; descriptor < allocation_limit; ++descriptor) {
+        if (fd_reserve_exact_thread_group(task, descriptor))
+            break;
+    }
+    if (descriptor == allocation_limit)
+        return -LINUX_EMFILE;
+    entry = &task->fds[descriptor];
+    entry->kind = kind == KERNEL_EDGE_KVM_FILE_VM ? KERNEL_FD_KVM_VM :
+        (kind == KERNEL_EDGE_KVM_FILE_VCPU ? KERNEL_FD_KVM_VCPU :
+                                             KERNEL_FD_KVM_DEVICE);
+    entry->event_index = (uint16_t)handle.slot;
+    entry->mount_id = handle.generation;
+    entry->status_flags = LINUX_O_RDWR;
+    result = fd_description_create(entry);
+    if (result < 0) {
+        fd_cancel_reservation_thread_group(task, descriptor);
+        return result;
+    }
+    result = fd_publish_thread_group(task, descriptor);
+    if (result < 0) {
+        fd_description_discard(entry);
+        fd_cancel_reservation_thread_group(task, descriptor);
+        return result;
+    }
+    return (int)descriptor;
+}
+
+static int
+arm64_edge_kvm_descriptor_resolve(void *context, int32_t descriptor,
+    kernel_edge_kvm_file_t *file)
+{
+    kernel_task_t *task = current_task();
+    bootstrap_fd_t *entry;
+
+    (void)context;
+    if (!task || !file || descriptor < 0 ||
+        (uint32_t)descriptor >= KERNEL_BOOTSTRAP_FD_MAX ||
+        !fd_slot_is_open(task, (uint32_t)descriptor))
+        return -LINUX_EBADF;
+    entry = &task->fds[descriptor];
+    bytes_zero(file, sizeof(*file));
+    if (entry->kind == KERNEL_FD_FILE && entry->path &&
+        strcmp(entry->path, "/dev/kvm") == 0) {
+        file->kind = KERNEL_EDGE_KVM_FILE_SYSTEM;
+        return 0;
+    }
+    if (entry->kind != KERNEL_FD_KVM_VM &&
+        entry->kind != KERNEL_FD_KVM_VCPU &&
+        entry->kind != KERNEL_FD_KVM_DEVICE)
+        return -LINUX_EBADF;
+    file->kind = arm64_edge_kvm_file_kind(entry->kind);
+    file->handle.slot = entry->event_index;
+    file->handle.generation = (uint32_t)entry->mount_id;
+    return 0;
+}
+
+static int
+arm64_edge_kvm_descriptor_install_stats(void *context,
+    kernel_edge_kvm_file_kind_t source_kind, edge_kvm_handle_t handle)
+{
+    kernel_task_t *task = current_task();
+    bootstrap_fd_t *entry;
+    uint32_t allocation_limit;
+    uint32_t descriptor;
+    int result;
+
+    (void)context;
+    if (!task || (source_kind != KERNEL_EDGE_KVM_FILE_VM &&
+        source_kind != KERNEL_EDGE_KVM_FILE_VCPU))
+        return -LINUX_EINVAL;
+    if (handle.slot > UINT16_MAX || source_kind > UINT16_MAX)
+        return -LINUX_EOVERFLOW;
+    allocation_limit = fd_allocation_limit_for_task(task);
+    for (descriptor = 0; descriptor < allocation_limit; ++descriptor) {
+        if (fd_reserve_exact_thread_group(task, descriptor))
+            break;
+    }
+    if (descriptor == allocation_limit)
+        return -LINUX_EMFILE;
+    entry = &task->fds[descriptor];
+    entry->kind = KERNEL_FD_KVM_STATS;
+    entry->event_index = (uint16_t)handle.slot;
+    entry->pipe_write_index = (uint16_t)source_kind;
+    entry->mount_id = handle.generation;
+    entry->anonymous_inode = 1;
+    entry->status_flags = LINUX_O_RDONLY;
+    result = fd_description_create(entry);
+    if (result < 0) {
+        fd_cancel_reservation_thread_group(task, descriptor);
+        return result;
+    }
+    result = fd_publish_thread_group(task, descriptor);
+    if (result < 0) {
+        fd_description_discard(entry);
+        fd_cancel_reservation_thread_group(task, descriptor);
+        return result;
+    }
+    return (int)descriptor;
+}
+
+static int
+arm64_edge_kvm_descriptor_install_guest_memfd(void *context, uint64_t size)
+{
+    kernel_task_t *task;
+    bootstrap_fd_t *entry;
+    int64_t descriptor;
+    int result;
+
+    (void)context;
+    if (!size || size > UINT32_MAX)
+        return -LINUX_EFBIG;
+    descriptor = arch_memfd_create_descriptor("kvm-guest-memfd",
+        KERNEL_MEMFD_CLOEXEC);
+    if (descriptor < 0)
+        return (int)descriptor;
+    result = arch_vfs_truncate_descriptor((int32_t)descriptor,
+        (uint32_t)size);
+    if (result < 0) {
+        (void)kernel_fd_close((int32_t)descriptor);
+        return result;
+    }
+    task = current_task();
+    if (!task || !fd_slot_is_open(task, (uint32_t)descriptor)) {
+        (void)kernel_fd_close((int32_t)descriptor);
+        return -LINUX_EBADF;
+    }
+    entry = &task->fds[descriptor];
+    entry->anonymous_inode = 2;
+    entry->inode.mode = (entry->inode.mode & ~0777u) | 0600u;
+    return (int)descriptor;
+}
+
+static int
+arm64_edge_kvm_descriptor_close(void *context, int32_t descriptor)
+{
+    (void)context;
+    return kernel_fd_close(descriptor);
+}
+
+static const kernel_edge_kvm_descriptor_backend_ops_t
+    arm64_edge_kvm_descriptor_backend_ops = {
+        .install = arm64_edge_kvm_descriptor_install,
+        .resolve = arm64_edge_kvm_descriptor_resolve,
+        .install_stats = arm64_edge_kvm_descriptor_install_stats,
+        .install_guest_memfd =
+            arm64_edge_kvm_descriptor_install_guest_memfd,
+        .close = arm64_edge_kvm_descriptor_close,
+    };
+
+static kernel_edge_vfio_file_kind_t
+arm64_edge_vfio_file_kind(uint8_t kind)
+{
+    if (kind == KERNEL_FD_VFIO_CONTAINER)
+        return KERNEL_EDGE_VFIO_FILE_CONTAINER;
+    if (kind == KERNEL_FD_VFIO_GROUP)
+        return KERNEL_EDGE_VFIO_FILE_GROUP;
+    return KERNEL_EDGE_VFIO_FILE_DEVICE;
+}
+
+static int
+arm64_edge_vfio_descriptor_install(void *context,
+    kernel_edge_vfio_file_kind_t kind, edge_vfio_handle_t handle)
+{
+    kernel_task_t *task = current_task();
+    bootstrap_fd_t *entry;
+    uint32_t allocation_limit;
+    uint32_t descriptor;
+    int result;
+
+    (void)context;
+    if (!task || (kind != KERNEL_EDGE_VFIO_FILE_CONTAINER &&
+        kind != KERNEL_EDGE_VFIO_FILE_GROUP &&
+        kind != KERNEL_EDGE_VFIO_FILE_DEVICE) || handle.slot > UINT16_MAX)
+        return -LINUX_EINVAL;
+    allocation_limit = fd_allocation_limit_for_task(task);
+    for (descriptor = 0; descriptor < allocation_limit; ++descriptor) {
+        if (fd_reserve_exact_thread_group(task, descriptor))
+            break;
+    }
+    if (descriptor == allocation_limit)
+        return -LINUX_EMFILE;
+    entry = &task->fds[descriptor];
+    entry->kind = kind == KERNEL_EDGE_VFIO_FILE_CONTAINER ?
+        KERNEL_FD_VFIO_CONTAINER :
+        (kind == KERNEL_EDGE_VFIO_FILE_GROUP ? KERNEL_FD_VFIO_GROUP :
+                                               KERNEL_FD_VFIO_DEVICE);
+    entry->event_index = (uint16_t)handle.slot;
+    entry->mount_id = handle.generation;
+    entry->status_flags = LINUX_O_RDWR;
+    result = fd_description_create(entry);
+    if (result < 0) {
+        fd_cancel_reservation_thread_group(task, descriptor);
+        return result;
+    }
+    result = fd_publish_thread_group(task, descriptor);
+    if (result < 0) {
+        fd_description_discard(entry);
+        fd_cancel_reservation_thread_group(task, descriptor);
+        return result;
+    }
+    return (int)descriptor;
+}
+
+static int
+arm64_edge_vfio_descriptor_resolve(void *context, int32_t descriptor,
+    kernel_edge_vfio_file_t *file)
+{
+    kernel_task_t *task = current_task();
+    bootstrap_fd_t *entry;
+
+    (void)context;
+    if (!task || !file || descriptor < 0 ||
+        (uint32_t)descriptor >= KERNEL_BOOTSTRAP_FD_MAX ||
+        !fd_slot_is_open(task, (uint32_t)descriptor))
+        return -LINUX_EBADF;
+    entry = &task->fds[descriptor];
+    if (entry->kind != KERNEL_FD_VFIO_CONTAINER &&
+        entry->kind != KERNEL_FD_VFIO_GROUP &&
+        entry->kind != KERNEL_FD_VFIO_DEVICE)
+        return -LINUX_EBADF;
+    bytes_zero(file, sizeof(*file));
+    file->kind = arm64_edge_vfio_file_kind(entry->kind);
+    file->handle.slot = entry->event_index;
+    file->handle.generation = (uint32_t)entry->mount_id;
+    return 0;
+}
+
+static int
+arm64_edge_vfio_descriptor_resolve_eventfd(void *context,
+    int32_t descriptor, int32_t *event_id)
+{
+    kernel_task_t *task = current_task();
+    bootstrap_fd_t *entry;
+    (void)context;
+    if (!task || !event_id || descriptor < 0 ||
+        (uint32_t)descriptor >= KERNEL_BOOTSTRAP_FD_MAX ||
+        !fd_slot_is_open(task, (uint32_t)descriptor))
+        return -LINUX_EBADF;
+    entry = &task->fds[descriptor];
+    if (entry->kind != KERNEL_FD_EVENT)
+        return -LINUX_EBADF;
+    *event_id = entry->event_index;
+    return 0;
+}
+
+static int
+arm64_edge_vfio_descriptor_close(void *context, int32_t descriptor)
+{
+    (void)context;
+    return kernel_fd_close(descriptor);
+}
+
+static const kernel_edge_vfio_descriptor_backend_ops_t
+    arm64_edge_vfio_descriptor_backend_ops = {
+        .install = arm64_edge_vfio_descriptor_install,
+        .resolve = arm64_edge_vfio_descriptor_resolve,
+        .resolve_eventfd = arm64_edge_vfio_descriptor_resolve_eventfd,
+        .close = arm64_edge_vfio_descriptor_close,
+    };
+
+static int
+arm64_edge_vhost_descriptor_install_net(void *context,
+    edge_vhost_handle_t handle)
+{
+    kernel_task_t *task = current_task();
+    bootstrap_fd_t *entry;
+    uint32_t allocation_limit;
+    uint32_t descriptor;
+    int result;
+
+    (void)context;
+    if (!task || handle.slot > UINT16_MAX) return -LINUX_EINVAL;
+    allocation_limit = fd_allocation_limit_for_task(task);
+    for (descriptor = 0; descriptor < allocation_limit; ++descriptor) {
+        if (fd_reserve_exact_thread_group(task, descriptor)) break;
+    }
+    if (descriptor == allocation_limit) return -LINUX_EMFILE;
+    entry = &task->fds[descriptor];
+    entry->kind = KERNEL_FD_VHOST_NET;
+    entry->event_index = (uint16_t)handle.slot;
+    entry->mount_id = handle.generation;
+    entry->status_flags = LINUX_O_RDWR;
+    result = fd_description_create(entry);
+    if (result < 0) {
+        fd_cancel_reservation_thread_group(task, descriptor);
+        return result;
+    }
+    result = fd_publish_thread_group(task, descriptor);
+    if (result < 0) {
+        fd_description_discard(entry);
+        fd_cancel_reservation_thread_group(task, descriptor);
+        return result;
+    }
+    return (int)descriptor;
+}
+
+static int
+arm64_edge_vhost_descriptor_resolve_net(void *context, int32_t descriptor,
+    edge_vhost_handle_t *handle)
+{
+    kernel_task_t *task = current_task();
+    bootstrap_fd_t *entry;
+    (void)context;
+    if (!task || !handle || descriptor < 0 ||
+        (uint32_t)descriptor >= KERNEL_BOOTSTRAP_FD_MAX ||
+        !fd_slot_is_open(task, (uint32_t)descriptor))
+        return -LINUX_EBADF;
+    entry = &task->fds[descriptor];
+    if (entry->kind != KERNEL_FD_VHOST_NET) return -LINUX_EBADF;
+    handle->slot = entry->event_index;
+    handle->generation = (uint32_t)entry->mount_id;
+    return 0;
+}
+
+static int
+arm64_edge_vhost_descriptor_install_device(void *context,
+    kernel_edge_vhost_device_kind_t kind, uint32_t device_id,
+    edge_vhost_handle_t handle)
+{
+    kernel_task_t *task = current_task();
+    bootstrap_fd_t *entry;
+    uint32_t allocation_limit;
+    uint32_t descriptor;
+    int result;
+
+    (void)context;
+    (void)device_id;
+    if (!task || handle.slot > UINT16_MAX ||
+        (kind != KERNEL_EDGE_VHOST_DEVICE_SCSI &&
+         kind != KERNEL_EDGE_VHOST_DEVICE_VSOCK))
+        return -LINUX_EINVAL;
+    allocation_limit = fd_allocation_limit_for_task(task);
+    for (descriptor = 0; descriptor < allocation_limit; ++descriptor) {
+        if (fd_reserve_exact_thread_group(task, descriptor)) break;
+    }
+    if (descriptor == allocation_limit) return -LINUX_EMFILE;
+    entry = &task->fds[descriptor];
+    entry->kind = kind == KERNEL_EDGE_VHOST_DEVICE_SCSI ?
+        KERNEL_FD_VHOST_SCSI : KERNEL_FD_VHOST_VSOCK;
+    entry->event_index = (uint16_t)handle.slot;
+    entry->mount_id = handle.generation;
+    entry->status_flags = LINUX_O_RDWR;
+    result = fd_description_create(entry);
+    if (result < 0) {
+        fd_cancel_reservation_thread_group(task, descriptor);
+        return result;
+    }
+    result = fd_publish_thread_group(task, descriptor);
+    if (result < 0) {
+        fd_description_discard(entry);
+        fd_cancel_reservation_thread_group(task, descriptor);
+        return result;
+    }
+    return (int)descriptor;
+}
+
+static int
+arm64_edge_vhost_descriptor_resolve_device(void *context,
+    int32_t descriptor, kernel_edge_vhost_device_kind_t *kind,
+    uint32_t *device_id, edge_vhost_handle_t *handle)
+{
+    kernel_task_t *task = current_task();
+    bootstrap_fd_t *entry;
+    (void)context;
+    if (!task || !kind || !device_id || !handle || descriptor < 0 ||
+        (uint32_t)descriptor >= KERNEL_BOOTSTRAP_FD_MAX ||
+        !fd_slot_is_open(task, (uint32_t)descriptor))
+        return -LINUX_EBADF;
+    entry = &task->fds[descriptor];
+    if (entry->kind != KERNEL_FD_VHOST_SCSI &&
+        entry->kind != KERNEL_FD_VHOST_VSOCK)
+        return -LINUX_EBADF;
+    *kind = entry->kind == KERNEL_FD_VHOST_SCSI ?
+        KERNEL_EDGE_VHOST_DEVICE_SCSI : KERNEL_EDGE_VHOST_DEVICE_VSOCK;
+    *device_id = 0;
+    handle->slot = entry->event_index;
+    handle->generation = (uint32_t)entry->mount_id;
+    return 0;
+}
+
+static int
+arm64_edge_vhost_descriptor_resolve_eventfd(void *context,
+    int32_t descriptor, int32_t *event_id)
+{
+    kernel_task_t *task = current_task();
+    bootstrap_fd_t *entry;
+    (void)context;
+    if (!task || !event_id || descriptor < 0 ||
+        (uint32_t)descriptor >= KERNEL_BOOTSTRAP_FD_MAX ||
+        !fd_slot_is_open(task, (uint32_t)descriptor))
+        return -LINUX_EBADF;
+    entry = &task->fds[descriptor];
+    if (entry->kind != KERNEL_FD_EVENT ||
+        kernel_eventfd_retain(entry->event_index) < 0)
+        return -LINUX_EBADF;
+    *event_id = entry->event_index;
+    return 0;
+}
+
+static void
+arm64_edge_vhost_descriptor_release_eventfd(void *context, int32_t event_id)
+{
+    (void)context;
+    kernel_eventfd_release(event_id);
+}
+
+static int
+arm64_edge_vhost_descriptor_resolve_backend(void *context,
+    int32_t descriptor, uint64_t *backend_id)
+{
+    (void)context;
+    (void)descriptor;
+    (void)backend_id;
+    return -LINUX_EOPNOTSUPP;
+}
+
+static void
+arm64_edge_vhost_descriptor_release_backend(void *context,
+    uint64_t backend_id)
+{
+    (void)context;
+    (void)backend_id;
+}
+
+static const kernel_edge_vhost_descriptor_backend_ops_t
+    arm64_edge_vhost_descriptor_backend_ops = {
+        .install_net = arm64_edge_vhost_descriptor_install_net,
+        .resolve_net = arm64_edge_vhost_descriptor_resolve_net,
+        .install_device = arm64_edge_vhost_descriptor_install_device,
+        .resolve_device = arm64_edge_vhost_descriptor_resolve_device,
+        .resolve_eventfd = arm64_edge_vhost_descriptor_resolve_eventfd,
+        .release_eventfd = arm64_edge_vhost_descriptor_release_eventfd,
+        .resolve_backend = arm64_edge_vhost_descriptor_resolve_backend,
+        .release_backend = arm64_edge_vhost_descriptor_release_backend,
+    };
+
+static int
+arm64_edge_iommufd_descriptor_install(void *context,
+    edge_iommufd_handle_t handle)
+{
+    kernel_task_t *task = current_task();
+    bootstrap_fd_t *entry;
+    uint32_t allocation_limit;
+    uint32_t descriptor;
+    int result;
+
+    (void)context;
+    if (!task || handle.slot > UINT16_MAX) return -LINUX_EINVAL;
+    allocation_limit = fd_allocation_limit_for_task(task);
+    for (descriptor = 0; descriptor < allocation_limit; ++descriptor) {
+        if (fd_reserve_exact_thread_group(task, descriptor)) break;
+    }
+    if (descriptor == allocation_limit) return -LINUX_EMFILE;
+    entry = &task->fds[descriptor];
+    entry->kind = KERNEL_FD_IOMMUFD;
+    entry->event_index = (uint16_t)handle.slot;
+    entry->mount_id = handle.generation;
+    entry->status_flags = LINUX_O_RDWR;
+    result = fd_description_create(entry);
+    if (result < 0) {
+        fd_cancel_reservation_thread_group(task, descriptor);
+        return result;
+    }
+    result = fd_publish_thread_group(task, descriptor);
+    if (result < 0) {
+        fd_description_discard(entry);
+        fd_cancel_reservation_thread_group(task, descriptor);
+        return result;
+    }
+    return (int)descriptor;
+}
+
+static int
+arm64_edge_iommufd_descriptor_resolve(void *context, int32_t descriptor,
+    edge_iommufd_handle_t *handle)
+{
+    kernel_task_t *task = current_task();
+    bootstrap_fd_t *entry;
+    (void)context;
+    if (!task || !handle || descriptor < 0 ||
+        (uint32_t)descriptor >= KERNEL_BOOTSTRAP_FD_MAX ||
+        !fd_slot_is_open(task, (uint32_t)descriptor))
+        return -LINUX_EBADF;
+    entry = &task->fds[descriptor];
+    if (entry->kind != KERNEL_FD_IOMMUFD) return -LINUX_EBADF;
+    handle->slot = entry->event_index;
+    handle->generation = (uint32_t)entry->mount_id;
+    return 0;
+}
+
+static const kernel_edge_iommufd_descriptor_backend_ops_t
+    arm64_edge_iommufd_descriptor_backend_ops = {
+        .install = arm64_edge_iommufd_descriptor_install,
+        .resolve = arm64_edge_iommufd_descriptor_resolve,
+    };
+
+static int arm64_edge_vfio_group_open(void *context, uint32_t group_id,
+    int *viable, uint64_t *group_cookie)
+{
+    (void)context;
+    (void)group_id;
+    (void)viable;
+    (void)group_cookie;
+    return -EDGE_LINUX_ENODEV;
+}
+
+static void arm64_edge_vfio_group_close(void *context,
+    uint64_t group_cookie)
+{
+    (void)context;
+    (void)group_cookie;
+}
+
+static int arm64_edge_vfio_device_open(void *context,
+    uint64_t group_cookie, uint64_t vm_cookie, const char *name,
+    uint64_t *device_cookie)
+{
+    (void)context;
+    (void)group_cookie;
+    (void)vm_cookie;
+    (void)name;
+    (void)device_cookie;
+    return -EDGE_LINUX_ENODEV;
+}
+
+static void arm64_edge_vfio_device_close(void *context,
+    uint64_t device_cookie)
+{
+    (void)context;
+    (void)device_cookie;
+}
+
+int
+kernel_edge_kvm_descriptor_runtime_initialize(void)
+{
+    edge_vfio_backend_ops_t vfio_backend = {
+        .group_open = arm64_edge_vfio_group_open,
+        .group_close = arm64_edge_vfio_group_close,
+        .device_open = arm64_edge_vfio_device_open,
+        .device_close = arm64_edge_vfio_device_close,
+    };
+    int result = kernel_edge_kvm_descriptor_backend_register(
+        &arm64_edge_kvm_descriptor_backend_ops, 0);
+    if (result < 0) return result;
+    result = kernel_edge_vfio_descriptor_backend_register(
+        &arm64_edge_vfio_descriptor_backend_ops, 0);
+    if (result < 0) return result;
+    result = kernel_edge_vhost_descriptor_backend_register(
+        &arm64_edge_vhost_descriptor_backend_ops, 0);
+    if (result < 0) return result;
+    result = kernel_edge_iommufd_descriptor_backend_register(
+        &arm64_edge_iommufd_descriptor_backend_ops, 0);
+    if (result < 0) return result;
+    return kernel_edge_vfio_backend_register(&vfio_backend);
+}
 
 typedef struct arm64_inotify_copy_context {
     kernel_task_t *task;
@@ -11109,6 +11711,55 @@ static int fd_retain_backing_object(const bootstrap_fd_t *fd) {
         result = kernel_io_uring_zcrx_export_retain(fd->event_index);
         return result < 0 ? result : 0;
     }
+    if (fd->kind == KERNEL_FD_KVM_VM ||
+        fd->kind == KERNEL_FD_KVM_VCPU ||
+        fd->kind == KERNEL_FD_KVM_DEVICE) {
+        edge_kvm_handle_t handle = {
+            .slot = fd->event_index,
+            .generation = (uint32_t)fd->mount_id,
+        };
+        result = kernel_edge_kvm_descriptor_retain(
+            arm64_edge_kvm_file_kind(fd->kind), handle);
+        return result < 0 ? result : 0;
+    }
+    if (fd->kind == KERNEL_FD_KVM_STATS) {
+        edge_kvm_handle_t handle = {
+            .slot = fd->event_index,
+            .generation = (uint32_t)fd->mount_id,
+        };
+        result = kernel_edge_kvm_descriptor_retain(
+            (kernel_edge_kvm_file_kind_t)fd->pipe_write_index, handle);
+        return result < 0 ? result : 0;
+    }
+    if (fd->kind == KERNEL_FD_VFIO_CONTAINER ||
+        fd->kind == KERNEL_FD_VFIO_GROUP ||
+        fd->kind == KERNEL_FD_VFIO_DEVICE) {
+        edge_vfio_handle_t handle = {
+            .slot = fd->event_index,
+            .generation = (uint32_t)fd->mount_id,
+        };
+        result = kernel_edge_vfio_descriptor_retain(
+            arm64_edge_vfio_file_kind(fd->kind), handle);
+        return result < 0 ? result : 0;
+    }
+    if (fd->kind == KERNEL_FD_VHOST_NET ||
+        fd->kind == KERNEL_FD_VHOST_SCSI ||
+        fd->kind == KERNEL_FD_VHOST_VSOCK) {
+        edge_vhost_handle_t handle = {
+            .slot = fd->event_index,
+            .generation = (uint32_t)fd->mount_id,
+        };
+        result = kernel_edge_vhost_descriptor_retain(handle);
+        return result < 0 ? result : 0;
+    }
+    if (fd->kind == KERNEL_FD_IOMMUFD) {
+        edge_iommufd_handle_t handle = {
+            .slot = fd->event_index,
+            .generation = (uint32_t)fd->mount_id,
+        };
+        result = kernel_edge_iommufd_descriptor_retain(handle);
+        return result < 0 ? result : 0;
+    }
     if (fd->kind == KERNEL_FD_SOCKET &&
         fd->socket_index < g_socket_capacity &&
         g_sockets[fd->socket_index].used &&
@@ -11359,6 +12010,8 @@ int arch_vfs_truncate_descriptor(int32_t descriptor, uint32_t length) {
     file = &task->fds[descriptor];
     if (file->kind != KERNEL_FD_FILE || !file->sb)
         return -EDGE_LINUX_EINVAL;
+    if (file->anonymous_inode == 2)
+        return -EDGE_LINUX_EINVAL;
     if (file->secret_memory && file->inode.size)
         return -EDGE_LINUX_EINVAL;
     result = kernel_vfs_truncate_inode_transaction(
@@ -11412,6 +12065,10 @@ int arch_vfs_fallocate_descriptor(int32_t descriptor, uint32_t mode,
     file = &task->fds[descriptor];
     if (file->kind != KERNEL_FD_FILE || !file->sb)
         return -EDGE_LINUX_EINVAL;
+    if (file->anonymous_inode == 2 &&
+        mode != (VFS_FALLOC_FL_PUNCH_HOLE |
+                 VFS_FALLOC_FL_KEEP_SIZE))
+        return -EDGE_LINUX_EOPNOTSUPP;
     if (file->secret_memory) return -EDGE_LINUX_EOPNOTSUPP;
     result = kernel_vfs_fallocate_inode_transaction(
         file->sb, &file->inode, mode, offset, length);
@@ -16013,7 +16670,8 @@ static int64_t fd_splice_read_kernel(kernel_task_t *task,
         uint64_t position = explicit_offset ? *offset :
                             fd_description_offset(fd);
         int received = EDGE_MEMDEV_NOT_HANDLED;
-        if (fd->secret_memory) return -LINUX_EINVAL;
+        if (fd->secret_memory || fd->anonymous_inode == 2)
+            return -LINUX_EINVAL;
         if ((fd->status_flags & 3u) == 1u) return -LINUX_EBADF;
         if (!fd->sb || !fd->sb->ops ||
             (!fd->sb->ops->read && !fd->sb->ops->read_description))
@@ -16135,7 +16793,8 @@ static int64_t fd_splice_write_kernel(kernel_task_t *task,
         uint64_t position = explicit_offset ? *offset :
                             fd_description_offset(fd);
         int written = EDGE_MEMDEV_NOT_HANDLED;
-        if (fd->secret_memory) return -LINUX_EINVAL;
+        if (fd->secret_memory || fd->anonymous_inode == 2)
+            return -LINUX_EINVAL;
         if ((fd->status_flags & 3u) == 0u) return -LINUX_EBADF;
         if (fd_effective_seals(fd) &
             (KERNEL_VFS_SEAL_WRITE |
@@ -16831,6 +17490,50 @@ static void fd_drop_backing_object(bootstrap_fd_t *fd) {
         edge_seccomp_listener_release(fd->event_index);
     if (fd->kind == KERNEL_FD_ZCRX)
         kernel_io_uring_zcrx_export_release(fd->event_index);
+    if (fd->kind == KERNEL_FD_KVM_VM ||
+        fd->kind == KERNEL_FD_KVM_VCPU ||
+        fd->kind == KERNEL_FD_KVM_DEVICE) {
+        edge_kvm_handle_t handle = {
+            .slot = fd->event_index,
+            .generation = (uint32_t)fd->mount_id,
+        };
+        (void)kernel_edge_kvm_descriptor_release(
+            arm64_edge_kvm_file_kind(fd->kind), handle);
+    }
+    if (fd->kind == KERNEL_FD_KVM_STATS) {
+        edge_kvm_handle_t handle = {
+            .slot = fd->event_index,
+            .generation = (uint32_t)fd->mount_id,
+        };
+        (void)kernel_edge_kvm_descriptor_release(
+            (kernel_edge_kvm_file_kind_t)fd->pipe_write_index, handle);
+    }
+    if (fd->kind == KERNEL_FD_VFIO_CONTAINER ||
+        fd->kind == KERNEL_FD_VFIO_GROUP ||
+        fd->kind == KERNEL_FD_VFIO_DEVICE) {
+        edge_vfio_handle_t handle = {
+            .slot = fd->event_index,
+            .generation = (uint32_t)fd->mount_id,
+        };
+        (void)kernel_edge_vfio_descriptor_release(
+            arm64_edge_vfio_file_kind(fd->kind), handle);
+    }
+    if (fd->kind == KERNEL_FD_VHOST_NET ||
+        fd->kind == KERNEL_FD_VHOST_SCSI ||
+        fd->kind == KERNEL_FD_VHOST_VSOCK) {
+        edge_vhost_handle_t handle = {
+            .slot = fd->event_index,
+            .generation = (uint32_t)fd->mount_id,
+        };
+        (void)kernel_edge_vhost_descriptor_release(handle);
+    }
+    if (fd->kind == KERNEL_FD_IOMMUFD) {
+        edge_iommufd_handle_t handle = {
+            .slot = fd->event_index,
+            .generation = (uint32_t)fd->mount_id,
+        };
+        (void)kernel_edge_iommufd_descriptor_release(handle);
+    }
     if ((fd->kind == KERNEL_FD_PIPE_READ ||
          fd->kind == KERNEL_FD_PIPE_WRITE ||
          fd->kind == KERNEL_FD_PIPE_RW) &&
@@ -20395,6 +21098,8 @@ static uint32_t fd_ready_mask(kernel_task_t *task, bootstrap_fd_t *fd) {
         kernel_pipe_t *pipe = fd->pipe_index < g_pipe_capacity ?
             &g_pipes[fd->pipe_index] : 0;
         ready |= kernel_pipe_poll_events(0, pipe, 0, 1);
+    } else if (fd->kind == KERNEL_FD_KVM_STATS) {
+        ready |= LINUX_POLLIN | LINUX_POLLOUT;
     } else if (fd->kind == KERNEL_FD_EVENT ||
                fd->kind == KERNEL_FD_TIMER ||
                fd->kind == KERNEL_FD_INOTIFY ||
@@ -23783,7 +24488,21 @@ int arch_vfs_metadata_fd(int32_t descriptor,
                file->kind == KERNEL_FD_IO_URING ||
                file->kind == KERNEL_FD_LANDLOCK ||
                file->kind == KERNEL_FD_BPF ||
-               file->kind == KERNEL_FD_SECCOMP) {
+               file->kind == KERNEL_FD_SECCOMP ||
+               file->kind == KERNEL_FD_KVM_VM ||
+               file->kind == KERNEL_FD_KVM_VCPU ||
+               file->kind == KERNEL_FD_KVM_DEVICE ||
+               file->kind == KERNEL_FD_KVM_STATS) {
+        arm64_metadata_set_anonymous(file, metadata, 0600u);
+    } else if (file->kind == KERNEL_FD_VFIO_CONTAINER ||
+               file->kind == KERNEL_FD_VFIO_GROUP ||
+               file->kind == KERNEL_FD_VFIO_DEVICE) {
+        arm64_metadata_set_anonymous(file, metadata, 0600u);
+    } else if (file->kind == KERNEL_FD_VHOST_NET ||
+               file->kind == KERNEL_FD_VHOST_SCSI ||
+               file->kind == KERNEL_FD_VHOST_VSOCK) {
+        arm64_metadata_set_anonymous(file, metadata, 0600u);
+    } else if (file->kind == KERNEL_FD_IOMMUFD) {
         arm64_metadata_set_anonymous(file, metadata, 0600u);
     } else if (file->kind == KERNEL_FD_FILE) {
         if (file->sb)
@@ -24377,6 +25096,7 @@ static int64_t fd_write_user_internal(
         if (length > 0x7fffffffULL) return -LINUX_EINVAL;
         if (!length) return 0;
     }
+    if (fd->anonymous_inode == 2) return -LINUX_ESPIPE;
     if (fd->secret_memory) return -LINUX_EINVAL;
     if (fd->kind == KERNEL_FD_NULL) return (int64_t)length;
     if (fd->kind == KERNEL_FD_FANOTIFY) {
@@ -24863,6 +25583,7 @@ static int64_t fd_read_user_internal(
             return -LINUX_EBADF;
         fd = &task->fds[fd_number];
     }
+    if (fd->anonymous_inode == 2) return -LINUX_ESPIPE;
     if (fd->secret_memory) return -LINUX_EINVAL;
     if (fd->kind == KERNEL_FD_NULL) return 0;
     if (fd->kind == KERNEL_FD_TUN) {
@@ -24924,6 +25645,37 @@ static int64_t fd_read_user_internal(
         return arch_copy_to_user(
             task->ttbr0, buffer, values, (uint64_t)result) < 0 ?
             -LINUX_EFAULT : result;
+    }
+    if (fd->kind == KERNEL_FD_KVM_STATS) {
+        edge_kvm_handle_t handle = {
+            .slot = fd->event_index,
+            .generation = (uint32_t)fd->mount_id,
+        };
+        char *chunk;
+        uint64_t done = 0;
+
+        if (!length) return 0;
+        if (!buffer) return -LINUX_EFAULT;
+        if (!task->scratch) return -LINUX_EIO;
+        chunk = task->scratch->path_scratch[1];
+        while (done < length) {
+            uint32_t count = (uint32_t)(length - done > PAGE_SIZE ?
+                                         PAGE_SIZE : length - done);
+            int64_t received = kernel_edge_kvm_stats_read(
+                (kernel_edge_kvm_file_kind_t)fd->pipe_write_index,
+                handle, fd_description_offset(fd), chunk, count);
+
+            if (received < 0)
+                return done ? (int64_t)done : received;
+            if (!received) break;
+            if (arch_copy_to_user(task->ttbr0, buffer + done, chunk,
+                                  (uint32_t)received) < 0)
+                return done ? (int64_t)done : -LINUX_EFAULT;
+            fd_description_advance(fd, (uint32_t)received);
+            done += (uint32_t)received;
+            if ((uint32_t)received < count) break;
+        }
+        return (int64_t)done;
     }
     if (fd->kind == KERNEL_FD_FILE &&
         edge_drm_path_is_card(fd->path)) {
@@ -25611,7 +26363,11 @@ static int64_t fd_read_user(kernel_task_t *task, uint64_t fd_number,
 }
 
 static int fd_positioned_user_supported(const bootstrap_fd_t *fd) {
-    if (!fd || fd->kind != KERNEL_FD_FILE)
+    if (!fd)
+        return 0;
+    if (fd->kind == KERNEL_FD_KVM_STATS)
+        return 1;
+    if (fd->kind != KERNEL_FD_FILE)
         return 0;
     if ((fd->inode.mode & 0xf000u) == VFS_INODE_BLK)
         return 1;
@@ -25630,8 +26386,36 @@ static int64_t fd_positioned_user_retained(
     chunk = task->scratch->path_scratch[1];
     if (length > INT64_MAX || (int64_t)offset < 0)
         return -LINUX_EINVAL;
+    if (fd->kind == KERNEL_FD_KVM_STATS) {
+        edge_kvm_handle_t handle = {
+            .slot = fd->event_index,
+            .generation = (uint32_t)fd->mount_id,
+        };
+
+        if (writing) return -LINUX_EBADF;
+        if (!length) return 0;
+        if (!buffer) return -LINUX_EFAULT;
+        while (done < length) {
+            uint32_t count = (uint32_t)(length - done > PAGE_SIZE ?
+                                         PAGE_SIZE : length - done);
+            int64_t received = kernel_edge_kvm_stats_read(
+                (kernel_edge_kvm_file_kind_t)fd->pipe_write_index,
+                handle, offset + done, chunk, count);
+
+            if (received < 0)
+                return done ? (int64_t)done : received;
+            if (!received) break;
+            if (arch_copy_to_user(task->ttbr0, buffer + done, chunk,
+                                  (uint32_t)received) < 0)
+                return done ? (int64_t)done : -LINUX_EFAULT;
+            done += (uint32_t)received;
+            if ((uint32_t)received < count) break;
+        }
+        return (int64_t)done;
+    }
     if (fd->kind != KERNEL_FD_FILE)
         return -LINUX_ESPIPE;
+    if (fd->anonymous_inode == 2) return -LINUX_ESPIPE;
     if (fd->secret_memory) return -LINUX_ESPIPE;
 
     if ((fd->inode.mode & 0xf000u) == VFS_INODE_BLK) {
@@ -31574,6 +32358,29 @@ int kernel_current_file_mapping_info(uint64_t address, uint64_t *start_out,
     return 0;
 }
 
+int edgeos_arm64_kvm_pin_user_page(uint64_t user_address,
+                                   uint32_t protection,
+                                   uint64_t *physical_address) {
+    kernel_task_t *task = current_task();
+    uint32_t access = KERNEL_MM_PROT_READ;
+    uint64_t physical;
+
+    if (!task || !task->ttbr0 || !physical_address)
+        return -LINUX_EFAULT;
+    if (protection & ARCH_VM_PROT_WRITE)
+        access |= KERNEL_MM_PROT_WRITE;
+    if (kernel_mm_resolve_user_page(
+            task->ttbr0, user_address, access) <= 0 ||
+        arch_vm_translate(
+            task->ttbr0, user_address, &physical, 0) < 0)
+        return -LINUX_EFAULT;
+    physical &= ~(uint64_t)(PAGE_SIZE - 1u);
+    if (arch_vm_retain_page((void *)(uintptr_t)physical) < 0)
+        return -LINUX_EFAULT;
+    *physical_address = physical;
+    return 0;
+}
+
 int arch_mm_file_mapping_info(uint64_t address,
                               kernel_mm_file_mapping_info_t *info) {
     kernel_task_t *task = current_task();
@@ -33886,9 +34693,30 @@ int64_t arch_vfs_open_special(
             }
             } else if (path_is_null(path)) {
             fd = fd_allocate_null(linux_flags);
+            } else if (strcmp(path, EDGE_VFIO_CONTAINER_PATH) == 0) {
+            fd = kernel_edge_vfio_open_container();
+            } else if (strcmp(path, EDGE_VHOST_NET_PATH) == 0) {
+            fd = kernel_edge_vhost_open_net();
+            } else if (strcmp(path, EDGE_VHOST_SCSI_PATH) == 0) {
+            fd = kernel_edge_vhost_open_scsi();
+            } else if (strcmp(path, EDGE_VHOST_VSOCK_PATH) == 0) {
+            fd = kernel_edge_vhost_open_vsock();
+            } else if (strcmp(path, EDGE_IOMMUFD_PATH) == 0) {
+            fd = kernel_edge_iommufd_open();
             } else {
-            *handled = 0;
-            return 0;
+            uint32_t vfio_group;
+            uint32_t vfio_device;
+            uint32_t vdpa_device;
+            if (kernel_edge_vhost_vdpa_path_parse(path, &vdpa_device))
+                fd = kernel_edge_vhost_open_vdpa(vdpa_device);
+            else if (kernel_edge_vfio_cdev_path_parse(path, &vfio_device))
+                fd = kernel_edge_vfio_open_cdev(vfio_device);
+            else if (kernel_edge_vfio_group_path_parse(path, &vfio_group))
+                fd = kernel_edge_vfio_open_group(vfio_group);
+            else {
+                *handled = 0;
+                return 0;
+            }
             }
         }
     }
@@ -34016,6 +34844,8 @@ int64_t arch_mm_map(const kernel_mm_map_request_t *request) {
             !fd_slot_is_open(task, (uint32_t)a4))
             return -LINUX_EBADF;
         mapping_fd = &task->fds[a4];
+        if (mapping_fd->anonymous_inode == 2)
+            return -LINUX_ENODEV;
         if (mapping_fd->kind == KERNEL_FD_FILE && mapping_fd->sb &&
             tmpfs_memfd_huge_page_size(
                 mapping_fd->sb, &mapping_fd->inode,
@@ -34094,6 +34924,47 @@ int64_t arch_mm_map(const kernel_mm_map_request_t *request) {
                         task->ttbr0, address,
                         (uint64_t)page_index * PAGE_SIZE);
                     return result < 0 ? result : -LINUX_ENOMEM;
+                }
+            }
+            map_result = 0;
+        } else if (fd->kind == KERNEL_FD_KVM_VCPU) {
+            edge_kvm_handle_t handle = {
+                .slot = fd->event_index,
+                .generation = (uint32_t)fd->mount_id,
+            };
+            uint64_t expected_length =
+                (uint64_t)EDGE_KVM_VCPU_MMAP_PAGES * PAGE_SIZE;
+
+            if (!(a3 & LINUX_MAP_SHARED) || a5 != 0 ||
+                length != expected_length ||
+                (a2 & (LINUX_PROT_READ | LINUX_PROT_WRITE)) !=
+                    (LINUX_PROT_READ | LINUX_PROT_WRITE))
+                return -LINUX_EINVAL;
+            for (uint32_t page = 0;
+                 page < EDGE_KVM_VCPU_MMAP_PAGES; ++page) {
+                uint64_t physical = 0;
+                int result = kernel_edge_kvm_vcpu_mmap_page(
+                    handle, page, &physical);
+
+                if (result < 0 || !physical ||
+                    (physical & (PAGE_SIZE - 1u)) != 0 ||
+                    arch_vm_retain_page(
+                        (void *)(uintptr_t)physical) < 0) {
+                    (void)arch_vm_unmap_user_range(
+                        task->ttbr0, address,
+                        (uint64_t)page * PAGE_SIZE);
+                    return result < 0 ? result : -LINUX_ENOMEM;
+                }
+                if (arch_vm_map_user_page(
+                        task->ttbr0,
+                        address + (uint64_t)page * PAGE_SIZE,
+                        physical, vm_prot(a2) |
+                            ARCH_VM_PROT_SHARED) < 0) {
+                    arch_vm_free_page((void *)(uintptr_t)physical);
+                    (void)arch_vm_unmap_user_range(
+                        task->ttbr0, address,
+                        (uint64_t)page * PAGE_SIZE);
+                    return -LINUX_ENOMEM;
                 }
             }
             map_result = 0;

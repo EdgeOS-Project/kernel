@@ -22,6 +22,10 @@ char *strdup_flags(const char *text, struct malloc_type *type, int flags);
 #define LIBKERN_LEN_BIN2BCD 100
 #define LIBKERN_LEN_HEX2ASCII 36
 
+extern u_char const bcd2bin_data[];
+extern u_char const bin2bcd_data[];
+extern char const hex2ascii_data[];
+
 static inline u_quad_t
 uqmax(u_quad_t left, u_quad_t right)
 {

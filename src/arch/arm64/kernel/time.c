@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "kernel/boottime_arch.h"
+#include "serial_console.h"
 
 static uint64_t counter_base;
 static uint64_t counter_frequency;
@@ -16,9 +17,14 @@ static uint64_t counter_now(void) {
 
 uint64_t kernel_arch_boottime_initialize(void) {
     volatile uint32_t *pl031_data = (volatile uint32_t *)(uintptr_t)0x09010000ULL;
+    serial_console_write_raw('V');
     __asm__ __volatile__("mrs %0, cntfrq_el0" : "=r"(counter_frequency));
+    serial_console_write_raw('W');
     counter_base = counter_now();
-    return (uint64_t)*pl031_data * 1000000ULL;
+    serial_console_write_raw('X');
+    uint64_t realtime_base = (uint64_t)*pl031_data * 1000000ULL;
+    serial_console_write_raw('Y');
+    return realtime_base;
 }
 
 uint64_t kernel_arch_boottime_monotonic_us(void) {

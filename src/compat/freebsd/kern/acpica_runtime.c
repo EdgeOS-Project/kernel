@@ -620,7 +620,9 @@ acpica_register_fixed_button(const char *hardware_id,
     };
     device_t child;
 
-    child = device_add_child(g_acpica_bus, 0, DEVICE_UNIT_ANY);
+    /* Fixed ACPI buttons have no namespace handle, so bind their devclass. */
+    child = device_add_child(g_acpica_bus, "acpi_button",
+        DEVICE_UNIT_ANY);
     if (!child)
         return AE_NO_MEMORY;
     if (acpica_child_bind(child, &firmware) != 0) {

@@ -423,7 +423,15 @@ static void arm64_install_translation(
      */
     sctlr &= ~(1ULL << 1);
     /* Linux AArch64 permits EL0 cache-ID reads, DC ZVA, and user cache maintenance. */
-    sctlr |= 1ULL | (1ULL << 14) | (1ULL << 15) | (1ULL << 26);
+    /*
+     * EL2 firmware may leave the banked EL1 cache controls in their reset
+     * state.  Enable both data and instruction caching explicitly instead of
+     * relying on an EL1 UEFI entry path to have done so.  Exclusive and LSE
+     * accesses require the kernel's Normal memory mappings to remain
+     * cacheable after an EL2-to-EL1 handoff.
+     */
+    sctlr |= 1ULL | (1ULL << 2) | (1ULL << 12) |
+             (1ULL << 14) | (1ULL << 15) | (1ULL << 26);
     __asm__ __volatile__("msr sctlr_el1, %0\n\tisb" :: "r"(sctlr) : "memory");
 
     /* Firmware policy must not determine whether Linux userspace can use FP/SIMD. */

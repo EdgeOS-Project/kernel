@@ -7,5 +7,6 @@
 int bsd_callout_runtime_initialize(void);
 int bsd_callout_runtime_is_initialized(void);
 void bsd_callout_process_timer_tick(void);
+void bsd_callout_process_timer_poll(void);
 
 #endif

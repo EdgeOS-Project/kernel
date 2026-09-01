@@ -292,7 +292,7 @@ vcpu_notify_event_locked(struct vcpu *vcpu)
 	if (vcpu->state == VCPU_RUNNING) {
 		KASSERT(hostcpu != NOCPU, ("vcpu running on invalid hostcpu"));
 		if (hostcpu != curcpu) {
-			ipi_cpu(hostcpu, vmm_ipinum);
+			(void)edge_smp_vmm_kick(hostcpu);
 		} else {
 			/*
 			 * If the 'vcpu' is running on 'curcpu' then it must

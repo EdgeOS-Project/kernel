@@ -35,6 +35,10 @@
 #include "kernel/boot_filesystems.h"
 #include "kernel/boot_logfile.h"
 #include "kernel/boot_root.h"
+#ifdef CONFIG_EDGE_KVM_BHYVE
+#include "kernel/edge_kvm_bhyve.h"
+#include "kernel/edge_kvm_runtime.h"
+#endif
 #include "fs/initramfs.h"
 #include "console.h"
 #include "fb_console.h"
@@ -66,6 +70,25 @@ static void arm64_serial_puts(const char *s) {
     while (s && *s) arm64_serial_putc(*s++);
 }
 
+static void arm64_serial_put_signed(int value) {
+    char digits[12];
+    unsigned int magnitude;
+    unsigned int count = 0;
+
+    if (value < 0) {
+        arm64_serial_putc('-');
+        magnitude = (unsigned int)(-(value + 1)) + 1u;
+    } else {
+        magnitude = (unsigned int)value;
+    }
+    do {
+        digits[count++] = (char)('0' + magnitude % 10u);
+        magnitude /= 10u;
+    } while (magnitude != 0 && count < sizeof(digits));
+    while (count != 0)
+        arm64_serial_putc(digits[--count]);
+}
+
 static uint64_t g_init_ttbr0;
 static uint64_t g_init_entry;
 static uint64_t g_init_stack;
@@ -85,28 +108,40 @@ __attribute__((noreturn))
 void edgeos_arm64_el1_main(edgeos_arm64_bootinfo_t *bootinfo) {
     int initramfs_root = 0;
     int boot_log_status;
+#ifdef CONFIG_EDGE_KVM_BHYVE
+    int bsd_bridge_ready = 0;
+#endif
+    arm64_serial_puts("arm64: entered EdgeOS EL1 handoff\n");
     if (!arm64_bootinfo_valid(bootinfo)) {
         arm64_serial_puts("arm64: invalid UEFI handoff; halted\n");
         for (;;) __asm__ __volatile__("wfe");
     }
+    arm64_serial_puts("arm64: UEFI handoff validated\n");
 
 #if defined(CONFIG_BSD_DRIVER_BRIDGE) && defined(CONFIG_DEVICE_TREE)
-    if ((bootinfo->flags & EDGEOS_ARM64_BOOTINFO_FLAG_FDT) != 0 &&
+    arm64_serial_puts("arm64: installing firmware device tree\n");
+    if (!bsd_ofw_fdt_available() &&
+        (bootinfo->flags & EDGEOS_ARM64_BOOTINFO_FLAG_FDT) != 0 &&
         bsd_ofw_fdt_install(
             (const void *)(uintptr_t)bootinfo->fdt_base,
             (size_t)bootinfo->fdt_size) != 0) {
         arm64_serial_puts(
             "arm64: firmware device tree validation failed\n");
     }
+    arm64_serial_puts("arm64: firmware device tree installed\n");
 #endif
+    arm64_serial_puts("arm64: configuring platform handoff\n");
     (void)edgeos_arm64_platform_configure(bootinfo);
+    arm64_serial_puts("arm64: refreshing EL1 page tables\n");
     if (edgeos_arm64_mmu_init(bootinfo) < 0) {
         arm64_serial_puts("arm64: failed to install EdgeOS EL1 page tables; halted\n");
         for (;;) __asm__ __volatile__("wfe");
     }
     arm64_serial_puts("arm64: entered EdgeOS EL1 after ExitBootServices\n");
     arm64_serial_puts("arm64: EdgeOS EL1 page tables active\n");
+    edgeos_arm64_exceptions_init();
 #ifdef CONFIG_BSD_DRIVER_BRIDGE
+    arm64_serial_puts("arm64: installing EFI runtime metadata\n");
     if ((bootinfo->flags & EDGEOS_ARM64_BOOTINFO_FLAG_ACPI) != 0)
         bsd_acpi_tables_install_rsdp(bootinfo->acpi_rsdp);
     if (bsd_firmware_metadata_configure_efi(
@@ -117,9 +152,13 @@ void edgeos_arm64_el1_main(edgeos_arm64_bootinfo_t *bootinfo) {
         bootinfo->efi_mmap.descriptor_version) != 0) {
         arm64_serial_puts("arm64: EFI runtime metadata rejected\n");
     }
+    arm64_serial_puts("arm64: EFI runtime metadata installed\n");
 #endif
+    arm64_serial_puts("arm64: configuring boot log\n");
     boot_log_status = kernel_boot_log_configure();
+    arm64_serial_puts("arm64: boot log policy configured\n");
     bootlog_init();
+    arm64_serial_puts("arm64: boot log configured\n");
     if (boot_log_status < 0)
         bootlog_stage("bootlog: invalid loglevel or logfile option");
     if (edgeos_arm64_platform_kind() ==
@@ -250,7 +289,6 @@ void edgeos_arm64_el1_main(edgeos_arm64_bootinfo_t *bootinfo) {
         g_init_entry = interp_entry ? interp_entry : init_entry;
         g_init_stack = init_sp;
     }
-    edgeos_arm64_exceptions_init();
     bootlog_stage("ARM64: Initializing exceptions and interrupt controller");
     if (edgeos_arm64_irq_init(bootinfo) < 0) {
         arm64_serial_puts("arm64: GICv3 discovery or timer initialization failed; halted\n");
@@ -311,6 +349,9 @@ void edgeos_arm64_el1_main(edgeos_arm64_bootinfo_t *bootinfo) {
     if (bsd_bridge_bootstrap(0) != 0) {
         arm64_serial_puts("arm64: BSD driver bridge startup failed\n");
     } else {
+#ifdef CONFIG_EDGE_KVM_BHYVE
+        bsd_bridge_ready = 1;
+#endif
         bsd_bridge_handoff_status_t handoff_status;
 
         if (bsd_bridge_arm64_handoff_start(
@@ -325,6 +366,25 @@ void edgeos_arm64_el1_main(edgeos_arm64_bootinfo_t *bootinfo) {
             arm64_serial_puts(
                 "arm64: BSD driver bridge runtime ready\n");
         }
+    }
+#endif
+#ifdef CONFIG_EDGE_KVM_BHYVE
+    if (bsd_bridge_ready) {
+        int kvm_error;
+
+        (void)kernel_edge_kvm_descriptor_runtime_initialize();
+        kvm_error = edge_kvm_bhyve_arm64_register();
+        if (kvm_error != 0) {
+            arm64_serial_puts(
+                "arm64: bhyve-backed KVM initialization failed error=");
+            arm64_serial_put_signed(kvm_error);
+            arm64_serial_putc('\n');
+        } else
+            arm64_serial_puts(
+                "arm64: bhyve-backed KVM hardware backend ready\n");
+    } else {
+        arm64_serial_puts(
+            "arm64: BSD bridge unavailable; KVM backend disabled\n");
     }
 #endif
     kernel_process_runtime_enter();

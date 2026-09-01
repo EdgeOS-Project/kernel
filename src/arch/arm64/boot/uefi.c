@@ -22,6 +22,7 @@ typedef uint16_t efi_char16_t;
 #define EFI_LOAD_ERROR (EFI_ERROR_BIT | 1)
 #define EFI_INVALID_PARAMETER (EFI_ERROR_BIT | 2)
 #define EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL 0x00000001U
+#define EFI_LOCATE_BY_PROTOCOL 2U
 #define EFI_FILE_MODE_READ 0x0000000000000001ULL
 #define EFI_ALLOCATE_ANY_PAGES 0
 #define EFI_RESERVED_MEMORY_TYPE 0
@@ -55,6 +56,12 @@ typedef struct {
     uint16_t data3;
     uint8_t data4[8];
 } efi_guid_t;
+
+typedef struct {
+    uint8_t type;
+    uint8_t subtype;
+    uint8_t length[2];
+} efi_device_path_protocol_t;
 
 typedef struct efi_simple_text_output_protocol efi_simple_text_output_protocol_t;
 typedef struct efi_boot_services efi_boot_services_t;
@@ -179,7 +186,9 @@ struct efi_boot_services {
     void *close_protocol;
     void *open_protocol_information;
     void *protocols_per_handle;
-    void *locate_handle_buffer;
+    efi_status_t (EFIAPI *locate_handle_buffer)(
+        uint32_t search_type, const efi_guid_t *protocol,
+        void *search_key, uint64_t *handle_count, efi_handle_t **handles);
     efi_status_t (EFIAPI *locate_protocol)(const efi_guid_t *protocol,
                                            void *registration, void **interface);
 };
@@ -262,6 +271,10 @@ static const efi_guid_t file_info_guid = {
 /* EFI_LOAD_FILE2_PROTOCOL_GUID, used by U-Boot to expose an initrd in memory. */
 static const efi_guid_t load_file2_protocol_guid = {
     0x4006C0C1, 0xFCB3, 0x403E, {0x99, 0x6D, 0x4A, 0x6C, 0x87, 0x24, 0xE0, 0x6D}
+};
+
+static const efi_device_path_protocol_t end_device_path = {
+    0x7F, 0xFF, {sizeof(efi_device_path_protocol_t), 0}
 };
 
 /* EFI_DTB_TABLE_GUID, supplied by Generic UEFI implementations that boot FDT. */
@@ -827,29 +840,68 @@ static efi_status_t open_volume_file(efi_handle_t image_handle,
     efi_file_protocol_t *file = NULL;
     efi_status_t status;
 
+    if (!st || !st->boot_services || !path || !file_out)
+        return EFI_INVALID_PARAMETER;
+    *file_out = NULL;
+
     status = st->boot_services->open_protocol(image_handle, &loaded_image_protocol_guid,
                                               (void **)&loaded, image_handle, NULL,
                                               EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL);
-    if (is_error(status)) return status;
-
-    status = st->boot_services->open_protocol(loaded->device_handle,
-                                              &simple_file_system_protocol_guid,
-                                              (void **)&fs, image_handle, NULL,
-                                              EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL);
-    if (is_error(status)) return status;
-
-    status = fs->open_volume(fs, &root);
-    if (is_error(status)) return status;
-
-    status = root->open(root, &file, path, EFI_FILE_MODE_READ, 0);
-    if (is_error(status)) {
-        root->close(root);
-        return status;
+    if (!is_error(status) && loaded && loaded->device_handle) {
+        status = st->boot_services->open_protocol(
+            loaded->device_handle, &simple_file_system_protocol_guid,
+            (void **)&fs, image_handle, NULL,
+            EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL);
+        if (!is_error(status) && fs && fs->open_volume) {
+            status = fs->open_volume(fs, &root);
+            if (!is_error(status) && root) {
+                status = root->open(
+                    root, &file, path, EFI_FILE_MODE_READ, 0);
+                root->close(root);
+                if (!is_error(status) && file) {
+                    *file_out = file;
+                    return EFI_SUCCESS;
+                }
+            }
+        }
     }
 
-    *file_out = file;
-    root->close(root);
-    return EFI_SUCCESS;
+    if (st->boot_services->locate_handle_buffer) {
+        efi_handle_t *handles = NULL;
+        uint64_t handle_count = 0;
+        uint64_t index;
+
+        status = st->boot_services->locate_handle_buffer(
+            EFI_LOCATE_BY_PROTOCOL, &simple_file_system_protocol_guid,
+            NULL, &handle_count, &handles);
+        if (!is_error(status) && handles) {
+            for (index = 0; index < handle_count; index++) {
+                fs = NULL;
+                root = NULL;
+                file = NULL;
+                status = st->boot_services->open_protocol(
+                    handles[index], &simple_file_system_protocol_guid,
+                    (void **)&fs, image_handle, NULL,
+                    EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL);
+                if (is_error(status) || !fs || !fs->open_volume)
+                    continue;
+                status = fs->open_volume(fs, &root);
+                if (is_error(status) || !root)
+                    continue;
+                status = root->open(
+                    root, &file, path, EFI_FILE_MODE_READ, 0);
+                root->close(root);
+                if (!is_error(status) && file) {
+                    *file_out = file;
+                    st->boot_services->free_pool(handles);
+                    return EFI_SUCCESS;
+                }
+            }
+            st->boot_services->free_pool(handles);
+        }
+    }
+
+    return is_error(status) ? status : EFI_LOAD_ERROR;
 }
 
 static int load_requested_video_mode(efi_handle_t image_handle,
@@ -948,6 +1000,8 @@ static void load_boot_command_line(efi_handle_t image_handle,
 
     buffer[0] = 0;
     status = open_volume_file(image_handle, st, u"\\boot\\cmdline", &file);
+    if (is_error(status))
+        status = open_volume_file(image_handle, st, u"cmdline", &file);
     if (!is_error(status) && file) {
         status = file->read(file, &size, buffer);
         file->close(file);
@@ -1146,6 +1200,9 @@ static efi_status_t load_initramfs_image(
         status = load_file_image(
             image_handle, st, u"\\boot\\initramfs.cpio", 110u,
             base_out, size_out);
+    if (is_error(status))
+        status = load_file_image(
+            image_handle, st, u"initrd", 110u, base_out, size_out);
     if (is_error(status) && st && st->boot_services &&
         st->boot_services->locate_protocol) {
         efi_load_file_protocol_t *load_file2 = NULL;
@@ -1157,7 +1214,8 @@ static efi_status_t load_initramfs_image(
             &load_file2_protocol_guid, NULL, (void **)&load_file2);
         if (!is_error(status) && load_file2 && load_file2->load_file) {
             status = load_file2->load_file(
-                load_file2, NULL, 0, &buffer_size, NULL);
+                load_file2, (void *)&end_device_path, 0,
+                &buffer_size, NULL);
             if (status == EFI_BUFFER_TOO_SMALL && buffer_size >= 110u) {
                 pages = (buffer_size + 4095u) >> 12;
                 status = st->boot_services->allocate_pages(
@@ -1166,7 +1224,7 @@ static efi_status_t load_initramfs_image(
                     uint64_t loaded_size = buffer_size;
 
                     status = load_file2->load_file(
-                        load_file2, NULL, 0, &loaded_size,
+                        load_file2, (void *)&end_device_path, 0, &loaded_size,
                         (void *)(uintptr_t)phys);
                     if (!is_error(status) && loaded_size >= 110u) {
                         *base_out = (void *)(uintptr_t)phys;
@@ -1391,6 +1449,8 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle, efi_system_table_t *st) 
         for (;;) __asm__ __volatile__("wfe");
     }
 
+    serial_puts("uefi: ExitBootServices complete\n");
+
     if (g_fb && g_fb_width && g_fb_height)
         fb_flush_rect(0, 0, (int)g_fb_width, (int)g_fb_height);
     /*
@@ -1399,9 +1459,13 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle, efi_system_table_t *st) 
      * in edgeos_arm64_kernel_entry cannot land on stale firmware EL1 state.
      * EDK2/QEMU normally invokes us at EL1 and keeps the existing path.
      */
-    if (current_exception_level() == 2u &&
-        edgeos_arm64_mmu_init(&g_bootinfo) < 0) {
-        for (;;) __asm__ __volatile__("wfe");
+    if (current_exception_level() == 2u) {
+        serial_puts("uefi: preparing EL1 page tables from EL2\n");
+        if (edgeos_arm64_mmu_init(&g_bootinfo) < 0) {
+            serial_puts("uefi: EL1 page-table preparation failed\n");
+            for (;;) __asm__ __volatile__("wfe");
+        }
+        serial_puts("uefi: EL1 page tables ready for handoff\n");
     }
     (void)g_rootfs_ok;
     edgeos_arm64_kernel_entry(&g_bootinfo);

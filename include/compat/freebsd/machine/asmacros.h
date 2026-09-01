@@ -5,8 +5,17 @@
 #define _MACHINE_ASMACROS_H_
 
 #define SUPERALIGN_TEXT .p2align 4,0x90
+#define ALIGN_TEXT SUPERALIGN_TEXT
 
 #ifdef LOCORE
+
+#define ENTRY(name) \
+    .text; \
+    SUPERALIGN_TEXT; \
+    .globl name; \
+    .type name,@function; \
+name:
+#define END(name) .size name, .-name
 
 /*
  * The imported Hyper-V vector enters through an EdgeOS interrupt gate while

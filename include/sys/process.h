@@ -269,6 +269,8 @@ typedef struct task_struct {
     uint64_t fuse_wait_identity;
     volatile uint64_t *runtime_wait_sequence;
     uint64_t runtime_wait_observed;
+    void (*syscall_interrupt_notify)(void *context);
+    void *syscall_interrupt_context;
     kernel_epoll_wait_lease_t epoll_wait_lease;
     spinlock_t file_lock_wait_lock;
     int64_t file_lock_wait_result;
@@ -438,6 +440,8 @@ int process_user_elf_map_inode_pid(int pid, const char *display_path,
                                    uint64_t start, uint64_t len,
                                    uint64_t file_offset,
                                    uint32_t protection);
+int process_user_elf_map_anon_pid(int pid, uint64_t start, uint64_t len,
+                                  uint32_t protection);
 void process_exit_current(int code);
 void process_exit_current_group(int code);
 void process_release_detached_zombie_thread(task_t *t);
@@ -514,6 +518,10 @@ int process_kill_pgid(int pgid, int code);
 int process_send_signal(int pid, int sig);
 int process_send_signal_thread(int pid, int sig);
 int process_send_signal_info(int pid, int sig, const void *signal_info);
+int process_current_task_interrupt_notifier_set(
+    void (*notify)(void *context), void *context);
+void process_current_task_interrupt_notifier_clear(
+    void (*notify)(void *context), void *context);
 int process_send_signal_pgid(int pgid, int sig);
 int process_send_signal_pgid_info(int pgid, int sig,
                                   const void *signal_info);

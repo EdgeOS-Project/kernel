@@ -543,6 +543,8 @@ static int edge_load_elf_from_vfs(
                 uint32_t bytes = (uint32_t)(copy_end - copy_start);
 
                 if (process_user_fixed_map_pid(target_pid, page, 0x1000ULL) < 0 ||
+                    process_user_elf_map_anon_pid(
+                        target_pid, page, 0x1000ULL, protection) < 0 ||
                     vfs_pread_exact(sb, &ino, (uint32_t)file_offset,
                                     io_chunk, bytes) < 0 ||
                     elf_write_user(target_pid, copy_start, io_chunk, bytes) < 0) {
@@ -554,7 +556,10 @@ static int edge_load_elf_from_vfs(
             }
         } else if ((dst & 0xFFFULL) != 0) {
             if (process_user_fixed_map_pid(
-                    target_pid, page_align_down_u64(dst), 0x1000ULL) < 0) {
+                    target_pid, page_align_down_u64(dst), 0x1000ULL) < 0 ||
+                process_user_elf_map_anon_pid(
+                    target_pid, page_align_down_u64(dst), 0x1000ULL,
+                    protection) < 0) {
                 printf("[elf][err] zero boundary map %s i=%u dst=0x%x\n",
                        path, i, (uint32_t)dst);
                 goto out_release;
@@ -565,9 +570,13 @@ static int edge_load_elf_from_vfs(
         if (ph[i].p_filesz == 0 && (dst & 0xFFFULL) == 0)
             anonymous_start = dst;
         if (page_align_up_u64(end) > anonymous_start &&
-            process_user_fixed_map_pid(
-                target_pid, anonymous_start,
-                page_align_up_u64(end) - anonymous_start) < 0) {
+            (process_user_fixed_map_pid(
+                 target_pid, anonymous_start,
+                 page_align_up_u64(end) - anonymous_start) < 0 ||
+             process_user_elf_map_anon_pid(
+                 target_pid, anonymous_start,
+                 page_align_up_u64(end) - anonymous_start,
+                 protection) < 0)) {
             printf("[elf][err] zero map %s i=%u dst=0x%x len=0x%x\n",
                    path, i, (uint32_t)anonymous_start,
                    (uint32_t)(page_align_up_u64(end) - anonymous_start));

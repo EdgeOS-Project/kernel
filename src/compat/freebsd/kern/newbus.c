@@ -991,6 +991,36 @@ bsd_newbus_create_root(const char *name, int unit, driver_t *driver)
     return device;
 }
 
+int
+bsd_newbus_attach_synthetic(device_t parent, const char *name, int unit,
+    driver_t *driver, device_t *result)
+{
+    device_t device;
+    int error;
+
+    if (result)
+        *result = 0;
+    if (!parent || !name || !driver)
+        return BSD_NEWBUS_EINVAL;
+    device = device_add_child(parent, name, unit);
+    if (!device)
+        return BSD_NEWBUS_ENOMEM;
+    error = device_set_driver(device, driver);
+    if (error != 0)
+        goto fail;
+    device->state = DS_ALIVE;
+    error = device_attach(device);
+    if (error != 0)
+        goto fail;
+    if (result)
+        *result = device;
+    return 0;
+
+fail:
+    (void)device_delete_child(parent, device);
+    return error;
+}
+
 static int
 device_call(device_t device, struct kobjop_desc *descriptor)
 {

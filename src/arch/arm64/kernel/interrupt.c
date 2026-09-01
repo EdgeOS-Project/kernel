@@ -1028,14 +1028,14 @@ void edgeos_arm64_sync_handler(edgeos_arm64_exception_frame_t *frame) {
     if (frame) {
         arm64_serial_puts("  esr=");
         arm64_serial_hex64(frame->esr);
-        arm64_serial_puts(" pid=");
-        arm64_serial_hex64((uint64_t)(uint32_t)kernel_current_pid());
-        arm64_serial_puts(" comm=");
-        arm64_serial_puts(kernel_current_comm());
         arm64_serial_puts(" far=");
         arm64_serial_hex64(frame->far);
         arm64_serial_puts(" elr=");
         arm64_serial_hex64(frame->elr);
+        arm64_serial_puts(" pid=");
+        arm64_serial_hex64((uint64_t)(uint32_t)kernel_current_pid());
+        arm64_serial_puts(" comm=");
+        arm64_serial_puts(kernel_current_comm());
         arm64_serial_puts(" lr=");
         arm64_serial_hex64(frame->x[30]);
         arm64_serial_puts(" x0=");
@@ -1297,7 +1297,11 @@ void edgeos_arm64_irq_handler(edgeos_arm64_exception_frame_t *frame) {
         else
             tval = freq / EDGE_KERNEL_TIMER_HZ;
         if (!tval) tval = 1;
-        __asm__ __volatile__("msr cntv_tval_el0, %0" :: "r"(tval));
+        __asm__ __volatile__(
+            "msr cntv_tval_el0, %0\n\t"
+            "msr cntv_ctl_el0, %1\n\t"
+            "isb"
+            :: "r"(tval), "r"(1u));
     } else if (intid == ARM64_RESCHEDULE_SGI) {
         __asm__ __volatile__("dmb ish" ::: "memory");
         execution_locked = edgeos_arm64_kernel_execution_try_enter();

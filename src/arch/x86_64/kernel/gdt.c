@@ -36,7 +36,7 @@ typedef struct {
 #define GDT_ENTRY_TLS_COUNT 3u
 #define GDT_ENTRY_COUNT 15u
 
-static uint64 g_gdt[SCHED_MAX_CPUS][GDT_ENTRY_COUNT]
+static uint64_t g_gdt[SCHED_MAX_CPUS][GDT_ENTRY_COUNT]
     __attribute__((aligned(64)));
 static tss64_t g_tss[SCHED_MAX_CPUS] __attribute__((aligned(64)));
 static gdt_ptr_t g_gdt_ptr[SCHED_MAX_CPUS];
@@ -70,6 +70,27 @@ uint64_t gdt_get_tss_rsp0(void) {
 
     if (cpu >= SCHED_MAX_CPUS) cpu = 0;
     return g_tss[cpu].rsp0;
+}
+
+uint64_t *gdt_current_tss_descriptor(void) {
+    uint32_t cpu = scheduler_cpu_id();
+
+    if (cpu >= SCHED_MAX_CPUS) cpu = 0;
+    return &g_gdt[cpu][5];
+}
+
+void *gdt_current_tss(void) {
+    uint32_t cpu = scheduler_cpu_id();
+
+    if (cpu >= SCHED_MAX_CPUS) cpu = 0;
+    return &g_tss[cpu];
+}
+
+uint64_t *gdt_current_base(void) {
+    uint32_t cpu = scheduler_cpu_id();
+
+    if (cpu >= SCHED_MAX_CPUS) cpu = 0;
+    return &g_gdt[cpu][0];
 }
 
 static void gdt_load_ldt_cpu(uint32_t cpu, const uint64_t *entries,

@@ -1763,6 +1763,176 @@ redist_write(struct vcpu *vcpu, uint64_t fault_ipa, uint64_t wval,
 	return (0);
 }
 
+int
+vgic_v3_kvm_dist_access(struct vm *vm, uint32_t offset, uint32_t *value,
+    int write)
+{
+	struct hypctx *hypctx;
+	struct vcpu *vcpu;
+	uint64_t result;
+	int error;
+
+	if (vm == NULL || value == NULL)
+		return (EINVAL);
+	vcpu = vm_vcpu(vm, 0);
+	if (vcpu == NULL || (hypctx = vcpu_get_cookie(vcpu)) == NULL ||
+	    hypctx->hyp == NULL || hypctx->hyp->vgic == NULL)
+		return (ENXIO);
+	if (write)
+		return (dist_write(vcpu, hypctx->hyp->vgic->dist_start + offset,
+		    *value, 4, NULL));
+	result = 0;
+	error = dist_read(vcpu, hypctx->hyp->vgic->dist_start + offset,
+	    &result, 4, NULL);
+	*value = (uint32_t)result;
+	return (error);
+}
+
+int
+vgic_v3_kvm_redist_access(struct vm *vm, uint32_t vcpu_id,
+    uint32_t offset, uint32_t *value, int write)
+{
+	struct hypctx *hypctx;
+	struct vcpu *vcpu;
+	uint64_t address;
+	uint64_t result;
+	int error;
+
+	if (vm == NULL || value == NULL || vcpu_id >= vm_get_maxcpus(vm))
+		return (EINVAL);
+	vcpu = vm_vcpu(vm, 0);
+	if (vcpu == NULL || (hypctx = vcpu_get_cookie(vcpu)) == NULL ||
+	    hypctx->hyp == NULL || hypctx->hyp->vgic == NULL)
+		return (ENXIO);
+	address = hypctx->hyp->vgic->redist_start +
+	    (uint64_t)vcpu_id * (GICR_RD_BASE_SIZE + GICR_SGI_BASE_SIZE) +
+	    offset;
+	if (write)
+		return (redist_write(vcpu, address, *value, 4, NULL));
+	result = 0;
+	error = redist_read(vcpu, address, &result, 4, NULL);
+	*value = (uint32_t)result;
+	return (error);
+}
+
+int
+vgic_v3_kvm_cpu_sysreg_access(struct vm *vm, uint32_t vcpu_id,
+    uint32_t attribute, uint64_t *value, int write)
+{
+	struct hypctx *hypctx;
+	struct vcpu *vcpu;
+	uint64_t vmcr;
+	enum hypctx_sysreg reg;
+
+	if (vm == NULL || value == NULL || vcpu_id >= vm_get_maxcpus(vm))
+		return (EINVAL);
+	vcpu = vm_vcpu(vm, vcpu_id);
+	if (vcpu == NULL || (hypctx = vcpu_get_cookie(vcpu)) == NULL)
+		return (ENXIO);
+	vmcr = hypctx_read_sys_reg(hypctx, HOST_ICH_VMCR_EL2);
+	switch (attribute) {
+	case 0xc230: /* ICC_PMR_EL1 */
+		if (write) {
+			vmcr &= ~ICH_VMCR_EL2_VPMR_MASK;
+			vmcr |= (*value & 0xff) << ICH_VMCR_EL2_VPMR_SHIFT;
+		} else
+			*value = (vmcr & ICH_VMCR_EL2_VPMR_MASK) >>
+			    ICH_VMCR_EL2_VPMR_SHIFT;
+		break;
+	case 0xc643: /* ICC_BPR0_EL1 */
+		if (write) {
+			vmcr &= ~ICH_VMCR_EL2_VBPR0_MASK;
+			vmcr |= (*value & 0x7) << ICH_VMCR_EL2_VBPR0_SHIFT;
+		} else
+			*value = (vmcr & ICH_VMCR_EL2_VBPR0_MASK) >>
+			    ICH_VMCR_EL2_VBPR0_SHIFT;
+		break;
+	case 0xc663: /* ICC_BPR1_EL1 */
+		if (write) {
+			vmcr &= ~ICH_VMCR_EL2_VBPR1_MASK;
+			vmcr |= (*value & 0x7) << ICH_VMCR_EL2_VBPR1_SHIFT;
+		} else
+			*value = (vmcr & ICH_VMCR_EL2_VBPR1_MASK) >>
+			    ICH_VMCR_EL2_VBPR1_SHIFT;
+		break;
+	case 0xc664: /* ICC_CTLR_EL1 */
+		if (write) {
+			vmcr &= ~(ICH_VMCR_EL2_VCBPR | ICH_VMCR_EL2_VEOIM);
+			if ((*value & 1) != 0)
+				vmcr |= ICH_VMCR_EL2_VCBPR;
+			if ((*value & 2) != 0)
+				vmcr |= ICH_VMCR_EL2_VEOIM;
+		} else {
+			*value = 5u << 8;
+			if ((vmcr & ICH_VMCR_EL2_VCBPR) != 0)
+				*value |= 1;
+			if ((vmcr & ICH_VMCR_EL2_VEOIM) != 0)
+				*value |= 2;
+		}
+		break;
+	case 0xc665: /* ICC_SRE_EL1 */
+		if (!write)
+			*value = 7;
+		break;
+	case 0xc666: /* ICC_IGRPEN0_EL1 */
+		if (write) {
+			vmcr &= ~ICH_VMCR_EL2_VENG0;
+			if ((*value & 1) != 0)
+				vmcr |= ICH_VMCR_EL2_VENG0;
+		} else
+			*value = (vmcr & ICH_VMCR_EL2_VENG0) != 0;
+		break;
+	case 0xc667: /* ICC_IGRPEN1_EL1 */
+		if (write) {
+			vmcr &= ~ICH_VMCR_EL2_VENG1;
+			if ((*value & 1) != 0)
+				vmcr |= ICH_VMCR_EL2_VENG1;
+		} else
+			*value = (vmcr & ICH_VMCR_EL2_VENG1) != 0;
+		break;
+	default:
+		if (attribute >= 0xc644 && attribute <= 0xc647)
+			reg = HOST_ICH_AP0R_EL2(attribute - 0xc644);
+		else if (attribute >= 0xc648 && attribute <= 0xc64b)
+			reg = HOST_ICH_AP1R_EL2(attribute - 0xc648);
+		else
+			return (ENXIO);
+		if (write)
+			hypctx_write_sys_reg(hypctx, reg, *value);
+		else
+			*value = hypctx_read_sys_reg(hypctx, reg);
+		return (0);
+	}
+	if (write)
+		hypctx_write_sys_reg(hypctx, HOST_ICH_VMCR_EL2, vmcr);
+	return (0);
+}
+
+int
+vgic_v3_kvm_level_access(struct vm *vm, uint32_t vcpu_id, uint32_t irq_id,
+    uint32_t *value, int write)
+{
+	struct hypctx *hypctx;
+	struct vgic_v3_irq *irq;
+	struct vcpu *vcpu;
+
+	if (vm == NULL || value == NULL || vcpu_id >= vm_get_maxcpus(vm))
+		return (EINVAL);
+	vcpu = vm_vcpu(vm, vcpu_id);
+	if (vcpu == NULL || (hypctx = vcpu_get_cookie(vcpu)) == NULL ||
+	    hypctx->hyp == NULL)
+		return (ENXIO);
+	irq = vgic_v3_get_irq(hypctx->hyp, vcpu_id, irq_id);
+	if (irq == NULL)
+		return (ENXIO);
+	if (write)
+		irq->level = (*value & 1) != 0;
+	else
+		*value = irq->level ? 1u : 0u;
+	vgic_v3_release_irq(irq);
+	return (0);
+}
+
 static int
 vgic_v3_icc_sgi1r_read(struct vcpu *vcpu, uint64_t *rval, void *arg)
 {

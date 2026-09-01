@@ -412,6 +412,9 @@ pci_function(device_t device)
     return device ? device_get_ivars(device) : 0;
 }
 
+static void pcie_pause_milliseconds(const char *wait_message,
+    unsigned int milliseconds);
+
 struct pci_map *
 pci_find_bar(device_t device, int register_offset)
 {
@@ -424,6 +427,56 @@ pci_find_bar(device_t device, int register_offset)
             function->maps[index].pm_size != 0)
             return &function->maps[index];
     }
+    return 0;
+}
+
+struct pci_map *
+pci_first_bar(device_t device)
+{
+    bsd_pci_function_t *function = pci_function(device);
+
+    if (!function)
+        return 0;
+    for (unsigned int index = 0; index < BSD_PCI_BAR_COUNT; ++index) {
+        if (function->maps[index].pm_size != 0)
+            return &function->maps[index];
+    }
+    return 0;
+}
+
+struct pci_map *
+pci_next_bar(struct pci_map *map)
+{
+    return map ? map->pm_link.stqe_next : 0;
+}
+
+int
+pci_power_reset(device_t device)
+{
+    int capability;
+    uint16_t control;
+    uint16_t original_state;
+
+    if (bsd_pci_find_capability(device,
+        BSD_PCI_CAP_POWER_MANAGEMENT, 0, &capability) != 0)
+        return BSD_PCI_ENXIO;
+    control = (uint16_t)bsd_pci_read_config(device,
+        capability + BSD_PCI_POWER_STATUS, 2);
+    original_state = control & 0x3u;
+    if (original_state != 0 && original_state != 3u) {
+        bsd_pci_write_config(device,
+            capability + BSD_PCI_POWER_STATUS,
+            control & (uint16_t)~0x3u, 2);
+        pcie_pause_milliseconds("pcipwr0", 10u);
+    }
+    bsd_pci_write_config(device,
+        capability + BSD_PCI_POWER_STATUS,
+        (control & (uint16_t)~0x3u) | 3u, 2);
+    pcie_pause_milliseconds("pcipwr3", 10u);
+    bsd_pci_write_config(device,
+        capability + BSD_PCI_POWER_STATUS,
+        (control & (uint16_t)~0x3u) | original_state, 2);
+    pcie_pause_milliseconds("pcipwrr", 10u);
     return 0;
 }
 
@@ -1619,6 +1672,17 @@ pci_add_bar_resources(device_t device)
     bsd_pci_write_config(
         device, BSD_PCI_COMMAND, enabled_command, 2);
     function->command = enabled_command;
+    struct pci_map *previous = 0;
+    for (unsigned int index = 0; index < BSD_PCI_BAR_COUNT; ++index) {
+        struct pci_map *map = &function->maps[index];
+
+        map->pm_link.stqe_next = 0;
+        if (map->pm_size == 0)
+            continue;
+        if (previous)
+            previous->pm_link.stqe_next = map;
+        previous = map;
+    }
     return 0;
 }
 

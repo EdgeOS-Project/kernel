@@ -30,6 +30,9 @@
 #include "kernel/drm_runtime.h"
 #include "kernel/file_metadata.h"
 #include "kernel/timer_policy.h"
+#ifdef CONFIG_EDGE_KVM_BHYVE
+#include "kernel/edge_kvm_bhyve.h"
+#endif
 #include "elf/elf_loader.h"
 #include "drivers/e1000.h"
 #ifdef CONFIG_WIFI_INTEL_IWLWIFI
@@ -257,6 +260,11 @@ static void timer_handler(REGISTERS *r) {
             virtio_gpu_presents_pending())
             kernel_display_work_request();
     }
+#ifdef CONFIG_BSD_DRIVER_BRIDGE
+    else {
+        bsd_callout_process_timer_poll();
+    }
+#endif
     scheduler_tick();
 #ifdef CONFIG_FB_CONSOLE
     if (edge_kernel_timer_runs_global_work(cpu) && g_has_fb_console) {
@@ -370,6 +378,9 @@ static void ensure_default_dev_entries(void) {
 void kmain(uint32_t magic, void *mb_info) {
     int initramfs_root = 0;
     int boot_log_status;
+#ifdef CONFIG_EDGE_KVM_BHYVE
+    int bsd_bridge_ready = 0;
+#endif
 
     serial_console_init();
     save_kernel_cmdline(magic, mb_info);
@@ -669,6 +680,10 @@ void kmain(uint32_t magic, void *mb_info) {
             bsd_bridge_handoff_status_t handoff_status;
             bsd_bridge_bootstrap_status_t bridge_status;
 
+#ifdef CONFIG_EDGE_KVM_BHYVE
+            bsd_bridge_ready = 1;
+#endif
+
 #ifdef CONFIG_BSD_DRIVER_ACPICA
             bridge_error = bsd_acpica_runtime_initialize();
             if (bridge_error != 0) {
@@ -707,6 +722,22 @@ void kmain(uint32_t magic, void *mb_info) {
     isr_register_interrupt_handler(APIC_TIMER_VECTOR, timer_handler);
     bootlog_stage("Starting secondary CPUs");
     (void)x86_smp_start_secondaries();
+#endif
+
+#ifdef CONFIG_EDGE_KVM_BHYVE
+    if (bsd_bridge_ready) {
+        int kvm_error;
+
+        bootlog_stage("Initializing bhyve-backed KVM facade");
+        kvm_error = edge_kvm_bhyve_x86_register();
+        if (kvm_error != 0)
+            printf("[edge-kvm] hardware backend unavailable: %d\n",
+                kvm_error);
+        else
+            printf("[edge-kvm] bhyve hardware backend ready\n");
+    } else {
+        printf("[edge-kvm] BSD bridge unavailable; backend disabled\n");
+    }
 #endif
 
     bootlog_stage("INIT: Starting configured init");

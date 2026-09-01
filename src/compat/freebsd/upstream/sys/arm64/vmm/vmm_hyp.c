@@ -235,15 +235,35 @@ static void
 vmm_hyp_reg_store_timer(struct hypctx *hypctx, struct hyp *hyp, bool guest)
 {
 	bool ecv_poff;
+#ifdef EDGEOS_BHYVE_HOST_IRQ_REENTER
+	uint64_t previous_cntv_cval;
+	uint32_t cntv_ctl;
+#endif
 
 	if (guest) {
 		/* Store the timer registers */
 		hypctx->vtimer_cpu.cntkctl_el1 =
 		    READ_SPECIALREG(EL1_REG(CNTKCTL));
+#ifdef EDGEOS_BHYVE_HOST_IRQ_REENTER
+		previous_cntv_cval =
+		    hypctx->vtimer_cpu.virt_timer.cntx_cval_el0;
+#endif
 		hypctx->vtimer_cpu.virt_timer.cntx_cval_el0 =
 		    READ_SPECIALREG(EL0_REG(CNTV_CVAL));
+#ifdef EDGEOS_BHYVE_HOST_IRQ_REENTER
+		cntv_ctl = READ_SPECIALREG(EL0_REG(CNTV_CTL));
+		if (!((hypctx->vtimer_cpu.virt_timer.cntx_ctl_el0 &
+		    (CNTP_CTL_ENABLE | CNTP_CTL_ISTATUS)) ==
+		    (CNTP_CTL_ENABLE | CNTP_CTL_ISTATUS) &&
+		    (cntv_ctl & (CNTP_CTL_ENABLE | CNTP_CTL_ISTATUS)) ==
+		    CNTP_CTL_ISTATUS &&
+		    hypctx->vtimer_cpu.virt_timer.cntx_cval_el0 ==
+		    previous_cntv_cval))
+			hypctx->vtimer_cpu.virt_timer.cntx_ctl_el0 = cntv_ctl;
+#else
 		hypctx->vtimer_cpu.virt_timer.cntx_ctl_el0 =
 		    READ_SPECIALREG(EL0_REG(CNTV_CTL));
+#endif
 	} else {
 		hypctx->vtimer_cpu.cntkctl_el1 =
 		    READ_SPECIALREG(cntkctl_el1);
@@ -588,6 +608,7 @@ static void
 vmm_hyp_reg_restore_timer(struct hypctx *hypctx, struct hyp *hyp, bool guest)
 {
 	bool ecv_poff;
+	uint32_t cntv_ctl;
 	ecv_poff = (hypctx_read_sys_reg(hypctx, HOST_CNTHCTL_EL2) &
 	    CNTHCTL_ECV_EN) != 0;
 
@@ -601,8 +622,19 @@ vmm_hyp_reg_restore_timer(struct hypctx *hypctx, struct hyp *hyp, bool guest)
 		    hypctx->vtimer_cpu.cntkctl_el1);
 		WRITE_SPECIALREG(EL0_REG(CNTV_CVAL),
 		    hypctx->vtimer_cpu.virt_timer.cntx_cval_el0);
-		WRITE_SPECIALREG(EL0_REG(CNTV_CTL),
-		    hypctx->vtimer_cpu.virt_timer.cntx_ctl_el0);
+		cntv_ctl = hypctx->vtimer_cpu.virt_timer.cntx_ctl_el0;
+#ifdef EDGEOS_BHYVE_HOST_IRQ_REENTER
+		/*
+		 * The native FreeBSD timer filter disables an expired hardware
+		 * timer before returning directly to the guest. EdgeOS leaves the
+		 * world switch to process host IRQs, so reproduce that hardware
+		 * state when the guest is restored. The saved control value remains
+		 * unchanged and the virtual GIC still presents the pending PPI.
+		 */
+		if ((cntv_ctl & CNTP_CTL_ISTATUS) != 0)
+			cntv_ctl &= ~CNTP_CTL_ENABLE;
+#endif
+		WRITE_SPECIALREG(EL0_REG(CNTV_CTL), cntv_ctl);
 
 		if (ecv_poff) {
 			/*

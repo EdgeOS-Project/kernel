@@ -27,12 +27,114 @@ static kernel_eventfd_object_t
     g_eventfds[EDGE_RUNTIME_MAX_EVENTFDS];
 static volatile uint32_t g_eventfd_lock;
 
+#define KERNEL_EVENTFD_MAX_OBSERVERS 256u
+
+typedef struct kernel_eventfd_observer {
+    uint8_t active;
+    int32_t event_id;
+    kernel_eventfd_observer_fn callback;
+    void *context;
+} kernel_eventfd_observer_t;
+
+static kernel_eventfd_observer_t
+    g_eventfd_observers[KERNEL_EVENTFD_MAX_OBSERVERS];
+static volatile uint32_t g_eventfd_observer_lock;
+static kernel_eventfd_state_changed_fn g_eventfd_state_changed;
+static void *g_eventfd_state_changed_context;
+
 static void kernel_eventfd_lock(void) {
     while (__sync_lock_test_and_set(&g_eventfd_lock, 1u)) { }
 }
 
 static void kernel_eventfd_unlock(void) {
     __sync_lock_release(&g_eventfd_lock);
+}
+
+static void kernel_eventfd_observer_lock(void) {
+    while (__sync_lock_test_and_set(&g_eventfd_observer_lock, 1u)) { }
+}
+
+static void kernel_eventfd_observer_unlock(void) {
+    __sync_lock_release(&g_eventfd_observer_lock);
+}
+
+int kernel_eventfd_state_backend_register(
+        kernel_eventfd_state_changed_fn callback, void *context) {
+    if (!callback) return -EDGE_LINUX_EINVAL;
+    g_eventfd_state_changed_context = context;
+    __atomic_store_n(&g_eventfd_state_changed, callback, __ATOMIC_RELEASE);
+    return 0;
+}
+
+static void kernel_eventfd_notify_state_changed(int event_id) {
+    kernel_eventfd_state_changed_fn callback = __atomic_load_n(
+        &g_eventfd_state_changed, __ATOMIC_ACQUIRE);
+
+    if (callback) callback(g_eventfd_state_changed_context, event_id);
+}
+
+int kernel_eventfd_observer_register(int event_id,
+        kernel_eventfd_observer_fn callback, void *context) {
+    kernel_eventfd_state_t state;
+    kernel_eventfd_observer_t *free_observer = 0;
+
+    if (!callback || kernel_eventfd_query(event_id, &state) < 0)
+        return -EDGE_LINUX_EBADF;
+    kernel_eventfd_observer_lock();
+    for (uint32_t index = 0; index < KERNEL_EVENTFD_MAX_OBSERVERS;
+         ++index) {
+        kernel_eventfd_observer_t *observer = &g_eventfd_observers[index];
+
+        if (!observer->active) {
+            if (!free_observer) free_observer = observer;
+            continue;
+        }
+        if (observer->event_id == event_id &&
+            observer->callback == callback && observer->context == context) {
+            kernel_eventfd_observer_unlock();
+            return -EDGE_LINUX_EEXIST;
+        }
+    }
+    if (!free_observer) {
+        kernel_eventfd_observer_unlock();
+        return -EDGE_LINUX_ENOSPC;
+    }
+    free_observer->event_id = event_id;
+    free_observer->callback = callback;
+    free_observer->context = context;
+    free_observer->active = 1u;
+    kernel_eventfd_observer_unlock();
+    return 0;
+}
+
+int kernel_eventfd_observer_unregister(int event_id,
+        kernel_eventfd_observer_fn callback, void *context) {
+    kernel_eventfd_observer_lock();
+    for (uint32_t index = 0; index < KERNEL_EVENTFD_MAX_OBSERVERS;
+         ++index) {
+        kernel_eventfd_observer_t *observer = &g_eventfd_observers[index];
+
+        if (!observer->active || observer->event_id != event_id ||
+            observer->callback != callback || observer->context != context)
+            continue;
+        memset(observer, 0, sizeof(*observer));
+        kernel_eventfd_observer_unlock();
+        return 0;
+    }
+    kernel_eventfd_observer_unlock();
+    return -EDGE_LINUX_ENOENT;
+}
+
+static void kernel_eventfd_notify_observers(int event_id) {
+    kernel_eventfd_observer_lock();
+    for (uint32_t index = 0; index < KERNEL_EVENTFD_MAX_OBSERVERS;
+         ++index) {
+        kernel_eventfd_observer_t *observer = &g_eventfd_observers[index];
+
+        if (observer->active && observer->event_id == event_id)
+            observer->callback(observer->context, event_id);
+    }
+    kernel_eventfd_observer_unlock();
 }
 
 static kernel_eventfd_object_t *kernel_eventfd_lookup_locked(int event_id) {
@@ -119,7 +221,12 @@ static int kernel_eventfd_consume(int event_id, uint64_t *value) {
         if (value) *value = consumed;
     }
     kernel_eventfd_unlock();
+    if (result == 0) kernel_eventfd_notify_state_changed(event_id);
     return result;
+}
+
+int kernel_eventfd_consume_value(int event_id, uint64_t *value) {
+    return kernel_eventfd_consume(event_id, value);
 }
 
 static int kernel_eventfd_add(int event_id, uint64_t value) {
@@ -137,6 +244,10 @@ static int kernel_eventfd_add(int event_id, uint64_t value) {
         if (++event->write_sequence == 0u) event->write_sequence = 1u;
     }
     kernel_eventfd_unlock();
+    if (result == 0) {
+        kernel_eventfd_notify_observers(event_id);
+        kernel_eventfd_notify_state_changed(event_id);
+    }
     return result;
 }
 

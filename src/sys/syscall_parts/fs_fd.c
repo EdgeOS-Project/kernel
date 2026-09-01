@@ -2432,6 +2432,9 @@ static int poll_fd_revents(edge_fd_t *e, int16_t events) {
             LINUX_POLLERR | LINUX_POLLPRI, events);
     }
 
+    if (e->kind == FD_KVM_STATS)
+        rev |= LINUX_POLLIN | LINUX_POLLOUT;
+
     if (e->kind == FD_EVENTFD || e->kind == FD_TIMERFD ||
         e->kind == FD_SIGNALFD || e->kind == FD_INOTIFY ||
         e->kind == FD_FANOTIFY || e->kind == FD_USERFAULTFD ||
@@ -4958,6 +4961,34 @@ int64_t arch_vfs_open_special(
     p = fd_proc_for_pid_empty(fd_owner_pid_current(), 1);
     if (!p) return (uint64_t)-ENOMEM;
 
+    if (strcmp(path, EDGE_VFIO_CONTAINER_PATH) == 0)
+        return kernel_edge_vfio_open_container();
+    {
+        uint32_t vfio_device;
+        if (kernel_edge_vfio_cdev_path_parse(path, &vfio_device))
+            return kernel_edge_vfio_open_cdev(vfio_device);
+    }
+    {
+        uint32_t vfio_group;
+        if (kernel_edge_vfio_group_path_parse(path, &vfio_group))
+            return kernel_edge_vfio_open_group(vfio_group);
+    }
+
+    if (strcmp(path, EDGE_VHOST_NET_PATH) == 0)
+        return kernel_edge_vhost_open_net();
+    if (strcmp(path, EDGE_VHOST_SCSI_PATH) == 0)
+        return kernel_edge_vhost_open_scsi();
+    if (strcmp(path, EDGE_VHOST_VSOCK_PATH) == 0)
+        return kernel_edge_vhost_open_vsock();
+    {
+        uint32_t vdpa_device;
+        if (kernel_edge_vhost_vdpa_path_parse(path, &vdpa_device))
+            return kernel_edge_vhost_open_vdpa(vdpa_device);
+    }
+
+    if (strcmp(path, EDGE_IOMMUFD_PATH) == 0)
+        return kernel_edge_iommufd_open();
+
     if (strcmp(path, EDGE_LINUX_TUN_PATH) == 0)
         return (int64_t)open_tun_fd(p, request);
 
@@ -5567,6 +5598,47 @@ static uint64_t do_sys_fd_read_entry(int fd, edge_fd_t *e,
             wait_blocking_step();
         } while (1);
     }
+    if (e->kind == FD_KVM_STATS) {
+        edge_kvm_handle_t handle = {
+            .slot = (uint32_t)e->pipe_id,
+            .generation = (uint32_t)e->mount_id,
+        };
+        uint64_t done = 0;
+
+        while (done < len) {
+            uint64_t count = len - done;
+            int64_t result;
+            if (count > sizeof(chunk)) count = sizeof(chunk);
+            result = kernel_edge_kvm_stats_read(
+                (kernel_edge_kvm_file_kind_t)e->vhost_device_id,
+                handle, fd_description_offset(e), chunk,
+                (uint32_t)count);
+            if (result < 0)
+                return done ? done : (uint64_t)result;
+            if (result == 0) break;
+            if (copy_to_user(buf_u + done, chunk, (uint64_t)result) < 0)
+                return done ? done : (uint64_t)-EFAULT;
+            done += (uint64_t)result;
+            fd_description_advance(e, (uint64_t)result);
+            if ((uint64_t)result < count) break;
+        }
+        return done;
+    }
+    if (e->kind == FD_VHOST_NET || e->kind == FD_VHOST_SCSI ||
+        e->kind == FD_VHOST_VSOCK || e->kind == FD_VHOST_VDPA) {
+        edge_vhost_handle_t handle = {
+            .slot = (uint32_t)e->pipe_id,
+            .generation = (uint32_t)e->mount_id,
+        };
+        edge_vhost_msg_v2_t message;
+        int64_t result = kernel_edge_vhost_read(
+            handle, &message,
+            len > UINT32_MAX ? UINT32_MAX : (uint32_t)len);
+        if (result <= 0) return (uint64_t)result;
+        if (copy_to_user(buf_u, &message, (uint64_t)result) < 0)
+            return (uint64_t)-EFAULT;
+        return (uint64_t)result;
+    }
     if (e->kind == FD_CONSOLE) {
         uint64_t r;
         if ((e->flags & LINUX_O_NONBLOCK) != 0 &&
@@ -5712,8 +5784,6 @@ static uint64_t do_sys_fd_read_entry(int fd, edge_fd_t *e,
             }
             socket_blocking_wait_step(0);
         }
-        if (status == KERNEL_EVENTFD_IO_BYTES)
-            fd_wake_eventfd_write_waiters(e->pipe_id);
         if (status < 0) return (uint64_t)(int64_t)status;
         if (g_gui_eventfd_trace_budget > 0 && gui_diag_task(cur)) {
             printf("[gui-eventfd] read pid=%d cmd=%s fd=%d id=%d val=%llu counter_after=%llu fl=0x%x budget=%d\n",
@@ -5726,6 +5796,8 @@ static uint64_t do_sys_fd_read_entry(int fd, edge_fd_t *e,
                    g_gui_eventfd_trace_budget - 1);
             g_gui_eventfd_trace_budget--;
         }
+        if (cur && !cur->is_idle && cur->need_resched)
+            scheduler_yield();
         return (uint64_t)status;
     }
     if (e->kind == FD_TIMERFD) {
@@ -5778,6 +5850,7 @@ static uint64_t do_sys_fd_read_entry(int fd, edge_fd_t *e,
         edge_memfd_t *mf = memfd_get(e->pipe_id);
         uint64_t done = 0;
         if (!mf) return (uint64_t)-EBADF;
+        if (mf->guest_memfd) return (uint64_t)-ESPIPE;
         if (mf->secret) return (uint64_t)-EINVAL;
         while (done < len && fd_description_offset(e) < mf->size) {
             uint64_t position = fd_description_offset(e);
@@ -6258,6 +6331,19 @@ static uint64_t do_sys_fd_write_entry(int fd, edge_fd_t *e,
             wait_blocking_step();
         } while (1);
     }
+    if (e->kind == FD_VHOST_NET || e->kind == FD_VHOST_SCSI ||
+        e->kind == FD_VHOST_VSOCK || e->kind == FD_VHOST_VDPA) {
+        edge_vhost_handle_t handle = {
+            .slot = (uint32_t)e->pipe_id,
+            .generation = (uint32_t)e->mount_id,
+        };
+        edge_vhost_msg_v2_t message;
+        if (len != sizeof(message)) return (uint64_t)-EINVAL;
+        if (copy_from_user(&message, buf_u, sizeof(message)) < 0)
+            return (uint64_t)-EFAULT;
+        return (uint64_t)kernel_edge_vhost_write(
+            handle, &message, sizeof(message));
+    }
 
 #if EDGE_BB_FD_TRACE
     if (fd == 1 && g_bb_fd_trace_budget > 0) {
@@ -6431,8 +6517,6 @@ static uint64_t do_sys_fd_write_entry(int fd, edge_fd_t *e,
                    g_gui_eventfd_trace_budget - 1);
             g_gui_eventfd_trace_budget--;
         }
-        if (status == KERNEL_EVENTFD_IO_BYTES)
-            fd_wake_eventfd_read_waiters(e->pipe_id);
         return (uint64_t)status;
     }
     if (e->kind == FD_TIMERFD || e->kind == FD_SIGNALFD || e->kind == FD_EPOLL || e->kind == FD_PIDFD) return (uint64_t)-EINVAL;
@@ -6440,6 +6524,7 @@ static uint64_t do_sys_fd_write_entry(int fd, edge_fd_t *e,
         edge_memfd_t *mf = memfd_get(e->pipe_id);
         uint64_t done = 0;
         if (!mf) return (uint64_t)-EBADF;
+        if (mf->guest_memfd) return (uint64_t)-ESPIPE;
         if (mf->secret) return (uint64_t)-EINVAL;
         while (done < len) {
             uint64_t position = fd_description_offset(e);
@@ -6719,6 +6804,7 @@ static int fd_entry_positional_io_unsupported(
            entry->kind == FD_SIGNALFD ||
            entry->kind == FD_EPOLL ||
            entry->kind == FD_PIDFD ||
+           memfd_entry_is_guest(entry) ||
            memfd_entry_is_secret(entry);
 }
 
@@ -6739,10 +6825,57 @@ static uint64_t do_sys_pread64_entry(
     if (fd_entry_positional_io_unsupported(e)) {
         return (uint64_t)-ESPIPE;
     }
+    if (e->kind == FD_VFIO_DEVICE) {
+        edge_vfio_handle_t handle = {
+            .slot = (uint32_t)e->pipe_id,
+            .generation = (uint32_t)e->mount_id,
+        };
+        uint64_t done = 0;
+        while (done < len) {
+            uint64_t count = len - done;
+            int64_t result;
+            if (count > sizeof(chunk)) count = sizeof(chunk);
+            result = kernel_edge_vfio_device_read_handle(
+                handle, off + done, chunk, (uint32_t)count);
+            if (result < 0)
+                return done ? done : (uint64_t)result;
+            if (result == 0) break;
+            if (copy_to_user(buf_u + done, chunk, (uint64_t)result) < 0)
+                return done ? done : (uint64_t)-EFAULT;
+            done += (uint64_t)result;
+            if ((uint64_t)result < count) break;
+        }
+        return done;
+    }
+    if (e->kind == FD_KVM_STATS) {
+        edge_kvm_handle_t handle = {
+            .slot = (uint32_t)e->pipe_id,
+            .generation = (uint32_t)e->mount_id,
+        };
+        uint64_t done = 0;
+
+        while (done < len) {
+            uint64_t count = len - done;
+            int64_t result;
+            if (count > sizeof(chunk)) count = sizeof(chunk);
+            result = kernel_edge_kvm_stats_read(
+                (kernel_edge_kvm_file_kind_t)e->vhost_device_id,
+                handle, off + done, chunk, (uint32_t)count);
+            if (result < 0)
+                return done ? done : (uint64_t)result;
+            if (result == 0) break;
+            if (copy_to_user(buf_u + done, chunk, (uint64_t)result) < 0)
+                return done ? done : (uint64_t)-EFAULT;
+            done += (uint64_t)result;
+            if ((uint64_t)result < count) break;
+        }
+        return done;
+    }
     if (e->kind == FD_MEMFD) {
         edge_memfd_t *mf = memfd_get(e->pipe_id);
         uint64_t done = 0;
         if (!mf) return (uint64_t)-EBADF;
+        if (mf->guest_memfd) return (uint64_t)-ESPIPE;
         while (done < len && off < mf->size) {
             uint64_t n = len - done;
             int r;
@@ -6858,10 +6991,33 @@ static uint64_t do_sys_pwrite64_entry(
     if (fd_entry_positional_io_unsupported(e)) {
         return (uint64_t)-ESPIPE;
     }
+    if (e->kind == FD_VFIO_DEVICE) {
+        edge_vfio_handle_t handle = {
+            .slot = (uint32_t)e->pipe_id,
+            .generation = (uint32_t)e->mount_id,
+        };
+        uint64_t done = 0;
+        while (done < len) {
+            uint64_t count = len - done;
+            int64_t result;
+            if (count > sizeof(chunk)) count = sizeof(chunk);
+            if (copy_from_user(chunk, buf_u + done, count) < 0)
+                return done ? done : (uint64_t)-EFAULT;
+            result = kernel_edge_vfio_device_write_handle(
+                handle, off + done, chunk, (uint32_t)count);
+            if (result < 0)
+                return done ? done : (uint64_t)result;
+            if (result == 0) break;
+            done += (uint64_t)result;
+            if ((uint64_t)result < count) break;
+        }
+        return done;
+    }
     if (e->kind == FD_MEMFD) {
         edge_memfd_t *mf = memfd_get(e->pipe_id);
         uint64_t done = 0;
         if (!mf) return (uint64_t)-EBADF;
+        if (mf->guest_memfd) return (uint64_t)-ESPIPE;
         while (done < len) {
             uint64_t n = len - done;
             int w;
@@ -7005,7 +7161,11 @@ static int linux_fd_fill_kstat(edge_fd_t *e, int fd,
                e->kind == FD_PIDFD || e->kind == FD_DMA_BUF ||
                e->kind == FD_DRM_SYNC ||
                e->kind == FD_MOUNT || e->kind == FD_IO_URING ||
-               e->kind == FD_BPF || e->kind == FD_SECCOMP) {
+               e->kind == FD_BPF || e->kind == FD_SECCOMP ||
+               e->kind == FD_KVM_VM || e->kind == FD_KVM_VCPU ||
+               e->kind == FD_KVM_DEVICE || e->kind == FD_KVM_STATS ||
+               e->kind == FD_VFIO_CONTAINER || e->kind == FD_VFIO_GROUP ||
+               e->kind == FD_VFIO_DEVICE) {
         /* Linux anon_inode descriptors have permission bits but no file type. */
         fill_kstat_mode_size(0600, 0, st);
         st->st_ino = 0xE0000000u + (uint64_t)(uint32_t)(e->kind << 16) + (uint64_t)(uint32_t)(e->pipe_id & 0xFFFF);

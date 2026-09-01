@@ -10,6 +10,7 @@
 #include "compat/freebsd/edgeos/malloc.h"
 #include "drivers/apic.h"
 #include <machine/intr_machdep.h>
+#include <machine/segments.h>
 
 typedef struct {
     void *isr_cookie;
@@ -24,6 +25,20 @@ int pti;
 #define BSD_X86_DYNAMIC_VECTOR_LAST 63u
 
 extern IDT g_idt[NO_IDT_DESCRIPTORS];
+
+/* FreeBSD's VMM reads the host IDT through these machine-level symbols. */
+struct gate_descriptor *idt = (struct gate_descriptor *)(void *)g_idt;
+struct region_descriptor r_idt = {
+    .rd_limit = sizeof(g_idt) - 1u,
+};
+
+__asm__(
+    ".global Xjustreturn\n"
+    "Xjustreturn:\n"
+    "iretq\n"
+    ".global Xjustreturn1_pti\n"
+    "Xjustreturn1_pti:\n"
+    "iretq\n");
 
 #ifndef BSD_BRIDGE_HOST_TEST
 static IDT bsd_x86_saved_dynamic_idt[
@@ -198,5 +213,6 @@ bsd_interrupt_arch_initialize(void)
         .unmask_interrupt = bsd_x86_unmask_interrupt,
     };
 
+    r_idt.rd_base = (uint64_t)(uintptr_t)g_idt;
     return bsd_interrupt_initialize(&operations);
 }

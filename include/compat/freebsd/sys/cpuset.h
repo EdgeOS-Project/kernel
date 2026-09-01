@@ -21,7 +21,7 @@ typedef struct _cpuset {
     ((unsigned int)(sizeof(cpuset_t) / sizeof(unsigned long)))
 
 static inline void
-bsd_cpuset_zero(cpuset_t *set)
+bsd_cpuset_zero(volatile cpuset_t *set)
 {
     unsigned int index;
 
@@ -30,7 +30,7 @@ bsd_cpuset_zero(cpuset_t *set)
 }
 
 static inline void
-bsd_cpuset_fill(cpuset_t *set)
+bsd_cpuset_fill(volatile cpuset_t *set)
 {
     unsigned int index;
 
@@ -39,7 +39,7 @@ bsd_cpuset_fill(cpuset_t *set)
 }
 
 static inline void
-bsd_cpuset_set(unsigned int cpu, cpuset_t *set)
+bsd_cpuset_set(unsigned int cpu, volatile cpuset_t *set)
 {
     if (cpu < sizeof(*set) * 8u)
         set->__bits[cpu / BSD_CPUSET_WORD_BITS] |=
@@ -47,15 +47,33 @@ bsd_cpuset_set(unsigned int cpu, cpuset_t *set)
 }
 
 static inline void
-bsd_cpuset_clear(unsigned int cpu, cpuset_t *set)
+bsd_cpuset_set_atomic(unsigned int cpu, volatile cpuset_t *set)
+{
+    if (cpu < sizeof(*set) * 8u)
+        (void)__atomic_fetch_or(
+            &set->__bits[cpu / BSD_CPUSET_WORD_BITS],
+            1ul << (cpu % BSD_CPUSET_WORD_BITS), __ATOMIC_RELAXED);
+}
+
+static inline void
+bsd_cpuset_clear(unsigned int cpu, volatile cpuset_t *set)
 {
     if (cpu < sizeof(*set) * 8u)
         set->__bits[cpu / BSD_CPUSET_WORD_BITS] &=
             ~(1ul << (cpu % BSD_CPUSET_WORD_BITS));
 }
 
+static inline void
+bsd_cpuset_clear_atomic(unsigned int cpu, volatile cpuset_t *set)
+{
+    if (cpu < sizeof(*set) * 8u)
+        (void)__atomic_fetch_and(
+            &set->__bits[cpu / BSD_CPUSET_WORD_BITS],
+            ~(1ul << (cpu % BSD_CPUSET_WORD_BITS)), __ATOMIC_RELAXED);
+}
+
 static inline int
-bsd_cpuset_isset(unsigned int cpu, const cpuset_t *set)
+bsd_cpuset_isset(unsigned int cpu, const volatile cpuset_t *set)
 {
     if (cpu >= sizeof(*set) * 8u)
         return 0;
@@ -64,7 +82,8 @@ bsd_cpuset_isset(unsigned int cpu, const cpuset_t *set)
 }
 
 static inline void
-bsd_cpuset_copy(const cpuset_t *source, cpuset_t *destination)
+bsd_cpuset_copy(const volatile cpuset_t *source,
+    volatile cpuset_t *destination)
 {
     unsigned int index;
 
@@ -73,8 +92,8 @@ bsd_cpuset_copy(const cpuset_t *source, cpuset_t *destination)
 }
 
 static inline void
-bsd_cpuset_and(cpuset_t *destination, const cpuset_t *left,
-    const cpuset_t *right)
+bsd_cpuset_and(volatile cpuset_t *destination,
+    const volatile cpuset_t *left, const volatile cpuset_t *right)
 {
     unsigned int index;
 
@@ -84,8 +103,8 @@ bsd_cpuset_and(cpuset_t *destination, const cpuset_t *left,
 }
 
 static inline void
-bsd_cpuset_or(cpuset_t *destination, const cpuset_t *left,
-    const cpuset_t *right)
+bsd_cpuset_or(volatile cpuset_t *destination,
+    const volatile cpuset_t *left, const volatile cpuset_t *right)
 {
     unsigned int index;
 
@@ -95,8 +114,8 @@ bsd_cpuset_or(cpuset_t *destination, const cpuset_t *left,
 }
 
 static inline void
-bsd_cpuset_xor(cpuset_t *destination, const cpuset_t *left,
-    const cpuset_t *right)
+bsd_cpuset_xor(volatile cpuset_t *destination,
+    const volatile cpuset_t *left, const volatile cpuset_t *right)
 {
     unsigned int index;
 
@@ -105,8 +124,20 @@ bsd_cpuset_xor(cpuset_t *destination, const cpuset_t *left,
             left->__bits[index] ^ right->__bits[index];
 }
 
+static inline void
+bsd_cpuset_andnot(volatile cpuset_t *destination,
+    const volatile cpuset_t *left, const volatile cpuset_t *right)
+{
+    unsigned int index;
+
+    for (index = 0; index < BSD_CPUSET_WORDS; ++index)
+        destination->__bits[index] =
+            left->__bits[index] & ~right->__bits[index];
+}
+
 static inline int
-bsd_cpuset_compare(const cpuset_t *left, const cpuset_t *right)
+bsd_cpuset_compare(const volatile cpuset_t *left,
+    const volatile cpuset_t *right)
 {
     unsigned int index;
 
@@ -118,7 +149,7 @@ bsd_cpuset_compare(const cpuset_t *left, const cpuset_t *right)
 }
 
 static inline int
-bsd_cpuset_empty(const cpuset_t *set)
+bsd_cpuset_empty(const volatile cpuset_t *set)
 {
     unsigned int index;
 
@@ -130,7 +161,7 @@ bsd_cpuset_empty(const cpuset_t *set)
 }
 
 static inline int
-bsd_cpuset_count(const cpuset_t *set)
+bsd_cpuset_count(const volatile cpuset_t *set)
 {
     unsigned int index;
     int count = 0;
@@ -141,7 +172,7 @@ bsd_cpuset_count(const cpuset_t *set)
 }
 
 static inline int
-bsd_cpuset_ffs(const cpuset_t *set)
+bsd_cpuset_ffs(const volatile cpuset_t *set)
 {
     unsigned int index;
 
@@ -154,7 +185,7 @@ bsd_cpuset_ffs(const cpuset_t *set)
 }
 
 static inline int
-bsd_cpuset_fls(const cpuset_t *set)
+bsd_cpuset_fls(const volatile cpuset_t *set)
 {
     unsigned int index = BSD_CPUSET_WORDS;
 
@@ -169,7 +200,7 @@ bsd_cpuset_fls(const cpuset_t *set)
 }
 
 static inline uint64_t
-bsd_cpuset_low64(const cpuset_t *set)
+bsd_cpuset_low64(const volatile cpuset_t *set)
 {
     return (uint64_t)set->__bits[0];
 }
@@ -178,6 +209,10 @@ bsd_cpuset_low64(const cpuset_t *set)
 #define CPU_FILL(set) bsd_cpuset_fill((set))
 #define CPU_SET(cpu, set) bsd_cpuset_set((unsigned int)(cpu), (set))
 #define CPU_CLR(cpu, set) bsd_cpuset_clear((unsigned int)(cpu), (set))
+#define CPU_SET_ATOMIC(cpu, set) \
+    bsd_cpuset_set_atomic((unsigned int)(cpu), (set))
+#define CPU_CLR_ATOMIC(cpu, set) \
+    bsd_cpuset_clear_atomic((unsigned int)(cpu), (set))
 #define CPU_ISSET(cpu, set) \
     bsd_cpuset_isset((unsigned int)(cpu), (set))
 #define CPU_COPY(source, destination) \
@@ -188,6 +223,8 @@ bsd_cpuset_low64(const cpuset_t *set)
     bsd_cpuset_or((destination), (left), (right))
 #define CPU_XOR(destination, left, right) \
     bsd_cpuset_xor((destination), (left), (right))
+#define CPU_ANDNOT(destination, left, right) \
+    bsd_cpuset_andnot((destination), (left), (right))
 #define CPU_CMP(left, right) bsd_cpuset_compare((left), (right))
 #define CPU_EQUAL(left, right) (CPU_CMP((left), (right)) == 0)
 #define CPU_EMPTY(set) bsd_cpuset_empty((set))
@@ -197,6 +234,9 @@ bsd_cpuset_low64(const cpuset_t *set)
 #define CPU_FOREACH_ISSET(cpu, set) \
     for ((cpu) = 0; (cpu) < CPU_SETSIZE; ++(cpu)) \
         if (CPU_ISSET((cpu), (set)))
+#define CPU_FOREACH_ISCLR(cpu, set) \
+    for ((cpu) = 0; (cpu) < CPU_SETSIZE; ++(cpu)) \
+        if (!CPU_ISSET((cpu), (set)))
 #define CPU_SETOF(cpu, set) do {                                        \
     CPU_ZERO(set);                                                      \
     CPU_SET((cpu), (set));                                              \

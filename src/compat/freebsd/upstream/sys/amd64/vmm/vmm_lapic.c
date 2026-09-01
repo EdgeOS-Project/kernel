@@ -52,6 +52,7 @@ int
 lapic_set_intr(struct vcpu *vcpu, int vector, bool level)
 {
 	struct vlapic *vlapic;
+	int newly_pending;
 
 	/*
 	 * According to section "Maskable Hardware Interrupts" in Intel SDM
@@ -61,7 +62,8 @@ lapic_set_intr(struct vcpu *vcpu, int vector, bool level)
 		return (EINVAL);
 
 	vlapic = vm_lapic(vcpu);
-	if (vlapic_set_intr_ready(vlapic, vector, level))
+	newly_pending = vlapic_set_intr_ready(vlapic, vector, level);
+	if (newly_pending || !level)
 		vcpu_notify_lapic(vcpu);
 	return (0);
 }

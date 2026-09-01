@@ -56,6 +56,11 @@
 #include "vlapic_priv.h"
 #include "vioapic.h"
 
+#ifdef EDGEOS_BSD_BRIDGE
+void edge_bhyve_kvm_startup_event(struct vm *vm,
+    const cpuset_t *targets, uint32_t mode, uint8_t vector);
+#endif
+
 #define	PRIO(x)			((x) >> 4)
 
 #define VLAPIC_VERSION		(0x14)
@@ -81,6 +86,7 @@
 
 static void vlapic_set_error(struct vlapic *, uint32_t, bool);
 static void vlapic_callout_handler(void *arg);
+
 static void vlapic_reset(struct vlapic *vlapic);
 
 static __inline uint32_t
@@ -198,7 +204,7 @@ vlapic_dump_lvt(uint32_t offset, uint32_t *lvt)
 static uint32_t
 vlapic_get_ccr(struct vlapic *vlapic)
 {
-	struct bintime bt_now, bt_rem;
+	struct bintime bt_now = {0}, bt_rem;
 	struct LAPIC *lapic __diagused;
 	uint32_t ccr;
 
@@ -710,8 +716,20 @@ vlapic_trigger_lvt(struct vlapic *vlapic, int vector)
 static void
 vlapic_callout_reset(struct vlapic *vlapic, sbintime_t t)
 {
+	int flags;
+
+	flags = 0;
+#ifdef EDGEOS_BHYVE_HOST_IRQ_REENTER
+	/*
+	 * EdgeOS does not run FreeBSD's softclock scheduler while a vCPU is
+	 * executing in the hardware guest.  The vLAPIC timer callback uses only
+	 * its spin mutex and vCPU interrupt state, so execute it from the host
+	 * timer tick instead of waiting for the cooperative BSD worker.
+	 */
+	flags = C_DIRECT_EXEC;
+#endif
 	callout_reset_sbt_curcpu(&vlapic->callout, t, 0,
-	    vlapic_callout_handler, vlapic, 0);
+	    vlapic_callout_handler, vlapic, flags);
 }
 
 static void
@@ -723,12 +741,25 @@ vlapic_callout_handler(void *arg)
 
 	vlapic = arg;
 
+#ifdef EDGEOS_BHYVE_HOST_IRQ_REENTER
+	/*
+	 * A direct EdgeOS callout can interrupt the vCPU thread while it owns
+	 * timer_mtx.  Retry on the next host tick instead of self-deadlocking in
+	 * interrupt context.
+	 */
+	if (!mtx_trylock_spin(&vlapic->timer_mtx)) {
+		vlapic_callout_reset(vlapic, SBT_1MS);
+		return;
+	}
+#else
 	VLAPIC_TIMER_LOCK(vlapic);
+#endif
 	if (callout_pending(&vlapic->callout))	/* callout was reset */
 		goto done;
 
-	if (!callout_active(&vlapic->callout))	/* callout was stopped */
+	if (!callout_active(&vlapic->callout)) {	/* callout was stopped */
 		goto done;
+	}
 
 	callout_deactivate(&vlapic->callout);
 
@@ -1169,6 +1200,12 @@ vm_handle_ipi(struct vcpu *vcpu, struct vm_exit *vme, bool *retu)
 	*retu = true;
 	switch (vme->u.ipi.mode) {
 	case APIC_DELMODE_INIT: {
+#ifdef EDGEOS_BSD_BRIDGE
+		int target_id;
+
+		CPU_FOREACH_ISSET(target_id, dmask)
+			vlapic_handle_init(vm_vcpu(vcpu_vm(vcpu), target_id), NULL);
+#else
 		cpuset_t active, reinit;
 
 		active = vm_active_cpus(vcpu_vm(vcpu));
@@ -1177,7 +1214,14 @@ vm_handle_ipi(struct vcpu *vcpu, struct vm_exit *vme, bool *retu)
 			vm_smp_rendezvous(vcpu, reinit, vlapic_handle_init,
 			    NULL);
 		}
+#endif
 		vm_await_start(vcpu_vm(vcpu), dmask);
+
+#ifdef EDGEOS_BSD_BRIDGE
+		edge_bhyve_kvm_startup_event(vcpu_vm(vcpu), dmask,
+		    APIC_DELMODE_INIT, 0);
+		*retu = false;
+#endif
 
 		if (!vlapic->ipi_exit)
 			*retu = false;
@@ -1195,6 +1239,12 @@ vm_handle_ipi(struct vcpu *vcpu, struct vm_exit *vme, bool *retu)
 			break;
 		}
 
+#ifdef EDGEOS_BSD_BRIDGE
+		edge_bhyve_kvm_startup_event(vcpu_vm(vcpu), dmask,
+		    APIC_DELMODE_STARTUP, vec);
+		*retu = false;
+#else
+
 		/*
 		 * Old bhyve versions don't support the IPI
 		 * exit. Translate it into the old style.
@@ -1204,6 +1254,7 @@ vm_handle_ipi(struct vcpu *vcpu, struct vm_exit *vme, bool *retu)
 			vme->u.spinup_ap.vcpu = CPU_FFS(dmask) - 1;
 			vme->u.spinup_ap.rip = vec << PAGE_SHIFT;
 		}
+#endif
 
 		break;
 	default:

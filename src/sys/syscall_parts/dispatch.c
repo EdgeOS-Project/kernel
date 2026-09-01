@@ -87,6 +87,7 @@ static int syscall_signal_restart_allowed(uint64_t nr) {
         case SYS_epoll_pwait2:
         case SYS_nanosleep:
         case SYS_clock_nanosleep:
+        case SYS_ioctl:
             return 0;
         default:
             return 1;
@@ -878,6 +879,7 @@ syscall_dispatch_complete:
 }
 
 void syscall_init(void) {
+    (void)kernel_edge_kvm_descriptor_runtime_initialize();
     (void)kernel_anonymous_fd_backend_register(
         &x86_anonymous_fd_backend_ops, 0);
     (void)kernel_io_uring_page_allocator_register(

@@ -97,7 +97,6 @@ shutdown_nice(int howto)
 #define BSD_UNR_ENTRY_SLOTS 2048u
 
 typedef struct {
-    uint64_t interrupt_state;
     uint32_t depth;
 } bsd_critical_cpu_state_t;
 
@@ -129,42 +128,6 @@ __attribute__((weak))
 void
 bsd_kthread_critical_exit(void)
 {
-}
-
-static uint64_t
-critical_interrupt_save_disable(void)
-{
-#ifdef BSD_BRIDGE_HOST_TEST
-    return 0;
-#elif defined(__x86_64__)
-    uint64_t state;
-
-    __asm__ __volatile__(
-        "pushfq; popq %0; cli" : "=r"(state) :: "memory");
-    return state;
-#elif defined(__aarch64__) || defined(_M_ARM64)
-    uint64_t state;
-
-    __asm__ __volatile__(
-        "mrs %0, daif; msr daifset, #0xf"
-        : "=r"(state) :: "memory");
-    return state;
-#else
-#error "BSD Driver Bridge critical sections need an interrupt backend"
-#endif
-}
-
-static void
-critical_interrupt_restore(uint64_t state)
-{
-#ifdef BSD_BRIDGE_HOST_TEST
-    (void)state;
-#elif defined(__x86_64__)
-    if ((state & (UINT64_C(1) << 9)) != 0)
-        __asm__ __volatile__("sti" ::: "memory");
-#elif defined(__aarch64__) || defined(_M_ARM64)
-    __asm__ __volatile__("msr daif, %0" :: "r"(state) : "memory");
-#endif
 }
 
 #ifndef BSD_BRIDGE_HOST_TEST
@@ -209,27 +172,21 @@ critical_cpu_state(void)
 void
 bsd_critical_enter(void)
 {
-    uint64_t interrupt_state = critical_interrupt_save_disable();
     bsd_critical_cpu_state_t *state = critical_cpu_state();
 
-    if (state->depth++ == 0)
-        state->interrupt_state = interrupt_state;
+    (void)__atomic_add_fetch(&state->depth, 1u, __ATOMIC_ACQ_REL);
     bsd_kthread_critical_enter();
 }
 
 void
 bsd_critical_exit(void)
 {
-    uint64_t interrupt_state = critical_interrupt_save_disable();
     bsd_critical_cpu_state_t *state = critical_cpu_state();
 
-    if (state->depth == 0) {
-        critical_interrupt_restore(interrupt_state);
+    if (__atomic_load_n(&state->depth, __ATOMIC_ACQUIRE) == 0)
         return;
-    }
     bsd_kthread_critical_exit();
-    if (--state->depth == 0)
-        critical_interrupt_restore(state->interrupt_state);
+    (void)__atomic_sub_fetch(&state->depth, 1u, __ATOMIC_ACQ_REL);
 }
 
 static void

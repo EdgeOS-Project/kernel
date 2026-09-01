@@ -339,6 +339,27 @@ getenv_uint64(const char *name, uint64_t *data)
 }
 
 int
+getenv_ulong(const char *name, unsigned long *data)
+{
+    char *value;
+    unsigned long parsed;
+    int negative;
+    int error;
+
+    if (!data)
+        return 0;
+    value = kern_getenv(name);
+    if (!value)
+        return 0;
+    error = resource_parse_integer(value, &parsed, &negative);
+    freeenv(value);
+    if (error || negative)
+        return 0;
+    *data = parsed;
+    return 1;
+}
+
+int
 getenv_bool(const char *name, bool *data)
 {
     char *value;

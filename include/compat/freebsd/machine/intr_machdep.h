@@ -14,6 +14,8 @@ typedef void inthand_t(void);
 
 extern int num_io_irqs;
 extern int pti;
+extern void IDTVEC(justreturn)(void);
+extern void IDTVEC(justreturn1_pti)(void);
 void intr_reprogram(void);
 void intrcnt_add(const char *name, unsigned long **counter);
 

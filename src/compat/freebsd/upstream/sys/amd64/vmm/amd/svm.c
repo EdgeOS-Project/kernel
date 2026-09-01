@@ -1505,6 +1505,11 @@ svm_vmexit(struct svm_softc *svm_sc, struct svm_vcpu *vcpu,
 					error));
 
 				reflect = 0;
+			} else if (vcpu->caps & (1 << VM_CAP_DB_EXIT)) {
+				vmexit->exitcode = VM_EXITCODE_DB;
+				vmexit->u.dbg.trace_trap = 0;
+				vmexit->u.dbg.pushf_intercept = 0;
+				reflect = 0;
 			}
 			break;
 		}
@@ -1839,7 +1844,6 @@ svm_inj_interrupts(struct svm_softc *sc, struct svm_vcpu *vcpu,
 		KASSERT(vector >= 0 && vector <= 255,
 		    ("invalid vector %d from INTR", vector));
 	}
-
 	/*
 	 * If the guest has disabled interrupts or is in an interrupt shadow
 	 * then we cannot inject the pending interrupt.
@@ -2471,6 +2475,11 @@ svm_setcap(void *vcpui, int type, int val)
 	case VM_CAP_BPT_EXIT:
 		svm_set_intercept(vcpu, VMCB_EXC_INTCPT, BIT(IDT_BP), val);
 		break;
+	case VM_CAP_DB_EXIT:
+		svm_set_intercept(vcpu, VMCB_EXC_INTCPT, BIT(IDT_DB), val);
+		vcpu->caps &= ~(1 << VM_CAP_DB_EXIT);
+		vcpu->caps |= (val << VM_CAP_DB_EXIT);
+		break;
 	case VM_CAP_IPI_EXIT:
 		vlapic = vm_lapic(vcpu->vcpu);
 		vlapic->ipi_exit = val;
@@ -2554,6 +2563,9 @@ svm_getcap(void *vcpui, int type, int *retval)
 		break;
 	case VM_CAP_BPT_EXIT:
 		*retval = svm_get_intercept(vcpu, VMCB_EXC_INTCPT, BIT(IDT_BP));
+		break;
+	case VM_CAP_DB_EXIT:
+		*retval = !!(vcpu->caps & (1 << VM_CAP_DB_EXIT));
 		break;
 	case VM_CAP_IPI_EXIT:
 		vlapic = vm_lapic(vcpu->vcpu);

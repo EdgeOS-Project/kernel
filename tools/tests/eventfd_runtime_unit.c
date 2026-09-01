@@ -22,6 +22,18 @@ typedef struct eventfd_copy_context {
     int fail_store;
 } eventfd_copy_context_t;
 
+typedef struct eventfd_state_context {
+    int calls;
+    int last_event_id;
+} eventfd_state_context_t;
+
+static void state_changed(void *opaque, int event_id) {
+    eventfd_state_context_t *context = opaque;
+
+    ++context->calls;
+    context->last_event_id = event_id;
+}
+
 static int load_value(void *opaque, uint64_t *value) {
     eventfd_copy_context_t *context = opaque;
     ++context->load_calls;
@@ -187,11 +199,42 @@ static void test_lifetime_and_zero_write(void) {
            -EDGE_LINUX_EBADF);
 }
 
+static void test_state_transition_notifications(void) {
+    eventfd_copy_context_t copy_context;
+    eventfd_state_context_t state_context = {0, -1};
+    kernel_eventfd_state_t state;
+    uint64_t value = 0;
+    int event_id;
+
+    assert(kernel_eventfd_state_backend_register(
+               state_changed, &state_context) == 0);
+    event_id = kernel_eventfd_create(0, 0);
+    assert(event_id >= 0);
+    assert(state_context.calls == 0);
+    assert(kernel_eventfd_query(event_id, &state) == 0);
+    assert(state_context.calls == 0);
+    assert(kernel_eventfd_write_value(event_id, 0, 3) ==
+           KERNEL_EVENTFD_IO_BYTES);
+    assert(state_context.calls == 1);
+    assert(state_context.last_event_id == event_id);
+    reset_copy_context(&copy_context);
+    assert(kernel_eventfd_read_io(
+               event_id, 8, 0, store_value, &copy_context, &value) ==
+           KERNEL_EVENTFD_IO_BYTES);
+    assert(state_context.calls == 2);
+    assert(kernel_eventfd_read_io(
+               event_id, 8, 1, store_value, &copy_context, &value) ==
+           -EDGE_LINUX_EAGAIN);
+    assert(state_context.calls == 2);
+    kernel_eventfd_release(event_id);
+}
+
 int main(void) {
     test_count_and_wait_policy();
     test_copy_fault_ordering();
     test_counter_and_semaphore_policy();
     test_lifetime_and_zero_write();
+    test_state_transition_notifications();
     printf("eventfd_runtime_unit: PASS\n");
     return 0;
 }

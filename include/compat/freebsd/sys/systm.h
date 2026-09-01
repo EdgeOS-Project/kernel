@@ -163,6 +163,7 @@ abs64(int64_t value)
 char *kern_getenv(const char *name);
 void freeenv(char *environment);
 int getenv_int(const char *name, int *data);
+int getenv_ulong(const char *name, unsigned long *data);
 int getenv_uint64(const char *name, uint64_t *data);
 int getenv_bool(const char *name, bool *data);
 int getenv_array(const char *name, void *data, int size, int *result_size,

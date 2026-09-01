@@ -14,13 +14,37 @@
 #include "compat/freebsd/vm/vm_page.h"
 #include "compat/freebsd/vm/vm_pageout.h"
 #include "compat/freebsd/vm/vm_pager.h"
+#include "compat/freebsd/vm/vm_param.h"
 #include "compat/freebsd/vm/vm_radix.h"
+#include "compat/freebsd/vm/pmap.h"
+#include "compat/freebsd/vm/vm_extern.h"
 
 #define TEST_PAGE_SIZE 4096u
 
 static uint32_t g_page_allocations;
 static uint32_t g_page_releases;
 static uint32_t g_sglist_releases;
+
+int
+pmap_enter(pmap_t pmap, vm_offset_t virtual_address, vm_page_t page,
+    vm_prot_t protection, unsigned int flags, int8_t page_size_index)
+{
+    (void)pmap;
+    (void)virtual_address;
+    (void)page;
+    (void)protection;
+    (void)flags;
+    (void)page_size_index;
+    return 0;
+}
+
+void
+pmap_remove(pmap_t pmap, vm_offset_t start, vm_offset_t end)
+{
+    (void)pmap;
+    (void)start;
+    (void)end;
+}
 
 int
 bsd_bus_dma_virtual_address(uint64_t physical_address, size_t length,
@@ -135,6 +159,57 @@ test_sg_pager(void)
     assert(g_sglist_releases == 1);
 }
 
+static int
+test_rvi_pinit(pmap_t pmap)
+{
+    return pmap_pinit_type(pmap, PT_RVI, PMAP_PDE_SUPERPAGE);
+}
+
+static void
+test_guest_vmspace(void)
+{
+    struct pmap pmap;
+    struct vmspace *vmspace;
+    vm_object_t object;
+    vm_page_t held_page = 0;
+
+    memset(&pmap, 0, sizeof(pmap));
+    assert(pmap_pinit_type(&pmap, PT_EPT,
+        PMAP_PDE_SUPERPAGE | PMAP_SUPPORTS_EXEC_ONLY) == 1);
+    assert(pmap.pm_type == PT_EPT);
+    assert(pmap.pm_cr3 != 0);
+    assert((pmap.pm_cr3 & (TEST_PAGE_SIZE - 1u)) == 0);
+    assert(pmap.edgeos_root_page != 0);
+    for (uint32_t index = 0; index < TEST_PAGE_SIZE; ++index)
+        assert(((uint8_t *)pmap.edgeos_root_page->edgeos_page)[index] == 0);
+    pmap_release(&pmap);
+    assert(pmap.pm_cr3 == 0);
+    assert(pmap.edgeos_root_page == 0);
+
+    vmspace = vmspace_alloc(0, 1ull << 40, test_rvi_pinit);
+    assert(vmspace != 0);
+    assert(vmspace_pmap(vmspace)->pm_type == PT_RVI);
+    assert(vm_map_min(&vmspace->vm_map) == 0);
+    assert(vm_map_max(&vmspace->vm_map) == (1ull << 40));
+    assert(vm_map_pmap(&vmspace->vm_map) == vmspace_pmap(vmspace));
+    assert(vmspace->vm_map.edgeos_address_space ==
+        vmspace_pmap(vmspace)->pm_cr3);
+
+    object = vm_object_allocate(OBJT_SWAP, 2);
+    assert(object != 0);
+    vm_map_lock(&vmspace->vm_map);
+    assert(vm_map_insert(&vmspace->vm_map, object, 0, 0x2000,
+        0x4000, VM_PROT_RW, VM_PROT_RW, 0) == KERN_SUCCESS);
+    vm_map_unlock(&vmspace->vm_map);
+    assert(vm_map_wire(&vmspace->vm_map, 0x2000, 0x4000,
+        VM_MAP_WIRE_USER | VM_MAP_WIRE_NOHOLES) == KERN_SUCCESS);
+    assert(vm_fault_quick_hold_pages(&vmspace->vm_map, 0x2000,
+        TEST_PAGE_SIZE, VM_PROT_READ, &held_page, 1) == 1);
+    assert(held_page != 0);
+    assert(vm_page_unwire(held_page, PQ_ACTIVE));
+    vmspace_free(vmspace);
+}
+
 int
 main(void)
 {
@@ -191,6 +266,7 @@ main(void)
     assert(vm_object_allocate(OBJT_SWAP, 0) == 0);
 
     test_sg_pager();
+    test_guest_vmspace();
 
     object = vm_object_allocate(OBJT_SWAP, 4);
     assert(object != 0);
@@ -230,8 +306,8 @@ main(void)
     vm_page_free(bogus_page);
     bogus_page = 0;
 
-    assert(g_page_allocations == 5);
-    assert(g_page_releases == 5);
+    assert(g_page_allocations == 9);
+    assert(g_page_releases == 9);
     printf("bsd_bridge_vm_page_unit: PASS\n");
     return 0;
 }

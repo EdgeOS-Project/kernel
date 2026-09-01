@@ -91,6 +91,20 @@ test_aligned_allocation(void)
     assert(bsd_malloc_aligned(32, 3, M_TEST, M_NOWAIT) == 0);
 }
 
+static void
+test_page_sized_allocation(void)
+{
+    uint8_t *allocation;
+
+    allocation = bsd_malloc(4 * TEST_PAGE_SIZE, M_TEST,
+        M_WAITOK | M_ZERO);
+    assert(allocation != 0);
+    assert(((uintptr_t)allocation & (TEST_PAGE_SIZE - 1U)) == 0);
+    for (size_t index = 0; index < 4 * TEST_PAGE_SIZE; ++index)
+        assert(allocation[index] == 0);
+    bsd_free(allocation, M_TEST);
+}
+
 int
 main(void)
 {
@@ -103,5 +117,6 @@ main(void)
     test_malloc_contract();
     test_array_overflow();
     test_aligned_allocation();
+    test_page_sized_allocation();
     return 0;
 }

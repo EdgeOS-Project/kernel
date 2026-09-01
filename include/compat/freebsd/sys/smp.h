@@ -39,6 +39,12 @@ bsd_cpu_next(int cpu)
 
 typedef void (*smp_rendezvous_func_t)(void *);
 
+#ifndef BSD_BRIDGE_HOST_TEST
+void bsd_smp_rendezvous_cpus(cpuset_t cpus,
+    smp_rendezvous_func_t setup, smp_rendezvous_func_t action,
+    smp_rendezvous_func_t teardown, void *argument);
+#endif
+
 static inline void
 smp_no_rendezvous_barrier(void *argument)
 {
@@ -52,12 +58,19 @@ smp_rendezvous_cpu(unsigned int cpu, smp_rendezvous_func_t setup,
 {
     if (cpu >= (unsigned int)mp_ncpus)
         return;
+#ifndef BSD_BRIDGE_HOST_TEST
+    cpuset_t cpus;
+
+    CPU_SETOF(cpu, &cpus);
+    bsd_smp_rendezvous_cpus(cpus, setup, action, teardown, argument);
+#else
     if (setup)
         setup(argument);
     if (action)
         action(argument);
     if (teardown)
         teardown(argument);
+#endif
 }
 
 static inline void
@@ -65,6 +78,9 @@ smp_rendezvous_cpus(cpuset_t cpus, smp_rendezvous_func_t setup,
     smp_rendezvous_func_t action, smp_rendezvous_func_t teardown,
     void *argument)
 {
+#ifndef BSD_BRIDGE_HOST_TEST
+    bsd_smp_rendezvous_cpus(cpus, setup, action, teardown, argument);
+#else
     cpuset_t active;
 
     CPU_AND(&active, &cpus, &all_cpus);
@@ -76,6 +92,7 @@ smp_rendezvous_cpus(cpuset_t cpus, smp_rendezvous_func_t setup,
         action(argument);
     if (teardown)
         teardown(argument);
+#endif
 }
 
 static inline void

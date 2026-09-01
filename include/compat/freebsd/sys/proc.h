@@ -25,6 +25,21 @@
 #define THREAD0_TID NO_PID
 #define P2_HWT 0x00000001u
 
+/* FreeBSD AST index used by the VMM run loop for process suspension. */
+#define TDA_SUSPEND 17
+#define TDAI(ast) (1u << (ast))
+#define td_ast_pending(thread, ast) \
+    (((thread)->td_ast & (int)TDAI(ast)) != 0)
+
+static inline int
+thread_check_susp(struct thread *thread, bool sleep)
+{
+    /* EdgeOS does not currently issue FreeBSD process-suspend ASTs. */
+    (void)thread;
+    (void)sleep;
+    return 0;
+}
+
 struct proc *bsd_curproc(void);
 struct proc *pfind(int pid);
 void bsd_proc_lock(struct proc *process);
@@ -59,6 +74,12 @@ static inline void
 kern_yield(int priority)
 {
 	(void)priority;
+	bsd_sync_yield_current();
+}
+
+static inline void
+maybe_yield(void)
+{
 	bsd_sync_yield_current();
 }
 

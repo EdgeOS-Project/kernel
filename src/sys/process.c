@@ -1945,6 +1945,7 @@ static uint64_t *fixed_user_pt_ptr_from_phys(uint64_t physical) {
 
 static void process_user_heap_release_for_idx(int idx);
 static int process_user_heap_clone(task_t *dst, const task_t *src);
+static int process_user_heap_addr_valid(task_t *mm, uint64_t addr, int write);
 static uint8_t *process_user_heap_byte_ptr(task_t *t, uint64_t addr, int write);
 static int process_user_heap_handle_fault(task_t *t, uint64_t addr, int write);
 static int process_user_heap_unmap_range(task_t *t, uint64_t start, uint64_t len);
@@ -2511,7 +2512,19 @@ static int process_user_fixed_handle_fault(task_t *t, uint64_t addr, int write) 
             return 1;
         }
         v = process_user_vma_for_addr(mm, addr);
-        if (!v || !v->file_backed) return 0;
+        if ((!v || !v->file_backed) && addr >= USER_HEAP_BASE &&
+            addr < USER_HEAP_BASE + USER_HEAP_TOTAL_SIZE &&
+            process_user_heap_addr_valid(mm, addr, write)) {
+            /*
+             * A BIGPIE program break can occupy the fixed PIE window.  The
+             * shared leaf table is correct, but anonymous brk pages still
+             * need the heap demand-zero path instead of the file-population
+             * path used by the executable image in the same table.
+             */
+            return process_user_heap_byte_ptr(mm, addr, write) != 0;
+        }
+        if (!v) return 0;
+        if (!v->file_backed) return 0;
         return user_mmap_populate_file_page(
                    mm, v, page_align_down_local(addr), write) == 0;
     }
@@ -4292,6 +4305,20 @@ static int process_user_heap_ensure_pt(task_t *mm, uint64_t addr, uint64_t **pt_
     idx = task_index(mm);
     if (!mm || idx < 0 || idx >= USER_AS_MAX_TASKS) return -1;
     if (user_heap_slot_for_addr(addr, &slot, 0) < 0 || slot >= USER_HEAP_TOTAL_PDE_CNT) return -1;
+    /*
+     * A PIE's program break starts after its last PT_LOAD and can therefore
+     * share a 2 MiB page-directory region with the BIGPIE image.  Both ranges
+     * must use one leaf table.  Installing a separate heap table here drops
+     * already-present executable and dynamic-section pages from the active
+     * address space as soon as brk first commits a page in that region.
+     */
+    if (addr >= USER_BIGPIE_BASE &&
+        addr < USER_BIGPIE_BASE + USER_BIGPIE_SIZE) {
+        uint32_t bigpie_page =
+            (uint32_t)((addr - USER_BIGPIE_BASE) >> 21);
+        *pt_out = fixed_user_bigpie_pt_ensure(idx, bigpie_page);
+        return *pt_out ? 0 : -1;
+    }
     if (!g_user_heap_pt[idx][slot]) {
         g_user_heap_pt[idx][slot] = fixed_user_pt_alloc(idx, "heap", slot);
         if (!g_user_heap_pt[idx][slot]) return -1;
@@ -4303,6 +4330,21 @@ static int process_user_heap_ensure_pt(task_t *mm, uint64_t addr, uint64_t **pt_
               PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
     *pt_out = g_user_heap_pt[idx][slot];
     return 0;
+}
+
+static uint64_t *process_user_heap_lookup_pt(int idx, uint64_t addr,
+                                             uint32_t heap_slot) {
+    if (idx < 0 || idx >= USER_AS_MAX_TASKS)
+        return 0;
+    if (addr >= USER_BIGPIE_BASE &&
+        addr < USER_BIGPIE_BASE + USER_BIGPIE_SIZE) {
+        uint32_t bigpie_page =
+            (uint32_t)((addr - USER_BIGPIE_BASE) >> 21);
+        return bigpie_page < USER_BIGPIE_PDE_CNT ?
+            g_user_bigpie_pt[idx][bigpie_page] : 0;
+    }
+    return heap_slot < USER_HEAP_TOTAL_PDE_CNT ?
+        g_user_heap_pt[idx][heap_slot] : 0;
 }
 
 static edge_user_vma_t *process_user_heap_vma_for_addr(task_t *mm, uint64_t addr) {
@@ -4374,7 +4416,7 @@ static int process_user_heap_commit_page(task_t *mm, uint64_t addr, int write) {
             }
             return -1;
         }
-        pt = g_user_heap_pt[idx][slot];
+        pt = process_user_heap_lookup_pt(idx, page, slot);
     }
     if (!pt) {
         /* Only hierarchy construction needs the per-mm lock.  The stable leaf
@@ -4487,7 +4529,7 @@ static int process_user_heap_unmap_range(task_t *t, uint64_t start, uint64_t len
         uint64_t entry;
         int backing_idx;
         if (user_heap_slot_for_addr(va, &slot, &pte_idx) < 0 || slot >= USER_HEAP_TOTAL_PDE_CNT) continue;
-        pt = g_user_heap_pt[idx][slot];
+        pt = process_user_heap_lookup_pt(idx, va, slot);
         if (!pt) continue;
         entry = pt[pte_idx];
         if ((entry & PAGE_PRESENT) == 0) {
@@ -4597,10 +4639,10 @@ static uint8_t *process_user_heap_byte_ptr(task_t *t, uint64_t addr, int write) 
     if (!mm || idx < 0 || idx >= USER_AS_MAX_TASKS) return 0;
     if (user_heap_slot_for_addr(addr, &slot, &pte_idx) < 0 || slot >= USER_HEAP_TOTAL_PDE_CNT) return 0;
     if (!process_user_heap_addr_valid(mm, addr, write)) return 0;
-    pt = g_user_heap_pt[idx][slot];
+    pt = process_user_heap_lookup_pt(idx, addr, slot);
     if (!pt || (pt[pte_idx] & PAGE_PRESENT) == 0) {
         if (process_user_heap_commit_page(mm, addr, write) < 0) return 0;
-        pt = g_user_heap_pt[idx][slot];
+        pt = process_user_heap_lookup_pt(idx, addr, slot);
     }
     if (!pt) return 0;
     entry = pt[pte_idx];
@@ -4624,12 +4666,14 @@ static int process_user_heap_handle_fault(task_t *t, uint64_t addr, int write) {
         int idx = task_index(mm);
         uint32_t slot;
         uint32_t pte_idx;
+        uint64_t *pt = 0;
         if (idx >= 0 && idx < USER_AS_MAX_TASKS &&
             user_heap_slot_for_addr(addr, &slot, &pte_idx) == 0 &&
-            slot < USER_HEAP_TOTAL_PDE_CNT && g_user_heap_pt[idx][slot] &&
-            (g_user_heap_pt[idx][slot][pte_idx] & PAGE_COW) != 0) {
-            return private_pte_resolve_cow(
-                mm, addr, &g_user_heap_pt[idx][slot][pte_idx]);
+            slot < USER_HEAP_TOTAL_PDE_CNT) {
+            pt = process_user_heap_lookup_pt(idx, addr, slot);
+        }
+        if (pt && (pt[pte_idx] & PAGE_COW) != 0) {
+            return private_pte_resolve_cow(mm, addr, &pt[pte_idx]);
         }
     }
     if (process_user_heap_commit_page(mm, addr, write) < 0) return 0;
@@ -6291,20 +6335,6 @@ static uint64_t *process_user_poison_pte_locked(task_t *memory,
     index = task_index(memory);
     if (!memory || index < 0 || index >= USER_AS_MAX_TASKS) return 0;
 
-    if (page >= USER_HEAP_BASE &&
-        page < USER_HEAP_BASE + USER_HEAP_TOTAL_SIZE) {
-        uint32_t slot;
-        uint32_t pte;
-        if (user_heap_slot_for_addr(page, &slot, &pte) < 0) return 0;
-        if (create) {
-            if (process_user_heap_ensure_pt(memory, page, &table) < 0)
-                return 0;
-        } else {
-            table = g_user_heap_pt[index][slot];
-        }
-        return table ? &table[pte] : 0;
-    }
-
     if (fixed_user_addr(page)) {
         if (create && !fixed_user_pte_for_addr_idx(index, page)) {
             if (page < USER_LOW_LIMIT) {
@@ -6322,6 +6352,20 @@ static uint64_t *process_user_poison_pte_locked(task_t *memory,
             }
         }
         return fixed_user_pte_for_addr_idx(index, page);
+    }
+
+    if (page >= USER_HEAP_BASE &&
+        page < USER_HEAP_BASE + USER_HEAP_TOTAL_SIZE) {
+        uint32_t slot;
+        uint32_t pte;
+        if (user_heap_slot_for_addr(page, &slot, &pte) < 0) return 0;
+        if (create) {
+            if (process_user_heap_ensure_pt(memory, page, &table) < 0)
+                return 0;
+        } else {
+            table = g_user_heap_pt[index][slot];
+        }
+        return table ? &table[pte] : 0;
     }
 
     if (!sparse_mmap_range_ok_local(page, USER_PAGE_SIZE)) return 0;
@@ -8303,6 +8347,16 @@ int process_user_fixed_mprotect(task_t *t, uint64_t start, uint64_t len, uint32_
                 return -1;
             }
             entryp = &g_user_stack_pt[idx][pte];
+        } else if (va >= USER_BIGPIE_BASE && va < USER_BIGPIE_BASE + USER_BIGPIE_SIZE) {
+            page = (uint32_t)((va - USER_BIGPIE_BASE) >> 21);
+            pde = (uint32_t)((va >> 21) & 0x1FF);
+            if (page >= USER_BIGPIE_PDE_CNT) return -1;
+            if (!g_user_bigpie_pt[idx][page]) return -1;
+            if (!pd || (pd[pde] & PAGE_PRESENT) == 0 ||
+                (pd[pde] & PAGE_PS) != 0) {
+                return -1;
+            }
+            entryp = &g_user_bigpie_pt[idx][page][pte];
         } else if (va >= USER_HEAP_BASE && va < USER_HEAP_BASE + USER_HEAP_TOTAL_SIZE) {
             uint32_t slot;
             if (user_heap_slot_for_addr(va, &slot, &pte) < 0 || slot >= USER_HEAP_TOTAL_PDE_CNT) return -1;
@@ -8314,16 +8368,6 @@ int process_user_fixed_mprotect(task_t *t, uint64_t start, uint64_t len, uint32_
             }
             entryp = &g_user_heap_pt[idx][slot][pte];
             if ((*entryp & PAGE_PRESENT) == 0) continue;
-        } else if (va >= USER_BIGPIE_BASE && va < USER_BIGPIE_BASE + USER_BIGPIE_SIZE) {
-            page = (uint32_t)((va - USER_BIGPIE_BASE) >> 21);
-            pde = (uint32_t)((va >> 21) & 0x1FF);
-            if (page >= USER_BIGPIE_PDE_CNT) return -1;
-            if (!g_user_bigpie_pt[idx][page]) return -1;
-            if (!pd || (pd[pde] & PAGE_PRESENT) == 0 ||
-                (pd[pde] & PAGE_PS) != 0) {
-                return -1;
-            }
-            entryp = &g_user_bigpie_pt[idx][page][pte];
         } else {
             continue;
         }
@@ -12246,6 +12290,15 @@ static int process_signal_mark_pending(task_t *target, int signal,
     } else {
         leader->signal_shared_pending |= bit;
     }
+    {
+        void (*notify)(void *context) = __atomic_load_n(
+            &wake_target->syscall_interrupt_notify, __ATOMIC_ACQUIRE);
+        void *notify_context = __atomic_load_n(
+            &wake_target->syscall_interrupt_context, __ATOMIC_ACQUIRE);
+
+        if (notify)
+            notify(notify_context);
+    }
     if (wake_target->state == TASK_BLOCKED ||
         (signal == LINUX_SIGKILL && wake_target->state == TASK_STOPPED)) {
         scheduler_task_make_runnable(
@@ -12253,6 +12306,37 @@ static int process_signal_mark_pending(task_t *target, int signal,
                 (uint32_t)wake_target->assigned_cpu : scheduler_cpu_id());
     }
     return 1;
+}
+
+int process_current_task_interrupt_notifier_set(
+    void (*notify)(void *context), void *context) {
+    task_t *task = process_current_task();
+
+    if (!task || !notify)
+        return -1;
+    __atomic_store_n(
+        &task->syscall_interrupt_context, context, __ATOMIC_RELEASE);
+    __atomic_store_n(
+        &task->syscall_interrupt_notify, notify, __ATOMIC_RELEASE);
+    return 0;
+}
+
+void process_current_task_interrupt_notifier_clear(
+    void (*notify)(void *context), void *context) {
+    task_t *task = process_current_task();
+    void (*expected)(void *context) = notify;
+
+    if (!task || !notify)
+        return;
+    if (__atomic_compare_exchange_n(
+            &task->syscall_interrupt_notify, &expected, 0, 0,
+            __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        void *expected_context = context;
+
+        (void)__atomic_compare_exchange_n(
+            &task->syscall_interrupt_context, &expected_context, 0, 0,
+            __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+    }
 }
 
 static int process_signal_send_info_internal(

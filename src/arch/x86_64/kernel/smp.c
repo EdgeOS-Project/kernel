@@ -254,6 +254,16 @@ int arch_smp_send_reschedule(uint32_t logical_id) {
                                APIC_RESCHEDULE_VECTOR);
 }
 
+int arch_smp_send_vmm_kick(uint32_t logical_id) {
+    edge_cpu_topology_t topology;
+
+    if (edge_smp_get_cpu(logical_id, &topology) != 0 ||
+        topology.state != EDGE_CPU_ONLINE)
+        return -1;
+    return apic_send_fixed_ipi((uint32_t)topology.hardware_id,
+                               APIC_RESCHEDULE_VECTOR);
+}
+
 uint32_t arch_smp_current_cpu(void) {
     return x86_smp_current_cpu_id();
 }

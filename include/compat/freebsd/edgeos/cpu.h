@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 int bsd_cpu_runtime_initialize(void);
+int bsd_cpu_runtime_refresh_topology(void);
 int bsd_cpu_idle(int64_t predicted_idle_time);
 
 #if defined(__x86_64__) && !defined(BSD_BRIDGE_HOST_TEST)

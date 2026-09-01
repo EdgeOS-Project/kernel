@@ -5,6 +5,7 @@
 #define _SYS_CLOCK_H_
 
 #include <sys/bus.h>
+#include <sys/libkern.h>
 #include <sys/time.h>
 
 struct clocktime {

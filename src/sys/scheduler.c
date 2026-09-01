@@ -1245,8 +1245,7 @@ static void scheduler_place_wakeup_locked(scheduler_cpu_t *cpu, task_t *task,
     if (!woke_from_blocked) return;
     floor = minimum > EDGE_LINUX_SCHED_WAKEUP_GRANULARITY_US ?
             minimum - EDGE_LINUX_SCHED_WAKEUP_GRANULARITY_US : 0;
-    if (task->scheduler_vruntime_us < floor)
-        task->scheduler_vruntime_us = floor;
+    task->scheduler_vruntime_us = floor;
 }
 
 static uint32_t scheduler_select_allowed_cpu(const task_t *task,
@@ -1932,6 +1931,17 @@ void scheduler_task_make_runnable(task_t *t, uint32_t cpu_id) {
                 cpu->current->scheduler_vruntime_us,
                 cpu->current->scheduler_vruntime_us, 1u, now);
         }
+        /*
+         * A KVM_RUN task can remain inside the hardware guest until it is
+         * explicitly kicked.  Once a blocked peer becomes runnable, request
+         * that exit even when the fair-scheduler wakeup comparison would let
+         * the current task finish its slice.  The syscall's registered poll
+         * callback turns this flag into a bounded vCPU notification.
+         */
+        if (woke_from_blocked && __atomic_load_n(
+                &cpu->current->syscall_interrupt_notify,
+                __ATOMIC_ACQUIRE) != 0)
+            preempts = 1;
         if (preempts)
             cpu->current->need_resched = 1;
     }

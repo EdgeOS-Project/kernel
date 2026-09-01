@@ -833,7 +833,9 @@ int arch_vfs_describe_descriptor(int32_t descriptor,
         entry->kind == FD_DMA_BUF || entry->kind == FD_MOUNT ||
         entry->kind == FD_IO_URING || entry->kind == FD_LANDLOCK ||
         entry->kind == FD_BPF || entry->kind == FD_SECCOMP ||
-        entry->kind == FD_DRM_SYNC) {
+        entry->kind == FD_DRM_SYNC || entry->kind == FD_KVM_VM ||
+        entry->kind == FD_KVM_VCPU || entry->kind == FD_KVM_DEVICE ||
+        entry->kind == FD_KVM_STATS) {
         description->kind = KERNEL_VFS_DESCRIPTOR_ANONYMOUS;
         return 0;
     }
@@ -951,14 +953,16 @@ edge_linux_seek_result_t arch_vfs_seek_descriptor(
     } else if (entry->kind == FD_MEMFD) {
         edge_memfd_t *memory = memfd_get(entry->pipe_id);
         if (!memory) return EDGE_LINUX_SEEK_BAD_DESCRIPTOR;
-        if (memory->secret) return EDGE_LINUX_SEEK_ILLEGAL;
+        if (memory->secret || memory->guest_memfd)
+            return EDGE_LINUX_SEEK_ILLEGAL;
         entry->inode.size = memory->size;
         state.end = memory->size;
         state.maximum = (uint64_t)INT64_MAX;
         state.capabilities = EDGE_LINUX_SEEK_POSITIONAL |
                              EDGE_LINUX_SEEK_DATA_HOLE;
     } else if (entry->kind == FD_EVENTFD || entry->kind == FD_TIMERFD ||
-               entry->kind == FD_SIGNALFD) {
+               entry->kind == FD_SIGNALFD ||
+               entry->kind == FD_KVM_STATS) {
         state.capabilities = EDGE_LINUX_SEEK_NOOP;
     } else {
         return whence > EDGE_LINUX_SEEK_HOLE ?
@@ -3626,13 +3630,14 @@ static uint64_t user_mmap_fail(task_t *cur, const char *why, uint64_t ret,
     if (g_user_mmap_fail_log_budget > 0 && (traced || resource_failure)) {
         if (resource_failure) g_user_mmap_resource_fail_log_budget--;
         g_user_mmap_fail_log_budget--;
-        printf("[mmap-fail] pid=%d mm=%d cmd=%s why=%s ret=%d addr=0x%x len=0x%x prot=0x%x flags=0x%x fd=%d off=0x%x hint=0x%x vmas=%u/%u backing=%u/%u pt=%u/%u path=%s budget=%d\n",
+        printf("[mmap-fail] pid=%d mm=%d cmd=%s why=%s ret=%d addr=0x%llx len=0x%llx prot=0x%x flags=0x%x fd=%d off=0x%llx hint=0x%llx vmas=%u/%u backing=%u/%u pt=%u/%u path=%s budget=%d\n",
                cur ? cur->pid : -1, mm ? mm->pid : -1,
                cur && cur->name[0] ? cur->name : "?",
                why ? why : "?", (int)(int64_t)ret,
-               (uint32_t)addr, (uint32_t)len, (uint32_t)prot,
-               (uint32_t)flags, fd, (uint32_t)off,
-               mm ? (uint32_t)mm->user_mmap_next : 0,
+               (unsigned long long)addr, (unsigned long long)len,
+               (uint32_t)prot, (uint32_t)flags, fd,
+               (unsigned long long)off,
+               (unsigned long long)(mm ? mm->user_mmap_next : 0),
                mm ? mm->user_vma_count : 0, (uint32_t)PROCESS_USER_VMA_MAX,
                process_user_mmap_backing_used_pages(),
                process_user_mmap_backing_total_pages(),
@@ -6433,6 +6438,8 @@ static int user_vma_record(task_t *t, uint64_t start, uint64_t end, uint32_t pro
     return user_vma_record_ex(t, start, end, prot, flags, 0, 0, 0);
 }
 
+static int user_vma_range_covered(task_t *t, uint64_t start, uint64_t end);
+
 int process_user_elf_map_inode_pid(int pid, const char *display_path,
                                    const vfs_inode_t *inode,
                                    vfs_superblock_t *superblock,
@@ -6459,6 +6466,24 @@ int process_user_elf_map_inode_pid(int pid, const char *display_path,
     return user_vma_record_ex_slot(
         mm, start, start + len, protection, LINUX_MAP_PRIVATE,
         display_path, file_offset, len, 0, file_slot);
+}
+
+int process_user_elf_map_anon_pid(int pid, uint64_t start, uint64_t len,
+                                  uint32_t protection) {
+    task_t *task;
+    task_t *mm;
+
+    if (len == 0 || (start & (PAGE_SIZE - 1ULL)) != 0 ||
+        (len & (PAGE_SIZE - 1ULL)) != 0 || start + len < start)
+        return -1;
+    task = process_task_by_pid(pid);
+    mm = process_vm_task(task);
+    if (!mm) return -1;
+    if (user_vma_range_covered(mm, start, start + len))
+        return 0;
+    return user_vma_record_ex_slot(
+        mm, start, start + len, protection,
+        LINUX_MAP_PRIVATE | LINUX_MAP_ANON, 0, 0, 0, 0, -1);
 }
 
 int process_user_elf_map_file_pid(int pid, const char *path, uint64_t start,
@@ -7463,10 +7488,91 @@ static int64_t arch_mm_map_locked(
                                flags, base, "[packet]");
             return base;
         }
+        if (e->kind == FD_KVM_VCPU) {
+            edge_kvm_handle_t handle = {
+                .slot = (uint32_t)e->pipe_id,
+                .generation = (uint32_t)e->mount_id,
+            };
+
+            if (!(flags & LINUX_MAP_SHARED) || !sparse_mmap || off != 0 ||
+                need != EDGE_KVM_VCPU_MMAP_PAGES * EDGE_KVM_PAGE_SIZE ||
+                (prot & (LINUX_PROT_READ | LINUX_PROT_WRITE)) !=
+                    (LINUX_PROT_READ | LINUX_PROT_WRITE))
+                return (uint64_t)-EINVAL;
+            for (uint32_t page = 0;
+                 page < EDGE_KVM_VCPU_MMAP_PAGES; ++page) {
+                uint64_t physical_address = 0;
+                int backing_index;
+                int result = kernel_edge_kvm_vcpu_mmap_page(
+                    handle, page, &physical_address);
+
+                if (result < 0) {
+                    process_user_mmap_unmap(
+                        mm, base, (uint64_t)page * PAGE_SIZE);
+                    return (uint64_t)(int64_t)result;
+                }
+                backing_index = process_user_mmap_backing_page_index(
+                    (void *)(uintptr_t)physical_address);
+                if (backing_index < 0 ||
+                    process_user_mmap_map_backing_page(
+                        mm, base + (uint64_t)page * PAGE_SIZE,
+                        backing_index, 1) < 0) {
+                    process_user_mmap_unmap(
+                        mm, base, (uint64_t)page * PAGE_SIZE);
+                    return (uint64_t)-ENOMEM;
+                }
+            }
+            if (user_vma_record_ex(
+                    mm, base, base + need, (uint32_t)prot,
+                    (uint32_t)flags, "[kvm-vcpu]", off, len) < 0) {
+                process_user_mmap_unmap(mm, base, need);
+                return (uint64_t)-ENOMEM;
+            }
+            user_mmap_trace_op(cur, "mmap-kvm-vcpu", addr, len, prot,
+                               flags, base, "[kvm-vcpu]");
+            return base;
+        }
+        if (e->kind == FD_VFIO_DEVICE) {
+            edge_vfio_handle_t handle = {
+                .slot = (uint32_t)e->pipe_id,
+                .generation = (uint32_t)e->mount_id,
+            };
+            uint64_t physical_address = 0;
+            int result;
+
+            if (!(flags & LINUX_MAP_SHARED) || !sparse_mmap ||
+                (off & (PAGE_SIZE - 1u)) != 0 ||
+                (need & (PAGE_SIZE - 1u)) != 0)
+                return (uint64_t)-EINVAL;
+            result = kernel_edge_vfio_device_mmap_handle(
+                handle, off, need, (uint32_t)prot, &physical_address);
+            if (result < 0)
+                return (uint64_t)(int64_t)result;
+            for (uint64_t page = 0; page < need; page += PAGE_SIZE) {
+                if (arch_vm_map_user_page(mm->cr3, base + page,
+                        physical_address + page,
+                        ARCH_VM_PROT_READ | ARCH_VM_PROT_DEVICE |
+                        ARCH_VM_PROT_SHARED | ARCH_VM_PROT_NOCACHE |
+                        ((prot & LINUX_PROT_WRITE) ? ARCH_VM_PROT_WRITE : 0)) < 0) {
+                    process_user_mmap_unmap(mm, base, page);
+                    return (uint64_t)-ENOMEM;
+                }
+            }
+            if (user_vma_record_ex(mm, base, base + need,
+                    (uint32_t)prot, (uint32_t)flags, "[vfio-pci]",
+                    off, len) < 0) {
+                process_user_mmap_unmap(mm, base, need);
+                return (uint64_t)-ENOMEM;
+            }
+            user_mmap_trace_op(cur, "mmap-vfio-pci", addr, len, prot,
+                               flags, base, "[vfio-pci]");
+            return base;
+        }
         if (e->kind == FD_MEMFD) {
             edge_memfd_t *mf = memfd_get(e->pipe_id);
             uint64_t map_end = off + len;
             if (!mf) return (uint64_t)-EBADF;
+            if (mf->guest_memfd) return (uint64_t)-ENODEV;
             if (map_end < off) return (uint64_t)-EOVERFLOW;
             if ((flags & LINUX_MAP_SHARED) && (prot & LINUX_PROT_WRITE) &&
                 (mf->seals & (LINUX_F_SEAL_WRITE | LINUX_F_SEAL_FUTURE_WRITE))) {
@@ -10838,6 +10944,7 @@ int arch_vfs_truncate_descriptor(int32_t descriptor, uint32_t length) {
     if (entry->kind == FD_MEMFD) {
         edge_memfd_t *memory = memfd_get(entry->pipe_id);
         if (!memory) return -EDGE_LINUX_EBADF;
+        if (memory->guest_memfd) return -EDGE_LINUX_EINVAL;
         if (memory->secret && memory->size)
             return -EDGE_LINUX_EINVAL;
         result = memfd_truncate(memory, length);
@@ -12026,6 +12133,10 @@ int arch_vfs_fallocate_descriptor(int32_t descriptor, uint32_t mode,
     if (e->kind == FD_MEMFD) {
         edge_memfd_t *mf = memfd_get(e->pipe_id);
         if (!mf) return -EDGE_LINUX_EBADF;
+        if (mf->guest_memfd &&
+            mode != (VFS_FALLOC_FL_PUNCH_HOLE |
+                     VFS_FALLOC_FL_KEEP_SIZE))
+            return -EDGE_LINUX_EOPNOTSUPP;
         if (mf->secret) return -EDGE_LINUX_EOPNOTSUPP;
         rc = memfd_fallocate_storage(mf, mode, offset, length);
         return rc;
@@ -12183,6 +12294,635 @@ static int alloc_special_fd(edge_fd_kind_t kind, int obj_id, int flags) {
     return fd;
 }
 
+static int x86_edge_kvm_descriptor_install(
+        void *context, kernel_edge_kvm_file_kind_t kind,
+        edge_kvm_handle_t handle) {
+    edge_fd_proc_t *process;
+    edge_fd_t *entry;
+    edge_fd_kind_t local_kind;
+    int descriptor;
+    (void)context;
+
+    if (kind == KERNEL_EDGE_KVM_FILE_VM)
+        local_kind = FD_KVM_VM;
+    else if (kind == KERNEL_EDGE_KVM_FILE_VCPU)
+        local_kind = FD_KVM_VCPU;
+    else if (kind == KERNEL_EDGE_KVM_FILE_DEVICE)
+        local_kind = FD_KVM_DEVICE;
+    else
+        return -EINVAL;
+    descriptor = alloc_special_fd(local_kind, (int)handle.slot,
+                                  LINUX_O_RDWR | LINUX_O_CLOEXEC);
+    if (descriptor < 0) return descriptor;
+    process = fd_proc_with_stdio();
+    entry = fd_get(process, descriptor);
+    if (!entry) return -EBADF;
+    entry->mount_id = handle.generation;
+    return descriptor;
+}
+
+static int x86_edge_kvm_descriptor_resolve(
+        void *context, int32_t descriptor, kernel_edge_kvm_file_t *file) {
+    edge_fd_proc_t *process = fd_proc_with_stdio();
+    edge_fd_t *entry = fd_get(process, descriptor);
+    (void)context;
+
+    if (!file) return -EINVAL;
+    if (!entry) return -EBADF;
+    memset(file, 0, sizeof(*file));
+    if (entry->kind == FD_VFS && strcmp(entry->path, "/dev/kvm") == 0) {
+        file->kind = KERNEL_EDGE_KVM_FILE_SYSTEM;
+        return 0;
+    }
+    if (entry->kind != FD_KVM_VM && entry->kind != FD_KVM_VCPU &&
+        entry->kind != FD_KVM_DEVICE)
+        return -EBADF;
+    file->kind = entry->kind == FD_KVM_VM ? KERNEL_EDGE_KVM_FILE_VM :
+        (entry->kind == FD_KVM_VCPU ? KERNEL_EDGE_KVM_FILE_VCPU :
+                                     KERNEL_EDGE_KVM_FILE_DEVICE);
+    file->handle.slot = (uint32_t)entry->pipe_id;
+    file->handle.generation = (uint32_t)entry->mount_id;
+    return 0;
+}
+
+static int x86_edge_kvm_descriptor_install_stats(
+        void *context, kernel_edge_kvm_file_kind_t source_kind,
+        edge_kvm_handle_t handle) {
+    edge_fd_proc_t *process;
+    edge_fd_t *entry;
+    int descriptor;
+
+    (void)context;
+    if (source_kind != KERNEL_EDGE_KVM_FILE_VM &&
+        source_kind != KERNEL_EDGE_KVM_FILE_VCPU)
+        return -EINVAL;
+    descriptor = alloc_special_fd(
+        FD_KVM_STATS, (int)handle.slot, LINUX_O_CLOEXEC);
+    if (descriptor < 0) return descriptor;
+    process = fd_proc_with_stdio();
+    entry = fd_get(process, descriptor);
+    if (!entry) return -EBADF;
+    entry->mount_id = handle.generation;
+    entry->vhost_device_id = (uint32_t)source_kind;
+    return descriptor;
+}
+
+static int x86_edge_kvm_descriptor_install_guest_memfd(
+        void *context, uint64_t size) {
+    edge_fd_proc_t *process;
+    edge_fd_t *entry;
+    edge_memfd_t *memory;
+    int object_id;
+    int descriptor;
+
+    (void)context;
+    if (!size || size > (uint64_t)EDGE_MEMFD_MAX_PAGES * PAGE_SIZE)
+        return -EINVAL;
+    process = fd_proc_with_stdio();
+    if (!process) return -ENOMEM;
+    object_id = memfd_alloc_obj("kvm-guest-memfd", 0u, 0, 1);
+    if (object_id < 0) return -ENFILE;
+    memory = memfd_get(object_id);
+    if (!memory) {
+        memfd_drop_ref(object_id);
+        return -EIO;
+    }
+    memory->size = size;
+    descriptor = fd_alloc(process, 0);
+    if (descriptor < 0) {
+        memfd_drop_ref(object_id);
+        return -EMFILE;
+    }
+    entry = &process->fds[descriptor];
+    entry->file_ref = file_ref_alloc(LINUX_O_RDWR);
+    if (!entry->file_ref) {
+        fd_abort_reserved(process, descriptor);
+        memfd_drop_ref(object_id);
+        return -ENFILE;
+    }
+    entry->kind = FD_MEMFD;
+    entry->flags = LINUX_O_RDWR;
+    entry->fd_flags = LINUX_FD_CLOEXEC;
+    entry->pipe_id = object_id;
+    entry->inode.mode = (uint16_t)(VFS_INODE_FILE | 0600);
+    entry->inode.size = size;
+    entry->inode.ino = 0xE1000000u + (uint32_t)object_id;
+    memfd_build_path(entry->path, sizeof(entry->path), object_id,
+                     "kvm-guest-memfd");
+    if (fd_publish(process, descriptor) < 0) {
+        (void)file_ref_put(entry->file_ref);
+        memfd_drop_ref(object_id);
+        fd_abort_reserved(process, descriptor);
+        return -EBADF;
+    }
+    return descriptor;
+}
+
+static int x86_edge_kvm_descriptor_close(
+        void *context, int32_t descriptor) {
+    (void)context;
+    return kernel_fd_close(descriptor);
+}
+
+static const kernel_edge_kvm_descriptor_backend_ops_t
+    x86_edge_kvm_descriptor_backend_ops = {
+        .install = x86_edge_kvm_descriptor_install,
+        .resolve = x86_edge_kvm_descriptor_resolve,
+        .install_stats = x86_edge_kvm_descriptor_install_stats,
+        .install_guest_memfd =
+            x86_edge_kvm_descriptor_install_guest_memfd,
+        .close = x86_edge_kvm_descriptor_close,
+    };
+
+static int x86_edge_vfio_descriptor_install(
+        void *context, kernel_edge_vfio_file_kind_t kind,
+        edge_vfio_handle_t handle) {
+    edge_fd_proc_t *process;
+    edge_fd_t *entry;
+    edge_fd_kind_t local_kind;
+    int descriptor;
+    (void)context;
+
+    if (kind == KERNEL_EDGE_VFIO_FILE_CONTAINER)
+        local_kind = FD_VFIO_CONTAINER;
+    else if (kind == KERNEL_EDGE_VFIO_FILE_GROUP)
+        local_kind = FD_VFIO_GROUP;
+    else if (kind == KERNEL_EDGE_VFIO_FILE_DEVICE)
+        local_kind = FD_VFIO_DEVICE;
+    else
+        return -EINVAL;
+    descriptor = alloc_special_fd(
+        local_kind, (int)handle.slot, LINUX_O_RDWR | LINUX_O_CLOEXEC);
+    if (descriptor < 0) return descriptor;
+    process = fd_proc_with_stdio();
+    entry = fd_get(process, descriptor);
+    if (!entry) return -EBADF;
+    entry->mount_id = handle.generation;
+    return descriptor;
+}
+
+static int x86_edge_vfio_descriptor_resolve(
+        void *context, int32_t descriptor, kernel_edge_vfio_file_t *file) {
+    edge_fd_proc_t *process = fd_proc_with_stdio();
+    edge_fd_t *entry = fd_get(process, descriptor);
+    (void)context;
+
+    if (!file) return -EINVAL;
+    if (!entry) return -EBADF;
+    if (entry->kind != FD_VFIO_CONTAINER &&
+        entry->kind != FD_VFIO_GROUP && entry->kind != FD_VFIO_DEVICE)
+        return -EBADF;
+    memset(file, 0, sizeof(*file));
+    file->kind = entry->kind == FD_VFIO_CONTAINER ?
+        KERNEL_EDGE_VFIO_FILE_CONTAINER :
+        (entry->kind == FD_VFIO_GROUP ? KERNEL_EDGE_VFIO_FILE_GROUP :
+                                       KERNEL_EDGE_VFIO_FILE_DEVICE);
+    file->handle.slot = (uint32_t)entry->pipe_id;
+    file->handle.generation = (uint32_t)entry->mount_id;
+    return 0;
+}
+
+static int x86_edge_vfio_descriptor_close(
+        void *context, int32_t descriptor) {
+    (void)context;
+    return kernel_fd_close(descriptor);
+}
+
+static int x86_edge_vfio_descriptor_resolve_eventfd(
+        void *context, int32_t descriptor, int32_t *event_id) {
+    edge_fd_proc_t *process = fd_proc_with_stdio();
+    edge_fd_t *entry = fd_get(process, descriptor);
+    (void)context;
+    if (!event_id || !entry || entry->kind != FD_EVENTFD)
+        return -EBADF;
+    *event_id = entry->pipe_id;
+    return 0;
+}
+
+static const kernel_edge_vfio_descriptor_backend_ops_t
+    x86_edge_vfio_descriptor_backend_ops = {
+        .install = x86_edge_vfio_descriptor_install,
+        .resolve = x86_edge_vfio_descriptor_resolve,
+        .resolve_eventfd = x86_edge_vfio_descriptor_resolve_eventfd,
+        .close = x86_edge_vfio_descriptor_close,
+    };
+
+static int x86_edge_vhost_descriptor_install_net(
+        void *context, edge_vhost_handle_t handle) {
+    edge_fd_proc_t *process;
+    edge_fd_t *entry;
+    int descriptor;
+    (void)context;
+    descriptor = alloc_special_fd(
+        FD_VHOST_NET, (int)handle.slot, LINUX_O_RDWR | LINUX_O_CLOEXEC);
+    if (descriptor < 0) return descriptor;
+    process = fd_proc_with_stdio();
+    entry = fd_get(process, descriptor);
+    if (!entry) return -EBADF;
+    entry->mount_id = handle.generation;
+    return descriptor;
+}
+
+static int x86_edge_vhost_descriptor_resolve_net(
+        void *context, int32_t descriptor, edge_vhost_handle_t *handle) {
+    edge_fd_proc_t *process = fd_proc_with_stdio();
+    edge_fd_t *entry = fd_get(process, descriptor);
+    (void)context;
+    if (!handle || !entry || entry->kind != FD_VHOST_NET)
+        return -EBADF;
+    handle->slot = (uint32_t)entry->pipe_id;
+    handle->generation = (uint32_t)entry->mount_id;
+    return 0;
+}
+
+static int x86_edge_vhost_descriptor_install_device(
+        void *context, kernel_edge_vhost_device_kind_t kind,
+        uint32_t device_id, edge_vhost_handle_t handle) {
+    edge_fd_proc_t *process;
+    edge_fd_t *entry;
+    edge_fd_kind_t local_kind;
+    int descriptor;
+    (void)context;
+    (void)device_id;
+    if (kind == KERNEL_EDGE_VHOST_DEVICE_SCSI)
+        local_kind = FD_VHOST_SCSI;
+    else if (kind == KERNEL_EDGE_VHOST_DEVICE_VSOCK)
+        local_kind = FD_VHOST_VSOCK;
+    else if (kind == KERNEL_EDGE_VHOST_DEVICE_VDPA)
+        local_kind = FD_VHOST_VDPA;
+    else
+        return -EOPNOTSUPP;
+    descriptor = alloc_special_fd(
+        local_kind, (int)handle.slot, LINUX_O_RDWR | LINUX_O_CLOEXEC);
+    if (descriptor < 0) return descriptor;
+    process = fd_proc_with_stdio();
+    entry = fd_get(process, descriptor);
+    if (!entry) return -EBADF;
+    entry->mount_id = handle.generation;
+    entry->vhost_device_id = device_id;
+    return descriptor;
+}
+
+static int x86_edge_vhost_descriptor_resolve_device(
+        void *context, int32_t descriptor,
+        kernel_edge_vhost_device_kind_t *kind, uint32_t *device_id,
+        edge_vhost_handle_t *handle) {
+    edge_fd_proc_t *process = fd_proc_with_stdio();
+    edge_fd_t *entry = fd_get(process, descriptor);
+    (void)context;
+    if (!kind || !device_id || !handle || !entry ||
+        (entry->kind != FD_VHOST_SCSI && entry->kind != FD_VHOST_VSOCK &&
+         entry->kind != FD_VHOST_VDPA))
+        return -EBADF;
+    *kind = entry->kind == FD_VHOST_SCSI ?
+        KERNEL_EDGE_VHOST_DEVICE_SCSI :
+        (entry->kind == FD_VHOST_VSOCK ?
+            KERNEL_EDGE_VHOST_DEVICE_VSOCK : KERNEL_EDGE_VHOST_DEVICE_VDPA);
+    *device_id = entry->kind == FD_VHOST_VDPA ?
+        entry->vhost_device_id : 0;
+    handle->slot = (uint32_t)entry->pipe_id;
+    handle->generation = (uint32_t)entry->mount_id;
+    return 0;
+}
+
+static int x86_edge_vhost_descriptor_resolve_eventfd(
+        void *context, int32_t descriptor, int32_t *event_id) {
+    edge_fd_proc_t *process = fd_proc_with_stdio();
+    edge_fd_t *entry = fd_get(process, descriptor);
+    (void)context;
+    if (!event_id || !entry || entry->kind != FD_EVENTFD)
+        return -EBADF;
+    if (kernel_eventfd_retain(entry->pipe_id) < 0)
+        return -EBADF;
+    *event_id = entry->pipe_id;
+    return 0;
+}
+
+static void x86_edge_vhost_descriptor_release_eventfd(
+        void *context, int32_t event_id) {
+    (void)context;
+    kernel_eventfd_release(event_id);
+}
+
+static int x86_edge_vhost_descriptor_resolve_backend(
+        void *context, int32_t descriptor, uint64_t *backend_id) {
+    edge_fd_proc_t *process = fd_proc_with_stdio();
+    edge_fd_t *entry = fd_get(process, descriptor);
+    (void)context;
+    if (!backend_id || !entry ||
+        (entry->kind != FD_TUN && entry->kind != FD_SOCKET) ||
+        entry->file_ref <= 0 || file_ref_get(entry->file_ref) < 0)
+        return -EBADF;
+    *backend_id = ((uint64_t)(uint32_t)entry->kind << 32) |
+        (uint32_t)entry->file_ref;
+    return 0;
+}
+
+static void x86_edge_vhost_descriptor_release_backend(
+        void *context, uint64_t backend_id) {
+    (void)context;
+    (void)file_ref_put((int32_t)backend_id);
+}
+
+static const kernel_edge_vhost_descriptor_backend_ops_t
+    x86_edge_vhost_descriptor_backend_ops = {
+        .install_net = x86_edge_vhost_descriptor_install_net,
+        .resolve_net = x86_edge_vhost_descriptor_resolve_net,
+        .install_device = x86_edge_vhost_descriptor_install_device,
+        .resolve_device = x86_edge_vhost_descriptor_resolve_device,
+        .resolve_eventfd = x86_edge_vhost_descriptor_resolve_eventfd,
+        .release_eventfd = x86_edge_vhost_descriptor_release_eventfd,
+        .resolve_backend = x86_edge_vhost_descriptor_resolve_backend,
+        .release_backend = x86_edge_vhost_descriptor_release_backend,
+    };
+
+static int x86_edge_iommufd_descriptor_install(
+        void *context, edge_iommufd_handle_t handle) {
+    edge_fd_proc_t *process;
+    edge_fd_t *entry;
+    int descriptor;
+    (void)context;
+    descriptor = alloc_special_fd(
+        FD_IOMMUFD, (int)handle.slot, LINUX_O_RDWR | LINUX_O_CLOEXEC);
+    if (descriptor < 0) return descriptor;
+    process = fd_proc_with_stdio();
+    entry = fd_get(process, descriptor);
+    if (!entry) return -EBADF;
+    entry->mount_id = handle.generation;
+    return descriptor;
+}
+
+static int x86_edge_iommufd_descriptor_resolve(
+        void *context, int32_t descriptor, edge_iommufd_handle_t *handle) {
+    edge_fd_proc_t *process = fd_proc_with_stdio();
+    edge_fd_t *entry = fd_get(process, descriptor);
+    (void)context;
+    if (!handle || !entry || entry->kind != FD_IOMMUFD) return -EBADF;
+    handle->slot = (uint32_t)entry->pipe_id;
+    handle->generation = (uint32_t)entry->mount_id;
+    return 0;
+}
+
+static const kernel_edge_iommufd_descriptor_backend_ops_t
+    x86_edge_iommufd_descriptor_backend_ops = {
+        .install = x86_edge_iommufd_descriptor_install,
+        .resolve = x86_edge_iommufd_descriptor_resolve,
+    };
+
+#define X86_EDGE_IOMMUFD_FILE_COOKIE_MAX 128u
+
+typedef struct x86_edge_iommufd_file_cookie {
+    uint32_t generation;
+    uint32_t references;
+    int32_t memfd_id;
+    int32_t owner_pid;
+    uint32_t live;
+    uint32_t reserved;
+    uint64_t offset;
+    uint64_t length;
+    uint64_t user_va;
+} x86_edge_iommufd_file_cookie_t;
+
+static spinlock_t g_x86_edge_iommufd_file_lock;
+static x86_edge_iommufd_file_cookie_t
+    g_x86_edge_iommufd_file_cookies[X86_EDGE_IOMMUFD_FILE_COOKIE_MAX];
+
+static int x86_edge_iommufd_find_memfd_mapping(
+        int32_t memfd_id, uint64_t offset, uint64_t length,
+        uint64_t *user_va) {
+    task_t *current = process_current_task();
+    task_t *memory = current ? process_vm_task(current) : 0;
+    uint64_t end;
+    int status = -EINVAL;
+
+    if (!memory || !user_va || !length || offset > UINT64_MAX - length)
+        return -EINVAL;
+    end = offset + length;
+    process_user_vma_mutation_lock(memory);
+    for (int index = 0; index < user_vma_live_limit(memory); ++index) {
+        const edge_user_vma_t *mapping = &memory->user_vmas[index];
+        const char *path;
+        uint64_t mapping_length;
+        uint64_t mapping_end;
+
+        if (!mapping->file_backed || mapping->end <= mapping->start ||
+            (mapping->flags & LINUX_MAP_SHARED) == 0)
+            continue;
+        path = user_mmap_file_path(mapping->file_slot);
+        if (memfd_id_from_path(path) != memfd_id) continue;
+        mapping_length = mapping->end - mapping->start;
+        if (mapping->file_off > UINT64_MAX - mapping_length) continue;
+        mapping_end = mapping->file_off + mapping_length;
+        if (offset < mapping->file_off || end > mapping_end) continue;
+        if (mapping->start > UINT64_MAX - (offset - mapping->file_off))
+            continue;
+        *user_va = mapping->start + offset - mapping->file_off;
+        status = 0;
+        break;
+    }
+    process_user_vma_mutation_unlock(memory);
+    return status;
+}
+
+static int x86_edge_iommufd_file_cookie_decode(
+        uint64_t cookie, uint32_t *slot, uint32_t *generation) {
+    uint32_t encoded_slot = (uint32_t)cookie;
+
+    if (!slot || !generation || encoded_slot == 0 ||
+        encoded_slot > X86_EDGE_IOMMUFD_FILE_COOKIE_MAX)
+        return -EINVAL;
+    *slot = encoded_slot - 1u;
+    *generation = (uint32_t)(cookie >> 32u);
+    if (*generation == 0) return -EINVAL;
+    return 0;
+}
+
+static int x86_edge_iommufd_file_acquire(
+        void *context, int32_t descriptor, uint64_t offset,
+        uint64_t length, uint64_t *user_va, uint64_t *cookie) {
+    edge_fd_proc_t *process = fd_proc_with_stdio();
+    edge_fd_t *entry = fd_get(process, descriptor);
+    edge_memfd_t *memory;
+    uint64_t resolved_user_va;
+    uint64_t lock_flags;
+    int free_slot = -1;
+    (void)context;
+
+    if (!user_va || !cookie) return -EINVAL;
+    if (!entry || entry->kind != FD_MEMFD) return -EBADF;
+    memory = memfd_get(entry->pipe_id);
+    if (!memory || memory->secret || memory->guest_memfd)
+        return -EOPNOTSUPP;
+    if (!length || offset > memory->size || length > memory->size - offset)
+        return -EINVAL;
+    if (x86_edge_iommufd_find_memfd_mapping(
+            entry->pipe_id, offset, length, &resolved_user_va) < 0)
+        return -EINVAL;
+
+    lock_flags = spin_lock_irqsave(&g_x86_edge_iommufd_file_lock);
+    if (memory->descriptor_refs == UINT32_MAX) {
+        spin_unlock_irqrestore(&g_x86_edge_iommufd_file_lock, lock_flags);
+        return -EOVERFLOW;
+    }
+    for (uint32_t index = 0; index < X86_EDGE_IOMMUFD_FILE_COOKIE_MAX;
+         ++index) {
+        if (!g_x86_edge_iommufd_file_cookies[index].live) {
+            free_slot = (int)index;
+            break;
+        }
+    }
+    if (free_slot < 0) {
+        spin_unlock_irqrestore(&g_x86_edge_iommufd_file_lock, lock_flags);
+        return -ENOSPC;
+    }
+    {
+        x86_edge_iommufd_file_cookie_t *record =
+            &g_x86_edge_iommufd_file_cookies[free_slot];
+        uint32_t generation = record->generation + 1u;
+
+        if (generation == 0) generation = 1u;
+        memset(record, 0, sizeof(*record));
+        record->generation = generation;
+        record->references = 1u;
+        record->memfd_id = entry->pipe_id;
+        record->owner_pid = process_current_task()->pid;
+        record->live = 1u;
+        record->offset = offset;
+        record->length = length;
+        record->user_va = resolved_user_va;
+        memfd_add_ref(entry->pipe_id);
+        *cookie = ((uint64_t)generation << 32u) |
+            ((uint32_t)free_slot + 1u);
+        *user_va = resolved_user_va;
+    }
+    spin_unlock_irqrestore(&g_x86_edge_iommufd_file_lock, lock_flags);
+    return 0;
+}
+
+static int x86_edge_iommufd_file_retain(void *context, uint64_t cookie) {
+    x86_edge_iommufd_file_cookie_t *record;
+    edge_memfd_t *memory;
+    uint64_t lock_flags;
+    uint32_t slot;
+    uint32_t generation;
+    (void)context;
+
+    if (x86_edge_iommufd_file_cookie_decode(
+            cookie, &slot, &generation) < 0)
+        return -EINVAL;
+    lock_flags = spin_lock_irqsave(&g_x86_edge_iommufd_file_lock);
+    record = &g_x86_edge_iommufd_file_cookies[slot];
+    memory = record->live && record->generation == generation ?
+        memfd_get(record->memfd_id) : 0;
+    if (!memory || record->references == UINT32_MAX ||
+        memory->descriptor_refs == UINT32_MAX) {
+        spin_unlock_irqrestore(&g_x86_edge_iommufd_file_lock, lock_flags);
+        return -EINVAL;
+    }
+    ++record->references;
+    memfd_add_ref(record->memfd_id);
+    spin_unlock_irqrestore(&g_x86_edge_iommufd_file_lock, lock_flags);
+    return 0;
+}
+
+static void x86_edge_iommufd_file_release(void *context, uint64_t cookie) {
+    x86_edge_iommufd_file_cookie_t *record;
+    uint64_t lock_flags;
+    uint32_t slot;
+    uint32_t generation;
+    int32_t memfd_id;
+    (void)context;
+
+    if (x86_edge_iommufd_file_cookie_decode(
+            cookie, &slot, &generation) < 0)
+        return;
+    lock_flags = spin_lock_irqsave(&g_x86_edge_iommufd_file_lock);
+    record = &g_x86_edge_iommufd_file_cookies[slot];
+    if (!record->live || record->generation != generation ||
+        record->references == 0) {
+        spin_unlock_irqrestore(&g_x86_edge_iommufd_file_lock, lock_flags);
+        return;
+    }
+    memfd_id = record->memfd_id;
+    --record->references;
+    if (record->references == 0) {
+        record->live = 0;
+        record->memfd_id = 0;
+        record->owner_pid = 0;
+        record->offset = 0;
+        record->length = 0;
+        record->user_va = 0;
+    }
+    spin_unlock_irqrestore(&g_x86_edge_iommufd_file_lock, lock_flags);
+    /* Object destruction can release many backing pages; never do it locked. */
+    memfd_drop_ref(memfd_id);
+}
+
+static int x86_edge_iommufd_file_change_process(
+        void *context, const uint64_t *cookies, uint32_t cookie_count) {
+    task_t *current = process_current_task();
+    uint64_t lock_flags;
+    (void)context;
+
+    if (!current || (!cookies && cookie_count != 0)) return -EINVAL;
+    lock_flags = spin_lock_irqsave(&g_x86_edge_iommufd_file_lock);
+    /* Validate the complete set first so failure leaves every owner intact. */
+    for (uint32_t index = 0; index < cookie_count; ++index) {
+        const x86_edge_iommufd_file_cookie_t *record;
+        uint32_t slot;
+        uint32_t generation;
+
+        if (x86_edge_iommufd_file_cookie_decode(
+                cookies[index], &slot, &generation) < 0) {
+            spin_unlock_irqrestore(
+                &g_x86_edge_iommufd_file_lock, lock_flags);
+            return -EINVAL;
+        }
+        record = &g_x86_edge_iommufd_file_cookies[slot];
+        if (!record->live || record->generation != generation ||
+            record->references == 0 || !memfd_get(record->memfd_id)) {
+            spin_unlock_irqrestore(
+                &g_x86_edge_iommufd_file_lock, lock_flags);
+            return -EINVAL;
+        }
+    }
+    for (uint32_t index = 0; index < cookie_count; ++index) {
+        uint32_t slot;
+        uint32_t generation;
+
+        (void)x86_edge_iommufd_file_cookie_decode(
+            cookies[index], &slot, &generation);
+        g_x86_edge_iommufd_file_cookies[slot].owner_pid = current->pid;
+    }
+    spin_unlock_irqrestore(&g_x86_edge_iommufd_file_lock, lock_flags);
+    return 0;
+}
+
+static const kernel_edge_iommufd_file_backend_ops_t
+    x86_edge_iommufd_file_backend_ops = {
+        .acquire = x86_edge_iommufd_file_acquire,
+        .retain = x86_edge_iommufd_file_retain,
+        .release = x86_edge_iommufd_file_release,
+        .change_process = x86_edge_iommufd_file_change_process,
+    };
+
+int kernel_edge_kvm_descriptor_runtime_initialize(void) {
+    int status = kernel_edge_kvm_descriptor_backend_register(
+        &x86_edge_kvm_descriptor_backend_ops, 0);
+    if (status < 0) return status;
+    status = kernel_edge_vfio_descriptor_backend_register(
+        &x86_edge_vfio_descriptor_backend_ops, 0);
+    if (status < 0) return status;
+    status = kernel_edge_vhost_descriptor_backend_register(
+        &x86_edge_vhost_descriptor_backend_ops, 0);
+    if (status < 0) return status;
+    status = kernel_edge_iommufd_descriptor_backend_register(
+        &x86_edge_iommufd_descriptor_backend_ops, 0);
+    if (status < 0) return status;
+    return kernel_edge_iommufd_file_backend_register(
+        &x86_edge_iommufd_file_backend_ops, 0);
+}
+
 static int x86_anonymous_fd_install(
     void *context, kernel_anonymous_fd_kind_t kind, int32_t object_id,
     uint32_t status_flags, uint32_t descriptor_flags) {
@@ -12312,8 +13052,26 @@ static void x86_anonymous_fd_state_changed(
     void *context, kernel_anonymous_fd_kind_t kind, int32_t object_id) {
     task_t *current;
     (void)context;
+    if (kind == KERNEL_ANONYMOUS_FD_EVENT) {
+        int read_woke = fd_wake_eventfd_read_waiters(object_id);
+        int write_woke = fd_wake_eventfd_write_waiters(object_id);
+        task_t *notifier = process_current_task();
+
+        if (read_woke || write_woke) {
+            if (notifier && !notifier->is_idle)
+                notifier->need_resched = 1;
+        }
+        return;
+    }
     if (kind == KERNEL_ANONYMOUS_FD_TIMER) {
-        fd_wake_timerfd_waiters(object_id);
+        int timer_woke = fd_wake_timerfd_waiters(object_id);
+
+        if (timer_woke) {
+            task_t *notifier = process_current_task();
+
+            if (notifier && !notifier->is_idle)
+                notifier->need_resched = 1;
+        }
         return;
     }
     if (kind != KERNEL_ANONYMOUS_FD_SIGNAL &&

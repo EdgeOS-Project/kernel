@@ -448,8 +448,9 @@ static void mutex_lock_spin(bsd_mutex_t *mutex, void *thread) {
 
 void bsd_mutex_lock(bsd_mutex_t *mutex) {
     void *thread;
-    if (!mutex || !mutex->initialized)
+    if (!mutex || !mutex->initialized) {
         sync_fatal("attempted to lock an uninitialized mutex");
+    }
     thread = current_thread();
     if (mutex->flags & BSD_MUTEX_SPIN) {
         mutex_lock_spin(mutex, thread);

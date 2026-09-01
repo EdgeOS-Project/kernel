@@ -29,6 +29,11 @@ static volatile uint64_t g_call_sequence;
 static volatile uint64_t g_call_requested[EDGE_SMP_MAX_CPUS];
 static volatile uint64_t g_call_completed[EDGE_SMP_MAX_CPUS];
 static volatile uint32_t g_call_flags[EDGE_SMP_MAX_CPUS];
+static volatile uint64_t g_callback_requested[EDGE_SMP_MAX_CPUS];
+static volatile uint64_t g_callback_completed[EDGE_SMP_MAX_CPUS];
+static volatile uintptr_t g_callback_function;
+static volatile uintptr_t g_callback_argument;
+static volatile uint8_t g_callback_lock;
 
 static uint32_t clamp_cpu_count(uint32_t count) {
     if (count == 0) return 1u;
@@ -185,8 +190,15 @@ void edge_smp_reset(uint64_t boot_hardware_id, uint32_t boot_firmware_id,
         __atomic_store_n(&g_call_requested[cpu], 0u, __ATOMIC_RELAXED);
         __atomic_store_n(&g_call_completed[cpu], 0u, __ATOMIC_RELAXED);
         __atomic_store_n(&g_call_flags[cpu], 0u, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_callback_requested[cpu], 0u,
+                         __ATOMIC_RELAXED);
+        __atomic_store_n(&g_callback_completed[cpu], 0u,
+                         __ATOMIC_RELAXED);
     }
     __atomic_store_n(&g_call_sequence, 0u, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_callback_function, 0u, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_callback_argument, 0u, __ATOMIC_RELAXED);
+    __atomic_clear(&g_callback_lock, __ATOMIC_RELAXED);
     g_registration_lock = 0;
     g_cpu_slots[0].hardware_id = boot_hardware_id;
     g_cpu_slots[0].firmware_id = boot_firmware_id;
@@ -391,6 +403,17 @@ int edge_smp_reschedule(uint32_t logical_id) {
     return arch_smp_send_reschedule(logical_id);
 }
 
+__attribute__((weak)) int arch_smp_send_vmm_kick(uint32_t logical_id) {
+    (void)logical_id;
+    return -1;
+}
+
+int edge_smp_vmm_kick(uint32_t logical_id) {
+    if (edge_smp_cpu_state(logical_id) != EDGE_CPU_ONLINE) return -1;
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    return arch_smp_send_vmm_kick(logical_id);
+}
+
 __attribute__((weak)) uint32_t arch_smp_current_cpu(void) {
     return 0u;
 }
@@ -430,6 +453,8 @@ static void publish_call_sequence(uint32_t logical_id, uint64_t sequence) {
 void edge_smp_handle_call(uint32_t logical_id) {
     uint64_t requested;
     uint64_t completed;
+    uint64_t callback_requested;
+    uint64_t callback_completed;
     uint32_t flags;
 
     if (logical_id >= edge_smp_nr_cpu_ids()) return;
@@ -445,6 +470,21 @@ void edge_smp_handle_call(uint32_t logical_id) {
      */
     flags = __atomic_load_n(&g_call_flags[logical_id], __ATOMIC_ACQUIRE);
     arch_smp_execute_call(flags);
+    callback_requested = __atomic_load_n(&g_callback_requested[logical_id],
+                                         __ATOMIC_ACQUIRE);
+    callback_completed = __atomic_load_n(&g_callback_completed[logical_id],
+                                         __ATOMIC_RELAXED);
+    if (callback_requested > callback_completed) {
+        edge_smp_callback_t callback = (edge_smp_callback_t)(uintptr_t)
+            __atomic_load_n(&g_callback_function, __ATOMIC_ACQUIRE);
+        void *argument = (void *)(uintptr_t)
+            __atomic_load_n(&g_callback_argument, __ATOMIC_ACQUIRE);
+
+        if (callback)
+            callback(argument);
+        __atomic_store_n(&g_callback_completed[logical_id],
+                         callback_requested, __ATOMIC_RELEASE);
+    }
     __atomic_store_n(&g_call_completed[logical_id], requested,
                      __ATOMIC_RELEASE);
 }
@@ -516,6 +556,75 @@ int edge_smp_call(const edge_cpumask_t *mask, uint32_t flags) {
             arch_smp_call_relax();
         }
     }
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    return failed ? -1 : 0;
+}
+
+int edge_smp_rendezvous(const edge_cpumask_t *mask,
+                        edge_smp_callback_t callback, void *argument) {
+    edge_cpumask_t targets;
+    edge_cpumask_t online;
+    edge_cpumask_t sent;
+    uint64_t sequence;
+    uint32_t current;
+    uint32_t cpu = UINT32_MAX;
+    int failed = 0;
+
+    if (!mask || !callback)
+        return -1;
+    edge_smp_online_mask(&online);
+    edge_cpumask_and(&targets, mask, &online);
+    edge_cpumask_init(&sent, targets.nbits);
+    if (!edge_cpumask_weight(&targets))
+        return 0;
+    if (edge_smp_online_count() > 1u && !edge_smp_calls_available())
+        return -1;
+
+    current = arch_smp_current_cpu();
+    while (__atomic_test_and_set(&g_callback_lock, __ATOMIC_ACQUIRE)) {
+        edge_smp_handle_call(current);
+        arch_smp_call_relax();
+    }
+    __atomic_store_n(&g_callback_argument, (uintptr_t)argument,
+                     __ATOMIC_RELAXED);
+    __atomic_store_n(&g_callback_function, (uintptr_t)callback,
+                     __ATOMIC_RELEASE);
+    sequence = __atomic_add_fetch(&g_call_sequence, 1u, __ATOMIC_RELAXED);
+    if (!sequence)
+        sequence = __atomic_add_fetch(&g_call_sequence, 1u,
+                                      __ATOMIC_RELAXED);
+
+    while ((cpu = edge_cpumask_next(&targets, cpu)) < targets.nbits) {
+        if (cpu == current) {
+            callback(argument);
+            continue;
+        }
+        __atomic_store_n(&g_callback_requested[cpu], sequence,
+                         __ATOMIC_RELEASE);
+        publish_call_sequence(cpu, sequence);
+        if (arch_smp_send_call(cpu) == 0)
+            (void)edge_cpumask_set_cpu(&sent, cpu);
+        else
+            failed = 1;
+    }
+
+    cpu = UINT32_MAX;
+    while ((cpu = edge_cpumask_next(&sent, cpu)) < sent.nbits) {
+        uint32_t spins = 0;
+
+        while (__atomic_load_n(&g_callback_completed[cpu],
+                               __ATOMIC_ACQUIRE) < sequence) {
+            edge_smp_handle_call(current);
+            if (++spins == 100000000u) {
+                failed = 1;
+                break;
+            }
+            arch_smp_call_relax();
+        }
+    }
+    __atomic_store_n(&g_callback_function, 0u, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_callback_argument, 0u, __ATOMIC_RELAXED);
+    __atomic_clear(&g_callback_lock, __ATOMIC_RELEASE);
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
     return failed ? -1 : 0;
 }

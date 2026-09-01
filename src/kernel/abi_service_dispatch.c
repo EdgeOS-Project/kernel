@@ -9,6 +9,10 @@
 #include "kernel/bpf_runtime.h"
 #include "kernel/anonymous_fd.h"
 #include "kernel/fbdev_runtime.h"
+#include "kernel/edge_kvm_runtime.h"
+#include "kernel/edge_vfio_runtime.h"
+#include "kernel/edge_vhost_runtime.h"
+#include "kernel/edge_iommufd_runtime.h"
 #include "kernel/ioctl_runtime.h"
 #include "kernel/keyring_runtime.h"
 #include "kernel/landlock_runtime.h"
@@ -61,6 +65,14 @@ int64_t kernel_ioctl_execute(const kernel_ioctl_request_t *request) {
     int64_t result;
 
     if (!request) return -EDGE_LINUX_EIO;
+    result = kernel_edge_kvm_ioctl(request);
+    if (result != -EDGE_LINUX_ENOTTY) return result;
+    result = kernel_edge_vfio_ioctl(request);
+    if (result != -EDGE_LINUX_ENOTTY) return result;
+    result = kernel_edge_vhost_ioctl(request);
+    if (result != -EDGE_LINUX_ENOTTY) return result;
+    result = kernel_edge_iommufd_ioctl(request);
+    if (result != -EDGE_LINUX_ENOTTY) return result;
     sync_file_id = kernel_anonymous_fd_descriptor_object_id(
         request->descriptor, KERNEL_ANONYMOUS_FD_DRM_SYNC);
     if (sync_file_id >= 0)

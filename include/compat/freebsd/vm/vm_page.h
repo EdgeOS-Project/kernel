@@ -20,6 +20,8 @@ struct bsd_vm_page_run;
 #endif
 
 #define PQ_NONE 255
+#define PQ_INACTIVE 0
+#define PQ_ACTIVE 1
 
 #define VM_ALLOC_NORMAL		0x0000
 #define VM_ALLOC_INTERRUPT	0x0001
@@ -91,6 +93,7 @@ struct vm_page {
 };
 
 #define VM_PAGE_TO_PHYS(page) ((page)->phys_addr)
+#define VM_PAGE_TO_DMAP(page) vm_page_direct_map((page))
 
 extern vm_page_t bogus_page;
 
@@ -114,7 +117,9 @@ void vm_page_updatefake(vm_page_t page, vm_paddr_t physical_address,
 vm_page_t vm_page_getfake(vm_paddr_t physical_address,
     vm_memattr_t memory_attribute);
 void vm_page_putfake(vm_page_t page);
+void *vm_page_direct_map(vm_page_t page);
 void vm_page_free(vm_page_t page);
+void vm_page_free_zero(vm_page_t page);
 void vm_page_wire(vm_page_t page);
 bool vm_page_unwire_noq(vm_page_t page);
 bool vm_page_unwire(vm_page_t page, uint8_t queue);

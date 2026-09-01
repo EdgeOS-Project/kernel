@@ -19,6 +19,13 @@ typedef struct {
     volatile uint32_t count;
 } reschedule_context_t;
 
+typedef struct {
+    struct callout callout;
+    uint32_t depth;
+    uint32_t maximum_depth;
+    uint32_t count;
+} direct_reschedule_context_t;
+
 static _Thread_local uint8_t g_thread_token;
 static volatile uint32_t g_callback_count;
 static volatile uint32_t g_mutex_callback_count;
@@ -127,6 +134,23 @@ reschedule_callback(void *context)
 }
 
 static void
+direct_reschedule_callback(void *context)
+{
+    direct_reschedule_context_t *reschedule = context;
+
+    reschedule->depth++;
+    if (reschedule->depth > reschedule->maximum_depth)
+        reschedule->maximum_depth = reschedule->depth;
+    reschedule->count++;
+    if (reschedule->count == 1) {
+        assert(callout_reset_sbt(&reschedule->callout, 0, 0,
+            direct_reschedule_callback, reschedule, C_DIRECT_EXEC) == 0);
+        bsd_callout_process_timer_tick();
+    }
+    reschedule->depth--;
+}
+
+static void
 slow_callback(void *context)
 {
     (void)context;
@@ -156,6 +180,7 @@ main(void)
     struct callout slow;
     struct mtx mutex;
     struct mtx spin_mutex;
+    direct_reschedule_context_t direct_reschedule = {0};
     reschedule_context_t reschedule = {0};
     sbintime_t absolute;
     sbintime_t effective_precision;
@@ -226,6 +251,19 @@ main(void)
     assert(__atomic_load_n(
         &g_direct_callback_count, __ATOMIC_ACQUIRE) == 1);
     callout_deactivate(&direct);
+
+    callout_init(&direct_reschedule.callout, 1);
+    assert(callout_reset_sbt(&direct_reschedule.callout, 0, 0,
+        direct_reschedule_callback, &direct_reschedule,
+        C_DIRECT_EXEC) == 0);
+    bsd_callout_process_timer_tick();
+    assert(direct_reschedule.maximum_depth == 1);
+    assert(direct_reschedule.count >= 1 && direct_reschedule.count <= 2);
+    if (callout_pending(&direct_reschedule.callout))
+        bsd_callout_process_timer_tick();
+    assert(direct_reschedule.count == 2);
+    assert(direct_reschedule.maximum_depth == 1);
+    callout_deactivate(&direct_reschedule.callout);
 
     callout_init_mtx(&invalid_direct, &mutex, 0);
     assert(callout_reset_sbt(&invalid_direct, SBT_1MS, 0,

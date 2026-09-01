@@ -14,6 +14,15 @@ static uint32_t g_current_cpu;
 static uint32_t g_sent_calls;
 static uint32_t g_executed_calls;
 static uint32_t g_executed_flags;
+static uint32_t g_callback_calls;
+static uint32_t g_vmm_kicks;
+
+static void count_rendezvous(void *argument) {
+    uint32_t *value = argument;
+
+    ++g_callback_calls;
+    ++*value;
+}
 
 uint32_t arch_smp_current_cpu(void) {
     return g_current_cpu;
@@ -26,6 +35,12 @@ int arch_smp_calls_available(void) {
 int arch_smp_send_call(uint32_t logical_id) {
     ++g_sent_calls;
     edge_smp_handle_call(logical_id);
+    return 0;
+}
+
+int arch_smp_send_vmm_kick(uint32_t logical_id) {
+    (void)logical_id;
+    ++g_vmm_kicks;
     return 0;
 }
 
@@ -130,6 +145,7 @@ static void test_cpu_lifecycle_and_topology(void) {
 
 static void test_cross_cpu_calls(void) {
     edge_cpumask_t targets;
+    uint32_t callback_value = 0u;
     int cpu1;
     int cpu2;
 
@@ -171,12 +187,40 @@ static void test_cross_cpu_calls(void) {
                 (g_executed_flags & EDGE_SMP_CALL_TLB_FLUSH));
     expect_true("invalid call flags are rejected",
                 edge_smp_call(&targets, 1u << 31) != 0);
+    g_callback_calls = 0u;
+    expect_true("rendezvous callback reaches every online CPU",
+                edge_smp_rendezvous(&targets, count_rendezvous,
+                                    &callback_value) == 0 &&
+                g_callback_calls == 3u && callback_value == 3u &&
+                g_sent_calls == 8u);
+    expect_true("rendezvous rejects a missing callback",
+                edge_smp_rendezvous(&targets, NULL, NULL) != 0);
+}
+
+static void test_vmm_kick_delivery(void) {
+    int cpu1;
+
+    edge_smp_reset(30u, 300u, EDGE_SMP_CAPACITY_SCALE);
+    cpu1 = edge_smp_register_cpu(31u, 301u, 0u, 1u, 0u, 0u,
+                                 EDGE_SMP_CAPACITY_SCALE);
+    expect_true("VMM kick target enters starting state",
+                edge_smp_set_state((uint32_t)cpu1,
+                                   EDGE_CPU_STARTING) == 0);
+    expect_true("VMM kick target enters online state",
+                edge_smp_set_state((uint32_t)cpu1,
+                                   EDGE_CPU_ONLINE) == 0);
+    g_vmm_kicks = 0u;
+    expect_true("each VMM kick is delivered to the target",
+                edge_smp_vmm_kick((uint32_t)cpu1) == 0 &&
+                edge_smp_vmm_kick((uint32_t)cpu1) == 0 &&
+                g_vmm_kicks == 2u);
 }
 
 int main(void) {
     test_scalable_cpumask();
     test_cpu_lifecycle_and_topology();
     test_cross_cpu_calls();
+    test_vmm_kick_delivery();
     if (g_failures) return 1;
     puts("smp_unit: PASS");
     return 0;

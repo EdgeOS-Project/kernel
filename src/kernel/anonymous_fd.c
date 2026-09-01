@@ -29,14 +29,18 @@
 
 static const kernel_anonymous_fd_backend_ops_t *g_backend_ops;
 static void *g_backend_context;
+static void anonymous_eventfd_state_changed(void *context, int event_id);
 
 int kernel_anonymous_fd_backend_register(
     const kernel_anonymous_fd_backend_ops_t *ops, void *context) {
+    int result;
     if (!ops || !ops->install || !ops->object_id || !ops->state_changed)
         return -EDGE_LINUX_EINVAL;
     g_backend_ops = ops;
     g_backend_context = context;
-    return 0;
+    result = kernel_eventfd_state_backend_register(
+        anonymous_eventfd_state_changed, 0);
+    return result;
 }
 
 int kernel_anonymous_fd_install_descriptor(
@@ -93,6 +97,10 @@ int kernel_timerfd_descriptor_id(int32_t descriptor) {
 
 static int anonymous_fd_object_is_live(
     kernel_anonymous_fd_kind_t kind, int32_t object_id) {
+    if (kind == KERNEL_ANONYMOUS_FD_EVENT) {
+        kernel_eventfd_state_t state;
+        return kernel_eventfd_query(object_id, &state) == 0;
+    }
     if (kind == KERNEL_ANONYMOUS_FD_TIMER) {
         kernel_timerfd_state_t state;
         return kernel_timerfd_query(object_id, &state) == 0;
@@ -126,6 +134,11 @@ static void anonymous_fd_state_changed(
      */
     g_backend_ops->state_changed(
         g_backend_context, kind, object_id);
+}
+
+static void anonymous_eventfd_state_changed(void *context, int event_id) {
+    (void)context;
+    anonymous_fd_state_changed(KERNEL_ANONYMOUS_FD_EVENT, event_id);
 }
 
 void kernel_timerfd_state_changed(int timer_id) {

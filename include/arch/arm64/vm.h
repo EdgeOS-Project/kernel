@@ -63,6 +63,9 @@ int edgeos_arm64_address_space_unmap_user_range(uint64_t ttbr0, uint64_t va,
                                                  uint64_t length);
 int edgeos_arm64_address_space_unmap_user_page_if_physical(
     uint64_t ttbr0, uint64_t va, uint64_t physical);
+int edgeos_arm64_kvm_pin_user_page(uint64_t user_address,
+                                   uint32_t protection,
+                                   uint64_t *physical_address);
 int edgeos_arm64_address_space_user_range_mapped(uint64_t ttbr0, uint64_t va,
                                                   uint64_t length);
 uint64_t edgeos_arm64_address_space_user_overlap_end(uint64_t ttbr0,

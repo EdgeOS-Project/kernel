@@ -66,6 +66,10 @@
 #include "io/vgic.h"
 #include "io/vgic_v3.h"
 #include "io/vtimer.h"
+
+#ifdef EDGEOS_BHYVE_HOST_IRQ_REENTER
+extern void bsd_kthread_pump(void);
+#endif
 #include "vmm_handlers.h"
 #include "vmm_stat.h"
 
@@ -1202,6 +1206,14 @@ vmmops_run(void *vcpui, register_t pc, pmap_t pmap, struct vm_eventinfo *evinfo)
 		PCPU_SET(curvmpmap, NULL);
 		intr_restore(daif);
 
+#ifdef EDGEOS_BHYVE_HOST_IRQ_REENTER
+		if (excp_type == EXCP_TYPE_EL1_IRQ ||
+		    excp_type == EXCP_TYPE_EL1_FIQ) {
+			bsd_kthread_pump();
+			continue;
+		}
+#endif
+
 		vmm_stat_incr(vcpu, VMEXIT_COUNT, 1);
 		if (excp_type == EXCP_TYPE_MAINT_IRQ)
 			continue;
@@ -1226,6 +1238,7 @@ vmmops_run(void *vcpui, register_t pc, pmap_t pmap, struct vm_eventinfo *evinfo)
 	return (0);
 }
 
+#ifndef EDGEOS_BSD_BRIDGE
 static void
 arm_pcpu_vmcleanup(void *arg)
 {
@@ -1241,6 +1254,35 @@ arm_pcpu_vmcleanup(void *arg)
 		}
 	}
 }
+#endif
+
+#ifdef EDGEOS_BSD_BRIDGE
+static void
+arm_edgeos_vmcleanup(struct hyp *hyp)
+{
+	struct hypctx *active;
+	int cpu, i, maxcpus;
+
+	/*
+	 * EdgeOS keeps imported DPCPU storage in a host-visible array.  VM
+	 * teardown runs only after every vCPU has left KVM_RUN, so clearing the
+	 * stale timer lookup slots directly is safe and avoids waiting for an SGI
+	 * on a CPU blocked in an interrupt-masked userspace syscall.
+	 */
+	maxcpus = vm_get_maxcpus(hyp->vm);
+	for (cpu = 0; cpu < MAXCPU; cpu++) {
+		active = __atomic_load_n(&edge_bsd_dpcpu_vcpu[cpu],
+		    __ATOMIC_ACQUIRE);
+		for (i = 0; i < maxcpus; i++) {
+			if (active == hyp->ctx[i]) {
+				__atomic_store_n(&edge_bsd_dpcpu_vcpu[cpu], NULL,
+				    __ATOMIC_RELEASE);
+				break;
+			}
+		}
+	}
+}
+#endif
 
 void
 vmmops_vcpu_cleanup(void *vcpui)
@@ -1264,7 +1306,11 @@ vmmops_cleanup(void *vmi)
 	vtimer_vmcleanup(hyp);
 	vgic_vmcleanup(hyp);
 
+#ifdef EDGEOS_BSD_BRIDGE
+	arm_edgeos_vmcleanup(hyp);
+#else
 	smp_rendezvous(NULL, arm_pcpu_vmcleanup, NULL, hyp);
+#endif
 
 	if (!in_vhe())
 		vmmpmap_remove(hyp->el2_addr, el2_hyp_size(hyp->vm), true);

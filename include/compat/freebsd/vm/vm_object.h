@@ -34,6 +34,7 @@ struct vm_object {
     };
     volatile uint32_t resident_page_count;
     objtype_t type;
+    vm_memattr_t memattr;
     void *handle;
     union {
         struct {
@@ -59,6 +60,7 @@ void vm_object_wunlock(vm_object_t object);
 int vm_object_wowned(vm_object_t object);
 int vm_object_pager_physical_address(vm_object_t object,
     vm_ooffset_t offset, vm_paddr_t *physical_address);
+int vm_object_set_memattr(vm_object_t object, vm_memattr_t memattr);
 
 #define VM_OBJECT_WLOCK(object) vm_object_wlock((object))
 #define VM_OBJECT_WUNLOCK(object) vm_object_wunlock((object))

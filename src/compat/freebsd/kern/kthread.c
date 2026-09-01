@@ -66,6 +66,7 @@ kthread_bind_process(struct proc *process, struct thread *thread,
     thread->td_proc = process;
     thread->td_ucred = process->p_ucred;
     thread->td_proc_next = 0;
+    thread->td_pcb = (struct pcb *)(void *)thread->td_pcb_storage;
 }
 
 typedef struct {
@@ -617,6 +618,9 @@ static bsd_kthread_record_t *g_current_kthreads[BSD_KTHREAD_CPU_MAX];
 static struct thread *g_public_thread_overrides[BSD_KTHREAD_CPU_MAX];
 static volatile uint32_t g_kthread_guard;
 static volatile uint32_t g_pump_guard;
+static volatile uintptr_t
+    g_deferred_wakeup_channels[BSD_KTHREAD_CHANNEL_MAX];
+static volatile uint8_t g_deferred_wakeup_overflow;
 static uint64_t g_pump_epoch;
 static uint8_t g_kthread_initialized;
 
@@ -697,6 +701,22 @@ kthread_lock(void)
     return state;
 }
 
+static int
+kthread_try_lock(uint64_t *state)
+{
+    uint64_t interrupt_state;
+
+    if (!state)
+        return 0;
+    interrupt_state = kthread_interrupt_save_disable();
+    if (__atomic_test_and_set(&g_kthread_guard, __ATOMIC_ACQUIRE)) {
+        kthread_interrupt_restore(interrupt_state);
+        return 0;
+    }
+    *state = interrupt_state;
+    return 1;
+}
+
 static void
 kthread_unlock(uint64_t state)
 {
@@ -748,6 +768,68 @@ kthread_channel_locked(const void *channel, int create)
         return available;
     }
     return 0;
+}
+
+static void
+kthread_wakeup_locked(const void *channel, int one)
+{
+    bsd_kthread_channel_t *entry = kthread_channel_locked(channel, 1);
+
+    if (entry) {
+        ++entry->generation;
+        if (!entry->generation)
+            ++entry->generation;
+    }
+    for (uint32_t index = 0; index < BSD_KTHREAD_MAX; ++index) {
+        bsd_kthread_record_t *record = &g_kthreads[index];
+
+        if (record->state != BSD_KTHREAD_WAITING ||
+            record->wait_channel != channel)
+            continue;
+        record->wait_channel = 0;
+        record->deadline_us = 0;
+        record->state = BSD_KTHREAD_RUNNABLE;
+        if (one)
+            break;
+    }
+}
+
+static void
+kthread_defer_wakeup(const void *channel)
+{
+    for (uint32_t index = 0; index < BSD_KTHREAD_CHANNEL_MAX; ++index) {
+        uintptr_t observed = __atomic_load_n(
+            &g_deferred_wakeup_channels[index], __ATOMIC_ACQUIRE);
+        uintptr_t expected = 0;
+
+        if (observed == (uintptr_t)channel)
+            return;
+        if (observed == 0 && __atomic_compare_exchange_n(
+                &g_deferred_wakeup_channels[index], &expected,
+                (uintptr_t)channel, 0, __ATOMIC_RELEASE,
+                __ATOMIC_RELAXED))
+            return;
+    }
+    __atomic_store_n(&g_deferred_wakeup_overflow, 1u, __ATOMIC_RELEASE);
+}
+
+static void
+kthread_drain_deferred_wakeups_locked(void)
+{
+    for (uint32_t index = 0; index < BSD_KTHREAD_CHANNEL_MAX; ++index) {
+        const void *channel = (const void *)(uintptr_t)__atomic_exchange_n(
+            &g_deferred_wakeup_channels[index], 0, __ATOMIC_ACQ_REL);
+
+        if (channel)
+            kthread_wakeup_locked(channel, 0);
+    }
+    if (__atomic_exchange_n(&g_deferred_wakeup_overflow, 0,
+            __ATOMIC_ACQ_REL) != 0) {
+        for (uint32_t index = 0; index < BSD_KTHREAD_CHANNEL_MAX; ++index) {
+            if (g_channels[index].channel)
+                kthread_wakeup_locked(g_channels[index].channel, 0);
+        }
+    }
 }
 
 static __attribute__((noreturn)) void
@@ -833,6 +915,9 @@ bsd_kthread_runtime_initialize(void)
         bsd_memset(g_current_kthreads, 0, sizeof(g_current_kthreads));
         bsd_memset(g_public_thread_overrides, 0,
             sizeof(g_public_thread_overrides));
+        bsd_memset((void *)g_deferred_wakeup_channels, 0,
+            sizeof(g_deferred_wakeup_channels));
+        g_deferred_wakeup_overflow = 0;
         g_pump_epoch = 1;
         __atomic_store_n(&g_kthread_initialized, 1, __ATOMIC_RELEASE);
     }
@@ -1011,6 +1096,7 @@ bsd_kthread_pump(void)
         bsd_kthread_record_t *record = 0;
         uint64_t state = kthread_lock();
 
+        kthread_drain_deferred_wakeups_locked();
         ++g_pump_epoch;
         if (!g_pump_epoch)
             ++g_pump_epoch;
@@ -1204,30 +1290,17 @@ bsd_kthread_sleep_generation(const void *channel,
 void
 bsd_kthread_wakeup(const void *channel, int one)
 {
-    bsd_kthread_channel_t *entry;
     uint64_t state;
 
     if (!channel)
         return;
-    state = kthread_lock();
-    entry = kthread_channel_locked(channel, 1);
-    if (entry) {
-        ++entry->generation;
-        if (!entry->generation)
-            ++entry->generation;
+    if (!kthread_try_lock(&state)) {
+        /* Hard-interrupt wakeups must never spin on an interrupted owner. */
+        kthread_defer_wakeup(channel);
+        return;
     }
-    for (uint32_t index = 0; index < BSD_KTHREAD_MAX; ++index) {
-        bsd_kthread_record_t *record = &g_kthreads[index];
-
-        if (record->state != BSD_KTHREAD_WAITING ||
-            record->wait_channel != channel)
-            continue;
-        record->wait_channel = 0;
-        record->deadline_us = 0;
-        record->state = BSD_KTHREAD_RUNNABLE;
-        if (one)
-            break;
-    }
+    kthread_drain_deferred_wakeups_locked();
+    kthread_wakeup_locked(channel, one);
     kthread_unlock(state);
 }
 

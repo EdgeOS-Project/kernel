@@ -52,6 +52,8 @@ typedef struct edge_cpu_topology {
     edge_cpu_state_t state;
 } edge_cpu_topology_t;
 
+typedef void (*edge_smp_callback_t)(void *argument);
+
 void edge_cpumask_init(edge_cpumask_t *mask, uint32_t nr_cpu_ids);
 void edge_cpumask_zero(edge_cpumask_t *mask);
 void edge_cpumask_fill(edge_cpumask_t *mask);
@@ -88,8 +90,11 @@ void edge_smp_sibling_mask(uint32_t logical_id, edge_cpumask_t *mask);
 uint64_t edge_smp_online_mask64(void);
 uint32_t edge_smp_current_cpu(void);
 int edge_smp_reschedule(uint32_t logical_id);
+int edge_smp_vmm_kick(uint32_t logical_id);
 int edge_smp_calls_available(void);
 int edge_smp_call(const edge_cpumask_t *mask, uint32_t flags);
+int edge_smp_rendezvous(const edge_cpumask_t *mask,
+                        edge_smp_callback_t callback, void *argument);
 void edge_smp_handle_call(uint32_t logical_id);
 
 #endif

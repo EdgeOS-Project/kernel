@@ -114,7 +114,13 @@ default_virtual_address(uint64_t physical_address, size_t length,
         physical_address > UINTPTR_MAX ||
         length - 1 > UINTPTR_MAX - (uintptr_t)physical_address)
         return -1;
+#if defined(__x86_64__)
+    if (!edge_mmio_phys_range_mapped(physical_address, length))
+        return -1;
+    *virtual_address = (void *)edge_mmio_low_alias(physical_address);
+#else
     *virtual_address = (void *)(uintptr_t)physical_address;
+#endif
     return 0;
 }
 

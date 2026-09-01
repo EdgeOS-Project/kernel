@@ -53,6 +53,7 @@ MECHANISM_CATEGORIES = {
     "clock source",
     "console hardware",
     "CPU topology",
+    "descriptor table mechanics",
     "register ABI conversion",
     "scheduler entry mechanics",
     "signal frame mechanics",

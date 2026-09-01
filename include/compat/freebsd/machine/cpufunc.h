@@ -62,7 +62,22 @@ intr_restore(register_t flags)
 {
     __asm__ __volatile__("msr daif, %0" : : "r"(flags) : "memory");
 }
+
+static __inline uint64_t
+arm64_address_translate_s1e1r(uint64_t address)
+{
+    uint64_t result;
+
+    __asm__ __volatile__(
+        "at s1e1r, %1\n"
+        "isb\n"
+        "mrs %0, par_el1"
+        : "=r"(result) : "r"(address) : "memory");
+    return result;
+}
 #elif defined(__x86_64__)
+struct region_descriptor;
+
 static __inline void
 do_cpuid(unsigned int leaf, unsigned int *registers)
 {
@@ -100,6 +115,15 @@ rcr0(void)
     unsigned long value;
 
     __asm__ __volatile__("movq %%cr0, %0" : "=r"(value));
+    return value;
+}
+
+static __inline unsigned long
+rcr3(void)
+{
+    unsigned long value;
+
+    __asm__ __volatile__("movq %%cr3, %0" : "=r"(value));
     return value;
 }
 
@@ -178,6 +202,63 @@ wrmsr(unsigned int register_id, uint64_t value)
             "d"((uint32_t)(value >> 32)) : "memory");
 }
 
+#define EDGEOS_X86_DEBUG_REGISTER_READER(name, reg) \
+static __inline unsigned long name(void) \
+{ \
+    unsigned long value; \
+    __asm__ __volatile__("movq %%" #reg ", %0" : "=r"(value)); \
+    return value; \
+}
+
+#define EDGEOS_X86_DEBUG_REGISTER_WRITER(name, reg) \
+static __inline void name(unsigned long value) \
+{ \
+    __asm__ __volatile__("movq %0, %%" #reg : : "r"(value) : "memory"); \
+}
+
+EDGEOS_X86_DEBUG_REGISTER_READER(rdr0, dr0)
+EDGEOS_X86_DEBUG_REGISTER_READER(rdr1, dr1)
+EDGEOS_X86_DEBUG_REGISTER_READER(rdr2, dr2)
+EDGEOS_X86_DEBUG_REGISTER_READER(rdr3, dr3)
+EDGEOS_X86_DEBUG_REGISTER_READER(rdr6, dr6)
+EDGEOS_X86_DEBUG_REGISTER_READER(rdr7, dr7)
+EDGEOS_X86_DEBUG_REGISTER_WRITER(load_dr0, dr0)
+EDGEOS_X86_DEBUG_REGISTER_WRITER(load_dr1, dr1)
+EDGEOS_X86_DEBUG_REGISTER_WRITER(load_dr2, dr2)
+EDGEOS_X86_DEBUG_REGISTER_WRITER(load_dr3, dr3)
+EDGEOS_X86_DEBUG_REGISTER_WRITER(load_dr6, dr6)
+EDGEOS_X86_DEBUG_REGISTER_WRITER(load_dr7, dr7)
+
+#undef EDGEOS_X86_DEBUG_REGISTER_READER
+#undef EDGEOS_X86_DEBUG_REGISTER_WRITER
+
+static __inline uint16_t
+sldt(void)
+{
+    uint16_t selector;
+
+    __asm__ __volatile__("sldt %0" : "=m"(selector));
+    return selector;
+}
+
+static __inline void
+lldt(uint16_t selector)
+{
+    __asm__ __volatile__("lldt %0" : : "m"(selector) : "memory");
+}
+
+static __inline void
+ltr(uint16_t selector)
+{
+#if defined(__x86_64__) && !defined(BSD_BRIDGE_HOST_TEST)
+    extern void bsd_x86_ltr(uint16_t selector);
+
+    bsd_x86_ltr(selector);
+#else
+    __asm__ __volatile__("ltr %0" : : "m"(selector) : "memory");
+#endif
+}
+
 static __inline uint8_t
 inb(uint16_t port)
 {
@@ -249,6 +330,45 @@ static __inline void
 sfence(void)
 {
     __asm__ __volatile__("sfence" : : : "memory");
+}
+
+static __inline unsigned long
+read_rflags(void)
+{
+    unsigned long flags;
+
+    __asm__ __volatile__("pushfq; popq %0" : "=r"(flags));
+    return flags;
+}
+
+static __inline void
+write_rflags(unsigned long flags)
+{
+    __asm__ __volatile__("pushq %0; popfq" : : "r"(flags) : "memory", "cc");
+}
+
+static __inline void
+bare_lgdt(struct region_descriptor *descriptor)
+{
+    __asm__ __volatile__("lgdt (%0)" : : "r"(descriptor) : "memory");
+}
+
+static __inline void
+sgdt(struct region_descriptor *descriptor)
+{
+    __asm__ __volatile__("sgdt %0" : "=m"(*(char *)descriptor) : : "memory");
+}
+
+static __inline void
+lidt(struct region_descriptor *descriptor)
+{
+    __asm__ __volatile__("lidt (%0)" : : "r"(descriptor) : "memory");
+}
+
+static __inline void
+sidt(struct region_descriptor *descriptor)
+{
+    __asm__ __volatile__("sidt %0" : "=m"(*(char *)descriptor) : : "memory");
 }
 
 static __inline register_t

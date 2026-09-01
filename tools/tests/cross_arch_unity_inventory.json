@@ -45,6 +45,10 @@
       "category": "scheduler entry mechanics",
       "reason": "Restores the native periodic timer after shared rseq syscall entry or revocation ends a slice grant."
     },
+    "kernel_arch_input_work_request": {
+      "category": "scheduler entry mechanics",
+      "reason": "Wakes the architecture scheduler when shared deferred input work is queued from interrupt or process context."
+    },
     "kernel_arch_scheduler_cpu_stats": {
       "category": "CPU topology",
       "reason": "Snapshots counters owned by each architecture scheduler while common code defines their Linux-visible format."
@@ -64,6 +68,10 @@
     "kernel_arch_signal_wait_block": {
       "category": "signal frame mechanics",
       "reason": "Parks either a saved user frame or the live syscall stack as required by the entry mechanism."
+    },
+    "kernel_edge_kvm_descriptor_runtime_initialize": {
+      "category": "descriptor table mechanics",
+      "reason": "Connects common KVM objects to each architecture's native process descriptor table and file lifetime rules."
     },
     "kernel_ptrace_current_syscall": {
       "category": "register ABI conversion",

@@ -60,6 +60,8 @@ typedef struct bsd_driver_module_data {
 
 device_t bsd_newbus_create_root(const char *name, int unit,
     driver_t *driver);
+int bsd_newbus_attach_synthetic(device_t parent, const char *name, int unit,
+    driver_t *driver, device_t *result);
 void bsd_device_set_dma_tag(device_t device, bus_dma_tag_t tag);
 
 devclass_t devclass_create(const char *class_name);

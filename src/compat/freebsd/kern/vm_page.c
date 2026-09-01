@@ -18,9 +18,15 @@ typedef unsigned long u_long;
 #include "compat/freebsd/vm/vm_page.h"
 #include "compat/freebsd/vm/vm_object.h"
 #include "compat/freebsd/vm/vm_pager.h"
+#include "compat/freebsd/vm/vm_param.h"
 #include "compat/freebsd/vm/vm_extern.h"
 #include "compat/freebsd/vm/pmap.h"
 #include "compat/freebsd/sys/sglist.h"
+
+#if (defined(__aarch64__) || defined(EDGEOS_BSD_ARM64)) && \
+    !defined(BSD_BRIDGE_HOST_TEST)
+#include <machine/armreg.h>
+#endif
 
 #ifndef BSD_BRIDGE_HOST_TEST
 #include "kernel/linux_errno.h"
@@ -55,7 +61,348 @@ struct bsd_pmap_mapping {
     vm_page_t page;
     vm_prot_t protection;
     uint8_t wired;
+    uint8_t dirty_tracked;
+    uint8_t dirty;
+    uint8_t dirty_write_protected;
 };
+
+#ifndef BSD_BRIDGE_HOST_TEST
+#define BSD_PMAP_MAPPING_CHUNK_CAPACITY 4096u
+
+struct bsd_pmap_mapping_chunk {
+    struct bsd_pmap_mapping_chunk *next;
+    struct bsd_pmap_mapping mappings[BSD_PMAP_MAPPING_CHUNK_CAPACITY];
+};
+
+static struct bsd_pmap_mapping *
+pmap_mapping_alloc_locked(pmap_t pmap)
+{
+    struct bsd_pmap_mapping_chunk *chunk;
+    struct bsd_pmap_mapping *mapping;
+
+    if (!pmap->edgeos_mapping_free) {
+        chunk = bsd_kmalloc(sizeof(*chunk), BSD_M_NOWAIT | BSD_M_ZERO);
+        if (!chunk)
+            return 0;
+        chunk->next = pmap->edgeos_mapping_chunks;
+        pmap->edgeos_mapping_chunks = chunk;
+        for (unsigned int index = 0;
+             index < BSD_PMAP_MAPPING_CHUNK_CAPACITY; ++index) {
+            chunk->mappings[index].next = pmap->edgeos_mapping_free;
+            pmap->edgeos_mapping_free = &chunk->mappings[index];
+        }
+    }
+    mapping = pmap->edgeos_mapping_free;
+    pmap->edgeos_mapping_free = mapping->next;
+    __builtin_memset(mapping, 0, sizeof(*mapping));
+    return mapping;
+}
+
+static void
+pmap_mapping_free_locked(pmap_t pmap, struct bsd_pmap_mapping *mapping)
+{
+    __builtin_memset(mapping, 0, sizeof(*mapping));
+    mapping->next = pmap->edgeos_mapping_free;
+    pmap->edgeos_mapping_free = mapping;
+}
+#endif
+
+struct bsd_pmap_table_page {
+    struct bsd_pmap_table_page *next;
+    vm_page_t page;
+};
+
+#ifdef BSD_BRIDGE_HOST_TEST
+int
+pmap_pinit(pmap_t pmap)
+{
+    return pmap_pinit_type(pmap, PT_X86, 0);
+}
+
+int
+pmap_pinit_type(pmap_t pmap, enum pmap_type type, int flags)
+{
+    const int allowed_flags = PMAP_NESTED_IPIMASK |
+        PMAP_PDE_SUPERPAGE | PMAP_EMULATE_AD_BITS |
+        PMAP_SUPPORTS_EXEC_ONLY;
+    vm_page_t root_page;
+
+    if (!pmap || type < PT_X86 || type > PT_RVI ||
+        (flags & ~allowed_flags) != 0)
+        return 0;
+    root_page = vm_page_alloc_noobj(VM_ALLOC_WIRED | VM_ALLOC_ZERO |
+        VM_ALLOC_WAITOK);
+    if (!root_page)
+        return 0;
+    pmap->pm_cr3 = VM_PAGE_TO_PHYS(root_page);
+    pmap->lock = 0;
+    pmap->edgeos_mappings = 0;
+    pmap->edgeos_mapping_tail = 0;
+    pmap->edgeos_mapping_free = 0;
+    pmap->edgeos_mapping_chunks = 0;
+    pmap->edgeos_table_pages = 0;
+    pmap->edgeos_root_page = root_page;
+    pmap->pm_pmltop = vm_page_direct_map(root_page);
+    smr_init(&pmap->edgeos_eptsmr);
+    pmap->pm_eptsmr = &pmap->edgeos_eptsmr;
+    CPU_ZERO(&pmap->pm_active);
+    pmap->pm_eptgen = 0;
+    pmap->pm_type = type;
+    pmap->pm_flags = (uint32_t)flags;
+    return 1;
+}
+
+#endif
+
+#ifndef BSD_BRIDGE_HOST_TEST
+
+#define EDGEOS_PMAP_ENTRY_ADDRESS 0x000ffffffffff000ull
+#define EDGEOS_RVI_PRESENT 0x001ull
+#define EDGEOS_RVI_WRITE 0x002ull
+#define EDGEOS_RVI_USER 0x004ull
+#define EDGEOS_RVI_NO_EXECUTE (1ull << 63)
+#define EDGEOS_EPT_READ 0x001ull
+#define EDGEOS_EPT_WRITE 0x002ull
+#define EDGEOS_EPT_EXECUTE 0x004ull
+#define EDGEOS_EPT_MEMORY_WB (6ull << 3)
+#define EDGEOS_ARM64_TABLE UINT64_C(0x003)
+#define EDGEOS_ARM64_PAGE UINT64_C(0x003)
+#define EDGEOS_ARM64_AF (UINT64_C(1) << 10)
+#define EDGEOS_ARM64_S2_READ (UINT64_C(1) << 6)
+#define EDGEOS_ARM64_S2_WRITE (UINT64_C(1) << 7)
+#define EDGEOS_ARM64_S2_MEMORY_WB (UINT64_C(0xf) << 2)
+#define EDGEOS_ARM64_S2_XN_ALL (UINT64_C(2) << 53)
+
+static vm_page_t
+pmap_nested_table_alloc(pmap_t pmap)
+{
+    struct bsd_pmap_table_page *table_page;
+    vm_page_t page;
+
+    page = vm_page_alloc_noobj(VM_ALLOC_WIRED | VM_ALLOC_ZERO |
+        VM_ALLOC_NOWAIT);
+    if (!page)
+        return 0;
+    table_page = bsd_kmalloc(sizeof(*table_page),
+        BSD_M_NOWAIT | BSD_M_ZERO);
+    if (!table_page) {
+        vm_page_free(page);
+        return 0;
+    }
+    table_page->page = page;
+    table_page->next = pmap->edgeos_table_pages;
+    pmap->edgeos_table_pages = table_page;
+    return page;
+}
+
+static uint64_t
+pmap_nested_nonleaf_flags(const pmap_t pmap)
+{
+    if (pmap->pm_type == PT_ARM64_STAGE2)
+        return EDGEOS_ARM64_TABLE;
+    if (pmap->pm_type == PT_EPT)
+        return EDGEOS_EPT_READ | EDGEOS_EPT_WRITE | EDGEOS_EPT_EXECUTE;
+    return EDGEOS_RVI_PRESENT | EDGEOS_RVI_WRITE | EDGEOS_RVI_USER;
+}
+
+static uint64_t
+pmap_nested_leaf_flags(const pmap_t pmap, vm_prot_t protection)
+{
+    uint64_t flags;
+
+    if (pmap->pm_type == PT_ARM64_STAGE2) {
+        flags = EDGEOS_ARM64_PAGE | EDGEOS_ARM64_AF |
+            EDGEOS_ARM64_S2_MEMORY_WB;
+        if ((protection & VM_PROT_READ) != 0)
+            flags |= EDGEOS_ARM64_S2_READ;
+        if ((protection & VM_PROT_WRITE) != 0)
+            flags |= EDGEOS_ARM64_S2_WRITE;
+        if ((protection & VM_PROT_EXECUTE) == 0)
+            flags |= EDGEOS_ARM64_S2_XN_ALL;
+        return flags;
+    }
+    if (pmap->pm_type == PT_EPT) {
+        flags = EDGEOS_EPT_MEMORY_WB;
+        if ((protection & VM_PROT_READ) != 0)
+            flags |= EDGEOS_EPT_READ;
+        if ((protection & VM_PROT_WRITE) != 0)
+            flags |= EDGEOS_EPT_WRITE;
+        if ((protection & VM_PROT_EXECUTE) != 0)
+            flags |= EDGEOS_EPT_EXECUTE;
+        return flags;
+    }
+    flags = EDGEOS_RVI_PRESENT | EDGEOS_RVI_USER;
+    if ((protection & VM_PROT_WRITE) != 0)
+        flags |= EDGEOS_RVI_WRITE;
+    if ((protection & VM_PROT_EXECUTE) == 0)
+        flags |= EDGEOS_RVI_NO_EXECUTE;
+    return flags;
+}
+
+static int
+pmap_nested_enter_locked(pmap_t pmap, vm_offset_t virtual_address,
+    vm_page_t page, vm_prot_t protection)
+{
+    static const unsigned int shifts[] = {39u, 30u, 21u};
+    unsigned int first_level;
+    unsigned int table_levels;
+    uint64_t *table;
+
+    if (pmap->pm_type != PT_EPT && pmap->pm_type != PT_RVI &&
+        pmap->pm_type != PT_ARM64_STAGE2)
+        return 0;
+    table_levels = pmap->pm_type == PT_ARM64_STAGE2 ?
+        (unsigned int)pmap->pm_levels : 4u;
+    if (table_levels < 2u || table_levels > 4u)
+        return 22;
+    first_level = 4u - table_levels;
+    table = vm_page_direct_map(pmap->edgeos_root_page);
+    if (!table)
+        return 12;
+    for (unsigned int level = first_level; level < 3u; ++level) {
+        const unsigned int index =
+            ((uint64_t)virtual_address >> shifts[level]) & 0x1ffu;
+        uint64_t entry = __atomic_load_n(&table[index], __ATOMIC_ACQUIRE);
+        vm_page_t child_page;
+
+        if ((entry & 0x3u) == 0) {
+            child_page = pmap_nested_table_alloc(pmap);
+            if (!child_page)
+                return 12;
+            entry = (VM_PAGE_TO_PHYS(child_page) &
+                EDGEOS_PMAP_ENTRY_ADDRESS) |
+                pmap_nested_nonleaf_flags(pmap);
+            __atomic_store_n(&table[index], entry, __ATOMIC_RELEASE);
+        } else {
+            child_page = PHYS_TO_VM_PAGE(entry &
+                EDGEOS_PMAP_ENTRY_ADDRESS);
+            if (!child_page)
+                return 14;
+        }
+        table = vm_page_direct_map(child_page);
+        if (!table)
+            return 14;
+    }
+    {
+        uint64_t flags = pmap_nested_leaf_flags(pmap, protection);
+
+        if (pmap->pm_type == PT_EPT &&
+            page->a.act_count == VM_MEMATTR_UNCACHEABLE)
+            flags &= ~EDGEOS_EPT_MEMORY_WB;
+        if (pmap->pm_type == PT_ARM64_STAGE2 &&
+            page->a.act_count == VM_MEMATTR_UNCACHEABLE)
+            flags &= ~EDGEOS_ARM64_S2_MEMORY_WB;
+        __atomic_store_n(&table[((uint64_t)virtual_address >> PAGE_SHIFT) &
+            0x1ffu], (VM_PAGE_TO_PHYS(page) &
+            EDGEOS_PMAP_ENTRY_ADDRESS) | flags, __ATOMIC_RELEASE);
+    }
+    return 0;
+}
+
+static void
+pmap_nested_remove_locked(pmap_t pmap, vm_offset_t virtual_address)
+{
+    static const unsigned int shifts[] = {39u, 30u, 21u};
+    unsigned int first_level;
+    uint64_t *table;
+
+    if ((pmap->pm_type != PT_EPT && pmap->pm_type != PT_RVI &&
+        pmap->pm_type != PT_ARM64_STAGE2) ||
+        !pmap->edgeos_root_page)
+        return;
+    first_level = pmap->pm_type == PT_ARM64_STAGE2 ?
+        4u - (unsigned int)pmap->pm_levels : 0u;
+    table = vm_page_direct_map(pmap->edgeos_root_page);
+    for (unsigned int level = first_level; table && level < 3u; ++level) {
+        uint64_t entry = __atomic_load_n(
+            &table[((uint64_t)virtual_address >> shifts[level]) & 0x1ffu],
+            __ATOMIC_ACQUIRE);
+        vm_page_t child_page;
+
+        if ((entry & 0x7u) == 0)
+            return;
+        child_page = PHYS_TO_VM_PAGE(entry & EDGEOS_PMAP_ENTRY_ADDRESS);
+        if (!child_page)
+            return;
+        table = vm_page_direct_map(child_page);
+    }
+    if (table)
+        __atomic_store_n(&table[((uint64_t)virtual_address >> PAGE_SHIFT) &
+            0x1ffu], 0, __ATOMIC_RELEASE);
+}
+
+static uint64_t *
+pmap_nested_leaf_locked(pmap_t pmap, vm_offset_t virtual_address)
+{
+    static const unsigned int shifts[] = {39u, 30u, 21u};
+    uint64_t *table;
+
+    if ((pmap->pm_type != PT_EPT && pmap->pm_type != PT_RVI) ||
+        !pmap->edgeos_root_page)
+        return 0;
+    table = vm_page_direct_map(pmap->edgeos_root_page);
+    for (unsigned int level = 0; table && level < 3u; ++level) {
+        uint64_t entry = __atomic_load_n(
+            &table[((uint64_t)virtual_address >> shifts[level]) & 0x1ffu],
+            __ATOMIC_ACQUIRE);
+        vm_page_t child_page;
+
+        if ((entry & 0x7u) == 0)
+            return 0;
+        child_page = PHYS_TO_VM_PAGE(entry & EDGEOS_PMAP_ENTRY_ADDRESS);
+        if (!child_page)
+            return 0;
+        table = vm_page_direct_map(child_page);
+    }
+    return table ? &table[((uint64_t)virtual_address >> PAGE_SHIFT) &
+        0x1ffu] : 0;
+}
+
+#endif
+
+#ifdef BSD_BRIDGE_HOST_TEST
+
+void
+pmap_release(pmap_t pmap)
+{
+    struct bsd_pmap_mapping *mapping;
+    vm_page_t root_page;
+
+    if (!pmap)
+        return;
+#if (defined(__aarch64__) || defined(EDGEOS_BSD_ARM64)) && \
+    !defined(BSD_BRIDGE_HOST_TEST)
+    if (pmap->pm_stage == PM_STAGE2 && pmap_stage2_invalidate_all)
+        pmap_stage2_invalidate_all(pmap_to_ttbr0(pmap));
+#endif
+    edgeos_smr_write_enter(pmap->pm_eptsmr);
+    pmap_lock(pmap);
+    mapping = pmap->edgeos_mappings;
+    pmap->edgeos_mappings = 0;
+    root_page = pmap->edgeos_root_page;
+    pmap->edgeos_root_page = 0;
+    pmap->pm_pmltop = 0;
+    pmap->edgeos_address_space = 0;
+    while (mapping) {
+        struct bsd_pmap_mapping *next = mapping->next;
+
+        if (mapping->wired && mapping->page)
+            (void)vm_page_unwire_noq(mapping->page);
+        bsd_kfree(mapping);
+        mapping = next;
+    }
+    pmap_unlock(pmap);
+    if (root_page)
+        vm_page_free(root_page);
+#if (defined(__aarch64__) || defined(EDGEOS_BSD_ARM64)) && \
+    !defined(BSD_BRIDGE_HOST_TEST)
+    pmap_stage2_vmid_free(pmap->pm_vmid);
+    pmap->pm_vmid = 0;
+    pmap->pm_stage = PM_INVALID;
+#endif
+    edgeos_smr_write_exit(pmap->pm_eptsmr);
+}
+#endif
 
 #ifndef BSD_BRIDGE_HOST_TEST
 struct bsd_vm_page_run {
@@ -523,8 +870,8 @@ vm_page_updatefake(vm_page_t page, vm_paddr_t physical_address,
     page->a.act_count = (uint8_t)memory_attribute;
 }
 
-static void *
-vm_page_direct_mapping(vm_page_t page)
+void *
+vm_page_direct_map(vm_page_t page)
 {
     void *mapping = 0;
 
@@ -552,9 +899,9 @@ pmap_copy_pages(vm_page_t source_pages[], vm_offset_t source_offset,
     if (!source_pages || !destination_pages || transfer_size < 0)
         return;
     while (transfer_size > 0) {
-        void *source = vm_page_direct_mapping(source_pages[source_index]);
+        void *source = vm_page_direct_map(source_pages[source_index]);
         void *destination =
-            vm_page_direct_mapping(destination_pages[destination_index]);
+            vm_page_direct_map(destination_pages[destination_index]);
         size_t portion = PAGE_SIZE - source_page_offset;
         size_t destination_available = PAGE_SIZE - destination_page_offset;
 
@@ -804,6 +1151,12 @@ vm_page_free(vm_page_t page)
 }
 
 void
+vm_page_free_zero(vm_page_t page)
+{
+    vm_page_free(page);
+}
+
+void
 vm_object_wlock(vm_object_t object)
 {
     if (!object)
@@ -850,6 +1203,7 @@ vm_object_allocate(int type, vm_pindex_t size)
     object->size = size;
     object->references = 1;
     object->type = type;
+    object->memattr = VM_MEMATTR_DEFAULT;
     object->domain.dr_policy = DOMAINSET_PREF(0);
     return object;
 }
@@ -859,6 +1213,16 @@ vm_object_reference(vm_object_t object)
 {
     if (object)
         __atomic_add_fetch(&object->references, 1u, __ATOMIC_ACQ_REL);
+}
+
+int
+vm_object_set_memattr(vm_object_t object, vm_memattr_t memattr)
+{
+    if (!object || memattr < VM_MEMATTR_UNCACHEABLE ||
+        memattr >= VM_MEMATTR_END)
+        return KERN_INVALID_ARGUMENT;
+    object->memattr = memattr;
+    return KERN_SUCCESS;
 }
 
 vm_object_t
@@ -1137,10 +1501,14 @@ bool
 vm_page_unwire(vm_page_t page, uint8_t queue)
 {
     bool unwired;
+    bool fake;
 
+    fake = page && (page->edgeos_flags & EDGEOS_VM_PAGE_FAKE) != 0;
     unwired = vm_page_unwire_noq(page);
-    if (page && unwired)
+    if (page && unwired && !fake)
         page->a.queue = queue;
+    if (unwired && fake)
+        vm_page_putfake(page);
     return unwired;
 }
 
@@ -1253,6 +1621,199 @@ smp_targeted_tlb_shootdown_t smp_targeted_tlb_shootdown =
     smp_targeted_tlb_shootdown_native;
 #endif
 
+#if defined(__aarch64__) || defined(EDGEOS_BSD_ARM64)
+void (*pmap_clean_stage2_tlbi)(void);
+void (*pmap_stage2_invalidate_range)(uint64_t, vm_offset_t, vm_offset_t,
+    bool);
+void (*pmap_stage2_invalidate_all)(uint64_t);
+
+static volatile uint32_t g_stage2_vmid_lock;
+static uint64_t g_stage2_vmids[4] = { UINT64_C(1), 0, 0, 0 };
+
+static void
+pmap_stage2_vmid_lock(void)
+{
+    while (__atomic_exchange_n(&g_stage2_vmid_lock, 1u,
+        __ATOMIC_ACQUIRE) != 0) {
+        while (__atomic_load_n(&g_stage2_vmid_lock, __ATOMIC_RELAXED) != 0)
+            __atomic_signal_fence(__ATOMIC_ACQUIRE);
+    }
+}
+
+static void
+pmap_stage2_vmid_unlock(void)
+{
+    __atomic_store_n(&g_stage2_vmid_lock, 0u, __ATOMIC_RELEASE);
+}
+
+static uint16_t
+pmap_stage2_vmid_alloc(void)
+{
+    uint16_t vmid = 0;
+
+    pmap_stage2_vmid_lock();
+    for (unsigned int word = 0; word < 4u && vmid == 0; ++word) {
+        uint64_t free_bits = ~g_stage2_vmids[word];
+
+        if (free_bits != 0) {
+            unsigned int bit = (unsigned int)__builtin_ctzll(free_bits);
+
+            g_stage2_vmids[word] |= UINT64_C(1) << bit;
+            vmid = (uint16_t)(word * 64u + bit);
+        }
+    }
+    pmap_stage2_vmid_unlock();
+    return vmid;
+}
+
+static void
+pmap_stage2_vmid_free(uint16_t vmid)
+{
+    if (vmid == 0)
+        return;
+    pmap_stage2_vmid_lock();
+    g_stage2_vmids[vmid / 64u] &= ~(UINT64_C(1) << (vmid % 64u));
+    pmap_stage2_vmid_unlock();
+}
+
+int
+pmap_pinit_stage(pmap_t pmap, enum pmap_stage stage, int levels)
+{
+    vm_page_t root_page;
+    uint16_t vmid = 0;
+
+    if (!pmap || (stage != PM_STAGE1 && stage != PM_STAGE2) ||
+        levels < 2 || levels > 4)
+        return 0;
+    if (stage == PM_STAGE2) {
+        vmid = pmap_stage2_vmid_alloc();
+        if (vmid == 0)
+            return 0;
+    }
+    root_page = vm_page_alloc_noobj(VM_ALLOC_WIRED | VM_ALLOC_ZERO |
+        VM_ALLOC_WAITOK);
+    if (!root_page) {
+        pmap_stage2_vmid_free(vmid);
+        return 0;
+    }
+    pmap->pm_cr3 = VM_PAGE_TO_PHYS(root_page);
+    pmap->lock = 0;
+    pmap->edgeos_mappings = 0;
+    pmap->edgeos_mapping_tail = 0;
+    pmap->edgeos_mapping_free = 0;
+    pmap->edgeos_mapping_chunks = 0;
+    pmap->edgeos_table_pages = 0;
+    pmap->edgeos_root_page = root_page;
+    pmap->pm_pmltop = vm_page_direct_map(root_page);
+    smr_init(&pmap->edgeos_eptsmr);
+    pmap->pm_eptsmr = &pmap->edgeos_eptsmr;
+    CPU_ZERO(&pmap->pm_active);
+    pmap->pm_eptgen = 0;
+    pmap->pm_type = stage == PM_STAGE2 ?
+        PT_ARM64_STAGE2 : PT_ARM64_STAGE1;
+    pmap->pm_flags = 0;
+    pmap->pm_vmid = vmid;
+    pmap->pm_stage = (uint8_t)stage;
+    pmap->pm_levels = (uint8_t)levels;
+    pmap->pm_ttbr = VM_PAGE_TO_PHYS(root_page);
+    return pmap->pm_pmltop != 0;
+}
+
+bool
+pmap_vs_enabled(void)
+{
+    /* EdgeOS deliberately uses the universally available 8-bit VMID form. */
+    return false;
+}
+
+void
+pmap_remove_pages(pmap_t pmap)
+{
+    if (pmap)
+        pmap_remove(pmap, 0, UINTPTR_MAX);
+}
+
+void
+pmap_activate_vm(pmap_t pmap)
+{
+    if (pmap && pmap->pm_stage == PM_STAGE2)
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+}
+
+uint64_t
+pmap_to_ttbr0(pmap_t pmap)
+{
+    if (!pmap)
+        return 0;
+    return pmap->pm_ttbr | ((uint64_t)pmap->pm_vmid << 48);
+}
+
+int
+pmap_fault(pmap_t pmap, uint64_t esr, uint64_t fault_address)
+{
+    struct bsd_pmap_mapping *mapping;
+    uint64_t *table;
+    unsigned int first_level;
+    int dirty_write = 0;
+
+    (void)esr;
+    if (!pmap || pmap->pm_stage != PM_STAGE2 ||
+        pmap->pm_levels < 2 || pmap->pm_levels > 4)
+        return KERN_FAILURE;
+    table = vm_page_direct_map(pmap->edgeos_root_page);
+    first_level = 4u - (unsigned int)pmap->pm_levels;
+    pmap_lock(pmap);
+    for (mapping = pmap->edgeos_mappings; mapping;
+         mapping = mapping->next) {
+        if (mapping->virtual_address ==
+            (fault_address & ~(vm_offset_t)(PAGE_SIZE - 1u)))
+            break;
+    }
+    if (mapping && mapping->dirty_tracked &&
+        (mapping->protection & VM_PROT_WRITE) != 0 &&
+        ESR_ELx_EXCEPTION(esr) == EXCP_DATA_ABORT_L &&
+        (esr & ISS_DATA_WnR) != 0) {
+        mapping->dirty = 1;
+        mapping->dirty_write_protected = 0;
+        dirty_write = 1;
+    }
+    for (unsigned int level = first_level; table && level < 3u; ++level) {
+        static const unsigned int shifts[] = {39u, 30u, 21u};
+        uint64_t entry = table[(fault_address >> shifts[level]) & 0x1ffu];
+        vm_page_t child;
+
+        if ((entry & 0x3u) == 0) {
+            table = 0;
+            break;
+        }
+        child = PHYS_TO_VM_PAGE(entry & EDGEOS_PMAP_ENTRY_ADDRESS);
+        table = child ? vm_page_direct_map(child) : 0;
+    }
+    if (table) {
+        uint64_t *entry = &table[(fault_address >> PAGE_SHIFT) & 0x1ffu];
+
+        if (*entry != 0) {
+            uint64_t flags = EDGEOS_ARM64_AF | EDGEOS_ARM64_PAGE;
+
+            if (dirty_write)
+                flags |= EDGEOS_ARM64_S2_WRITE;
+            __atomic_fetch_or(entry, flags, __ATOMIC_RELEASE);
+            __atomic_fetch_add(&pmap->pm_eptgen, 1, __ATOMIC_RELEASE);
+            pmap_unlock(pmap);
+            if (pmap_stage2_invalidate_range)
+                pmap_stage2_invalidate_range(pmap_to_ttbr0(pmap),
+                    fault_address & ~(vm_offset_t)(PAGE_SIZE - 1u),
+                    (fault_address & ~(vm_offset_t)(PAGE_SIZE - 1u)) +
+                        PAGE_SIZE,
+                    true);
+            return KERN_SUCCESS;
+        }
+    }
+    pmap_unlock(pmap);
+    return KERN_FAILURE;
+}
+#endif
+
 vm_paddr_t
 pmap_extract(pmap_t pmap, vm_offset_t virtual_address)
 {
@@ -1275,7 +1836,7 @@ pmap_extract(pmap_t pmap, vm_offset_t virtual_address)
         return physical_address;
     }
     pmap_unlock(pmap);
-    if (!pmap->edgeos_address_space ||
+    if (pmap->pm_type != PT_X86 || !pmap->edgeos_address_space ||
         arch_vm_translate(pmap->edgeos_address_space,
         (uint64_t)virtual_address, &physical_address, 0) != 0)
         return 0;
@@ -1285,20 +1846,51 @@ pmap_extract(pmap_t pmap, vm_offset_t virtual_address)
 int
 pmap_pinit(pmap_t pmap)
 {
-    if (!pmap)
-        return 12;
-    pmap->edgeos_address_space = 0;
+    return pmap_pinit_type(pmap, PT_X86, 0);
+}
+
+int
+pmap_pinit_type(pmap_t pmap, enum pmap_type type, int flags)
+{
+    const int allowed_flags = PMAP_NESTED_IPIMASK |
+        PMAP_PDE_SUPERPAGE | PMAP_EMULATE_AD_BITS |
+        PMAP_SUPPORTS_EXEC_ONLY;
+    vm_page_t root_page;
+
+    if (!pmap || type < PT_X86 || type > PT_RVI ||
+        (flags & ~allowed_flags) != 0)
+        return 0;
+    root_page = vm_page_alloc_noobj(VM_ALLOC_WIRED | VM_ALLOC_ZERO |
+        VM_ALLOC_WAITOK);
+    if (!root_page)
+        return 0;
+    pmap->pm_cr3 = VM_PAGE_TO_PHYS(root_page);
     pmap->lock = 0;
     pmap->edgeos_mappings = 0;
-    return 0;
+    pmap->edgeos_mapping_tail = 0;
+    pmap->edgeos_mapping_free = 0;
+    pmap->edgeos_mapping_chunks = 0;
+    pmap->edgeos_table_pages = 0;
+    pmap->edgeos_root_page = root_page;
+    pmap->pm_pmltop = vm_page_direct_map(root_page);
+    smr_init(&pmap->edgeos_eptsmr);
+    pmap->pm_eptsmr = &pmap->edgeos_eptsmr;
+    CPU_ZERO(&pmap->pm_active);
+    pmap->pm_eptgen = 0;
+    pmap->pm_type = type;
+    pmap->pm_flags = (uint32_t)flags;
+    return 1;
 }
 
 int
 pmap_enter(pmap_t pmap, vm_offset_t virtual_address, vm_page_t page,
     vm_prot_t protection, unsigned int flags, int8_t page_size_index)
 {
+    struct bsd_pmap_mapping **link;
     struct bsd_pmap_mapping *mapping;
     vm_offset_t page_address;
+    int error;
+    int new_mapping = 0;
     unsigned int allowed_flags = VM_PROT_ALL | PMAP_ENTER_NOSLEEP |
         PMAP_ENTER_WIRED | PMAP_ENTER_UNPROTECTED;
 
@@ -1307,49 +1899,422 @@ pmap_enter(pmap_t pmap, vm_offset_t virtual_address, vm_page_t page,
         (flags & ~allowed_flags) != 0)
         return 22;
     page_address = virtual_address & ~(vm_offset_t)(PAGE_SIZE - 1u);
+    edgeos_smr_write_enter(pmap->pm_eptsmr);
     pmap_lock(pmap);
-    for (mapping = pmap->edgeos_mappings; mapping;
-         mapping = mapping->next) {
-        if (mapping->virtual_address == page_address)
-            break;
+    mapping = pmap->edgeos_mapping_tail;
+    link = 0;
+    if (mapping && mapping->virtual_address < page_address &&
+        (!mapping->next ||
+         mapping->next->virtual_address >= page_address)) {
+        link = &mapping->next;
+        mapping = *link;
+    } else if (!mapping || mapping->virtual_address != page_address) {
+        link = &pmap->edgeos_mappings;
+        while (*link && (*link)->virtual_address < page_address)
+            link = &(*link)->next;
+        mapping = *link;
     }
+    if (mapping && mapping->virtual_address != page_address)
+        mapping = 0;
     if (!mapping) {
-        mapping = bsd_malloc(sizeof(*mapping), M_DEVBUF,
-            M_NOWAIT | M_ZERO);
+        mapping = pmap_mapping_alloc_locked(pmap);
         if (!mapping) {
             pmap_unlock(pmap);
+            edgeos_smr_write_exit(pmap->pm_eptsmr);
             return 12;
         }
         mapping->virtual_address = page_address;
-        mapping->next = pmap->edgeos_mappings;
-        pmap->edgeos_mappings = mapping;
+        if (!link)
+            link = &pmap->edgeos_mappings;
+        mapping->next = *link;
+        *link = mapping;
+        new_mapping = 1;
     } else if (mapping->wired && mapping->page) {
         (void)vm_page_unwire_noq(mapping->page);
     }
+    pmap->edgeos_mapping_tail = mapping;
+    error = pmap_nested_enter_locked(pmap, page_address, page, protection);
+    if (error != 0) {
+        if (new_mapping) {
+            if (pmap->edgeos_mappings == mapping) {
+                pmap->edgeos_mappings = mapping->next;
+            } else {
+                struct bsd_pmap_mapping *previous =
+                    pmap->edgeos_mappings;
+
+                while (previous && previous->next != mapping)
+                    previous = previous->next;
+                if (previous)
+                    previous->next = mapping->next;
+            }
+            if (pmap->edgeos_mapping_tail == mapping) {
+                pmap->edgeos_mapping_tail = pmap->edgeos_mappings;
+                while (pmap->edgeos_mapping_tail &&
+                    pmap->edgeos_mapping_tail->next)
+                    pmap->edgeos_mapping_tail =
+                        pmap->edgeos_mapping_tail->next;
+            }
+            pmap_mapping_free_locked(pmap, mapping);
+        }
+        pmap_unlock(pmap);
+        edgeos_smr_write_exit(pmap->pm_eptsmr);
+        return error;
+    }
     mapping->physical_address = VM_PAGE_TO_PHYS(page) &
         ~(vm_paddr_t)(PAGE_SIZE - 1u);
-    mapping->page = page;
+    mapping->page = (page->edgeos_flags & EDGEOS_VM_PAGE_FAKE) != 0 ?
+        0 : page;
     mapping->protection = protection;
-    mapping->wired = (flags & PMAP_ENTER_WIRED) != 0;
+    mapping->wired = mapping->page &&
+        (flags & PMAP_ENTER_WIRED) != 0;
     if (mapping->wired)
         vm_page_wire(page);
+    __atomic_fetch_add(&pmap->pm_eptgen, 1, __ATOMIC_RELEASE);
     pmap_unlock(pmap);
+    edgeos_smr_write_exit(pmap->pm_eptsmr);
+#if defined(__aarch64__) || defined(EDGEOS_BSD_ARM64)
+    if (pmap->pm_stage == PM_STAGE2 && pmap_stage2_invalidate_range)
+        pmap_stage2_invalidate_range(pmap_to_ttbr0(pmap), page_address,
+            page_address + PAGE_SIZE, true);
+#endif
     return 0;
+}
+
+int
+pmap_emulate_accessed_dirty(pmap_t pmap, vm_offset_t address,
+    int fault_type)
+{
+    (void)address;
+    (void)fault_type;
+    if (!pmap || (pmap->pm_flags & PMAP_EMULATE_AD_BITS) == 0)
+        return -1;
+    /* EdgeOS nested mappings currently use hardware-managed A/D state. */
+    return -1;
+}
+
+long
+pmap_wired_count(pmap_t pmap)
+{
+    struct bsd_pmap_mapping *mapping;
+    long count = 0;
+
+    if (!pmap)
+        return 0;
+    pmap_lock(pmap);
+    for (mapping = pmap->edgeos_mappings; mapping;
+         mapping = mapping->next) {
+        if (mapping->wired)
+            ++count;
+    }
+    pmap_unlock(pmap);
+    return count;
+}
+
+int
+edgeos_pmap_get_dirty(pmap_t pmap, vm_offset_t start,
+    uint32_t page_count, uint64_t *bitmap, uint32_t bitmap_words,
+    int clear)
+{
+#if defined(__x86_64__) && !defined(BSD_BRIDGE_HOST_TEST)
+    uint64_t dirty_flag;
+    int cleared = 0;
+
+    if (!pmap || !bitmap || page_count == 0 ||
+        bitmap_words < (page_count + 63u) / 64u ||
+        (pmap->pm_type != PT_EPT && pmap->pm_type != PT_RVI))
+        return 22;
+    for (uint32_t word = 0; word < bitmap_words; ++word)
+        bitmap[word] = 0;
+    dirty_flag = pmap->pm_type == PT_EPT ? UINT64_C(1) << 9 : PG_M;
+    edgeos_smr_write_enter(pmap->pm_eptsmr);
+    pmap_lock(pmap);
+    for (uint32_t page = 0; page < page_count; ++page) {
+        uint64_t *entry = pmap_nested_leaf_locked(
+            pmap, start + (uint64_t)page * PAGE_SIZE);
+        uint64_t previous;
+
+        if (!entry)
+            continue;
+        previous = clear ?
+            __atomic_fetch_and(entry, ~dirty_flag, __ATOMIC_ACQ_REL) :
+            __atomic_load_n(entry, __ATOMIC_ACQUIRE);
+        if ((previous & dirty_flag) == 0)
+            continue;
+        bitmap[page / 64u] |= UINT64_C(1) << (page % 64u);
+        cleared |= clear != 0;
+    }
+    if (cleared)
+        __atomic_fetch_add(&pmap->pm_eptgen, 1, __ATOMIC_RELEASE);
+    pmap_unlock(pmap);
+    edgeos_smr_write_exit(pmap->pm_eptsmr);
+    return 0;
+#elif (defined(__aarch64__) || defined(EDGEOS_BSD_ARM64)) && \
+    !defined(BSD_BRIDGE_HOST_TEST)
+    struct bsd_pmap_mapping *mapping;
+    int cleared = 0;
+
+    if (!pmap || !bitmap || page_count == 0 ||
+        bitmap_words < (page_count + 63u) / 64u ||
+        pmap->pm_type != PT_ARM64_STAGE2)
+        return 22;
+    for (uint32_t word = 0; word < bitmap_words; ++word)
+        bitmap[word] = 0;
+    pmap_lock(pmap);
+    for (mapping = pmap->edgeos_mappings; mapping;
+         mapping = mapping->next) {
+        vm_offset_t address = mapping->virtual_address;
+        uint64_t offset;
+        uint32_t page;
+        uint64_t *entry;
+
+        if (address < start)
+            continue;
+        offset = address - start;
+        if ((offset & (PAGE_SIZE - 1u)) != 0 ||
+            offset / PAGE_SIZE >= page_count)
+            continue;
+        page = (uint32_t)(offset / PAGE_SIZE);
+        if (!mapping || !mapping->dirty_tracked || !mapping->dirty)
+            continue;
+        bitmap[page / 64u] |= UINT64_C(1) << (page % 64u);
+        if (!clear)
+            continue;
+        entry = pmap_nested_leaf_locked(pmap, address);
+        if (!mapping->dirty_write_protected && entry) {
+            __atomic_fetch_and(entry, ~EDGEOS_ARM64_S2_WRITE,
+                __ATOMIC_ACQ_REL);
+            mapping->dirty_write_protected = 1;
+        } else {
+            mapping->dirty = 0;
+        }
+        cleared = 1;
+    }
+    if (cleared)
+        __atomic_fetch_add(&pmap->pm_eptgen, 1, __ATOMIC_RELEASE);
+    pmap_unlock(pmap);
+    if (cleared && pmap_stage2_invalidate_range)
+        pmap_stage2_invalidate_range(pmap_to_ttbr0(pmap), start,
+            start + (uint64_t)page_count * PAGE_SIZE, true);
+    return 0;
+#else
+    (void)pmap;
+    (void)start;
+    (void)page_count;
+    (void)bitmap;
+    (void)bitmap_words;
+    (void)clear;
+    return 95;
+#endif
+}
+
+int
+edgeos_pmap_clear_dirty(pmap_t pmap, vm_offset_t start,
+    uint32_t page_count, const uint64_t *bitmap, uint32_t bitmap_words)
+{
+#if defined(__x86_64__) && !defined(BSD_BRIDGE_HOST_TEST)
+    uint64_t dirty_flag;
+    int cleared = 0;
+
+    if (!pmap || !bitmap || page_count == 0 ||
+        bitmap_words < (page_count + 63u) / 64u ||
+        (pmap->pm_type != PT_EPT && pmap->pm_type != PT_RVI))
+        return 22;
+    dirty_flag = pmap->pm_type == PT_EPT ? UINT64_C(1) << 9 : PG_M;
+    edgeos_smr_write_enter(pmap->pm_eptsmr);
+    pmap_lock(pmap);
+    for (uint32_t page = 0; page < page_count; ++page) {
+        uint64_t *entry;
+        uint64_t previous;
+
+        if ((bitmap[page / 64u] &
+             (UINT64_C(1) << (page % 64u))) == 0)
+            continue;
+        entry = pmap_nested_leaf_locked(
+            pmap, start + (uint64_t)page * PAGE_SIZE);
+        if (!entry)
+            continue;
+        previous = __atomic_fetch_and(entry, ~dirty_flag, __ATOMIC_ACQ_REL);
+        cleared |= (previous & dirty_flag) != 0;
+    }
+    if (cleared)
+        __atomic_fetch_add(&pmap->pm_eptgen, 1, __ATOMIC_RELEASE);
+    pmap_unlock(pmap);
+    edgeos_smr_write_exit(pmap->pm_eptsmr);
+    return 0;
+#elif (defined(__aarch64__) || defined(EDGEOS_BSD_ARM64)) && \
+    !defined(BSD_BRIDGE_HOST_TEST)
+    struct bsd_pmap_mapping *mapping;
+    int cleared = 0;
+
+    if (!pmap || !bitmap || page_count == 0 ||
+        bitmap_words < (page_count + 63u) / 64u ||
+        pmap->pm_type != PT_ARM64_STAGE2)
+        return 22;
+    pmap_lock(pmap);
+    for (mapping = pmap->edgeos_mappings; mapping;
+         mapping = mapping->next) {
+        vm_offset_t address = mapping->virtual_address;
+        uint64_t offset;
+        uint32_t page;
+        uint64_t *entry;
+
+        if (address < start)
+            continue;
+        offset = address - start;
+        if ((offset & (PAGE_SIZE - 1u)) != 0 ||
+            offset / PAGE_SIZE >= page_count)
+            continue;
+        page = (uint32_t)(offset / PAGE_SIZE);
+        if ((bitmap[page / 64u] &
+             (UINT64_C(1) << (page % 64u))) == 0)
+            continue;
+        if (!mapping || !mapping->dirty_tracked)
+            continue;
+        entry = pmap_nested_leaf_locked(pmap, address);
+        if (!mapping->dirty_write_protected && entry) {
+            __atomic_fetch_and(entry, ~EDGEOS_ARM64_S2_WRITE,
+                __ATOMIC_ACQ_REL);
+            mapping->dirty_write_protected = 1;
+        } else {
+            mapping->dirty = 0;
+        }
+        cleared = 1;
+    }
+    if (cleared)
+        __atomic_fetch_add(&pmap->pm_eptgen, 1, __ATOMIC_RELEASE);
+    pmap_unlock(pmap);
+    if (cleared && pmap_stage2_invalidate_range)
+        pmap_stage2_invalidate_range(pmap_to_ttbr0(pmap), start,
+            start + (uint64_t)page_count * PAGE_SIZE, true);
+    return 0;
+#else
+    (void)pmap;
+    (void)start;
+    (void)page_count;
+    (void)bitmap;
+    (void)bitmap_words;
+    return 95;
+#endif
+}
+
+int
+edgeos_pmap_enable_dirty_tracking(pmap_t pmap, vm_offset_t start,
+    uint32_t page_count)
+{
+#if (defined(__aarch64__) || defined(EDGEOS_BSD_ARM64)) && \
+    !defined(BSD_BRIDGE_HOST_TEST)
+    struct bsd_pmap_mapping *mapping;
+    uint32_t tracked = 0;
+
+    if (!pmap || page_count == 0 || pmap->pm_type != PT_ARM64_STAGE2)
+        return 22;
+    pmap_lock(pmap);
+    for (mapping = pmap->edgeos_mappings; mapping;
+         mapping = mapping->next) {
+        vm_offset_t address = mapping->virtual_address;
+        uint64_t offset;
+        uint64_t *entry;
+
+        if (address < start)
+            continue;
+        offset = address - start;
+        if ((offset & (PAGE_SIZE - 1u)) != 0 ||
+            offset / PAGE_SIZE >= page_count)
+            continue;
+        mapping->dirty_tracked = 1;
+        mapping->dirty = 0;
+        mapping->dirty_write_protected = 1;
+        entry = pmap_nested_leaf_locked(pmap, address);
+        if (entry && (mapping->protection & VM_PROT_WRITE) != 0)
+            __atomic_fetch_and(entry, ~EDGEOS_ARM64_S2_WRITE,
+                __ATOMIC_ACQ_REL);
+        ++tracked;
+    }
+    if (tracked != page_count) {
+        pmap_unlock(pmap);
+        return 22;
+    }
+    __atomic_fetch_add(&pmap->pm_eptgen, 1, __ATOMIC_RELEASE);
+    pmap_unlock(pmap);
+    if (pmap_stage2_invalidate_range)
+        pmap_stage2_invalidate_range(pmap_to_ttbr0(pmap), start,
+            start + (uint64_t)page_count * PAGE_SIZE, true);
+    return 0;
+#else
+    (void)pmap;
+    (void)start;
+    (void)page_count;
+    return 95;
+#endif
+}
+
+int
+edgeos_pmap_disable_dirty_tracking(pmap_t pmap, vm_offset_t start,
+    uint32_t page_count)
+{
+#if (defined(__aarch64__) || defined(EDGEOS_BSD_ARM64)) && \
+    !defined(BSD_BRIDGE_HOST_TEST)
+    struct bsd_pmap_mapping *mapping;
+    uint32_t updated = 0;
+
+    if (!pmap || page_count == 0 || pmap->pm_type != PT_ARM64_STAGE2)
+        return 22;
+    pmap_lock(pmap);
+    for (mapping = pmap->edgeos_mappings; mapping;
+         mapping = mapping->next) {
+        vm_offset_t address = mapping->virtual_address;
+        uint64_t offset;
+        uint64_t *entry;
+
+        if (address < start)
+            continue;
+        offset = address - start;
+        if ((offset & (PAGE_SIZE - 1u)) != 0 ||
+            offset / PAGE_SIZE >= page_count)
+            continue;
+        mapping->dirty_tracked = 0;
+        mapping->dirty = 0;
+        mapping->dirty_write_protected = 0;
+        entry = pmap_nested_leaf_locked(pmap, address);
+        if (entry && (mapping->protection & VM_PROT_WRITE) != 0)
+            __atomic_fetch_or(entry, EDGEOS_ARM64_S2_WRITE,
+                __ATOMIC_ACQ_REL);
+        ++updated;
+    }
+    if (updated != page_count) {
+        pmap_unlock(pmap);
+        return 22;
+    }
+    __atomic_fetch_add(&pmap->pm_eptgen, 1, __ATOMIC_RELEASE);
+    pmap_unlock(pmap);
+    if (pmap_stage2_invalidate_range)
+        pmap_stage2_invalidate_range(pmap_to_ttbr0(pmap), start,
+            start + (uint64_t)page_count * PAGE_SIZE, true);
+    return 0;
+#else
+    (void)pmap;
+    (void)start;
+    (void)page_count;
+    return 95;
+#endif
 }
 
 void
 pmap_remove(pmap_t pmap, vm_offset_t start, vm_offset_t end)
 {
     struct bsd_pmap_mapping **link;
+    int invalidate_all;
 
     if (!pmap || start >= end)
         return;
+    invalidate_all = start == 0 && end == UINTPTR_MAX;
     start &= ~(vm_offset_t)(PAGE_SIZE - 1u);
     if (end > UINTPTR_MAX - (PAGE_SIZE - 1u))
         end = UINTPTR_MAX & ~(vm_offset_t)(PAGE_SIZE - 1u);
     else
         end = (end + PAGE_SIZE - 1u) &
             ~(vm_offset_t)(PAGE_SIZE - 1u);
+    edgeos_smr_write_enter(pmap->pm_eptsmr);
     pmap_lock(pmap);
     for (link = &pmap->edgeos_mappings; *link;) {
         struct bsd_pmap_mapping *mapping = *link;
@@ -1360,33 +2325,77 @@ pmap_remove(pmap_t pmap, vm_offset_t start, vm_offset_t end)
             continue;
         }
         *link = mapping->next;
+        pmap_nested_remove_locked(pmap, mapping->virtual_address);
         if (mapping->wired && mapping->page)
             (void)vm_page_unwire_noq(mapping->page);
-        bsd_free(mapping, M_DEVBUF);
+        pmap_mapping_free_locked(pmap, mapping);
     }
+    pmap->edgeos_mapping_tail = pmap->edgeos_mappings;
+    while (pmap->edgeos_mapping_tail &&
+        pmap->edgeos_mapping_tail->next)
+        pmap->edgeos_mapping_tail = pmap->edgeos_mapping_tail->next;
+    __atomic_fetch_add(&pmap->pm_eptgen, 1, __ATOMIC_RELEASE);
     pmap_unlock(pmap);
+    edgeos_smr_write_exit(pmap->pm_eptsmr);
+#if defined(__aarch64__) || defined(EDGEOS_BSD_ARM64)
+    if (pmap->pm_stage == PM_STAGE2) {
+        if (invalidate_all && pmap_stage2_invalidate_all)
+            pmap_stage2_invalidate_all(pmap_to_ttbr0(pmap));
+        else if (pmap_stage2_invalidate_range)
+            pmap_stage2_invalidate_range(pmap_to_ttbr0(pmap), start, end,
+                true);
+    }
+#endif
 }
 
 void
 pmap_release(pmap_t pmap)
 {
     struct bsd_pmap_mapping *mapping;
+    struct bsd_pmap_mapping_chunk *mapping_chunk;
+    struct bsd_pmap_table_page *table_page;
+    vm_page_t root_page;
 
     if (!pmap)
         return;
+    edgeos_smr_write_enter(pmap->pm_eptsmr);
     pmap_lock(pmap);
     mapping = pmap->edgeos_mappings;
     pmap->edgeos_mappings = 0;
+    pmap->edgeos_mapping_tail = 0;
+    pmap->edgeos_mapping_free = 0;
+    mapping_chunk = pmap->edgeos_mapping_chunks;
+    pmap->edgeos_mapping_chunks = 0;
+    root_page = pmap->edgeos_root_page;
+    pmap->edgeos_root_page = 0;
+    pmap->pm_pmltop = 0;
+    table_page = pmap->edgeos_table_pages;
+    pmap->edgeos_table_pages = 0;
     pmap->edgeos_address_space = 0;
     while (mapping) {
         struct bsd_pmap_mapping *next = mapping->next;
 
         if (mapping->wired && mapping->page)
             (void)vm_page_unwire_noq(mapping->page);
-        bsd_free(mapping, M_DEVBUF);
         mapping = next;
     }
     pmap_unlock(pmap);
+    while (mapping_chunk) {
+        struct bsd_pmap_mapping_chunk *next = mapping_chunk->next;
+
+        bsd_kfree(mapping_chunk);
+        mapping_chunk = next;
+    }
+    while (table_page) {
+        struct bsd_pmap_table_page *next = table_page->next;
+
+        vm_page_free(table_page->page);
+        bsd_kfree(table_page);
+        table_page = next;
+    }
+    if (root_page)
+        vm_page_free(root_page);
+    edgeos_smr_write_exit(pmap->pm_eptsmr);
 }
 
 static void

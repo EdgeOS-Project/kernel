@@ -6,15 +6,39 @@
 
 #include <stdint.h>
 #include <sys/cpuset.h>
+#include <sys/smr.h>
 #include "vm.h"
 #include "vm_page.h"
 #if defined(__x86_64__)
 #include <machine/specialreg.h>
+
+/* Native x86 page-table and page-fault encodings consumed by the VMM. */
+#define PG_V UINT64_C(0x001)
+#define PG_RW UINT64_C(0x002)
+#define PG_U UINT64_C(0x004)
+#define PG_A UINT64_C(0x020)
+#define PG_M UINT64_C(0x040)
+#define PG_PS UINT64_C(0x080)
+
+#define PGEX_P 0x01
+#define PGEX_W 0x02
+#define PGEX_U 0x04
+#define PGEX_RSV 0x08
+#define PGEX_I 0x10
 #endif
 
 #ifndef EDGEOS_FREEBSD_PMAP_TYPE_DEFINED
 #define EDGEOS_FREEBSD_PMAP_TYPE_DEFINED
 struct bsd_pmap_mapping;
+struct bsd_pmap_mapping_chunk;
+struct bsd_pmap_table_page;
+enum pmap_type {
+    PT_X86,
+    PT_EPT,
+    PT_RVI,
+    PT_ARM64_STAGE1,
+    PT_ARM64_STAGE2,
+};
 struct pmap {
     union {
         uint64_t edgeos_address_space;
@@ -22,6 +46,22 @@ struct pmap {
     };
     volatile uint32_t lock;
     struct bsd_pmap_mapping *edgeos_mappings;
+    struct bsd_pmap_mapping *edgeos_mapping_tail;
+    struct bsd_pmap_mapping *edgeos_mapping_free;
+    struct bsd_pmap_mapping_chunk *edgeos_mapping_chunks;
+    struct bsd_pmap_table_page *edgeos_table_pages;
+    vm_page_t edgeos_root_page;
+    void *pm_pmltop;
+    struct edgeos_smr edgeos_eptsmr;
+    smr_t pm_eptsmr;
+    cpuset_t pm_active;
+    volatile long pm_eptgen;
+    enum pmap_type pm_type;
+    uint32_t pm_flags;
+    uint16_t pm_vmid;
+    uint8_t pm_stage;
+    uint8_t pm_levels;
+    uint64_t pm_ttbr;
 };
 
 typedef struct pmap *pmap_t;
@@ -71,6 +111,7 @@ vm_paddr_t pmap_extract(pmap_t pmap, vm_offset_t virtual_address);
 int pmap_enter(pmap_t pmap, vm_offset_t virtual_address, vm_page_t page,
     vm_prot_t protection, unsigned int flags, int8_t page_size_index);
 int pmap_pinit(pmap_t pmap);
+int pmap_pinit_type(pmap_t pmap, enum pmap_type type, int flags);
 void pmap_release(pmap_t pmap);
 void pmap_remove(pmap_t pmap, vm_offset_t start, vm_offset_t end);
 void pmap_qenter(void *address, vm_page_t *pages, int count);
@@ -92,12 +133,46 @@ void pmap_large_unmap(void *mapping, vm_size_t size);
 void pmap_flush_cache_phys_range(vm_paddr_t start, vm_paddr_t end,
     vm_memattr_t memory_attribute);
 void pmap_allow_2m_x_ept_recalculate(void);
+int pmap_emulate_accessed_dirty(pmap_t pmap, vm_offset_t address,
+    int fault_type);
+long pmap_wired_count(pmap_t pmap);
+int edgeos_pmap_get_dirty(pmap_t pmap, vm_offset_t start,
+    uint32_t page_count, uint64_t *bitmap, uint32_t bitmap_words,
+    int clear);
+int edgeos_pmap_clear_dirty(pmap_t pmap, vm_offset_t start,
+    uint32_t page_count, const uint64_t *bitmap, uint32_t bitmap_words);
+int edgeos_pmap_enable_dirty_tracking(pmap_t pmap, vm_offset_t start,
+    uint32_t page_count);
+int edgeos_pmap_disable_dirty_tracking(pmap_t pmap, vm_offset_t start,
+    uint32_t page_count);
+#if defined(__aarch64__) || defined(EDGEOS_BSD_ARM64)
+int pmap_fault(pmap_t pmap, uint64_t esr, uint64_t fault_address);
+enum pmap_stage {
+    PM_INVALID,
+    PM_STAGE1,
+    PM_STAGE2,
+};
+int pmap_pinit_stage(pmap_t pmap, enum pmap_stage stage, int levels);
+bool pmap_vs_enabled(void);
+void pmap_remove_pages(pmap_t pmap);
+void pmap_activate_vm(pmap_t pmap);
+uint64_t pmap_to_ttbr0(pmap_t pmap);
+extern void (*pmap_clean_stage2_tlbi)(void);
+extern void (*pmap_stage2_invalidate_range)(uint64_t vttbr,
+    vm_offset_t start, vm_offset_t end, bool final_only);
+extern void (*pmap_stage2_invalidate_all)(uint64_t vttbr);
+#endif
 
 #define PMAP_ENTER_NOSLEEP 0x00000100u
 #define PMAP_ENTER_WIRED 0x00000200u
 #define PMAP_ENTER_LARGEPAGE 0x00000400u
 #define PMAP_ENTER_UNPROTECTED 0x00000800u
 #define PMAP_ENTER_RESERVED 0xff000000u
+
+#define PMAP_NESTED_IPIMASK 0x000000ffu
+#define PMAP_PDE_SUPERPAGE  0x00000100u
+#define PMAP_EMULATE_AD_BITS 0x00000200u
+#define PMAP_SUPPORTS_EXEC_ONLY 0x00000400u
 
 static inline void
 pmap_lock(pmap_t pmap)

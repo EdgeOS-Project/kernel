@@ -30,6 +30,10 @@
 #define	_VMM_HOST_H_
 
 #include <sys/pcpu.h>
+#ifdef EDGEOS_BSD_BRIDGE
+#include <machine/cpufunc.h>
+#include <machine/specialreg.h>
+#endif
 
 #ifndef	_KERNEL
 #error "no user-serviceable parts inside"
@@ -76,7 +80,11 @@ static __inline uint64_t
 vmm_get_host_gsbase(void)
 {
 
+#ifdef EDGEOS_BSD_BRIDGE
+	return (rdmsr(MSR_GSBASE));
+#else
 	return ((uint64_t)get_pcpu());
+#endif
 }
 
 #endif

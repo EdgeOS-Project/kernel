@@ -28,6 +28,7 @@ struct ucred {
 };
 
 struct trapframe;
+struct pcb;
 
 #ifndef RFSTOPPED
 #define RFSTOPPED (1 << 17)
@@ -51,8 +52,12 @@ struct thread {
 	uint64_t td_affinity_mask;
 	int td_critnest;
 	int td_no_sleeping;
+	volatile int td_ast;
+	volatile int td_owepreempt;
 	uint32_t td_pflags;
 	struct trapframe *td_intr_frame;
+	struct pcb *td_pcb;
+	uint8_t td_pcb_storage[4096] __attribute__((aligned(16)));
 	unsigned int td_intr_nesting_level;
 	uint32_t td_fpu_depth;
 	uint8_t td_fpu_save[528] __attribute__((aligned(16)));

@@ -6,13 +6,32 @@
 
 #include <stdint.h>
 
+#if defined(__aarch64__) || defined(EDGEOS_BSD_ARM64)
+#include <machine/armreg.h>
+
+#define CPU_AFF0(mpidr) ((unsigned int)(((mpidr) >> 0) & 0xff))
+#define CPU_AFF1(mpidr) ((unsigned int)(((mpidr) >> 8) & 0xff))
+#define CPU_AFF2(mpidr) ((unsigned int)(((mpidr) >> 16) & 0xff))
+#define CPU_AFF3(mpidr) ((unsigned int)(((mpidr) >> 32) & 0xff))
+#endif
+
+#if defined(__x86_64__)
+extern void (*vmm_suspend_p)(void);
+extern void (*vmm_resume_p)(void);
+#endif
+
 #define CPU_IMPL_CAVIUM 0x43U
+#define CPU_IMPL_ARM 0x41U
+#define CPU_IMPL_APM 0x50U
 #define CPU_PART_THUNDERX 0x0a1U
+#define CPU_PART_EMAG8180 0x000U
+#define CPU_PART_FOUNDATION 0xd00U
 
 #define CPU_IMPL_TO_MIDR(value) (((uint32_t)(value) & 0xffU) << 24)
 #define CPU_PART_TO_MIDR(value) (((uint32_t)(value) & 0xfffU) << 4)
 #define CPU_VAR_TO_MIDR(value) (((uint32_t)(value) & 0xfU) << 20)
 #define CPU_REV_TO_MIDR(value) ((uint32_t)(value) & 0xfU)
+#define CPU_ARCH_TO_MIDR(value) (((uint32_t)(value) & 0xfU) << 16)
 
 #define CPU_IMPL_MASK UINT32_C(0xff000000)
 #define CPU_PART_MASK UINT32_C(0x0000fff0)
@@ -65,5 +84,12 @@ get_midr(void)
     ((((uint32_t)(mask)) & get_midr()) ==                               \
         (((uint32_t)(mask)) & CPU_ID_RAW(implementation, part,          \
             variant, revision)))
+
+#if defined(__aarch64__) || defined(EDGEOS_BSD_ARM64)
+void get_kernel_reg_iss_masked(unsigned int iss, uint64_t *value,
+    uint64_t mask);
+void get_kernel_reg_iss(unsigned int iss, uint64_t *value);
+#define get_kernel_reg(reg, value) get_kernel_reg_iss(reg ## _ISS, value)
+#endif
 
 #endif

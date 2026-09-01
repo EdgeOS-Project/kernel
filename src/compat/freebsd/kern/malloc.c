@@ -17,6 +17,7 @@ MALLOC_DEFINE(M_SUBPROC, "subproc", "BSD bridge subprocess allocations");
 MALLOC_DEFINE(M_TEMP, "temp", "BSD bridge temporary allocations");
 
 #define BSD_MALLOC_ALIGNED_MAGIC 0x425344414c49474eULL
+#define BSD_MALLOC_PAGE_SIZE 4096U
 
 typedef struct bsd_malloc_aligned_header {
     uint64_t magic;
@@ -87,7 +88,12 @@ aligned_header(void *allocation)
 void *
 bsd_malloc(size_t size, struct malloc_type *type, int flags)
 {
-    void *allocation = bsd_kmalloc(size, allocator_flags(flags));
+    void *allocation;
+
+    if (size >= BSD_MALLOC_PAGE_SIZE &&
+        (size & (BSD_MALLOC_PAGE_SIZE - 1u)) == 0)
+        return bsd_malloc_aligned(size, BSD_MALLOC_PAGE_SIZE, type, flags);
+    allocation = bsd_kmalloc(size, allocator_flags(flags));
 
     if (allocation)
         record_allocation(type, bsd_kmalloc_usable_size(allocation));
@@ -97,8 +103,14 @@ bsd_malloc(size_t size, struct malloc_type *type, int flags)
 void *
 bsd_mallocarray(size_t count, size_t size, struct malloc_type *type, int flags)
 {
-    void *allocation =
-        bsd_kmallocarray(count, size, allocator_flags(flags));
+    void *allocation;
+
+    if (size != 0 && count > SIZE_MAX / size)
+        return 0;
+    if (count * size >= BSD_MALLOC_PAGE_SIZE &&
+        ((count * size) & (BSD_MALLOC_PAGE_SIZE - 1u)) == 0)
+        return bsd_malloc(count * size, type, flags);
+    allocation = bsd_kmallocarray(count, size, allocator_flags(flags));
 
     if (allocation)
         record_allocation(type, bsd_kmalloc_usable_size(allocation));

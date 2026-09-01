@@ -32,4 +32,15 @@
 #define VGIC_ICH_LR_NUM_MAX	16
 #define	VGIC_ICH_APR_NUM_MAX	4
 
+struct vm;
+
+int vgic_v3_kvm_dist_access(struct vm *vm, uint32_t offset,
+    uint32_t *value, int write);
+int vgic_v3_kvm_redist_access(struct vm *vm, uint32_t vcpu_id,
+    uint32_t offset, uint32_t *value, int write);
+int vgic_v3_kvm_cpu_sysreg_access(struct vm *vm, uint32_t vcpu_id,
+    uint32_t attribute, uint64_t *value, int write);
+int vgic_v3_kvm_level_access(struct vm *vm, uint32_t vcpu_id,
+    uint32_t irq_id, uint32_t *value, int write);
+
 #endif /* !_VMM_VGIC_V3_H_ */

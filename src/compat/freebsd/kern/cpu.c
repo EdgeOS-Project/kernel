@@ -27,6 +27,7 @@
 #include "sys/boottime.h"
 
 #ifndef BSD_BRIDGE_HOST_TEST
+#include "kernel/smp.h"
 #include "mm/arch_vm.h"
 #if defined(__x86_64__)
 #include "arch/x86_64/task.h"
@@ -41,27 +42,70 @@ unsigned int cpu_power_eax;
 unsigned int cpu_power_ecx;
 unsigned int cpu_id;
 unsigned int cpu_high;
+unsigned int cpu_exthigh;
 unsigned int cpu_feature;
 unsigned int cpu_feature2;
 unsigned int cpu_stdext_feature;
 unsigned int cpu_stdext_feature2;
 unsigned int cpu_stdext_feature3;
 unsigned int cpu_stdext_feature4;
+uint64_t cpu_ia32_arch_caps;
 unsigned int cpu_vendor_id;
 unsigned int cpu_mon_mwait_edx;
 unsigned int amd_pminfo;
+unsigned int amd_feature;
 unsigned int amd_feature2;
 unsigned int amd_extended_feature_extensions;
 unsigned int cpu_procinfo2;
 char cpu_vendor[13];
 uint64_t tsc_freq;
 int tsc_is_invariant;
+int smp_tsc;
 int cpu_disable_c2_sleep;
 int cpu_disable_c3_sleep;
+int nmi_flush_l1d_sw;
 int use_xsave;
 uint64_t xsave_mask;
 extern unsigned long physmem;
 void (*cpu_idle_hook)(sbintime_t);
+#if defined(__x86_64__)
+void (*vmm_suspend_p)(void);
+void (*vmm_resume_p)(void);
+
+/*
+ * Keep the FreeBSD VMM's L1TF software-flush contract.  The routine is
+ * intentionally ABI-special: vmx_support.S permits it to clobber RBX and the
+ * ordinary caller wrapper preserves RBX.
+ */
+__asm__(
+    ".text\n"
+    ".p2align 4\n"
+    ".global flush_l1d_sw\n"
+    ".type flush_l1d_sw,@function\n"
+    "flush_l1d_sw:\n"
+    "movq $0x08000000, %r9\n"
+    "movq $-65536, %rcx\n"
+    "1: movb 65536(%r9,%rcx), %al\n"
+    "addq $4096, %rcx\n"
+    "jne 1b\n"
+    "xorl %eax, %eax\n"
+    "cpuid\n"
+    "movq $-65536, %rcx\n"
+    "2: movb 65536(%r9,%rcx), %al\n"
+    "addq $64, %rcx\n"
+    "jne 2b\n"
+    "lfence\n"
+    "ret\n"
+    ".size flush_l1d_sw, .-flush_l1d_sw\n"
+    ".global flush_l1d_sw_abi\n"
+    ".type flush_l1d_sw_abi,@function\n"
+    "flush_l1d_sw_abi:\n"
+    "pushq %rbx\n"
+    "call flush_l1d_sw\n"
+    "popq %rbx\n"
+    "ret\n"
+    ".size flush_l1d_sw_abi, .-flush_l1d_sw_abi\n");
+#endif
 
 #if defined(__x86_64__) && !defined(BSD_BRIDGE_HOST_TEST)
 static void *g_bsd_cpu_microcode;
@@ -107,8 +151,73 @@ ucode_update(void *data)
 }
 #endif
 
-static struct pcpu g_bsd_pcpus[1];
+#define BSD_BRIDGE_MAX_CPUS 256u
+static struct pcpu g_bsd_pcpus[BSD_BRIDGE_MAX_CPUS];
 static volatile int g_bsd_cpu_initialized;
+
+#ifndef BSD_BRIDGE_HOST_TEST
+static void
+bsd_smp_build_edge_mask(const cpuset_t *source, edge_cpumask_t *destination)
+{
+    unsigned int cpu;
+
+    edge_cpumask_init(destination, edge_smp_nr_cpu_ids());
+    for (cpu = 0; cpu < destination->nbits; ++cpu) {
+        if (CPU_ISSET(cpu, source))
+            (void)edge_cpumask_set_cpu(destination, cpu);
+    }
+}
+
+void
+bsd_smp_rendezvous_cpus(cpuset_t cpus, smp_rendezvous_func_t setup,
+    smp_rendezvous_func_t action, smp_rendezvous_func_t teardown,
+    void *argument)
+{
+    edge_cpumask_t targets;
+
+    bsd_smp_build_edge_mask(&cpus, &targets);
+    if (setup && edge_smp_rendezvous(&targets, setup, argument) != 0)
+        bsd_panic("SMP rendezvous setup failed");
+    if (action && edge_smp_rendezvous(&targets, action, argument) != 0)
+        bsd_panic("SMP rendezvous action failed");
+    if (teardown && edge_smp_rendezvous(&targets, teardown, argument) != 0)
+        bsd_panic("SMP rendezvous teardown failed");
+}
+
+static void
+bsd_cpu_import_topology(void)
+{
+    edge_cpumask_t online;
+    edge_cpu_topology_t topology;
+    uint32_t cpu = UINT32_MAX;
+    unsigned int cores = 0;
+
+    edge_smp_online_mask(&online);
+    CPU_ZERO(&all_cpus);
+    CPU_ZERO(&cpuset_domain[0]);
+    while ((cpu = edge_cpumask_next(&online, cpu)) < online.nbits) {
+        if (cpu >= BSD_BRIDGE_MAX_CPUS ||
+            edge_smp_get_cpu(cpu, &topology) != 0)
+            continue;
+        CPU_SET(cpu, &all_cpus);
+        CPU_SET(cpu, &cpuset_domain[0]);
+        g_bsd_pcpus[cpu].pc_cpuid = cpu;
+        g_bsd_pcpus[cpu].pc_acpi_id = topology.firmware_id;
+        g_bsd_pcpus[cpu].pc_domain = topology.numa_node;
+        if (topology.thread_id == 0u)
+            ++cores;
+    }
+    mp_ncpus = (int)edge_cpumask_weight(&online);
+    if (mp_ncpus < 1)
+        mp_ncpus = 1;
+    mp_maxid = (int)edge_smp_nr_cpu_ids() - 1;
+    mp_ncores = cores ? (int)cores : mp_ncpus;
+    smp_threads_per_core = mp_ncores > 0 ? mp_ncpus / mp_ncores : 1;
+    if (smp_threads_per_core < 1)
+        smp_threads_per_core = 1;
+    smp_started = mp_ncpus > 1;
+}
+#endif
 
 #if defined(__x86_64__) && !defined(BSD_BRIDGE_HOST_TEST)
 
@@ -162,6 +271,28 @@ bsd_cpu_rdmsr(uint32_t register_id)
     __asm__ __volatile__("rdmsr"
         : "=a"(low), "=d"(high) : "c"(register_id) : "memory");
     return ((uint64_t)high << 32) | low;
+}
+
+void
+bsd_x86_ltr(uint16_t selector)
+{
+    struct {
+        uint16_t limit;
+        uint64_t base;
+    } __attribute__((packed)) gdtr;
+    uint64_t *descriptor;
+    uint32_t offset = selector & ~UINT16_C(7);
+
+    __asm__ __volatile__("sgdt %0" : "=m"(gdtr));
+    if ((selector & UINT16_C(7)) != 0 ||
+        offset + 2u * sizeof(uint64_t) - 1u > gdtr.limit)
+        bsd_panic("invalid TSS selector %#x for GDT limit %#x",
+            selector, gdtr.limit);
+    descriptor = (uint64_t *)(uintptr_t)(gdtr.base + offset);
+    descriptor[0] = (descriptor[0] & ~(UINT64_C(0x1f) << 40)) |
+        ((uint64_t)SDT_SYSTSS << 40);
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    __asm__ __volatile__("ltr %0" : : "r"(selector) : "memory");
 }
 
 static int
@@ -252,6 +383,20 @@ bsd_cpu_identify_x86(void)
     uint32_t extended_maximum;
 
     bsd_cpu_cpuid(0, 0, &maximum, &ebx, &ecx, &edx);
+    cpu_high = maximum;
+    cpu_vendor[0] = (char)ebx;
+    cpu_vendor[1] = (char)(ebx >> 8);
+    cpu_vendor[2] = (char)(ebx >> 16);
+    cpu_vendor[3] = (char)(ebx >> 24);
+    cpu_vendor[4] = (char)edx;
+    cpu_vendor[5] = (char)(edx >> 8);
+    cpu_vendor[6] = (char)(edx >> 16);
+    cpu_vendor[7] = (char)(edx >> 24);
+    cpu_vendor[8] = (char)ecx;
+    cpu_vendor[9] = (char)(ecx >> 8);
+    cpu_vendor[10] = (char)(ecx >> 16);
+    cpu_vendor[11] = (char)(ecx >> 24);
+    cpu_vendor[12] = '\0';
     if (ebx == UINT32_C(0x68747541) &&
         edx == UINT32_C(0x69746e65) &&
         ecx == UINT32_C(0x444d4163))
@@ -285,6 +430,9 @@ bsd_cpu_identify_x86(void)
         cpu_stdext_feature2 = ecx;
         cpu_stdext_feature3 = edx;
         cpu_stdext_feature4 = eax;
+        cpu_ia32_arch_caps = 0;
+        if ((cpu_stdext_feature3 & CPUID_STDEXT3_ARCH_CAP) != 0)
+            (void)rdmsr_safe(MSR_IA32_ARCH_CAP, &cpu_ia32_arch_caps);
     }
     use_xsave = (cpu_feature2 & CPUID2_XSAVE) != 0;
     if (use_xsave && maximum >= UINT32_C(0x0d)) {
@@ -296,6 +444,7 @@ bsd_cpu_identify_x86(void)
     }
     bsd_cpu_cpuid(UINT32_C(0x80000000), 0, &extended_maximum,
         &ebx, &ecx, &edx);
+    cpu_exthigh = extended_maximum;
     if (extended_maximum >= UINT32_C(0x80000007)) {
         bsd_cpu_cpuid(UINT32_C(0x80000007), 0,
             &eax, &ebx, &ecx, &edx);
@@ -306,6 +455,7 @@ bsd_cpu_identify_x86(void)
     if (extended_maximum >= UINT32_C(0x80000001)) {
         bsd_cpu_cpuid(UINT32_C(0x80000001), 0,
             &eax, &ebx, &ecx, &edx);
+        amd_feature = edx & ~(cpu_feature & UINT32_C(0x0183f3ff));
         amd_feature2 = ecx;
     }
     if (extended_maximum >= UINT32_C(0x80000008)) {
@@ -624,6 +774,13 @@ pcpu_find(unsigned int cpu)
     if (cpu >= (unsigned int)mp_ncpus ||
         cpu >= sizeof(g_bsd_pcpus) / sizeof(g_bsd_pcpus[0]))
         return 0;
+    g_bsd_pcpus[cpu].pc_cpuid = cpu;
+#if defined(__x86_64__) && !defined(BSD_BRIDGE_HOST_TEST)
+    if (cpu == bsd_pcpu_current_cpuid()) {
+        g_bsd_pcpus[cpu].pc_tssp = gdt_current_tss();
+        g_bsd_pcpus[cpu].pc_gdt = gdt_current_base();
+    }
+#endif
     return &g_bsd_pcpus[cpu];
 }
 
@@ -690,6 +847,7 @@ bsd_cpu_runtime_initialize(void)
     g_bsd_pcpus[0].pc_clock = 0;
     g_bsd_pcpus[0].pc_device = 0;
 #ifndef BSD_BRIDGE_HOST_TEST
+    bsd_cpu_import_topology();
     physmem = (unsigned long)(arch_vm_memory_total_bytes() / 4096u);
     if (physmem == 0)
         physmem = 1;
@@ -699,6 +857,15 @@ bsd_cpu_runtime_initialize(void)
 #if defined(__x86_64__) && !defined(BSD_BRIDGE_HOST_TEST)
     bsd_cpu_identify_x86();
     g_bsd_pcpus[0].pc_small_core = bsd_pcpu_current_small_core();
+#endif
+    return 0;
+}
+
+int
+bsd_cpu_runtime_refresh_topology(void)
+{
+#ifndef BSD_BRIDGE_HOST_TEST
+    bsd_cpu_import_topology();
 #endif
     return 0;
 }
@@ -747,6 +914,12 @@ uint64_t
 cpu_tickrate(void)
 {
     return tsc_freq ? tsc_freq : UINT64_C(1000000);
+}
+
+unsigned int
+cpu_auxmsr(void)
+{
+    return bsd_kthread_current_cpu_id();
 }
 
 int

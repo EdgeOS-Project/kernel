@@ -4,6 +4,8 @@
 #ifndef _SYS_DOMAINSET_H_
 #define _SYS_DOMAINSET_H_
 
+#include <stdbool.h>
+
 struct domainset {
     int preferred_domain;
 };
@@ -24,5 +26,11 @@ extern struct domainset domainset_round_robin[1];
 
 #define DOMAINSET_PREF(domain) (&domainset_prefer[0])
 #define DOMAINSET_RR() (&domainset_round_robin[0])
+
+static inline bool
+domainset_empty_vm(struct domainset *domain)
+{
+    return domain == 0 || domain->preferred_domain < 0;
+}
 
 #endif

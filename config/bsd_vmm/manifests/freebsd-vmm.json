@@ -3,14 +3,15 @@
   "id": "freebsd-vmm",
   "provider": "freebsd",
   "package_type": "subsystem",
-  "description": "Unmodified complete FreeBSD x86_64 and arm64 kernel vmm source baseline.",
+  "description": "Complete FreeBSD x86_64 and arm64 kernel vmm source baseline with audited EdgeOS host integration patches.",
   "architectures": [
     "x86_64",
     "arm64"
   ],
   "compile": {
     "definitions": [
-      "VMM_KEEP_STATS"
+      "VMM_KEEP_STATS",
+      "EDGEOS_BHYVE_HOST_IRQ_REENTER"
     ],
     "undefinitions": []
   },
@@ -25,23 +26,137 @@
     "freebsd_version": 1600019
   },
   "source_policy": {
-    "mode": "unmodified",
-    "allow_inline_patches": false,
+    "mode": "patched",
+    "allow_inline_patches": true,
+    "patches": [
+      {
+        "path": "sys/arm64/vmm/vmm_arm64.c",
+        "upstream_sha256": "08bbbdf65dfd696aa723f65dae9699d46f1df2a8cb5b2d4fe6aa12dc09009ba1",
+        "reason": "Re-enter the ARM64 guest after EdgeOS handles a host IRQ instead of translating the host event through the KVM userspace ABI, and clear EdgeOS host-visible per-CPU vCPU slots directly after every vCPU has exited so teardown cannot deadlock behind an interrupt-masked userspace syscall."
+      },
+      {
+        "path": "sys/arm64/vmm/vmm_hyp.c",
+        "upstream_sha256": "a1d323832cf9fcb852e3aabcb30276c2f34c5b0a1a7b606e5bc10694ea297d22",
+        "reason": "Preserve FreeBSD virtual timer filter semantics when EdgeOS host IRQ handling requires a full guest world-switch restore."
+      },
+      {
+        "path": "sys/amd64/include/vmm.h",
+        "upstream_sha256": "75a85750101df9ae0e9982c1d262b249fd8b9d3f8a286204891c763302fcdaa1",
+        "reason": "Expose an EdgeOS host-only debug-exception exit capability so the Linux KVM guest-debug ABI can receive hardware-breakpoint exits without changing the public bhyve ABI."
+      },
+      {
+        "path": "sys/amd64/vmm/amd/svm.c",
+        "upstream_sha256": "636da372642dd0bfdebba940fd472b3e0b4d64158f174f9540b618b51416fb9f",
+        "reason": "Toggle the SVM debug-exception intercept for the EdgeOS KVM hardware-breakpoint bridge while preserving upstream single-step handling."
+      },
+      {
+        "path": "sys/amd64/vmm/intel/vmx.c",
+        "upstream_sha256": "5079babb6f34dd1a8d5cc10f8d61ab1a636adc78bac9796e44ca2b26359cc0a6",
+        "reason": "Toggle the VMX debug-exception bitmap for the EdgeOS KVM hardware-breakpoint bridge and expose the existing interrupt-mask capability state for transactional rollback."
+      },
+      {
+        "path": "sys/amd64/vmm/io/vlapic.c",
+        "upstream_sha256": "8439a26fd1bd62d835d6e86eb330be8ed3b6ef305963400a465d7dbfaa3703ce",
+        "reason": "Complete INIT and SIPI through an EdgeOS KVM bridge hook because EdgeOS exposes the Linux KVM ABI and has no bhyve userspace process to consume VM_EXITCODE_SPINUP_AP, and execute the spin-locked vLAPIC timer callout directly because EdgeOS cannot run the cooperative FreeBSD softclock worker while a hardware vCPU remains inside KVM_RUN."
+      }
+    ],
     "allowed_licenses": [
       "BSD-2-Clause",
-      "BSD-3-Clause"
+      "BSD-3-Clause",
+      "Public-Domain"
     ],
-    "license_exceptions": {}
+    "license_exceptions": {
+      "sys/amd64/include/reg.h": {
+        "license": "Public-Domain",
+        "evidence": "Architecture include router retained verbatim from the pinned FreeBSD tree; its header explicitly declares the file to be in the public domain."
+      },
+      "sys/kern/genassym.sh": {
+        "license": "BSD-2-Clause",
+        "evidence": "Build helper retained verbatim from the pinned FreeBSD tree; the repository COPYRIGHT terms apply."
+      },
+      "sys/conf/ldscript.arm64": {
+        "license": "BSD-2-Clause",
+        "evidence": "Architecture linker script retained verbatim from the pinned FreeBSD tree; the repository COPYRIGHT terms apply."
+      },
+      "sys/conf/debuginfo.ldscript": {
+        "license": "BSD-2-Clause",
+        "evidence": "Debug-section linker fragment retained verbatim from the pinned FreeBSD tree; the repository COPYRIGHT terms apply."
+      },
+      "sys/arm64/include/vmm_snapshot.h": {
+        "license": "BSD-2-Clause",
+        "evidence": "One-line empty architecture placeholder retained verbatim from the pinned FreeBSD tree; the repository COPYRIGHT terms apply."
+      },
+      "sys/libkern/bcd.c": {
+        "license": "Public-Domain",
+        "evidence": "The pinned FreeBSD source explicitly states that its data tables cannot be copyrighted."
+      }
+    }
   },
   "source_lock": {
     "paths": [
       "sys/dev/vmm",
       "sys/amd64/vmm",
-      "sys/arm64/vmm"
+      "sys/arm64/vmm",
+      "sys/amd64/include/vmm.h",
+      "sys/amd64/include/vmm_dev.h",
+      "sys/amd64/include/vmm_instruction_emul.h",
+      "sys/amd64/include/vmm_snapshot.h",
+      "sys/arm64/include/vmm.h",
+      "sys/arm64/include/vmm_dev.h",
+      "sys/arm64/include/vmm_instruction_emul.h",
+      "sys/arm64/include/vmm_snapshot.h",
+      "sys/arm64/include/asm.h",
+      "sys/arm64/include/_armreg.h",
+      "sys/arm64/include/armreg.h",
+      "sys/arm64/include/atomic.h",
+      "sys/arm64/include/cpu.h",
+      "sys/arm64/include/cpufunc.h",
+      "sys/arm64/include/debug_monitor.h",
+      "sys/arm64/include/hypervisor.h",
+      "sys/arm64/include/ifunc.h",
+      "sys/arm64/include/intr.h",
+      "sys/arm64/include/machdep.h",
+      "sys/arm64/include/pcb.h",
+      "sys/arm64/include/pcpu.h",
+      "sys/arm64/include/pmap.h",
+      "sys/arm64/include/pte.h",
+      "sys/arm64/include/reg.h",
+      "sys/arm64/include/vfp.h",
+      "sys/arm64/include/vm.h",
+      "sys/arm/arm/gic_common.h",
+      "sys/arm64/arm64/gic_v3_reg.h",
+      "sys/arm64/arm64/gic_v3_var.h",
+      "sys/arm64/arm64/hyp_stub.S",
+      "sys/sys/elf_common.h",
+      "sys/sys/exterrvar.h",
+      "sys/sys/_exterr.h",
+      "sys/sys/_uexterror.h",
+      "sys/sys/exterr_cat.h",
+      "sys/conf/ldscript.arm64",
+      "sys/conf/debuginfo.ldscript",
+      "sys/x86/include/segments.h",
+      "sys/amd64/include/segments.h",
+      "sys/amd64/include/pcb.h",
+      "sys/x86/include/ifunc.h",
+      "sys/x86/include/timerreg.h",
+      "sys/x86/include/bhyve.h",
+      "sys/x86/include/apicreg.h",
+      "sys/dev/ic/i8253reg.h",
+      "sys/dev/ic/i8259.h",
+      "sys/dev/acpica/acpi_hpet.h",
+      "sys/libkern/bcd.c",
+      "sys/sys/reg.h",
+      "sys/x86/include/reg.h",
+      "sys/amd64/include/reg.h",
+      "sys/sys/assym.h",
+      "sys/kern/genassym.sh"
     ],
-    "file_count": 106,
-    "tree_sha256": "deb90563307f172e0e6a00265b4f47b49abbc5f648325a80cbc0a4fed10bfaea"
+    "file_count": 159,
+    "tree_sha256": "133fbe63fc353f39990e76a97ef6120d4f9f2c3341874bbc8d8797528aebf3b3"
   },
-  "generated_interfaces": [],
+  "generated_interfaces": [
+    "sys/amd64/vmm/amd/ivhd_if.m",
+    "sys/arm64/vmm/io/vgic_if.m"
+  ],
   "modules": []
 }

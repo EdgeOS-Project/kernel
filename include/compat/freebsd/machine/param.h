@@ -39,18 +39,18 @@
 #define CACHE_LINE_SHIFT 6
 #define ALIGNED_POINTER(pointer, type) 1
 #define MAXPAGESIZES 3
+#ifndef KERNBASE
+#define KERNBASE 0x08000000UL
+#endif
 #define amd64_btop(value) ((__uintptr_t)(value) >> PAGE_SHIFT)
 #define amd64_ptob(value) ((__uintptr_t)(value) << PAGE_SHIFT)
 #else
 #error "Unsupported EdgeOS FreeBSD driver bridge architecture"
 #endif
 
-#ifdef SMP
+/* EdgeOS owns SMP scheduling but imported subsystems still need per-CPU slots. */
 #ifndef MAXCPU
 #define MAXCPU 1024
-#endif
-#else
-#define MAXCPU 1
 #endif
 
 #ifndef MAXMEMDOM
@@ -64,6 +64,24 @@
 
 #ifndef PAGE_SHIFT
 #define PAGE_SHIFT 12
+#endif
+#ifndef PAGE_SIZE_4K
+#define PAGE_SIZE_4K 4096
+#endif
+#ifndef PAGE_SHIFT_4K
+#define PAGE_SHIFT_4K 12
+#endif
+#ifndef PAGE_SIZE_16K
+#define PAGE_SIZE_16K 16384
+#endif
+#ifndef PAGE_SHIFT_16K
+#define PAGE_SHIFT_16K 14
+#endif
+#ifndef PAGE_SHIFT_64K
+#define PAGE_SHIFT_64K 16
+#endif
+#ifndef PAGE_SIZE_64K
+#define PAGE_SIZE_64K (1 << PAGE_SHIFT_64K)
 #endif
 #ifndef PAGE_SIZE
 #define PAGE_SIZE (1 << PAGE_SHIFT)

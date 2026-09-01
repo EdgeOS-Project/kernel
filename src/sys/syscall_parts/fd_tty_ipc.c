@@ -1244,7 +1244,10 @@ static int eventfd_waiter_wake_registered(int waiters[EDGE_MAX_EVENTFDS][EDGE_EV
             continue;
         if (cur && t == cur) continue;
         if (t->state == TASK_BLOCKED && t->fd_wait_active) {
-            uint32_t cpu = scheduler_cpu_id();
+            uint32_t cpu = t->assigned_cpu >= 0 ?
+                (uint32_t)t->assigned_cpu : scheduler_cpu_id();
+
+            if (cpu >= SCHED_MAX_CPUS) cpu = scheduler_cpu_id();
             scheduler_task_make_runnable(t, cpu);
             if (wake_trace_budget > 0 && gui_wake_trace_task(t)) {
                 printf("[eventwake] %s id=%d pid=%d cmd=%s counter=%llu\n",
@@ -5749,13 +5752,23 @@ static int memfd_entry_is_secret(const edge_fd_t *entry) {
     return memory && memory->secret;
 }
 
-static int memfd_alloc_obj(const char *name, uint32_t flags, int secret) {
+static int memfd_entry_is_guest(const edge_fd_t *entry) {
+    edge_memfd_t *memory;
+
+    if (!entry || entry->kind != FD_MEMFD) return 0;
+    memory = memfd_get(entry->pipe_id);
+    return memory && memory->guest_memfd;
+}
+
+static int memfd_alloc_obj(const char *name, uint32_t flags, int secret,
+                           int guest_memfd) {
     for (int i = 1; i < EDGE_MEMFD_MAX; ++i) {
         edge_memfd_t *mf = &g_memfds[i];
         if (mf->used) continue;
         memset(mf, 0, sizeof(*mf));
         mf->used = 1;
         mf->secret = secret ? 1u : 0u;
+        mf->guest_memfd = guest_memfd ? 1u : 0u;
         mf->huge_shift = (flags & KERNEL_MEMFD_HUGETLB) ?
             (uint8_t)((flags & KERNEL_MEMFD_HUGE_MASK) ?
                 (flags & KERNEL_MEMFD_HUGE_MASK) >>
@@ -6085,7 +6098,7 @@ int64_t arch_memfd_create_descriptor(const char *name, uint32_t flags) {
 
     p = fd_proc_with_stdio();
     if (!p) return -ENOMEM;
-    id = memfd_alloc_obj(name, flags, 0);
+    id = memfd_alloc_obj(name, flags, 0, 0);
     if (id < 0) return -ENFILE;
     fd = fd_alloc(p, 0);
     if (fd < 0) {
@@ -6124,7 +6137,7 @@ int64_t arch_memfd_secret_descriptor(uint32_t descriptor_flags) {
 
     process = fd_proc_with_stdio();
     if (!process) return -ENOMEM;
-    object_id = memfd_alloc_obj("secretmem", 0u, 1);
+    object_id = memfd_alloc_obj("secretmem", 0u, 1, 0);
     if (object_id < 0) return -ENFILE;
     descriptor = fd_alloc(process, 0);
     if (descriptor < 0) {
@@ -6191,6 +6204,53 @@ static void fd_drop_backing_object(edge_fd_t *e) {
         edge_seccomp_listener_release(e->pipe_id);
     if (e->kind == FD_ZCRX)
         kernel_io_uring_zcrx_export_release(e->pipe_id);
+    if (e->kind == FD_KVM_VM || e->kind == FD_KVM_VCPU ||
+        e->kind == FD_KVM_DEVICE) {
+        edge_kvm_handle_t handle = {
+            .slot = (uint32_t)e->pipe_id,
+            .generation = (uint32_t)e->mount_id,
+        };
+        (void)kernel_edge_kvm_descriptor_release(
+            e->kind == FD_KVM_VM ? KERNEL_EDGE_KVM_FILE_VM :
+            (e->kind == FD_KVM_VCPU ? KERNEL_EDGE_KVM_FILE_VCPU :
+                                      KERNEL_EDGE_KVM_FILE_DEVICE),
+            handle);
+    }
+    if (e->kind == FD_KVM_STATS) {
+        edge_kvm_handle_t handle = {
+            .slot = (uint32_t)e->pipe_id,
+            .generation = (uint32_t)e->mount_id,
+        };
+        (void)kernel_edge_kvm_descriptor_release(
+            (kernel_edge_kvm_file_kind_t)e->vhost_device_id, handle);
+    }
+    if (e->kind == FD_VFIO_CONTAINER || e->kind == FD_VFIO_GROUP ||
+        e->kind == FD_VFIO_DEVICE) {
+        edge_vfio_handle_t handle = {
+            .slot = (uint32_t)e->pipe_id,
+            .generation = (uint32_t)e->mount_id,
+        };
+        (void)kernel_edge_vfio_descriptor_release(
+            e->kind == FD_VFIO_CONTAINER ? KERNEL_EDGE_VFIO_FILE_CONTAINER :
+            (e->kind == FD_VFIO_GROUP ? KERNEL_EDGE_VFIO_FILE_GROUP :
+                                        KERNEL_EDGE_VFIO_FILE_DEVICE),
+            handle);
+    }
+    if (e->kind == FD_VHOST_NET || e->kind == FD_VHOST_SCSI ||
+        e->kind == FD_VHOST_VSOCK || e->kind == FD_VHOST_VDPA) {
+        edge_vhost_handle_t handle = {
+            .slot = (uint32_t)e->pipe_id,
+            .generation = (uint32_t)e->mount_id,
+        };
+        (void)kernel_edge_vhost_descriptor_release(handle);
+    }
+    if (e->kind == FD_IOMMUFD) {
+        edge_iommufd_handle_t handle = {
+            .slot = (uint32_t)e->pipe_id,
+            .generation = (uint32_t)e->mount_id,
+        };
+        (void)kernel_edge_iommufd_descriptor_release(handle);
+    }
     if (e->kind == FD_NAMESPACE)
         edge_namespace_handle_release(
             (edge_namespace_kind_t)e->namespace_kind, e->namespace_id);
@@ -6288,6 +6348,55 @@ static int fd_add_backing_object(edge_fd_t *e) {
         return edge_seccomp_listener_retain(e->pipe_id) == 0 ? 0 : -1;
     if (e->kind == FD_ZCRX)
         return kernel_io_uring_zcrx_export_retain(e->pipe_id) == 0 ? 0 : -1;
+    if (e->kind == FD_KVM_VM || e->kind == FD_KVM_VCPU ||
+        e->kind == FD_KVM_DEVICE) {
+        edge_kvm_handle_t handle = {
+            .slot = (uint32_t)e->pipe_id,
+            .generation = (uint32_t)e->mount_id,
+        };
+        return kernel_edge_kvm_descriptor_retain(
+                   e->kind == FD_KVM_VM ? KERNEL_EDGE_KVM_FILE_VM :
+                   (e->kind == FD_KVM_VCPU ? KERNEL_EDGE_KVM_FILE_VCPU :
+                                             KERNEL_EDGE_KVM_FILE_DEVICE),
+                   handle) == 0 ? 0 : -1;
+    }
+    if (e->kind == FD_KVM_STATS) {
+        edge_kvm_handle_t handle = {
+            .slot = (uint32_t)e->pipe_id,
+            .generation = (uint32_t)e->mount_id,
+        };
+        return kernel_edge_kvm_descriptor_retain(
+                   (kernel_edge_kvm_file_kind_t)e->vhost_device_id,
+                   handle) == 0 ? 0 : -1;
+    }
+    if (e->kind == FD_VFIO_CONTAINER || e->kind == FD_VFIO_GROUP ||
+        e->kind == FD_VFIO_DEVICE) {
+        edge_vfio_handle_t handle = {
+            .slot = (uint32_t)e->pipe_id,
+            .generation = (uint32_t)e->mount_id,
+        };
+        return kernel_edge_vfio_descriptor_retain(
+                   e->kind == FD_VFIO_CONTAINER ?
+                       KERNEL_EDGE_VFIO_FILE_CONTAINER :
+                   (e->kind == FD_VFIO_GROUP ? KERNEL_EDGE_VFIO_FILE_GROUP :
+                                               KERNEL_EDGE_VFIO_FILE_DEVICE),
+                   handle) == 0 ? 0 : -1;
+    }
+    if (e->kind == FD_VHOST_NET || e->kind == FD_VHOST_SCSI ||
+        e->kind == FD_VHOST_VSOCK || e->kind == FD_VHOST_VDPA) {
+        edge_vhost_handle_t handle = {
+            .slot = (uint32_t)e->pipe_id,
+            .generation = (uint32_t)e->mount_id,
+        };
+        return kernel_edge_vhost_descriptor_retain(handle) == 0 ? 0 : -1;
+    }
+    if (e->kind == FD_IOMMUFD) {
+        edge_iommufd_handle_t handle = {
+            .slot = (uint32_t)e->pipe_id,
+            .generation = (uint32_t)e->mount_id,
+        };
+        return kernel_edge_iommufd_descriptor_retain(handle) == 0 ? 0 : -1;
+    }
     if (e->kind == FD_NAMESPACE) {
         if (e->namespace_kind >= EDGE_NAMESPACE_KIND_COUNT ||
             edge_namespace_handle_retain(
@@ -6976,9 +7085,10 @@ static int gui_wake_trace_task(const task_t *t) {
 #endif
 }
 
-static void fd_wake_fd_owner_tasks(int fd_owner_pid, task_t *cur, const char *source) {
+static int fd_wake_fd_owner_tasks(int fd_owner_pid, task_t *cur, const char *source) {
     static int wake_trace_budget = EDGE_GUI_DEEP_TRACE ? 192 : 0;
-    if (fd_owner_pid <= 0) return;
+    int woke = 0;
+    if (fd_owner_pid <= 0) return 0;
     for (int i = 0; i < PROC_MAX_TASKS; ++i) {
         const task_t *ct = process_task_by_index(i);
         task_t *t = (task_t *)(uintptr_t)ct;
@@ -7010,8 +7120,10 @@ static void fd_wake_fd_owner_tasks(int fd_owner_pid, task_t *cur, const char *so
                 wake_trace_budget--;
             }
             scheduler_task_make_runnable(t, cpu);
+            woke++;
         }
     }
+    return woke;
 }
 
 static void fd_wake_socket_waiters_events(int sock_id, uint16_t events) {
@@ -7192,10 +7304,10 @@ static void fd_wake_pipe_waiters(int pipe_id) {
     (void)write_woke;
 }
 
-static void fd_wake_eventfd_read_waiters(int eventfd_id) {
+static int fd_wake_eventfd_read_waiters(int eventfd_id) {
     task_t *cur = process_current_task();
     int registered_woke;
-    if (eventfd_id < 0) return;
+    if (eventfd_id < 0) return 0;
     registered_woke = eventfd_waiter_wake_registered(g_eventfd_read_waiter_pids,
                                                      "read", eventfd_id, cur);
     /*
@@ -7205,21 +7317,22 @@ static void fd_wake_eventfd_read_waiters(int eventfd_id) {
      * Poll/select/epoll and blocking eventfd I/O register exact waiters, so do
      * not fall back to waking unrelated owner tasks here.
      */
-    (void)registered_woke;
+    return registered_woke;
 }
 
-static void fd_wake_eventfd_write_waiters(int eventfd_id) {
+static int fd_wake_eventfd_write_waiters(int eventfd_id) {
     task_t *cur = process_current_task();
     int registered_woke;
-    if (eventfd_id < 0) return;
+    if (eventfd_id < 0) return 0;
     registered_woke = eventfd_waiter_wake_registered(g_eventfd_write_waiter_pids,
                                                      "write", eventfd_id, cur);
-    (void)registered_woke;
+    return registered_woke;
 }
 
-static void fd_wake_timerfd_waiters(int timerfd_id) {
+static int fd_wake_timerfd_waiters(int timerfd_id) {
     task_t *cur = process_current_task();
-    if (timerfd_id < 0) return;
+    int woke = 0;
+    if (timerfd_id < 0) return 0;
     fd_proc_registry_read_begin();
     for (int pi = 0; pi < EDGE_MAX_FD_PROCS; ++pi) {
         edge_fd_proc_t *fp = __atomic_load_n(
@@ -7237,11 +7350,12 @@ static void fd_wake_timerfd_waiters(int timerfd_id) {
              * timeout.  The timer expiry itself is handled by bounded sleep
              * deadlines in poll/select/epoll.
              */
-            fd_wake_fd_owner_tasks(fp->pid, cur, "timerfd");
+            woke += fd_wake_fd_owner_tasks(fp->pid, cur, "timerfd");
             break;
         }
     }
     fd_proc_registry_read_end();
+    return woke;
 }
 
 static void fd_wake_pidfd_waiters(int target_pid) {
@@ -7499,6 +7613,18 @@ static const char *fd_kind_name(edge_fd_kind_t kind) {
         case FD_BPF: return "bpf";
         case FD_SECCOMP: return "seccomp";
         case FD_DRM_SYNC: return "sync_file";
+        case FD_KVM_VM: return "kvm-vm";
+        case FD_KVM_VCPU: return "kvm-vcpu";
+        case FD_KVM_DEVICE: return "kvm-device";
+        case FD_KVM_STATS: return "kvm-stats";
+        case FD_VFIO_CONTAINER: return "vfio-container";
+        case FD_VFIO_GROUP: return "vfio-group";
+        case FD_VFIO_DEVICE: return "vfio-device";
+        case FD_VHOST_NET: return "vhost-net";
+        case FD_VHOST_SCSI: return "vhost-scsi";
+        case FD_VHOST_VSOCK: return "vhost-vsock";
+        case FD_VHOST_VDPA: return "vhost-vdpa";
+        case FD_IOMMUFD: return "iommufd";
         default: return "none";
     }
 }

@@ -200,7 +200,12 @@ ifneq ($(filter y,$(CONFIG_EDGE_KVM) $(ARM64_CONFIG_EDGE_KVM)),)
 EDGE_SHARED_SRCS += \
 	$(SRC)/kernel/edge_kvm_capability.c \
 	$(SRC)/kernel/edge_kvm_facade.c \
-	$(SRC)/kernel/edge_kvm_object.c
+	$(SRC)/kernel/edge_kvm_runtime.c \
+	$(SRC)/kernel/edge_kvm_object.c \
+	$(SRC)/kernel/edge_vfio_object.c \
+	$(SRC)/kernel/edge_vfio_runtime.c \
+	$(SRC)/kernel/edge_vhost_runtime.c \
+	$(SRC)/kernel/edge_iommufd_runtime.c
 endif
 
 ifeq ($(CONFIG_FUSE_FS),y)

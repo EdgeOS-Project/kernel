@@ -488,6 +488,9 @@ int devtmpfs_populate_standard_nodes(const char *mountpoint) {
         { "fuse", 0666u, VFS_INODE_CHR,
           EDGE_FUSE_DEVICE_MAJOR, EDGE_FUSE_DEVICE_MINOR },
 #endif
+#ifdef CONFIG_EDGE_KVM
+        { "kvm", 0666u, VFS_INODE_CHR, 10u, 232u },
+#endif
     };
     static const devtmpfs_node_t render_node =
         { "dri/renderD128", 0660u, VFS_INODE_CHR, 226u, 128u };
