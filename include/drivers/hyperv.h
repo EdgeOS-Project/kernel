@@ -9,6 +9,5 @@
 #define EDGEOS_DRIVERS_HYPERV_H
 
 void hyperv_probe_init(void);
-int hyperv_is_present(void);
 
 #endif

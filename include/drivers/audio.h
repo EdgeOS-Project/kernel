@@ -68,7 +68,6 @@ int audio_register_backend(const struct audio_backend *backend);
 void audio_unregister_backend(uint8_t kind);
 int audio_ac97_init(void);
 int audio_hda_init(void);
-int audio_uac_init(void);
 int audio_ac97_pci_function_ready(uint8_t bus, uint8_t slot, uint8_t func);
 int audio_hda_pci_function_ready(uint8_t bus, uint8_t slot, uint8_t func);
 int audio_write_pcm(const char *buf, uint32_t len);

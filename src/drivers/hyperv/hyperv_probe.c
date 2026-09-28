@@ -11,8 +11,6 @@
 
 #include <stdint.h>
 
-static int g_hyperv_present;
-
 static void cpuid_leaf(uint32_t leaf, uint32_t subleaf,
                        uint32_t *a, uint32_t *b, uint32_t *c, uint32_t *d) {
     uint32_t ra, rb, rc, rd;
@@ -28,7 +26,6 @@ static void cpuid_leaf(uint32_t leaf, uint32_t subleaf,
 void hyperv_probe_init(void) {
     uint32_t max_leaf = 0, ebx = 0, ecx = 0, edx = 0;
     char sig[13];
-    g_hyperv_present = 0;
     cpuid_leaf(0x40000000u, 0, &max_leaf, &ebx, &ecx, &edx);
     sig[0] = (char)(ebx & 0xffu);
     sig[1] = (char)((ebx >> 8) & 0xffu);
@@ -47,7 +44,6 @@ void hyperv_probe_init(void) {
         sig[4] == 'o' && sig[5] == 's' && sig[6] == 'o' && sig[7] == 'f' &&
         sig[8] == 't' && sig[9] == ' ' && sig[10] == 'H' && sig[11] == 'v') {
         uint32_t features = 0, rec = 0;
-        g_hyperv_present = 1;
         if (max_leaf >= 0x40000003u) cpuid_leaf(0x40000003u, 0, &features, &rec, 0, 0);
         printf("[hyperv] detected vendor=\"%s\" max_leaf=0x%x features=0x%x recommendations=0x%x\n",
                sig, max_leaf, features, rec);
@@ -55,8 +51,4 @@ void hyperv_probe_init(void) {
     } else {
         printf("[hyperv] not detected vendor=\"%s\" max_leaf=0x%x\n", sig, max_leaf);
     }
-}
-
-int hyperv_is_present(void) {
-    return g_hyperv_present;
 }

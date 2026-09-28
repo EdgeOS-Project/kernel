@@ -9,6 +9,5 @@
 #define EDGEOS_DRIVERS_IWLWIFI_H
 
 void iwlwifi_init(void);
-int iwlwifi_probe_count(void);
 
 #endif

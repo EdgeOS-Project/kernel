@@ -61,8 +61,6 @@ static const iwl_id_t g_iwl_ids[] = {
     { 0x54F0u, "Intel Wi-Fi 6 AX211", "iwlwifi-so-a0-gf-a0-77.ucode", "iwlwifi-so-a0-gf-a0.pnvm" },
 };
 
-static int g_probe_count;
-
 static const iwl_id_t *iwl_lookup(uint16_t device) {
     for (uint32_t i = 0; i < sizeof(g_iwl_ids) / sizeof(g_iwl_ids[0]); ++i) {
         if (g_iwl_ids[i].device == device) return &g_iwl_ids[i];
@@ -92,7 +90,7 @@ static uint64_t iwl_find_mmio_bar(uint8_t bus, uint8_t slot, uint8_t func) {
 }
 
 void iwlwifi_init(void) {
-    g_probe_count = 0;
+    int probe_count = 0;
     for (uint8_t bus = 0; bus < 255; ++bus) {
         for (uint8_t slot = 0; slot < 32; ++slot) {
             for (uint8_t func = 0; func < 8; ++func) {
@@ -145,13 +143,9 @@ void iwlwifi_init(void) {
                        id->name, (uint32_t)bus, (uint32_t)slot, (uint32_t)func,
                        (uint32_t)did, hw_rev, hw_if, id->fw,
                        id->pnvm ? " pnvm=" : "", id->pnvm ? id->pnvm : "");
-                g_probe_count++;
+                probe_count++;
             }
         }
     }
-    if (g_probe_count == 0) printf("[wifi] iwlwifi: no supported Intel Wi-Fi PCI device found\n");
-}
-
-int iwlwifi_probe_count(void) {
-    return g_probe_count;
+    if (probe_count == 0) printf("[wifi] iwlwifi: no supported Intel Wi-Fi PCI device found\n");
 }
