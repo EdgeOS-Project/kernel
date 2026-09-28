@@ -1,0 +1,75 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-videomode",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD EDID parsing, VESA timing generation, and display mode selection subsystem.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {
+      "sys/dev/videomode/videomode.c": {
+        "license": "BSD-2-Clause",
+        "evidence": "The FreeBSD top-level COPYRIGHT applies its compilation license to this generated source file, which has no separate license header."
+      }
+    }
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/videomode/edid.c",
+      "sys/dev/videomode/ediddevs.h",
+      "sys/dev/videomode/ediddevs_data.h",
+      "sys/dev/videomode/edidreg.h",
+      "sys/dev/videomode/edidvar.h",
+      "sys/dev/videomode/pickmode.c",
+      "sys/dev/videomode/vesagtf.c",
+      "sys/dev/videomode/vesagtf.h",
+      "sys/dev/videomode/videomode.c",
+      "sys/dev/videomode/videomode.h"
+    ],
+    "file_count": 10,
+    "tree_sha256": "9b9efbd59752ad6d8d651325769f4c6052b6a4c7ad61603361a0b497813bc0a2"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "videomode",
+      "sources": [
+        "sys/dev/videomode/edid.c",
+        "sys/dev/videomode/pickmode.c",
+        "sys/dev/videomode/vesagtf.c",
+        "sys/dev/videomode/videomode.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "memory",
+        "module"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

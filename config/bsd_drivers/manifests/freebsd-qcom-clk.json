@@ -1,0 +1,74 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-qcom-clk",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Qualcomm clock primitives.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/qcom_clk",
+      "sys/dev/qcom_clk/qcom_clk_apssdiv.c",
+      "sys/dev/qcom_clk/qcom_clk_branch2.c",
+      "sys/dev/qcom_clk/qcom_clk_fdiv.c",
+      "sys/dev/qcom_clk/qcom_clk_fepll.c",
+      "sys/dev/qcom_clk/qcom_clk_freqtbl.c",
+      "sys/dev/qcom_clk/qcom_clk_rcg2.c",
+      "sys/dev/qcom_clk/qcom_clk_ro_div.c"
+    ],
+    "file_count": 16,
+    "tree_sha256": "36fdbedb4dd913b9c8c2fd43e63f70c6bebc9a6fd16ccf045c5e6e71e2a150c1"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "qcom-clk",
+      "sources": [
+        "sys/dev/qcom_clk/qcom_clk_apssdiv.c",
+        "sys/dev/qcom_clk/qcom_clk_branch2.c",
+        "sys/dev/qcom_clk/qcom_clk_fdiv.c",
+        "sys/dev/qcom_clk/qcom_clk_fepll.c",
+        "sys/dev/qcom_clk/qcom_clk_freqtbl.c",
+        "sys/dev/qcom_clk/qcom_clk_rcg2.c",
+        "sys/dev/qcom_clk/qcom_clk_ro_div.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "newbus",
+        "resource",
+        "synchronization"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

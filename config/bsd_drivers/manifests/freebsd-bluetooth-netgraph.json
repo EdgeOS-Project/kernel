@@ -1,0 +1,109 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-bluetooth-netgraph",
+  "provider": "freebsd",
+  "description": "Unmodified FreeBSD netgraph core, Bluetooth HCI/L2CAP/socket stack, and USB Bluetooth transports imported through the EdgeOS BSD Driver Bridge.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "USB_VERBOSE",
+      "__FreeBSD__=14"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "netgraph-bluetooth"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "ISC",
+      "LicenseRef-Upstream-Unmarked"
+    ],
+    "allow_unmarked_files": true,
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/netgraph/bluetooth",
+      "sys/netgraph/netgraph.h",
+      "sys/netgraph/ng_base.c",
+      "sys/netgraph/ng_message.h",
+      "sys/netgraph/ng_parse.c",
+      "sys/netgraph/ng_parse.h",
+      "sys/netgraph/ng_socket.c",
+      "sys/netgraph/ng_socket.h",
+      "sys/netgraph/ng_socketvar.h"
+    ],
+    "file_count": 53,
+    "tree_sha256": "c61780c5d88f22ccf74f6e3fc16a26583772519baf61cdddaf951a8361af8413"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "bluetooth-stack",
+      "sources": [
+        "sys/netgraph/bluetooth/common/ng_bluetooth.c",
+        "sys/netgraph/bluetooth/drivers/ubt/ng_ubt.c",
+        "sys/netgraph/bluetooth/drivers/ubt/ng_ubt_intel.c",
+        "sys/netgraph/bluetooth/drivers/ubt/ng_ubt_rtl.c",
+        "sys/netgraph/bluetooth/drivers/ubtbcmfw/ubtbcmfw.c",
+        "sys/netgraph/bluetooth/hci/ng_hci_cmds.c",
+        "sys/netgraph/bluetooth/hci/ng_hci_evnt.c",
+        "sys/netgraph/bluetooth/hci/ng_hci_main.c",
+        "sys/netgraph/bluetooth/hci/ng_hci_misc.c",
+        "sys/netgraph/bluetooth/hci/ng_hci_ulpi.c",
+        "sys/netgraph/bluetooth/l2cap/ng_l2cap_cmds.c",
+        "sys/netgraph/bluetooth/l2cap/ng_l2cap_evnt.c",
+        "sys/netgraph/bluetooth/l2cap/ng_l2cap_llpi.c",
+        "sys/netgraph/bluetooth/l2cap/ng_l2cap_main.c",
+        "sys/netgraph/bluetooth/l2cap/ng_l2cap_misc.c",
+        "sys/netgraph/bluetooth/l2cap/ng_l2cap_ulpi.c",
+        "sys/netgraph/bluetooth/socket/ng_btsocket.c",
+        "sys/netgraph/bluetooth/socket/ng_btsocket_hci_raw.c",
+        "sys/netgraph/bluetooth/socket/ng_btsocket_l2cap.c",
+        "sys/netgraph/bluetooth/socket/ng_btsocket_l2cap_raw.c",
+        "sys/netgraph/bluetooth/socket/ng_btsocket_rfcomm.c",
+        "sys/netgraph/bluetooth/socket/ng_btsocket_sco.c",
+        "sys/netgraph/ng_base.c",
+        "sys/netgraph/ng_parse.c",
+        "sys/netgraph/ng_socket.c"
+      ],
+      "capabilities": [
+        "base",
+        "callout",
+        "character-device",
+        "machine",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "usb",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

@@ -1,0 +1,82 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-cavium-thunderx",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Cavium ThunderX PCIe host and PEM drivers.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT",
+      "INTRNG"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/arm64/cavium/thunder_pcie_common.c",
+      "sys/arm64/cavium/thunder_pcie_common.h",
+      "sys/arm64/cavium/thunder_pcie_fdt.c",
+      "sys/arm64/cavium/thunder_pcie_pem.c",
+      "sys/arm64/cavium/thunder_pcie_pem.h",
+      "sys/arm64/cavium/thunder_pcie_pem_fdt.c",
+      "sys/dev/pci/pcib_if.m"
+    ],
+    "file_count": 7,
+    "tree_sha256": "71f4d32e6a40d58a725e4aed0c1f6b4a4f68ebb27d064c2237860ab05c9107fb"
+  },
+  "generated_interfaces": [
+    "sys/dev/pci/pcib_if.m"
+  ],
+  "modules": [
+    {
+      "id": "thunderx-pcie",
+      "sources": [
+        "sys/arm64/cavium/thunder_pcie_common.c",
+        "sys/arm64/cavium/thunder_pcie_fdt.c",
+        "sys/arm64/cavium/thunder_pcie_pem.c",
+        "sys/arm64/cavium/thunder_pcie_pem_fdt.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "vm"
+      ],
+      "kconfig_requires": [
+        "DEVICE_TREE"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

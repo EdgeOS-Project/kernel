@@ -1,0 +1,139 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-ath10k",
+  "provider": "freebsd",
+  "description": "FreeBSD LinuxKPI Qualcomm Atheros 802.11ac ath10k PCI driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "CONFIG_ATH10K_DEBUG",
+      "CONFIG_FWLOG",
+      "DEV_ACPI=1",
+      "EDGEOS_BSD_LINUXKPI=1",
+      "EDGEOS_BSD_FULL_ACPICA=1",
+      "KBUILD_MODNAME=ath10k",
+      "LINUXKPI_VERSION=70000",
+      "LINUXKPI_WANT_LINUX_ACPI",
+      "__FreeBSD__=14"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "acpica",
+      "linuxkpi",
+      "ath10k"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "patched",
+    "allow_inline_patches": true,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "BSD-3-Clause-Clear",
+      "GPL-2.0-only",
+      "ISC",
+      "LicenseRef-Upstream-Unmarked"
+    ],
+    "allow_unmarked_files": true,
+    "license_exceptions": {},
+    "patches": [
+      {
+        "path": "sys/contrib/dev/athk/ath11k/reg.c",
+        "upstream_sha256": "15d502dd0a5b0e473d1f475ab8928565f90516df2ff5cf4e5c89fb193db0759d",
+        "reason": "The ath10k source lock currently covers the complete shared athk import; record the ath11k fixed-width alpha2 initializer patch."
+      },
+      {
+        "path": "sys/contrib/dev/athk/ath11k/pci.c",
+        "upstream_sha256": "1bf8145e1edfdac29f6b7a41fd5e8ec9d2093aa08d19cff44f05777f6bbdf2f5",
+        "reason": "The ath10k source lock currently covers the complete shared athk import; record the ath11k unused-local cleanup."
+      },
+    {
+      "path": "sys/contrib/dev/athk/ath12k/wmi.c",
+      "upstream_sha256": "1c2db91841a4e6474abda8da0a5dcdb78c354993f6714a9a47d5a180a0bcc193",
+      "reason": "The ath10k source lock currently covers the complete shared athk import; record the ath12k regulatory const-correctness patch."
+    },
+      {
+        "path": "sys/contrib/dev/athk/ath12k/reg.c",
+        "upstream_sha256": "a8ff39367fe209291599355fb228af54d4a5d0746711c6da9277b229c1963678",
+        "reason": "The ath10k source lock currently covers the complete shared athk import; record the ath12k fixed-width alpha2 initializer patch."
+      },
+      {
+        "path": "sys/contrib/dev/athk/regd.c",
+        "upstream_sha256": "928582bfaa3d72574eb40a69e6bc8f268ff7d37f87de805ec21c2c24beedc5c4",
+        "reason": "Initialize fixed-width regulatory alpha2 codes without out-of-bounds string terminators."
+      }
+    ]
+  },
+  "source_lock": {
+    "paths": [
+      "sys/contrib/dev/athk",
+      "sys/contrib/dev/athk/ath10k/bmi.c",
+      "sys/contrib/dev/athk/ath10k/ce.c",
+      "sys/contrib/dev/athk/ath10k/core.c",
+      "sys/contrib/dev/athk/ath10k/debug.c",
+      "sys/contrib/dev/athk/ath10k/fwlog.c",
+      "sys/contrib/dev/athk/ath10k/htc.c",
+      "sys/contrib/dev/athk/ath10k/htt.c",
+      "sys/contrib/dev/athk/ath10k/htt_rx.c",
+      "sys/contrib/dev/athk/ath10k/htt_tx.c",
+      "sys/contrib/dev/athk/ath10k/hw.c",
+      "sys/contrib/dev/athk/ath10k/mac.c",
+      "sys/contrib/dev/athk/ath10k/p2p.c",
+      "sys/contrib/dev/athk/ath10k/pci.c",
+      "sys/contrib/dev/athk/ath10k/swap.c",
+      "sys/contrib/dev/athk/ath10k/txrx.c",
+      "sys/contrib/dev/athk/ath10k/wmi-tlv.c",
+      "sys/contrib/dev/athk/ath10k/wmi.c"
+    ],
+    "file_count": 262,
+    "tree_sha256": "950ca1269c589385b4ed9ba4d5d43ba80560ecadecee54f8545e9e7b7e31e180"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "ath10k",
+      "sources": [
+        "sys/contrib/dev/athk/main.c",
+        "sys/contrib/dev/athk/regd.c",
+        "sys/contrib/dev/athk/ath10k/bmi.c",
+        "sys/contrib/dev/athk/ath10k/ce.c",
+        "sys/contrib/dev/athk/ath10k/core.c",
+        "sys/contrib/dev/athk/ath10k/debug.c",
+        "sys/contrib/dev/athk/ath10k/fwlog.c",
+        "sys/contrib/dev/athk/ath10k/htc.c",
+        "sys/contrib/dev/athk/ath10k/htt.c",
+        "sys/contrib/dev/athk/ath10k/htt_rx.c",
+        "sys/contrib/dev/athk/ath10k/htt_tx.c",
+        "sys/contrib/dev/athk/ath10k/hw.c",
+        "sys/contrib/dev/athk/ath10k/mac.c",
+        "sys/contrib/dev/athk/ath10k/p2p.c",
+        "sys/contrib/dev/athk/ath10k/pci.c",
+        "sys/contrib/dev/athk/ath10k/swap.c",
+        "sys/contrib/dev/athk/ath10k/txrx.c",
+        "sys/contrib/dev/athk/ath10k/wmi-tlv.c",
+        "sys/contrib/dev/athk/ath10k/wmi.c"
+      ],
+      "capabilities": [
+        "base",
+        "network",
+        "resource"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

@@ -1,0 +1,134 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-pci-host-generic",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD generic ECAM PCI host bridge with Device Tree and ACPI frontends.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "DEV_ACPI",
+      "EDGEOS_BSD_FULL_ACPICA",
+      "FDT",
+      "INTRNG"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "acpica"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/pci/pci_host_generic.c",
+      "sys/dev/pci/pci_host_generic.h",
+      "sys/dev/pci/pci_host_generic_acpi.c",
+      "sys/dev/pci/pci_host_generic_acpi.h",
+      "sys/dev/pci/pci_host_generic_den0115.c",
+      "sys/dev/pci/pci_host_generic_fdt.c",
+      "sys/dev/pci/pci_host_generic_fdt.h",
+      "sys/dev/pci/pcib_if.m"
+    ],
+    "file_count": 8,
+    "tree_sha256": "f784b01e01a11c1778d32734f80aedd5e29edab290ca942cd3d2521dc2b30b2f"
+  },
+  "generated_interfaces": [
+    "sys/dev/pci/pcib_if.m"
+  ],
+  "modules": [
+    {
+      "id": "pci-host-generic-core",
+      "sources": [
+        "sys/dev/pci/pci_host_generic.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "fdt",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "pci-host-generic-fdt",
+      "sources": [
+        "sys/dev/pci/pci_host_generic_fdt.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization"
+      ],
+      "kconfig_requires": [
+        "DEVICE_TREE"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "pci-host-generic-acpi",
+      "sources": [
+        "sys/dev/pci/pci_host_generic_acpi.c",
+        "sys/dev/pci/pci_host_generic_den0115.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl"
+      ],
+      "kconfig_requires": [
+        "ACPI"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

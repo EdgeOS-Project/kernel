@@ -1,0 +1,63 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-dwwdt",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Synopsys DesignWare watchdog driver.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/dwwdt",
+      "sys/dev/dwwdt/dwwdt.c"
+    ],
+    "file_count": 1,
+    "tree_sha256": "923636397f59bcbbf0cd001a5efd6b16d2b20bab21e7b131f921bfd426e3674e"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "dwwdt",
+      "sources": [
+        "sys/dev/dwwdt/dwwdt.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "machine",
+        "module",
+        "newbus",
+        "resource",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

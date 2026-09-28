@@ -1,0 +1,74 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-usb-dwc3",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Synopsys DWC3 dual-role USB controller family.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT",
+      "USB_VERBOSE"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/usb/controller/dwc3/aw_dwc3.c",
+      "sys/dev/usb/controller/dwc3/dwc3.c",
+      "sys/dev/usb/controller/dwc3/dwc3.h",
+      "sys/dev/usb/controller/dwc3/rk_dwc3.c",
+      "sys/dev/usb/controller/xlnx_dwc3.c"
+    ],
+    "file_count": 5,
+    "tree_sha256": "4d7dd9903f56c3e6e468073ca3b898bff66d09a611614edd00189d916a15048a"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "usb-dwc3",
+      "sources": [
+        "sys/dev/usb/controller/dwc3/aw_dwc3.c",
+        "sys/dev/usb/controller/dwc3/dwc3.c",
+        "sys/dev/usb/controller/dwc3/rk_dwc3.c",
+        "sys/dev/usb/controller/xlnx_dwc3.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "fdt",
+        "generated",
+        "machine",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization",
+        "usb"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

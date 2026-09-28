@@ -1,0 +1,68 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-acpi-wmi",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD ACPI WMI mapping driver with GUID, block, method, event, and wmistat interfaces.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [
+      "EDGEOS_BSD_FULL_ACPICA"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "acpica"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/acpi_support/acpi_wmi.c",
+      "sys/dev/acpi_support/acpi_wmi_if.m"
+    ],
+    "file_count": 2,
+    "tree_sha256": "0685c0b38dbbfd15c9ed3eef32cc64f49f292f49d28b7043810924620d525bc2"
+  },
+  "generated_interfaces": [
+    "sys/dev/acpi_support/acpi_wmi_if.m"
+  ],
+  "modules": [
+    {
+      "id": "acpi-wmi",
+      "sources": [
+        "sys/dev/acpi_support/acpi_wmi.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "character-device",
+        "generated",
+        "memory",
+        "module",
+        "newbus"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-fdt-common",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD common Flattened Device Tree helpers.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/fdt/fdt_common.c",
+      "sys/dev/fdt/fdt_common.h"
+    ],
+    "file_count": 2,
+    "tree_sha256": "0691eb9fd0299a0a43d077a1846d4ba5903ee41985cf929b3738ec86bac4968d"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "fdt-common",
+      "sources": [
+        "sys/dev/fdt/fdt_common.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "generated",
+        "memory",
+        "newbus",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

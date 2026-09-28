@@ -1,0 +1,59 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-ispfw",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD QLogic ISP firmware registration package.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "ISP_ALL"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/ispfw",
+      "sys/dev/ispfw/ispfw.c"
+    ],
+    "file_count": 6,
+    "tree_sha256": "dd7e90ca3f03518a7a294ad30b48993170e316c3fadc2d7edf86aa0270e2bd7e"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "ispfw",
+      "sources": [
+        "sys/dev/ispfw/ispfw.c"
+      ],
+      "capabilities": [
+        "base",
+        "module"
+      ],
+      "build": {
+        "mode": "module"
+      }
+    }
+  ]
+}

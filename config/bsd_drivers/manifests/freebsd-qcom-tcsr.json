@@ -1,0 +1,65 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-qcom-tcsr",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Qualcomm TCSR system-control driver.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/qcom_tcsr",
+      "sys/dev/qcom_tcsr/qcom_tcsr.c"
+    ],
+    "file_count": 3,
+    "tree_sha256": "55b3013c497ce4867d611f254aeb87058a7713d426a3febd8a429787ca2a17a5"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "qcom-tcsr",
+      "sources": [
+        "sys/dev/qcom_tcsr/qcom_tcsr.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

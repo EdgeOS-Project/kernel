@@ -1,0 +1,299 @@
+{
+  "schema_version": 1,
+  "provider": "freebsd",
+  "capabilities": {
+    "acpi": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "platform"
+    },
+    "base": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "core"
+    },
+    "block": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "block"
+    },
+    "callout": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "callout"
+    },
+    "cam": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "storage"
+    },
+    "character-device": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "character-device"
+    },
+    "display": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "display"
+    },
+    "fdt": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "platform"
+    },
+    "firmware": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "firmware"
+    },
+    "framebuffer": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "display"
+    },
+    "generated": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "kobj"
+    },
+    "geom": {
+      "status": "unsupported",
+      "architectures": [],
+      "owner": "storage"
+    },
+    "geom-core": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "storage"
+    },
+    "geom-disk": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "storage"
+    },
+    "ifnet": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "network"
+    },
+    "interrupt": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "interrupt"
+    },
+    "machine": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "machine"
+    },
+    "mbuf": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "network"
+    },
+    "memory": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "memory"
+    },
+    "mmio": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "bus"
+    },
+    "module": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "module"
+    },
+    "network": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "network"
+    },
+    "newbus": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "newbus"
+    },
+    "pci": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "pci"
+    },
+    "random": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "random"
+    },
+    "resource": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "resource"
+    },
+    "scmi": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "firmware"
+    },
+    "scsi": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "storage"
+    },
+    "sglist-core": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "memory"
+    },
+    "synchronization": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "synchronization"
+    },
+    "sysctl": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "sysctl"
+    },
+    "taskqueue": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "taskqueue"
+    },
+    "tty": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "tty"
+    },
+    "usb": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "usb"
+    },
+    "sglist-uio": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "memory"
+    },
+    "virtio": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "virtio"
+    },
+    "vm": {
+      "status": "implemented",
+      "architectures": [
+        "x86_64",
+        "arm64"
+      ],
+      "owner": "vm"
+    }
+  }
+}

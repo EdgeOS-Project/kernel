@@ -1,0 +1,74 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-oce",
+  "provider": "freebsd",
+  "description": "Unmodified complete standard FreeBSD Emulex OneConnect PCIe Ethernet driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "Public-Domain"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/oce",
+      "sys/dev/oce/oce_hw.c",
+      "sys/dev/oce/oce_if.c",
+      "sys/dev/oce/oce_mbox.c",
+      "sys/dev/oce/oce_queue.c",
+      "sys/dev/oce/oce_sysctl.c",
+      "sys/dev/oce/oce_util.c",
+      "sys/netinet/icmp6.h",
+      "sys/netinet/in_var.h",
+      "sys/netinet6/in6_var.h",
+      "sys/netinet6/ip6_mroute.h",
+      "sys/sys/fnv_hash.h",
+      "sys/sys/sockopt.h"
+    ],
+    "file_count": 15,
+    "tree_sha256": "05e81712a9dd1147a8ac0cb6c01d06cf6f0a4e5bde370154192cb3d445b930c0"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "oce",
+      "sources": [
+        "sys/dev/oce/oce_hw.c",
+        "sys/dev/oce/oce_if.c",
+        "sys/dev/oce/oce_mbox.c",
+        "sys/dev/oce/oce_queue.c",
+        "sys/dev/oce/oce_sysctl.c",
+        "sys/dev/oce/oce_util.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

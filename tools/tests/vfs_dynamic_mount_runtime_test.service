@@ -1,0 +1,14 @@
+[Unit]
+Description=EdgeOS dynamic VFS mount table runtime test
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/root/vfs_dynamic_mount_runtime_test.sh 80
+StandardOutput=journal+console
+StandardError=journal+console
+TimeoutStartSec=120
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

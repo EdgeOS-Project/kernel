@@ -1,0 +1,95 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-hwt-intel-pt",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Hardware Trace framework with the amd64 Intel Processor Trace backend.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [
+      "SMP"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/amd64/pt",
+      "sys/amd64/pt/pt.c",
+      "sys/dev/hwt",
+      "sys/dev/hwt/hwt.c",
+      "sys/dev/hwt/hwt_backend.c",
+      "sys/dev/hwt/hwt_config.c",
+      "sys/dev/hwt/hwt_context.c",
+      "sys/dev/hwt/hwt_contexthash.c",
+      "sys/dev/hwt/hwt_cpu.c",
+      "sys/dev/hwt/hwt_hook.c",
+      "sys/dev/hwt/hwt_ioctl.c",
+      "sys/dev/hwt/hwt_owner.c",
+      "sys/dev/hwt/hwt_ownerhash.c",
+      "sys/dev/hwt/hwt_record.c",
+      "sys/dev/hwt/hwt_thread.c",
+      "sys/dev/hwt/hwt_vm.c",
+      "sys/sys/hwt.h",
+      "sys/sys/hwt_record.h",
+      "sys/x86/include/fpu.h",
+      "sys/x86/include/x86_var.h"
+    ],
+    "file_count": 32,
+    "tree_sha256": "bfe2f1768ac1acc73ae9608540e8418bedc476a97cb5b94a086c4870f2998b91"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "hwt-intel-pt",
+      "sources": [
+        "sys/amd64/pt/pt.c",
+        "sys/dev/hwt/hwt.c",
+        "sys/dev/hwt/hwt_backend.c",
+        "sys/dev/hwt/hwt_config.c",
+        "sys/dev/hwt/hwt_context.c",
+        "sys/dev/hwt/hwt_contexthash.c",
+        "sys/dev/hwt/hwt_cpu.c",
+        "sys/dev/hwt/hwt_hook.c",
+        "sys/dev/hwt/hwt_ioctl.c",
+        "sys/dev/hwt/hwt_owner.c",
+        "sys/dev/hwt/hwt_ownerhash.c",
+        "sys/dev/hwt/hwt_record.c",
+        "sys/dev/hwt/hwt_thread.c",
+        "sys/dev/hwt/hwt_vm.c"
+      ],
+      "capabilities": [
+        "base",
+        "character-device",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "synchronization",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

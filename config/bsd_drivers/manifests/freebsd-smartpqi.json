@@ -1,0 +1,92 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-smartpqi",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Microchip SmartPQI storage driver with discovery, queues, CAM, management, and PCI support.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "__FreeBSD__=16"
+    ],
+    "undefinitions": [],
+    "arm64_options": [
+      "external-inline-definitions"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/smartpqi"
+    ],
+    "file_count": 24,
+    "tree_sha256": "4a2726b03f1f5cb9343ac15024b5a0512b7e7b48fbcf139ecac319544e99f3fa"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "smartpqi",
+      "sources": [
+        "sys/dev/smartpqi/smartpqi_mem.c",
+        "sys/dev/smartpqi/smartpqi_intr.c",
+        "sys/dev/smartpqi/smartpqi_main.c",
+        "sys/dev/smartpqi/smartpqi_cam.c",
+        "sys/dev/smartpqi/smartpqi_ioctl.c",
+        "sys/dev/smartpqi/smartpqi_misc.c",
+        "sys/dev/smartpqi/smartpqi_sis.c",
+        "sys/dev/smartpqi/smartpqi_init.c",
+        "sys/dev/smartpqi/smartpqi_queue.c",
+        "sys/dev/smartpqi/smartpqi_tag.c",
+        "sys/dev/smartpqi/smartpqi_cmd.c",
+        "sys/dev/smartpqi/smartpqi_request.c",
+        "sys/dev/smartpqi/smartpqi_response.c",
+        "sys/dev/smartpqi/smartpqi_event.c",
+        "sys/dev/smartpqi/smartpqi_helper.c",
+        "sys/dev/smartpqi/smartpqi_discovery.c",
+        "sys/dev/smartpqi/smartpqi_features.c"
+      ],
+      "capabilities": [
+        "base",
+        "block",
+        "callout",
+        "cam",
+        "character-device",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "scsi",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

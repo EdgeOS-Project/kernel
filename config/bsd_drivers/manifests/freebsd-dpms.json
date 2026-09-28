@@ -1,0 +1,57 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-dpms",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD display power management driver.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/dpms",
+      "sys/dev/dpms/dpms.c"
+    ],
+    "file_count": 1,
+    "tree_sha256": "8bd78fa920fd569bd349303728fbfd691757c5828c1aa9b991162a8455d4a033"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "dpms",
+      "sources": [
+        "sys/dev/dpms/dpms.c"
+      ],
+      "capabilities": [
+        "base",
+        "module",
+        "newbus"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

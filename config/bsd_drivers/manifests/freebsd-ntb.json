@@ -1,0 +1,82 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-ntb",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD non-transparent bridge stack for Intel, AMD, and PLX hardware.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/ntb",
+      "sys/dev/ntb/if_ntb/if_ntb.c",
+      "sys/dev/ntb/ntb.c",
+      "sys/dev/ntb/ntb_hw/ntb_hw_amd.c",
+      "sys/dev/ntb/ntb_hw/ntb_hw_intel.c",
+      "sys/dev/ntb/ntb_hw/ntb_hw_plx.c",
+      "sys/dev/ntb/ntb_if.m",
+      "sys/dev/ntb/ntb_transport.c",
+      "sys/dev/ntb/test/ntb_tool.c"
+    ],
+    "file_count": 12,
+    "tree_sha256": "ce56ba0d4574a339b431a828be183ecd0e23fcb4445f007319c6ef7e8c95ad22"
+  },
+  "generated_interfaces": [
+    "sys/dev/ntb/ntb_if.m"
+  ],
+  "modules": [
+    {
+      "id": "ntb",
+      "sources": [
+        "sys/dev/ntb/if_ntb/if_ntb.c",
+        "sys/dev/ntb/ntb.c",
+        "sys/dev/ntb/ntb_hw/ntb_hw_amd.c",
+        "sys/dev/ntb/ntb_hw/ntb_hw_intel.c",
+        "sys/dev/ntb/ntb_hw/ntb_hw_plx.c",
+        "sys/dev/ntb/ntb_transport.c",
+        "sys/dev/ntb/test/ntb_tool.c"
+      ],
+      "capabilities": [
+        "base",
+        "machine",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

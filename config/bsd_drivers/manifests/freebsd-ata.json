@@ -1,0 +1,123 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-ata",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD legacy ATA PCI controller and chipset driver stack.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/ata",
+      "sys/dev/ata/ata-all.c",
+      "sys/dev/ata/ata-dma.c",
+      "sys/dev/ata/ata-lowlevel.c",
+      "sys/dev/ata/ata-pci.c",
+      "sys/dev/ata/ata-sata.c",
+      "sys/dev/ata/ata_if.m",
+      "sys/dev/ata/chipsets/ata-acard.c",
+      "sys/dev/ata/chipsets/ata-acerlabs.c",
+      "sys/dev/ata/chipsets/ata-amd.c",
+      "sys/dev/ata/chipsets/ata-ati.c",
+      "sys/dev/ata/chipsets/ata-cenatek.c",
+      "sys/dev/ata/chipsets/ata-cypress.c",
+      "sys/dev/ata/chipsets/ata-cyrix.c",
+      "sys/dev/ata/chipsets/ata-highpoint.c",
+      "sys/dev/ata/chipsets/ata-intel.c",
+      "sys/dev/ata/chipsets/ata-ite.c",
+      "sys/dev/ata/chipsets/ata-jmicron.c",
+      "sys/dev/ata/chipsets/ata-marvell.c",
+      "sys/dev/ata/chipsets/ata-micron.c",
+      "sys/dev/ata/chipsets/ata-national.c",
+      "sys/dev/ata/chipsets/ata-netcell.c",
+      "sys/dev/ata/chipsets/ata-nvidia.c",
+      "sys/dev/ata/chipsets/ata-promise.c",
+      "sys/dev/ata/chipsets/ata-serverworks.c",
+      "sys/dev/ata/chipsets/ata-siliconimage.c",
+      "sys/dev/ata/chipsets/ata-sis.c",
+      "sys/dev/ata/chipsets/ata-via.c"
+    ],
+    "file_count": 30,
+    "tree_sha256": "b6c1cd42d901469f5f9428d83cf71b94d8d7b9bd7b7408afab0d3c5d17ff7027"
+  },
+  "generated_interfaces": [
+    "sys/dev/ata/ata_if.m"
+  ],
+  "modules": [
+    {
+      "id": "ata",
+      "sources": [
+        "sys/dev/ata/ata-all.c",
+        "sys/dev/ata/ata-dma.c",
+        "sys/dev/ata/ata-lowlevel.c",
+        "sys/dev/ata/ata-pci.c",
+        "sys/dev/ata/ata-sata.c",
+        "sys/dev/ata/chipsets/ata-acard.c",
+        "sys/dev/ata/chipsets/ata-acerlabs.c",
+        "sys/dev/ata/chipsets/ata-amd.c",
+        "sys/dev/ata/chipsets/ata-ati.c",
+        "sys/dev/ata/chipsets/ata-cenatek.c",
+        "sys/dev/ata/chipsets/ata-cypress.c",
+        "sys/dev/ata/chipsets/ata-cyrix.c",
+        "sys/dev/ata/chipsets/ata-highpoint.c",
+        "sys/dev/ata/chipsets/ata-intel.c",
+        "sys/dev/ata/chipsets/ata-ite.c",
+        "sys/dev/ata/chipsets/ata-jmicron.c",
+        "sys/dev/ata/chipsets/ata-marvell.c",
+        "sys/dev/ata/chipsets/ata-micron.c",
+        "sys/dev/ata/chipsets/ata-national.c",
+        "sys/dev/ata/chipsets/ata-netcell.c",
+        "sys/dev/ata/chipsets/ata-nvidia.c",
+        "sys/dev/ata/chipsets/ata-promise.c",
+        "sys/dev/ata/chipsets/ata-serverworks.c",
+        "sys/dev/ata/chipsets/ata-siliconimage.c",
+        "sys/dev/ata/chipsets/ata-sis.c",
+        "sys/dev/ata/chipsets/ata-via.c"
+      ],
+      "capabilities": [
+        "base",
+        "block",
+        "cam",
+        "character-device",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

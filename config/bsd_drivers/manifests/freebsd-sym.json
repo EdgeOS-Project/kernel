@@ -1,0 +1,65 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-sym",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Symbios and LSI 53C8XX PCI SCSI controller driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/sym",
+      "sys/dev/sym/sym_hipd.c"
+    ],
+    "file_count": 7,
+    "tree_sha256": "07bb7edd542558b1bf0e812c5f5ca4afdfb3bed9530f69a8824f43dc97c990bb"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "sym",
+      "sources": [
+        "sys/dev/sym/sym_hipd.c"
+      ],
+      "capabilities": [
+        "base",
+        "cam",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

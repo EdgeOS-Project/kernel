@@ -1,0 +1,64 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-vgapci",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD PCI VGA bus driver used as the parent for native display drivers.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/pci/vga_pci.c"
+    ],
+    "file_count": 1,
+    "tree_sha256": "c99ade07f5cb395174822a08342136b19a6a741d527f72249d0704982970a654"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "vgapci",
+      "sources": [
+        "sys/dev/pci/vga_pci.c"
+      ],
+      "capabilities": [
+        "base",
+        "display",
+        "generated",
+        "memory",
+        "mmio",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "sysctl",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

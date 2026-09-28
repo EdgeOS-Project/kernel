@@ -1,0 +1,82 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-x86bios",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD x86 option-ROM execution service with the permissively licensed x86 emulator.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "MIT"
+    ],
+    "license_exceptions": {
+      "sys/contrib/x86emu/x86emu.c": {
+        "license": "MIT",
+        "evidence": "The retained header grants permission to use, copy, modify, distribute, and sell the software for any purpose."
+      },
+      "sys/contrib/x86emu/x86emu.h": {
+        "license": "MIT",
+        "evidence": "The retained header grants permission to use, copy, modify, distribute, and sell the software for any purpose."
+      },
+      "sys/contrib/x86emu/x86emu_regs.h": {
+        "license": "MIT",
+        "evidence": "The retained header grants permission to use, copy, modify, distribute, and sell the software for any purpose."
+      }
+    }
+  },
+  "source_lock": {
+    "paths": [
+      "sys/compat/x86bios/x86bios.c",
+      "sys/compat/x86bios/x86bios.h",
+      "sys/contrib/x86emu/x86emu.c",
+      "sys/contrib/x86emu/x86emu.h",
+      "sys/contrib/x86emu/x86emu_regs.h"
+    ],
+    "file_count": 5,
+    "tree_sha256": "08f3ccf5ca26d5ec0e82b71537dff6b186d8af7617fabd9a64ed7240c51270d6"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "x86bios",
+      "sources": [
+        "sys/compat/x86bios/x86bios.c",
+        "sys/contrib/x86emu/x86emu.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "memory",
+        "mmio",
+        "module",
+        "newbus",
+        "pci",
+        "synchronization",
+        "sysctl",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

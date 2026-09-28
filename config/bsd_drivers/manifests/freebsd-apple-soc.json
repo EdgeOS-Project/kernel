@@ -1,0 +1,83 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-apple-soc",
+  "provider": "freebsd",
+  "description": "Unmodified FreeBSD Apple Silicon interrupt controller, GPIO pin controller, and watchdog drivers.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT",
+      "INTRNG"
+    ],
+    "undefinitions": [],
+    "source_preincludes": {
+      "sys/arm64/apple/apple_aic.c": "sys/intr.h"
+    }
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "ISC",
+      "MIT"
+    ],
+    "allow_unmarked_files": false,
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/arm64/apple/apple_aic.c",
+      "sys/arm64/apple/apple_pinctrl.c",
+      "sys/arm64/apple/apple_wdog.c",
+      "sys/arm64/apple/exynos_uart.c",
+      "sys/arm64/apple/exynos_uart.h",
+      "sys/arm64/include/_armreg.h",
+      "sys/arm64/include/armreg.h",
+      "sys/contrib/device-tree/include/dt-bindings/interrupt-controller/apple-aic.h",
+      "sys/contrib/device-tree/include/dt-bindings/interrupt-controller/irq.h",
+      "sys/dev/fdt/fdt_intr.h"
+    ],
+    "file_count": 10,
+    "tree_sha256": "3b17d9628acfdc2dad25e3436822803abab53565c0d7c0ef99769ed35f098b7d"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "apple-soc",
+      "sources": [
+        "sys/arm64/apple/apple_aic.c",
+        "sys/arm64/apple/apple_pinctrl.c",
+        "sys/arm64/apple/apple_wdog.c",
+        "sys/arm64/apple/exynos_uart.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

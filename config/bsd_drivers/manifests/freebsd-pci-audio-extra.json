@@ -1,0 +1,168 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-pci-audio-extra",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD MIDI and additional PCI audio controller drivers.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/sound/isa/sb.h",
+      "sys/dev/sound/midi",
+      "sys/dev/sound/pci/als4000.c",
+      "sys/dev/sound/pci/als4000.h",
+      "sys/dev/sound/pci/cmi.c",
+      "sys/dev/sound/pci/cmireg.h",
+      "sys/dev/sound/pci/csa.c",
+      "sys/dev/sound/pci/csapcm.c",
+      "sys/dev/sound/pci/csamidi.c",
+      "sys/dev/sound/pci/csareg.h",
+      "sys/dev/sound/pci/csavar.h",
+      "sys/dev/sound/pci/cs461x_dsp.h",
+      "sys/dev/sound/pci/emu10k1.c",
+      "sys/dev/sound/pci/emu10kx.c",
+      "sys/dev/sound/pci/emu10kx-pcm.c",
+      "sys/dev/sound/pci/emu10kx-midi.c",
+      "sys/dev/sound/pci/emu10kx.h",
+      "sys/dev/sound/pci/emuxkireg.h",
+      "sys/dev/sound/pci/envy24.c",
+      "sys/dev/sound/pci/envy24.h",
+      "sys/dev/sound/pci/envy24ht.c",
+      "sys/dev/sound/pci/envy24ht.h",
+      "sys/dev/sound/pci/hdsp.c",
+      "sys/dev/sound/pci/hdsp-pcm.c",
+      "sys/dev/sound/pci/hdsp.h",
+      "sys/dev/sound/pci/hdspe.c",
+      "sys/dev/sound/pci/hdspe-pcm.c",
+      "sys/dev/sound/pci/hdspe.h",
+      "sys/dev/sound/pci/solo.c",
+      "sys/dev/sound/pci/spicds.c",
+      "sys/dev/sound/pci/spicds.h"
+    ],
+    "file_count": 37,
+    "tree_sha256": "d60447017d217f524d6568ce3b0e657eb350080a0f87a1085e03251d67f890d4"
+  },
+  "generated_interfaces": [
+    "sys/dev/sound/midi/mpu_if.m",
+    "sys/dev/sound/midi/mpufoi_if.m"
+  ],
+  "modules": [
+    {
+      "id": "sound-midi-core",
+      "sources": [
+        "sys/dev/sound/midi/midi.c",
+        "sys/dev/sound/midi/mpu401.c"
+      ],
+      "capabilities": [
+        "base", "character-device", "generated", "memory", "module",
+        "newbus", "synchronization", "sysctl", "taskqueue"
+      ],
+      "build": { "mode": "builtin" }
+    },
+    {
+      "id": "sound-als4000",
+      "sources": ["sys/dev/sound/pci/als4000.c"],
+      "capabilities": ["base", "generated", "interrupt", "machine", "memory", "module", "newbus", "pci", "resource", "synchronization", "sysctl", "taskqueue"],
+      "build": { "mode": "builtin" }
+    },
+    {
+      "id": "sound-cmi",
+      "sources": ["sys/dev/sound/pci/cmi.c"],
+      "capabilities": ["base", "generated", "interrupt", "machine", "memory", "module", "newbus", "pci", "resource", "synchronization", "sysctl", "taskqueue"],
+      "build": { "mode": "builtin" }
+    },
+    {
+      "id": "sound-csa",
+      "sources": [
+        "sys/dev/sound/pci/csa.c",
+        "sys/dev/sound/pci/csapcm.c",
+        "sys/dev/sound/pci/csamidi.c"
+      ],
+      "capabilities": ["base", "generated", "interrupt", "machine", "memory", "module", "newbus", "pci", "resource", "synchronization", "sysctl", "taskqueue"],
+      "build": { "mode": "builtin" }
+    },
+    {
+      "id": "sound-emu10k1",
+      "sources": ["sys/dev/sound/pci/emu10k1.c"],
+      "capabilities": ["base", "generated", "interrupt", "machine", "memory", "module", "newbus", "pci", "resource", "synchronization", "sysctl", "taskqueue"],
+      "build": { "mode": "builtin" }
+    },
+    {
+      "id": "sound-emu10kx",
+      "sources": [
+        "sys/dev/sound/pci/emu10kx.c",
+        "sys/dev/sound/pci/emu10kx-pcm.c",
+        "sys/dev/sound/pci/emu10kx-midi.c"
+      ],
+      "capabilities": ["base", "character-device", "generated", "interrupt", "machine", "memory", "module", "newbus", "pci", "resource", "synchronization", "sysctl", "taskqueue"],
+      "build": { "mode": "builtin" }
+    },
+    {
+      "id": "sound-envy24",
+      "sources": ["sys/dev/sound/pci/envy24.c"],
+      "capabilities": ["base", "generated", "interrupt", "machine", "memory", "module", "newbus", "pci", "resource", "synchronization", "sysctl", "taskqueue"],
+      "build": { "mode": "builtin" }
+    },
+    {
+      "id": "sound-envy24ht",
+      "sources": ["sys/dev/sound/pci/envy24ht.c"],
+      "capabilities": ["base", "generated", "interrupt", "machine", "memory", "module", "newbus", "pci", "resource", "synchronization", "sysctl", "taskqueue"],
+      "build": { "mode": "builtin" }
+    },
+    {
+      "id": "sound-hdsp",
+      "sources": [
+        "sys/dev/sound/pci/hdsp.c",
+        "sys/dev/sound/pci/hdsp-pcm.c"
+      ],
+      "capabilities": ["base", "character-device", "generated", "interrupt", "machine", "memory", "module", "newbus", "pci", "resource", "synchronization", "sysctl", "taskqueue"],
+      "build": { "mode": "builtin" }
+    },
+    {
+      "id": "sound-hdspe",
+      "sources": [
+        "sys/dev/sound/pci/hdspe.c",
+        "sys/dev/sound/pci/hdspe-pcm.c"
+      ],
+      "capabilities": ["base", "character-device", "generated", "interrupt", "machine", "memory", "module", "newbus", "pci", "resource", "synchronization", "sysctl", "taskqueue"],
+      "build": { "mode": "builtin" }
+    },
+    {
+      "id": "sound-solo",
+      "sources": ["sys/dev/sound/pci/solo.c"],
+      "capabilities": ["base", "generated", "interrupt", "machine", "memory", "module", "newbus", "pci", "resource", "synchronization", "sysctl", "taskqueue"],
+      "build": { "mode": "builtin" }
+    },
+    {
+      "id": "sound-spicds",
+      "sources": ["sys/dev/sound/pci/spicds.c"],
+      "capabilities": ["base", "generated", "memory", "module", "newbus", "synchronization", "sysctl"],
+      "build": { "mode": "builtin" }
+    }
+  ]
+}

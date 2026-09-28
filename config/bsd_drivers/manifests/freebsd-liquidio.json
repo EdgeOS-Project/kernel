@@ -1,0 +1,80 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-liquidio",
+  "provider": "freebsd",
+  "description": "Unmodified complete standard FreeBSD Cavium LiquidIO PCIe Ethernet driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/liquidio"
+    ],
+    "file_count": 31,
+    "tree_sha256": "b1da843be3cfc3652ef2cb6df74328e819bb57c89a66a8f4f718eee88d6d6db7"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "liquidio",
+      "sources": [
+        "sys/dev/liquidio/base/cn23xx_pf_device.c",
+        "sys/dev/liquidio/base/lio_console.c",
+        "sys/dev/liquidio/base/lio_ctrl.c",
+        "sys/dev/liquidio/base/lio_device.c",
+        "sys/dev/liquidio/base/lio_droq.c",
+        "sys/dev/liquidio/base/lio_mem_ops.c",
+        "sys/dev/liquidio/base/lio_request_manager.c",
+        "sys/dev/liquidio/base/lio_response_manager.c",
+        "sys/dev/liquidio/lio_core.c",
+        "sys/dev/liquidio/lio_ioctl.c",
+        "sys/dev/liquidio/lio_main.c",
+        "sys/dev/liquidio/lio_rss.c",
+        "sys/dev/liquidio/lio_rxtx.c",
+        "sys/dev/liquidio/lio_sysctl.c"
+      ],
+      "capabilities": [
+        "base",
+        "firmware",
+        "machine",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

@@ -1,0 +1,157 @@
+/*-
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
+ * Copyright (c) 2005-2009 Ariff Abdullah <ariff@FreeBSD.org>
+ * Copyright (c) 1999 Cameron Grant <cg@FreeBSD.org>
+ * All rights reserved.
+ * Copyright (c) 2025 The FreeBSD Foundation
+ *
+ * Portions of this software were developed by Christos Margiolis
+ * <christos@FreeBSD.org> under sponsorship from the FreeBSD Foundation.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+enum feeder_type {
+	FEEDER_ROOT,
+	FEEDER_FORMAT,
+	FEEDER_MIXER,
+	FEEDER_RATE,
+	FEEDER_EQ,
+	FEEDER_VOLUME,
+	FEEDER_MATRIX,
+	FEEDER_LAST,
+};
+
+struct pcm_feederdesc {
+	u_int32_t in, out;
+};
+
+struct feeder_class {
+	KOBJ_CLASS_FIELDS;
+	enum feeder_type type;
+	SLIST_ENTRY(feeder_class) link;
+};
+
+struct pcm_feeder {
+    	KOBJ_FIELDS;
+	struct pcm_feederdesc desc;
+	void *data;
+	struct feeder_class *class;
+	struct pcm_feeder *source, *parent;
+};
+
+void feeder_register(void *p);
+struct feeder_class *feeder_getclass(u_int32_t type);
+
+u_int32_t snd_fmtbest(u_int32_t fmt, u_int32_t *fmts);
+
+int feeder_add(struct pcm_channel *c, struct feeder_class *fc,
+    struct pcm_feederdesc *desc);
+void feeder_remove(struct pcm_channel *c);
+struct pcm_feeder *feeder_find(struct pcm_channel *c, u_int32_t type);
+int feeder_chain(struct pcm_channel *);
+
+#define FEEDER_DECLARE(feeder, ctype)					\
+static struct feeder_class feeder ## _class = {				\
+	.name =		#feeder,					\
+	.methods =	feeder ## _methods,				\
+	.size =		sizeof(struct pcm_feeder),			\
+	.type =		ctype,						\
+};									\
+SYSINIT(feeder, SI_SUB_DRIVERS, SI_ORDER_ANY, feeder_register,		\
+    &feeder ## _class)
+
+/* feeder_format */
+enum {
+	FEEDFORMAT_CHANNELS
+};
+
+/* feeder_mixer */
+enum {
+	FEEDMIXER_CHANNELS
+};
+
+/* feeder_rate */
+enum {
+	FEEDRATE_SRC,
+	FEEDRATE_DST,
+	FEEDRATE_QUALITY,
+	FEEDRATE_CHANNELS
+};
+
+#define FEEDRATE_RATEMIN	1
+#define FEEDRATE_RATEMAX	2016000		/* 48000 * 42 */
+#define FEEDRATE_MIN		1
+#define FEEDRATE_MAX		0x7fffff	/* sign 24bit ~ 8ghz ! */
+#define FEEDRATE_ROUNDHZ	25
+#define FEEDRATE_ROUNDHZ_MIN	0
+#define FEEDRATE_ROUNDHZ_MAX	500
+
+extern int feeder_rate_min;
+extern int feeder_rate_max;
+extern int feeder_rate_round;
+extern int feeder_rate_quality;
+
+/* feeder_eq */
+enum {
+	FEEDEQ_CHANNELS,
+	FEEDEQ_RATE,
+	FEEDEQ_TREBLE,
+	FEEDEQ_BASS,
+	FEEDEQ_PREAMP,
+};
+
+int feeder_eq_validrate(uint32_t);
+void feeder_eq_initsys(device_t);
+
+/* feeder_volume */
+enum {
+	FEEDVOLUME_CLASS,
+	FEEDVOLUME_CHANNELS,
+	FEEDVOLUME_STATE,
+	FEEDVOLUME_ENABLE,
+	FEEDVOLUME_BYPASS
+};
+
+int feeder_volume_apply_matrix(struct pcm_feeder *, struct pcmchan_matrix *);
+
+/* feeder_matrix */
+int feeder_matrix_default_id(uint32_t);
+struct pcmchan_matrix *feeder_matrix_default_channel_map(uint32_t);
+
+uint32_t feeder_matrix_default_format(uint32_t);
+
+int feeder_matrix_format_id(uint32_t);
+struct pcmchan_matrix *feeder_matrix_format_map(uint32_t);
+
+struct pcmchan_matrix *feeder_matrix_id_map(int);
+
+int feeder_matrix_setup(struct pcm_feeder *, struct pcmchan_matrix *,
+    struct pcmchan_matrix *);
+int feeder_matrix_compare(struct pcmchan_matrix *, struct pcmchan_matrix *);
+
+/* 4Front OSS stuffs */
+int feeder_matrix_oss_get_channel_order(struct pcmchan_matrix *,
+    unsigned long long *);
+int feeder_matrix_oss_set_channel_order(struct pcmchan_matrix *,
+    unsigned long long *);

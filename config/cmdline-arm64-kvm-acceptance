@@ -1,0 +1,1 @@
+rdinit=/edge-kvm-init console=ttyAMA0 loglevel=8 logfile=/edgeos-boot.log kvm.trace=1

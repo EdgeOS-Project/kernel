@@ -1,0 +1,86 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-linuxkpi-wlan",
+  "provider": "freebsd",
+  "description": "FreeBSD LinuxKPI 802.11, power-management, and MHI foundation.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "EDGEOS_BSD_LINUXKPI=1",
+      "KBUILD_MODNAME=linuxkpi_wlan",
+      "LINUXKPI_VERSION=70000",
+      "__FreeBSD__=14"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "linuxkpi"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "patched",
+    "allow_inline_patches": true,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "LicenseRef-Upstream-Unmarked"
+    ],
+    "allow_unmarked_files": true,
+    "license_exceptions": {},
+    "patches": [
+      {
+        "path": "sys/compat/linuxkpi/common/src/linux_80211.c",
+        "upstream_sha256": "13ab42cc991d8b9f5480345d4743b71eb8dd76fb75be41ce0a1b9d83c93d86e8",
+        "reason": "Expose the live hardware queue stopped state required by ath12k recovery."
+      }
+    ]
+  },
+  "source_lock": {
+    "paths": [
+      "sys/compat/linuxkpi/common/src/linux_80211.c",
+      "sys/compat/linuxkpi/common/src/linux_80211_macops.c",
+      "sys/compat/linuxkpi/common/src/linux_mhi.c",
+      "sys/compat/linuxkpi/common/src/linuxkpi_80211_pm.c"
+    ],
+    "file_count": 4,
+    "tree_sha256": "a8d816f6e0ac908ad2fc4f24d726c3d6169699bc110b9a6cf94439f1ef96df96"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "linuxkpi-wlan",
+      "sources": [
+        "sys/compat/linuxkpi/common/src/linux_80211.c",
+        "sys/compat/linuxkpi/common/src/linux_80211_macops.c",
+        "sys/compat/linuxkpi/common/src/linux_mhi.c",
+        "sys/compat/linuxkpi/common/src/linuxkpi_80211_pm.c"
+      ],
+      "capabilities": [
+        "base",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "synchronization",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

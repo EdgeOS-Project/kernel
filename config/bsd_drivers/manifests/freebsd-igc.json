@@ -1,0 +1,82 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-igc",
+  "provider": "freebsd",
+  "description": "Unmodified FreeBSD Intel I225 and I226 Ethernet driver family imported through the EdgeOS BSD Driver Bridge.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/igc/if_igc.c",
+      "sys/dev/igc/if_igc.h",
+      "sys/dev/igc/igc_api.c",
+      "sys/dev/igc/igc_api.h",
+      "sys/dev/igc/igc_base.c",
+      "sys/dev/igc/igc_base.h",
+      "sys/dev/igc/igc_defines.h",
+      "sys/dev/igc/igc_hw.h",
+      "sys/dev/igc/igc_i225.c",
+      "sys/dev/igc/igc_i225.h",
+      "sys/dev/igc/igc_mac.c",
+      "sys/dev/igc/igc_mac.h",
+      "sys/dev/igc/igc_nvm.c",
+      "sys/dev/igc/igc_nvm.h",
+      "sys/dev/igc/igc_osdep.h",
+      "sys/dev/igc/igc_phy.c",
+      "sys/dev/igc/igc_phy.h",
+      "sys/dev/igc/igc_regs.h",
+      "sys/dev/igc/igc_txrx.c"
+    ],
+    "file_count": 19,
+    "tree_sha256": "412dd370af33be5c2e128f85bbb9306d328412128c84efa31addba52efb30c21"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "igc-family",
+      "sources": [
+        "sys/dev/igc/if_igc.c",
+        "sys/dev/igc/igc_api.c",
+        "sys/dev/igc/igc_base.c",
+        "sys/dev/igc/igc_i225.c",
+        "sys/dev/igc/igc_mac.c",
+        "sys/dev/igc/igc_nvm.c",
+        "sys/dev/igc/igc_phy.c",
+        "sys/dev/igc/igc_txrx.c"
+      ],
+      "capabilities": [
+        "base",
+        "machine",
+        "network"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

@@ -1,0 +1,233 @@
+/*
+ * Copyright (c) EdgeOS Contributors.
+ * SPDX-License-Identifier: MPL-2.0
+ */
+#ifndef EDGEOS_KERNEL_RUNTIME_LIMITS_H
+#define EDGEOS_KERNEL_RUNTIME_LIMITS_H
+
+/* Linux-visible object capacities must not vary by CPU architecture. */
+/*
+ * Modern browsers routinely create several hundred live processes and
+ * threads in addition to the desktop session.  A 384-task system-wide table
+ * made Firefox fail clone(2) during ordinary navigation while the guest still
+ * had ample memory.  Keep enough headroom for a browser, desktop services, and
+ * build tools on both architectures; the ARM64 runtime allocates this table
+ * from detected RAM rather than reserving it in the image.
+ */
+#ifndef CONFIG_RUNTIME_MAX_TASKS
+#define CONFIG_RUNTIME_MAX_TASKS 4096
+#endif
+#define EDGE_RUNTIME_MAX_TASKS CONFIG_RUNTIME_MAX_TASKS
+#ifndef CONFIG_RUNTIME_MAX_OPEN_FILES
+#define CONFIG_RUNTIME_MAX_OPEN_FILES 1024
+#endif
+#define EDGE_RUNTIME_MAX_OPEN_FILES (CONFIG_RUNTIME_MAX_OPEN_FILES + 0u)
+/*
+ * Firefox and Chromium can keep more than 128 pipes live while the desktop,
+ * browser parent, and content processes overlap during startup.  Exhausting
+ * this system-wide pool makes an otherwise healthy process fail pipe2(2) even
+ * though its descriptor limit and physical memory still have headroom.
+ * Match the shared task, descriptor, and socket scale on both architectures.
+ */
+#ifndef CONFIG_RUNTIME_MAX_PIPES
+#define CONFIG_RUNTIME_MAX_PIPES 1024
+#endif
+#define EDGE_RUNTIME_MAX_PIPES CONFIG_RUNTIME_MAX_PIPES
+/*
+ * A Linux desktop can keep several hundred AF_UNIX endpoints live before a
+ * lock screen starts another X server, D-Bus client set, and greeter.  Stream
+ * connections consume two socket objects, so a 384-object system-wide table
+ * made an otherwise healthy Debian XFCE session fail socket(2) with ENOMEM.
+ * Container hosts add hundreds of AF_UNIX control endpoints for shims,
+ * logging, service managers, and Docker itself before application traffic is
+ * counted.  A 111-container restore reached the old 1,024-object ceiling
+ * with free RAM still measured in GiB, causing socket(2) to return ENOMEM to
+ * unrelated services.  Keep four times that observed high-water mark while
+ * socket metadata remains a boot-allocated pool.  This is architecture
+ * neutral and still bounded well below the 16-bit UNIX peer identifier.
+ */
+#ifndef CONFIG_RUNTIME_MAX_SOCKETS
+#define CONFIG_RUNTIME_MAX_SOCKETS 4096
+#endif
+#define EDGE_RUNTIME_MAX_SOCKETS CONFIG_RUNTIME_MAX_SOCKETS
+#ifndef CONFIG_RUNTIME_MAX_EVENTFDS
+#define CONFIG_RUNTIME_MAX_EVENTFDS 1024
+#endif
+#define EDGE_RUNTIME_MAX_EVENTFDS CONFIG_RUNTIME_MAX_EVENTFDS
+#ifndef CONFIG_RUNTIME_MAX_TIMERFDS
+#define CONFIG_RUNTIME_MAX_TIMERFDS 128
+#endif
+#define EDGE_RUNTIME_MAX_TIMERFDS CONFIG_RUNTIME_MAX_TIMERFDS
+#ifndef CONFIG_RUNTIME_MAX_SIGNALFDS
+#define CONFIG_RUNTIME_MAX_SIGNALFDS 128
+#endif
+#define EDGE_RUNTIME_MAX_SIGNALFDS CONFIG_RUNTIME_MAX_SIGNALFDS
+#ifndef CONFIG_RUNTIME_MAX_INOTIFY_INSTANCES
+#define CONFIG_RUNTIME_MAX_INOTIFY_INSTANCES 128
+#endif
+#define EDGE_RUNTIME_MAX_INOTIFY_INSTANCES CONFIG_RUNTIME_MAX_INOTIFY_INSTANCES
+#ifndef CONFIG_RUNTIME_MAX_INOTIFY_WATCHES
+#define CONFIG_RUNTIME_MAX_INOTIFY_WATCHES 4096
+#endif
+#define EDGE_RUNTIME_MAX_INOTIFY_WATCHES CONFIG_RUNTIME_MAX_INOTIFY_WATCHES
+#define EDGE_RUNTIME_INOTIFY_QUEUE_SIZE 512
+#define EDGE_RUNTIME_INOTIFY_NAME_MAX 256
+#ifndef CONFIG_RUNTIME_MAX_FANOTIFY_GROUPS
+#define CONFIG_RUNTIME_MAX_FANOTIFY_GROUPS 32
+#endif
+#define EDGE_RUNTIME_MAX_FANOTIFY_GROUPS CONFIG_RUNTIME_MAX_FANOTIFY_GROUPS
+#ifndef CONFIG_RUNTIME_MAX_FANOTIFY_MARKS
+#define CONFIG_RUNTIME_MAX_FANOTIFY_MARKS 512
+#endif
+#define EDGE_RUNTIME_MAX_FANOTIFY_MARKS CONFIG_RUNTIME_MAX_FANOTIFY_MARKS
+#define EDGE_RUNTIME_FANOTIFY_EVENT_POOL 512
+#define EDGE_RUNTIME_FANOTIFY_GROUP_QUEUE 64
+#ifndef CONFIG_RUNTIME_MAX_USERFAULTFDS
+#define CONFIG_RUNTIME_MAX_USERFAULTFDS 64
+#endif
+#define EDGE_RUNTIME_MAX_USERFAULTFDS CONFIG_RUNTIME_MAX_USERFAULTFDS
+#ifndef CONFIG_RUNTIME_MAX_USERFAULTFD_RANGES
+#define CONFIG_RUNTIME_MAX_USERFAULTFD_RANGES 256
+#endif
+#define EDGE_RUNTIME_MAX_USERFAULTFD_RANGES CONFIG_RUNTIME_MAX_USERFAULTFD_RANGES
+#define EDGE_RUNTIME_USERFAULTFD_EVENT_POOL 256
+#ifndef CONFIG_RUNTIME_MAX_PERF_EVENTS
+#define CONFIG_RUNTIME_MAX_PERF_EVENTS 128
+#endif
+#define EDGE_RUNTIME_MAX_PERF_EVENTS CONFIG_RUNTIME_MAX_PERF_EVENTS
+#ifndef CONFIG_RUNTIME_MAX_BPF_OBJECTS
+#define CONFIG_RUNTIME_MAX_BPF_OBJECTS 128
+#endif
+#define EDGE_RUNTIME_MAX_BPF_OBJECTS CONFIG_RUNTIME_MAX_BPF_OBJECTS
+#ifndef CONFIG_RUNTIME_MAX_BPF_ATTACHMENTS
+#define CONFIG_RUNTIME_MAX_BPF_ATTACHMENTS 256
+#endif
+#define EDGE_RUNTIME_MAX_BPF_ATTACHMENTS CONFIG_RUNTIME_MAX_BPF_ATTACHMENTS
+#ifndef CONFIG_RUNTIME_MAX_QUOTA_FILESYSTEMS
+#define CONFIG_RUNTIME_MAX_QUOTA_FILESYSTEMS 32
+#endif
+#define EDGE_RUNTIME_MAX_QUOTA_FILESYSTEMS (CONFIG_RUNTIME_MAX_QUOTA_FILESYSTEMS + 0u)
+#ifndef CONFIG_RUNTIME_MAX_QUOTA_ENTRIES
+#define CONFIG_RUNTIME_MAX_QUOTA_ENTRIES 512
+#endif
+#define EDGE_RUNTIME_MAX_QUOTA_ENTRIES (CONFIG_RUNTIME_MAX_QUOTA_ENTRIES + 0u)
+/*
+ * Snap, container storage, and network filesystems can keep many FUSE mounts
+ * active while also creating short-lived capability-check mounts.  A
+ * four-session global table exhausted during a normal snapd self-update.
+ * Keep a production-scale shared limit while retaining bounded metadata.
+ */
+#ifndef CONFIG_RUNTIME_MAX_FUSE_SESSIONS
+#define CONFIG_RUNTIME_MAX_FUSE_SESSIONS 256
+#endif
+#define EDGE_RUNTIME_MAX_FUSE_SESSIONS (CONFIG_RUNTIME_MAX_FUSE_SESSIONS + 0u)
+#ifndef CONFIG_RUNTIME_SIGNAL_QUEUE_SIZE
+#define CONFIG_RUNTIME_SIGNAL_QUEUE_SIZE 16384
+#endif
+#define EDGE_RUNTIME_SIGNAL_QUEUE_SIZE CONFIG_RUNTIME_SIGNAL_QUEUE_SIZE
+#ifndef CONFIG_RUNTIME_MAX_EPOLL_IDS
+#define CONFIG_RUNTIME_MAX_EPOLL_IDS 4096
+#endif
+#define EDGE_RUNTIME_MAX_EPOLL_IDS CONFIG_RUNTIME_MAX_EPOLL_IDS
+#define EDGE_RUNTIME_EPOLL_WATCH_INITIAL 16
+#ifndef CONFIG_RUNTIME_MAX_EPOLL_WATCHES
+#define CONFIG_RUNTIME_MAX_EPOLL_WATCHES 1048576
+#endif
+#define EDGE_RUNTIME_MAX_EPOLL_WATCHES CONFIG_RUNTIME_MAX_EPOLL_WATCHES
+#ifndef CONFIG_RUNTIME_SOCKET_BACKLOG
+#define CONFIG_RUNTIME_SOCKET_BACKLOG 128
+#endif
+#define EDGE_RUNTIME_SOCKET_BACKLOG CONFIG_RUNTIME_SOCKET_BACKLOG
+#define EDGE_RUNTIME_UNIX_SOCKET_BUFFER_SIZE (128u * 1024u)
+#define EDGE_RUNTIME_UNIX_RECORD_QUEUE 128u
+#define EDGE_RUNTIME_NETLINK_BUFFER_SIZE (32u * 1024u)
+#define EDGE_RUNTIME_NETLINK_RECORD_QUEUE 128u
+/*
+ * Keep stream copy granularity architecture-neutral and aligned with the
+ * Ethernet TCP payload size.  Smaller architecture-local chunks add extra
+ * user-copy and transport queue operations to every large write.
+ */
+#define EDGE_RUNTIME_STREAM_COPY_CHUNK 1460u
+
+#ifndef CONFIG_RUNTIME_EXEC_ARGUMENT_BYTES
+#define CONFIG_RUNTIME_EXEC_ARGUMENT_BYTES 2097152
+#endif
+
+#ifndef CONFIG_RUNTIME_ARM64_VMA_MIN_ORDER
+#define CONFIG_RUNTIME_ARM64_VMA_MIN_ORDER 14
+#endif
+#ifndef CONFIG_RUNTIME_ARM64_FILE_PAGE_MIN_ORDER
+#define CONFIG_RUNTIME_ARM64_FILE_PAGE_MIN_ORDER 16
+#endif
+
+#ifndef CONFIG_RUNTIME_CGROUP_NODES
+#define CONFIG_RUNTIME_CGROUP_NODES 4096
+#endif
+
+#ifndef CONFIG_RUNTIME_ARM64_MAPPING_ORDER
+#define CONFIG_RUNTIME_ARM64_MAPPING_ORDER 22
+#endif
+
+#ifndef CONFIG_RUNTIME_RIGHTS_RECORDS
+#define CONFIG_RUNTIME_RIGHTS_RECORDS 8192
+#endif
+#ifndef CONFIG_RUNTIME_MQ_MESSAGES
+#define CONFIG_RUNTIME_MQ_MESSAGES 512
+#endif
+
+#ifndef CONFIG_RUNTIME_MEMFD_OBJECTS
+#define CONFIG_RUNTIME_MEMFD_OBJECTS 128
+#endif
+#ifndef CONFIG_RUNTIME_FILE_DESCRIPTION_ORDER
+#define CONFIG_RUNTIME_FILE_DESCRIPTION_ORDER 15
+#endif
+#ifndef CONFIG_RUNTIME_OVERLAY_INITIAL_CONTEXTS
+#define CONFIG_RUNTIME_OVERLAY_INITIAL_CONTEXTS 16
+#endif
+
+#ifndef CONFIG_RUNTIME_PHYSICAL_POOL_MIB
+#define CONFIG_RUNTIME_PHYSICAL_POOL_MIB 8192
+#endif
+#ifndef CONFIG_RUNTIME_MAPPED_FILES
+#define CONFIG_RUNTIME_MAPPED_FILES 4096
+#endif
+#ifndef CONFIG_RUNTIME_FILE_CACHE_ORDER
+#define CONFIG_RUNTIME_FILE_CACHE_ORDER 18
+#endif
+
+#ifndef CONFIG_RUNTIME_PIPE_CAPACITY
+#define CONFIG_RUNTIME_PIPE_CAPACITY 65536
+#endif
+#define EDGE_RUNTIME_PIPE_CAPACITY (CONFIG_RUNTIME_PIPE_CAPACITY + 0u)
+
+#ifndef CONFIG_RUNTIME_IO_URING_RINGS
+#define CONFIG_RUNTIME_IO_URING_RINGS 64
+#endif
+#define EDGE_RUNTIME_IO_URING_RINGS (CONFIG_RUNTIME_IO_URING_RINGS + 0u)
+
+#ifndef CONFIG_RUNTIME_KEY_OBJECTS
+#define CONFIG_RUNTIME_KEY_OBJECTS 256
+#endif
+#define EDGE_RUNTIME_KEY_OBJECTS (CONFIG_RUNTIME_KEY_OBJECTS + 0u)
+
+#ifndef CONFIG_RUNTIME_KEY_TASKS
+#define CONFIG_RUNTIME_KEY_TASKS 2048
+#endif
+#define EDGE_RUNTIME_KEY_TASKS (CONFIG_RUNTIME_KEY_TASKS + 0u)
+
+#ifndef CONFIG_RUNTIME_DRM_BUFFERS
+#define CONFIG_RUNTIME_DRM_BUFFERS 64
+#endif
+#define EDGE_RUNTIME_DRM_BUFFERS (CONFIG_RUNTIME_DRM_BUFFERS + 0u)
+
+#ifndef CONFIG_RUNTIME_FRAMEBUFFER_BYTES
+#define CONFIG_RUNTIME_FRAMEBUFFER_BYTES 16777216
+#endif
+#define EDGE_RUNTIME_FRAMEBUFFER_BYTES (CONFIG_RUNTIME_FRAMEBUFFER_BYTES + 0u)
+
+#ifndef CONFIG_RUNTIME_TMPFS_BLOCK_ORDER
+#define CONFIG_RUNTIME_TMPFS_BLOCK_ORDER 18
+#endif
+#define EDGE_RUNTIME_TMPFS_BLOCK_ORDER (CONFIG_RUNTIME_TMPFS_BLOCK_ORDER + 0u)
+
+#endif

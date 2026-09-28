@@ -1,0 +1,91 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-arm-scmi",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD ARM SCMI core, clock protocol, shared-memory, mailbox, SMC, and VirtIO transports.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT",
+      "INTRNG"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/firmware/arm/scmi.c",
+      "sys/dev/firmware/arm/scmi.h",
+      "sys/dev/firmware/arm/scmi_clk.c",
+      "sys/dev/firmware/arm/scmi_clk.h",
+      "sys/dev/firmware/arm/scmi_if.m",
+      "sys/dev/firmware/arm/scmi_mailbox.c",
+      "sys/dev/firmware/arm/scmi_protocols.h",
+      "sys/dev/firmware/arm/scmi_shmem.c",
+      "sys/dev/firmware/arm/scmi_shmem.h",
+      "sys/dev/firmware/arm/scmi_smc.c",
+      "sys/dev/firmware/arm/scmi_virtio.c"
+    ],
+    "file_count": 11,
+    "tree_sha256": "1c304bc05a5e4010daa72ff3378231ea6acd96af8e6684e393c601d8e7ba8f13"
+  },
+  "generated_interfaces": [
+    "sys/dev/firmware/arm/scmi_if.m"
+  ],
+  "modules": [
+    {
+      "id": "arm-scmi",
+      "sources": [
+        "sys/dev/firmware/arm/scmi.c",
+        "sys/dev/firmware/arm/scmi_clk.c",
+        "sys/dev/firmware/arm/scmi_mailbox.c",
+        "sys/dev/firmware/arm/scmi_shmem.c",
+        "sys/dev/firmware/arm/scmi_smc.c",
+        "sys/dev/firmware/arm/scmi_virtio.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "firmware",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "mmio",
+        "module",
+        "newbus",
+        "resource",
+        "scmi",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "virtio"
+      ],
+      "kconfig_requires": [
+        "DEVICE_TREE"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

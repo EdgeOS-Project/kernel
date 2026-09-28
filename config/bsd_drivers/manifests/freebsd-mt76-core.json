@@ -1,0 +1,68 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-mt76-core",
+  "provider": "freebsd",
+  "description": "FreeBSD LinuxKPI MediaTek mt76 wireless LAN core.",
+  "architectures": ["x86_64", "arm64"],
+  "compile": {
+    "definitions": [
+      "CONFIG_ARCH_DMA_ADDR_T_64BIT",
+      "EDGEOS_BSD_LINUXKPI=1",
+      "KBUILD_MODNAME=mt76_core",
+      "LINUXKPI_VERSION=70000",
+      "__FreeBSD__=14"
+    ],
+    "undefinitions": [],
+    "include_groups": ["linuxkpi", "mt76"]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": ["BSD-2-Clause", "BSD-3-Clause-Clear", "LicenseRef-Upstream-Unmarked"],
+    "allow_unmarked_files": true,
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": ["sys/contrib/dev/mediatek/mt76"],
+    "file_count": 214,
+    "tree_sha256": "db5f1ae20663a64d6787e3cfcfe23a4eca0ca1a5f0b0b4f19e44a9f40927d8bb"
+  },
+  "generated_interfaces": [],
+  "modules": [{
+    "id": "mt76-core",
+    "sources": [
+      "sys/contrib/dev/mediatek/mt76/mac80211.c",
+      "sys/contrib/dev/mediatek/mt76/mmio.c",
+      "sys/contrib/dev/mediatek/mt76/util.c",
+      "sys/contrib/dev/mediatek/mt76/dma.c",
+      "sys/contrib/dev/mediatek/mt76/eeprom.c",
+      "sys/contrib/dev/mediatek/mt76/tx.c",
+      "sys/contrib/dev/mediatek/mt76/agg-rx.c",
+      "sys/contrib/dev/mediatek/mt76/mcu.c",
+      "sys/contrib/dev/mediatek/mt76/channel.c",
+      "sys/contrib/dev/mediatek/mt76/scan.c",
+      "sys/contrib/dev/mediatek/mt76/wed.c",
+      "sys/contrib/dev/mediatek/mt76/pci.c",
+      "sys/contrib/dev/mediatek/mt76/mt76_connac_mac.c",
+      "sys/contrib/dev/mediatek/mt76/mt76_connac_mcu.c",
+      "sys/contrib/dev/mediatek/mt76/mt76_connac3_mac.c",
+      "sys/contrib/dev/mediatek/mt76/mt792x_core.c",
+      "sys/contrib/dev/mediatek/mt76/mt792x_mac.c",
+      "sys/contrib/dev/mediatek/mt76/mt792x_dma.c",
+      "sys/contrib/dev/mediatek/mt76/mt792x_debugfs.c",
+      "sys/contrib/dev/mediatek/mt76/debugfs.c"
+    ],
+    "capabilities": ["base", "network"],
+    "build": {"mode": "builtin"}
+  }]
+}

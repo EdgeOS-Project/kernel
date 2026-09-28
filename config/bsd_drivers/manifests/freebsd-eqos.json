@@ -1,0 +1,77 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-eqos",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Synopsys DesignWare EQoS Ethernet driver.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/arm64/rockchip/rk_otp.c",
+      "sys/arm64/rockchip/rk_otp.h",
+      "sys/arm64/rockchip/rk_otp_if.m",
+      "sys/dev/eqos",
+      "sys/dev/eqos/if_eqos.c",
+      "sys/dev/eqos/if_eqos_fdt.c",
+      "sys/dev/eqos/if_eqos_if.m"
+    ],
+    "file_count": 9,
+    "tree_sha256": "1f36ea02bbd357d7a0f8df9cfef5627dd1647238c85e15ee70b6c8c2c1dd5bb2"
+  },
+  "generated_interfaces": [
+    "sys/arm64/rockchip/rk_otp_if.m",
+    "sys/dev/eqos/if_eqos_if.m"
+  ],
+  "modules": [
+    {
+      "id": "eqos",
+      "sources": [
+        "sys/arm64/rockchip/rk_otp.c",
+        "sys/dev/eqos/if_eqos.c",
+        "sys/dev/eqos/if_eqos_fdt.c"
+      ],
+      "capabilities": [
+        "base",
+        "callout",
+        "fdt",
+        "generated",
+        "machine",
+        "mbuf",
+        "module",
+        "network",
+        "newbus",
+        "resource",
+        "synchronization"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

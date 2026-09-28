@@ -1,0 +1,573 @@
+/* SPDX-License-Identifier: MPL-2.0 */
+/* Initramfs runner for a batch of standalone Linux UAPI probes. */
+
+#include <stdint.h>
+
+#if defined(__x86_64__)
+#define ENTRY_ALIGNMENT __attribute__((force_align_arg_pointer))
+#define SYS_write 1
+#define SYS_sched_yield 24
+#define SYS_fork 57
+#define SYS_execve 59
+#define SYS_exit 60
+#define SYS_wait4 61
+#define SYS_mount 165
+#define SYS_mkdirat 258
+#elif defined(__aarch64__)
+#define ENTRY_ALIGNMENT
+#define SYS_write 64
+#define SYS_exit 93
+#define SYS_sched_yield 124
+#define SYS_wait4 260
+#define SYS_execve 221
+#define SYS_clone 220
+#define SYS_mount 40
+#define SYS_mkdirat 34
+#else
+#error "uapi_batch_init requires a supported 64-bit architecture"
+#endif
+
+#define SIGCHLD 17
+
+void *memcpy(void *destination, const void *source, unsigned long length) {
+    unsigned char *output = destination;
+    const unsigned char *input = source;
+
+    for (unsigned long index = 0; index < length; ++index)
+        output[index] = input[index];
+    return destination;
+}
+
+void *memset(void *destination, int value, unsigned long length) {
+    unsigned char *output = destination;
+
+    for (unsigned long index = 0; index < length; ++index)
+        output[index] = (unsigned char)value;
+    return destination;
+}
+
+static long raw_syscall1(long number, long a0) {
+#if defined(__x86_64__)
+    long result;
+    __asm__ volatile("syscall"
+                     : "=a"(result)
+                     : "a"(number), "D"(a0)
+                     : "rcx", "r11", "memory");
+    return result;
+#else
+    register long x8 __asm__("x8") = number;
+    register long x0 __asm__("x0") = a0;
+    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x8) : "memory", "cc");
+    return x0;
+#endif
+}
+
+static long raw_syscall3(long number, long a0, long a1, long a2) {
+#if defined(__x86_64__)
+    long result;
+    __asm__ volatile("syscall"
+                     : "=a"(result)
+                     : "a"(number), "D"(a0), "S"(a1), "d"(a2)
+                     : "rcx", "r11", "memory");
+    return result;
+#else
+    register long x8 __asm__("x8") = number;
+    register long x0 __asm__("x0") = a0;
+    register long x1 __asm__("x1") = a1;
+    register long x2 __asm__("x2") = a2;
+    __asm__ volatile("svc #0"
+                     : "+r"(x0)
+                     : "r"(x8), "r"(x1), "r"(x2)
+                     : "memory", "cc");
+    return x0;
+#endif
+}
+
+static long raw_syscall4(long number, long a0, long a1, long a2, long a3) {
+#if defined(__x86_64__)
+    register long r10 __asm__("r10") = a3;
+    long result;
+    __asm__ volatile("syscall"
+                     : "=a"(result)
+                     : "a"(number), "D"(a0), "S"(a1), "d"(a2),
+                       "r"(r10)
+                     : "rcx", "r11", "memory");
+    return result;
+#else
+    register long x8 __asm__("x8") = number;
+    register long x0 __asm__("x0") = a0;
+    register long x1 __asm__("x1") = a1;
+    register long x2 __asm__("x2") = a2;
+    register long x3 __asm__("x3") = a3;
+    __asm__ volatile("svc #0"
+                     : "+r"(x0)
+                     : "r"(x8), "r"(x1), "r"(x2), "r"(x3)
+                     : "memory", "cc");
+    return x0;
+#endif
+}
+
+#if defined(UAPI_BATCH_IO_URING_NVME_CMD_ONLY) || \
+    defined(UAPI_BATCH_IO_URING_BSG_CMD_ONLY) || \
+    defined(UAPI_BATCH_IO_URING_FUSE_CMD_ONLY) || \
+    defined(UAPI_BATCH_EVENT_CORE_ONLY) || \
+    defined(UAPI_BATCH_MOUNT_API_ONLY) || \
+    defined(UAPI_BATCH_FILESYSTEM_CORE_ONLY) || \
+    defined(UAPI_BATCH_FILESYSTEM_FD_ONLY) || \
+    defined(UAPI_BATCH_PROCESS_RESOURCE_ONLY) || \
+    defined(UAPI_BATCH_PROCESS_EVENT_ONLY) || \
+    defined(UAPI_BATCH_PROCESS_MISC_ORACLE_ONLY) || \
+    defined(UAPI_BATCH_PROCESS_LIFECYCLE_ONLY) || \
+    defined(UAPI_BATCH_PROCESS_ADMIN_ONLY) || \
+    defined(UAPI_BATCH_MEMORY_ONLY) || \
+    defined(UAPI_BATCH_FILE_IO_ONLY)
+static long raw_syscall5(long number, long a0, long a1, long a2, long a3,
+                         long a4) {
+#if defined(__x86_64__)
+    register long r10 __asm__("r10") = a3;
+    register long r8 __asm__("r8") = a4;
+    long result;
+    __asm__ volatile("syscall"
+                     : "=a"(result)
+                     : "a"(number), "D"(a0), "S"(a1), "d"(a2),
+                       "r"(r10), "r"(r8)
+                     : "rcx", "r11", "memory");
+    return result;
+#else
+    register long x8 __asm__("x8") = number;
+    register long x0 __asm__("x0") = a0;
+    register long x1 __asm__("x1") = a1;
+    register long x2 __asm__("x2") = a2;
+    register long x3 __asm__("x3") = a3;
+    register long x4 __asm__("x4") = a4;
+    __asm__ volatile("svc #0"
+                     : "+r"(x0)
+                     : "r"(x8), "r"(x1), "r"(x2), "r"(x3), "r"(x4)
+                     : "memory", "cc");
+    return x0;
+#endif
+}
+#endif
+
+static unsigned long text_length(const char *text) {
+    unsigned long length = 0;
+    while (text[length]) ++length;
+    return length;
+}
+
+static void print_text(const char *text) {
+    (void)raw_syscall3(SYS_write, 1, (long)text,
+                       (long)text_length(text));
+}
+
+static void print_number(long value) {
+    char output[24];
+    unsigned long magnitude;
+    unsigned long count = 0;
+
+    if (value < 0) {
+        print_text("-");
+        magnitude = (unsigned long)(-(value + 1)) + 1u;
+    } else {
+        magnitude = (unsigned long)value;
+    }
+    do {
+        output[count++] = (char)('0' + magnitude % 10u);
+        magnitude /= 10u;
+    } while (magnitude);
+    for (unsigned long left = 0, right = count - 1u; left < right;
+         ++left, --right) {
+        char temporary = output[left];
+        output[left] = output[right];
+        output[right] = temporary;
+    }
+    (void)raw_syscall3(SYS_write, 1, (long)output, (long)count);
+}
+
+static long spawn(void) {
+#if defined(__x86_64__)
+    return raw_syscall1(SYS_fork, 0);
+#else
+    return raw_syscall4(SYS_clone, SIGCHLD, 0, 0, 0);
+#endif
+}
+
+static int run_probe(const char *name) {
+    char path[96] = "/probes/";
+    char *arguments[2];
+    char *environment[1] = {0};
+    unsigned long offset = text_length(path);
+    long child;
+    int status = -1;
+
+    for (unsigned long index = 0; name[index] && offset + 1 < sizeof(path);
+         ++index)
+        path[offset++] = name[index];
+    path[offset] = 0;
+    child = spawn();
+    if (child < 0) return 1;
+    if (child == 0) {
+        long exec_result;
+        arguments[0] = path;
+        arguments[1] = 0;
+        exec_result = raw_syscall3(
+            SYS_execve, (long)path, (long)arguments, (long)environment);
+        print_text("UAPI_BATCH_EXEC_ERROR ");
+        print_text(name);
+        print_text(" result=");
+        print_number(exec_result);
+        print_text("\n");
+        (void)raw_syscall1(SYS_exit, 127);
+        for (;;) { }
+    }
+    if (raw_syscall4(SYS_wait4, child, (long)&status, 0, 0) != child)
+        return 1;
+    if (status != 0) {
+        print_text("UAPI_BATCH_CHILD_STATUS ");
+        print_text(name);
+        print_text(" status=");
+        print_number(status);
+        print_text("\n");
+    }
+    return status != 0;
+}
+
+__attribute__((noreturn)) ENTRY_ALIGNMENT void _start(void) {
+    static const char *const probes[] = {
+#ifdef UAPI_BATCH_USERFAULTFD_ONLY
+        "userfaultfd_abi_probe",
+#elif defined(UAPI_BATCH_USERFAULTFD_COMPAT_ONLY)
+        "ia32_userfaultfd_uapi_probe",
+        "x32_userfaultfd_uapi_probe",
+#elif defined(UAPI_BATCH_FANOTIFY_ONLY)
+        "fanotify_abi_probe",
+#elif defined(UAPI_BATCH_KEYCTL_COMPAT_ONLY)
+        "ia32_keyctl_compat_uapi_probe",
+        "x32_keyctl_compat_uapi_probe",
+#elif defined(UAPI_BATCH_KEYRING_KDF_ONLY)
+        "keyring_abi_probe",
+#elif defined(UAPI_BATCH_IO_URING_COMPAT_ONLY)
+        "ia32_io_uring_iovec_uapi_probe",
+        "x32_io_uring_iovec_uapi_probe",
+#elif defined(UAPI_BATCH_IO_URING_NO_MMAP_ONLY)
+        "io_uring_no_mmap_abi_probe",
+#elif defined(UAPI_BATCH_IO_URING_PBUF_ONLY)
+        "io_uring_pbuf_ring_abi_probe",
+#elif defined(UAPI_BATCH_IO_URING_READ_MULTISHOT_ONLY)
+        "io_uring_read_multishot_abi_probe",
+#elif defined(UAPI_BATCH_IO_URING_FIXED_BUFFER_ONLY)
+        "io_uring_fixed_buffer_pin_abi_probe",
+#elif defined(UAPI_BATCH_IO_URING_URING_CMD_ONLY)
+        "io_uring_uring_cmd_abi_probe",
+#elif defined(UAPI_BATCH_IO_URING_NVME_CMD_ONLY)
+        "io_uring_nvme_uring_cmd_abi_probe",
+#elif defined(UAPI_BATCH_IO_URING_BSG_CMD_ONLY)
+        "io_uring_bsg_uring_cmd_abi_probe",
+#elif defined(UAPI_BATCH_IO_URING_FUSE_CMD_ONLY)
+        "io_uring_fuse_uring_cmd_abi_probe",
+#elif defined(UAPI_BATCH_IO_URING_ZCRX_ONLY)
+        "io_uring_zcrx_abi_probe",
+#elif defined(UAPI_BATCH_IO_URING_SQPOLL_ONLY)
+        "io_uring_sqpoll_abi_probe",
+#elif defined(UAPI_BATCH_BPF_COMPAT_ONLY)
+        "ia32_bpf_uapi_probe",
+        "x32_bpf_uapi_probe",
+#elif defined(UAPI_BATCH_BPF_STACK_TRACE_ONLY)
+        "bpf_stack_trace_abi_probe",
+#elif defined(UAPI_BATCH_BPF_CPUMAP_ONLY)
+        "bpf_cpumap_abi_probe",
+#elif defined(UAPI_BATCH_BPF_DEVMAP_ONLY)
+        "bpf_devmap_abi_probe",
+#elif defined(UAPI_BATCH_BPF_XSKMAP_ONLY)
+        "bpf_xskmap_abi_probe",
+#elif defined(UAPI_BATCH_BPF_SOCKMAP_ONLY)
+        "bpf_sockmap_abi_probe",
+#elif defined(UAPI_BATCH_BPF_REUSEPORT_ONLY)
+        "bpf_reuseport_array_abi_probe",
+#elif defined(UAPI_BATCH_BPF_CGRP_STORAGE_ONLY)
+        "bpf_cgrp_storage_abi_probe",
+#elif defined(UAPI_BATCH_BPF_SK_STORAGE_ONLY)
+        "bpf_sk_storage_abi_probe",
+#elif defined(UAPI_BATCH_BPF_INODE_STORAGE_ONLY)
+        "bpf_inode_storage_abi_probe",
+#elif defined(UAPI_BATCH_BPF_TASK_STORAGE_ONLY)
+        "bpf_task_storage_abi_probe",
+#elif defined(UAPI_BATCH_BPF_ABI_ONLY)
+        "bpf_abi_probe",
+#elif defined(UAPI_BATCH_BPF_INSN_ARRAY_ONLY)
+        "bpf_insn_array_abi_probe",
+#elif defined(UAPI_BATCH_BPF_RHASH_ONLY)
+        "bpf_rhash_abi_probe",
+#elif defined(UAPI_BATCH_BPF_PROG_TEST_RUN_ONLY)
+        "bpf_prog_test_run_abi_probe",
+#elif defined(UAPI_BATCH_EVENT_CORE_ONLY)
+        "eventfd_abi_probe",
+        "timerfd_abi_probe",
+        "inotify_abi_probe",
+#elif defined(UAPI_BATCH_SHARED_SMOKE_ONLY)
+        "shared_syscall_smoke",
+#elif defined(UAPI_BATCH_FILESYSTEM_CORE_ONLY)
+        "metadata_mutation_abi_probe",
+        "path_mutation_abi_probe",
+        "xattr_abi_probe",
+        "vector_io_abi_probe",
+#elif defined(UAPI_BATCH_FILESYSTEM_FD_ONLY)
+        "fd_control_abi_probe",
+        "fs_context_abi_probe",
+        "stat_metadata_abi_probe",
+        "sync_abi_probe",
+        "statfs_abi_probe",
+        "truncate_abi_probe",
+        "file_lock_abi_probe",
+        "copy_file_range_abi_probe",
+        "file_handle_abi_probe",
+        "mknod_abi_probe",
+        "pipe_abi_probe",
+#elif defined(UAPI_BATCH_PROCESS_RESOURCE_ONLY)
+        "process_control_abi_probe",
+        "resource_accounting_abi_probe",
+        "mlock_abi_probe",
+        "posix_timer_abi_probe",
+        "itimer_abi_probe",
+        "signal_state_abi_probe",
+        "signal_targeting_abi_probe",
+#elif defined(UAPI_BATCH_SOCKET_TRANSFER_ONLY)
+        "socket_accept_abi_probe",
+        "socket_message_abi_probe",
+#elif defined(UAPI_BATCH_SYNC_REGISTRATION_ONLY)
+        "futex_abi_probe",
+        "synchronization_registration_abi_probe",
+#elif defined(UAPI_BATCH_PROCESS_EVENT_ONLY)
+        "signal_queue_abi_probe",
+        "namespace_abi_probe",
+        "signalfd_abi_probe",
+        "wait_abi_probe",
+#elif defined(UAPI_BATCH_PROCESS_MISC_ORACLE_ONLY)
+        "capability_abi_probe",
+        "nanosleep_abi_probe",
+        "supplementary_groups_abi_probe",
+        "pidfd_signal_abi_probe",
+        "process_vm_abi_probe",
+#elif defined(UAPI_BATCH_PROCESS_LIFECYCLE_ONLY)
+        "clone_abi_probe",
+        "fork_clone_tid_probe",
+        "exec_abi_probe",
+        "exit_abi_probe",
+        "process_session_abi_probe",
+        "prctl_abi_probe",
+        "prctl_state_abi_probe",
+        "prctl_pdeathsig_probe",
+        "restart_syscall_abi_probe",
+        "sched_param_abi_probe",
+        "signal_wait_abi_probe",
+#elif defined(UAPI_BATCH_MEMORY_ONLY)
+        "brk_abi_probe",
+        "mmap_abi_probe",
+        "munmap_abi_probe",
+        "mprotect_abi_probe",
+        "mremap_abi_probe",
+        "madvise_abi_probe",
+        "mincore_abi_probe",
+        "msync_abi_probe",
+        "mseal_abi_probe",
+        "memfd_create_abi_probe",
+        "pkey_abi_probe",
+#elif defined(UAPI_BATCH_FILE_IO_ONLY)
+        "openat2_abi_probe",
+        "lseek_abi_probe",
+        "fallocate_abi_probe",
+        "file_advice_abi_probe",
+        "sendfile_abi_probe",
+        "splice_abi_probe",
+        "tee_abi_probe",
+        "vmsplice_abi_probe",
+#elif defined(UAPI_BATCH_SOCKET_CORE_ONLY)
+        "socket_core_abi_probe",
+        "socket_address_abi_probe",
+        "socket_option_abi_probe",
+#elif defined(UAPI_BATCH_WAIT_SIGNAL_ONLY)
+        "poll_abi_probe",
+        "select_abi_probe",
+        "signal_altstack_abi_probe",
+        "signal_wait_mask_abi_probe",
+#elif defined(UAPI_BATCH_TIME_ADMIN_ONLY)
+        "clock_adjust_abi_probe",
+        "time_set_abi_probe",
+        "vhangup_abi_probe",
+#elif defined(UAPI_BATCH_OBJECT_EVENTS_ONLY)
+        "keyring_abi_probe",
+        "fanotify_abi_probe",
+        "userfaultfd_abi_probe",
+#elif defined(UAPI_BATCH_EXTENDED_METADATA_ONLY)
+        "cachestat_abi_probe",
+        "xattrat_abi_probe",
+        "fileattr_abi_probe",
+#elif defined(UAPI_BATCH_MOUNT_API_ONLY)
+        "mount_abi_probe",
+        "modern_mount_abi_probe",
+        "mount_context_abi_probe",
+        "statmount_abi_probe",
+#elif defined(UAPI_BATCH_PROCESS_ADMIN_ONLY)
+        "kcmp_abi_probe",
+        "pidfd_getfd_abi_probe",
+        "process_madvise_abi_probe",
+        "process_mrelease_abi_probe",
+        "ptrace_abi_probe",
+        "perf_event_abi_probe",
+        "quota_abi_probe",
+        "seccomp_abi_probe",
+        "syslog_abi_probe",
+        "listns_abi_probe",
+#elif defined(UAPI_BATCH_FINAL_COMMON_ONLY)
+        "module_abi_probe",
+        "ioctl_abi_probe",
+        "reboot_abi_probe",
+        "rseq_slice_abi_probe",
+#elif defined(UAPI_BATCH_FINAL_X86_ONLY)
+        "x86_64_legacy_syscall_probe",
+        "x86_arch_control_abi_probe",
+#elif defined(UAPI_BATCH_BPF_ONLY)
+        "bpf_abi_probe",
+#elif defined(UAPI_BATCH_NATIVE_OPTIONAL_ONLY)
+        "native_optional_syscalls_abi_probe",
+#else
+#ifndef UAPI_BATCH_FREESTANDING_ONLY
+        "restart_syscall_abi_probe",
+#endif
+        "futex_abi_probe",
+        "futex_pi_abi_probe",
+#ifndef UAPI_BATCH_FREESTANDING_ONLY
+        "futex_pi_requeue_abi_probe",
+#endif
+        "sysv_sem_abi_probe",
+        "sysv_msg_abi_probe",
+        "posix_mq_abi_probe",
+        "fanotify_abi_probe",
+        "userfaultfd_abi_probe",
+        "keyring_abi_probe",
+        "quota_abi_probe",
+        "perf_event_abi_probe",
+        "bpf_abi_probe",
+        "seccomp_abi_probe",
+        "memfd_secret_abi_probe",
+        "numa_policy_abi_probe",
+#ifndef UAPI_BATCH_FREESTANDING_ONLY
+        "clock_adjust_abi_probe",
+        "module_abi_probe",
+        "vhangup_abi_probe",
+#endif
+#endif
+    };
+    int failures = 0;
+
+#if defined(UAPI_BATCH_IO_URING_NVME_CMD_ONLY) || \
+    defined(UAPI_BATCH_IO_URING_BSG_CMD_ONLY) || \
+    defined(UAPI_BATCH_IO_URING_FUSE_CMD_ONLY)
+    (void)raw_syscall5(SYS_mount, (long)"devtmpfs", (long)"/dev",
+                       (long)"devtmpfs", 0, 0);
+#endif
+#if defined(UAPI_BATCH_EVENT_CORE_ONLY)
+    (void)raw_syscall5(SYS_mount, (long)"proc", (long)"/proc",
+                       (long)"proc", 0, 0);
+#endif
+#if defined(UAPI_BATCH_MOUNT_API_ONLY)
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/dev", 0755, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/proc", 0555, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/sys", 0555, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/tmp", 01777, 0);
+    (void)raw_syscall5(SYS_mount, (long)"devtmpfs", (long)"/dev",
+                       (long)"devtmpfs", 0, 0);
+    (void)raw_syscall5(SYS_mount, (long)"proc", (long)"/proc",
+                       (long)"proc", 0, 0);
+    (void)raw_syscall5(SYS_mount, (long)"sysfs", (long)"/sys",
+                       (long)"sysfs", 0, 0);
+#endif
+#if defined(UAPI_BATCH_PROCESS_ADMIN_ONLY)
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/dev", 0755, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/proc", 0555, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/sys", 0555, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/tmp", 01777, 0);
+    (void)raw_syscall5(SYS_mount, (long)"devtmpfs", (long)"/dev",
+                       (long)"devtmpfs", 0, 0);
+    (void)raw_syscall5(SYS_mount, (long)"proc", (long)"/proc",
+                       (long)"proc", 0, 0);
+    (void)raw_syscall5(SYS_mount, (long)"sysfs", (long)"/sys",
+                       (long)"sysfs", 0, 0);
+#endif
+#if defined(UAPI_BATCH_PROCESS_RESOURCE_ONLY)
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/proc", 0555, 0);
+    (void)raw_syscall5(SYS_mount, (long)"proc", (long)"/proc",
+                       (long)"proc", 0, 0);
+#endif
+#if defined(UAPI_BATCH_PROCESS_EVENT_ONLY)
+    (void)raw_syscall5(SYS_mount, (long)"devtmpfs", (long)"/dev",
+                       (long)"devtmpfs", 0, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/proc", 0555, 0);
+    (void)raw_syscall5(SYS_mount, (long)"proc", (long)"/proc",
+                       (long)"proc", 0, 0);
+#endif
+#if defined(UAPI_BATCH_PROCESS_MISC_ORACLE_ONLY)
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/proc", 0555, 0);
+    (void)raw_syscall5(SYS_mount, (long)"proc", (long)"/proc",
+                       (long)"proc", 0, 0);
+#endif
+#if defined(UAPI_BATCH_PROCESS_LIFECYCLE_ONLY)
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/dev", 0755, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/proc", 0555, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/tmp", 01777, 0);
+    (void)raw_syscall5(SYS_mount, (long)"devtmpfs", (long)"/dev",
+                       (long)"devtmpfs", 0, 0);
+    (void)raw_syscall5(SYS_mount, (long)"proc", (long)"/proc",
+                       (long)"proc", 0, 0);
+#endif
+#if defined(UAPI_BATCH_MEMORY_ONLY)
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/dev", 0755, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/proc", 0555, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/tmp", 01777, 0);
+    (void)raw_syscall5(SYS_mount, (long)"devtmpfs", (long)"/dev",
+                       (long)"devtmpfs", 0, 0);
+    (void)raw_syscall5(SYS_mount, (long)"proc", (long)"/proc",
+                       (long)"proc", 0, 0);
+#endif
+#if defined(UAPI_BATCH_FILE_IO_ONLY)
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/dev", 0755, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/proc", 0555, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/root", 0700, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/tmp", 01777, 0);
+    (void)raw_syscall5(SYS_mount, (long)"devtmpfs", (long)"/dev",
+                       (long)"devtmpfs", 0, 0);
+    (void)raw_syscall5(SYS_mount, (long)"proc", (long)"/proc",
+                       (long)"proc", 0, 0);
+#endif
+#if defined(UAPI_BATCH_FILESYSTEM_CORE_ONLY) || \
+    defined(UAPI_BATCH_FILESYSTEM_FD_ONLY)
+    (void)raw_syscall5(SYS_mount, (long)"devtmpfs", (long)"/dev",
+                       (long)"devtmpfs", 0, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/dev/pts", 0755, 0);
+    (void)raw_syscall4(SYS_mkdirat, -100, (long)"/root", 0700, 0);
+    (void)raw_syscall5(SYS_mount, (long)"devpts", (long)"/dev/pts",
+                       (long)"devpts", 0, 0);
+    (void)raw_syscall5(SYS_mount, (long)"proc", (long)"/proc",
+                       (long)"proc", 0, 0);
+#endif
+
+    for (unsigned long index = 0;
+         index < sizeof(probes) / sizeof(probes[0]); ++index) {
+        int failed;
+        print_text("UAPI_BATCH_BEGIN ");
+        print_text(probes[index]);
+        print_text("\n");
+        failed = run_probe(probes[index]);
+        failures += failed;
+        print_text(failed ? "UAPI_BATCH_FAIL " : "UAPI_BATCH_PASS ");
+        print_text(probes[index]);
+        print_text("\n");
+    }
+    print_text(failures ? "UAPI_BATCH_RESULT_FAIL\n" :
+                          "UAPI_BATCH_RESULT_PASS\n");
+#if defined(UAPI_BATCH_LINUX_ORACLE_HOLD)
+    for (;;) (void)raw_syscall1(SYS_sched_yield, 0);
+#endif
+    (void)raw_syscall1(SYS_exit, failures ? 1 : 0);
+    for (;;) { }
+}

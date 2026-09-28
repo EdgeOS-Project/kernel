@@ -1,0 +1,86 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-nvdimm",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD ACPI NFIT and NVDIMM namespace driver stack.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [
+      "EDGEOS_BSD_FULL_ACPICA"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "acpica"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/nvdimm",
+      "sys/dev/nvdimm/nvdimm.c",
+      "sys/dev/nvdimm/nvdimm_acpi.c",
+      "sys/dev/nvdimm/nvdimm_e820.c",
+      "sys/dev/nvdimm/nvdimm_nfit.c",
+      "sys/dev/nvdimm/nvdimm_ns.c",
+      "sys/dev/nvdimm/nvdimm_spa.c"
+    ],
+    "file_count": 7,
+    "tree_sha256": "0ae232322baad897247ad42ed938f1d76263cb5c5be1826b0beca1508293df0b"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "nvdimm",
+      "sources": [
+        "sys/dev/nvdimm/nvdimm.c",
+        "sys/dev/nvdimm/nvdimm_acpi.c",
+        "sys/dev/nvdimm/nvdimm_e820.c",
+        "sys/dev/nvdimm/nvdimm_nfit.c",
+        "sys/dev/nvdimm/nvdimm_ns.c",
+        "sys/dev/nvdimm/nvdimm_spa.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "block",
+        "character-device",
+        "generated",
+        "geom-core",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "vm"
+      ],
+      "kconfig_requires": [
+        "ACPI"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

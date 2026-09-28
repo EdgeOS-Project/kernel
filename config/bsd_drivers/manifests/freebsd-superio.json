@@ -1,0 +1,64 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-superio",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD ISA Super I/O bus and logical-device driver.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/superio/superio.c",
+      "sys/dev/superio/superio.h",
+      "sys/dev/superio/superio_io.h"
+    ],
+    "file_count": 3,
+    "tree_sha256": "a3707072fc417368268a28cbe0335acdf1a3a6b82016fa6355923ed6d063407a"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "superio",
+      "sources": [
+        "sys/dev/superio/superio.c"
+      ],
+      "capabilities": [
+        "base",
+        "character-device",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

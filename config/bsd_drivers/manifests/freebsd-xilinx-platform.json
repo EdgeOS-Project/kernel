@@ -1,0 +1,86 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-xilinx-platform",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Xilinx PCIe, AXI DMA, AXI Ethernet, and AXI Quad SPI drivers.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT",
+      "INTRNG"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/xilinx",
+      "sys/dev/xilinx/axi_quad_spi.c",
+      "sys/dev/xilinx/axidma.c",
+      "sys/dev/xilinx/axidma_if.m",
+      "sys/dev/xilinx/if_xae.c",
+      "sys/dev/xilinx/xlnx_pcib.c"
+    ],
+    "file_count": 9,
+    "tree_sha256": "a0baf1e19823cdc73cbcd2ae7cd76d55591766a609529df31e32f95aa3a00ad5"
+  },
+  "generated_interfaces": [
+    "sys/dev/xilinx/axidma_if.m"
+  ],
+  "modules": [
+    {
+      "id": "xilinx-platform",
+      "sources": [
+        "sys/dev/xilinx/axi_quad_spi.c",
+        "sys/dev/xilinx/axidma.c",
+        "sys/dev/xilinx/if_xae.c",
+        "sys/dev/xilinx/xlnx_pcib.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "generated",
+        "ifnet",
+        "interrupt",
+        "machine",
+        "mbuf",
+        "memory",
+        "mmio",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "vm"
+      ],
+      "kconfig_requires": [
+        "DEVICE_TREE"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

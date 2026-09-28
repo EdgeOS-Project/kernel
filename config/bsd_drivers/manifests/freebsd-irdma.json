@@ -1,0 +1,97 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-irdma",
+  "provider": "freebsd",
+  "description": "Unmodified FreeBSD Intel Ethernet RDMA driver for iWARP and RoCEv2-capable ICE devices.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "CONFIG_INFINIBAND_USER_MEM",
+      "EDGEOS_BSD_IRDMA=1",
+      "EDGEOS_BSD_LINUXKPI=1",
+      "KBUILD_MODNAME=irdma",
+      "__FreeBSD__=14"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "irdma",
+      "linuxkpi",
+      "ofed"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-3-Clause",
+      "GPL-2.0 or Linux-OpenIB",
+      "(GPL-2.0 WITH Linux-syscall-note) OR Linux-OpenIB)"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/irdma",
+      "sys/dev/ice/ice_rdma.h",
+      "sys/dev/ice/irdma_if.m",
+      "sys/dev/ice/irdma_di_if.m"
+    ],
+    "file_count": 37,
+    "tree_sha256": "b33f9f0f69307ab9340120142709c508715d1010148c4adfed7c31cc09560254"
+  },
+  "generated_interfaces": [
+    "sys/dev/ice/irdma_if.m",
+    "sys/dev/ice/irdma_di_if.m"
+  ],
+  "modules": [
+    {
+      "id": "irdma",
+      "sources": [
+        "sys/dev/irdma/fbsd_kcompat.c",
+        "sys/dev/irdma/icrdma.c",
+        "sys/dev/irdma/icrdma_hw.c",
+        "sys/dev/irdma/irdma_cm.c",
+        "sys/dev/irdma/irdma_ctrl.c",
+        "sys/dev/irdma/irdma_hmc.c",
+        "sys/dev/irdma/irdma_hw.c",
+        "sys/dev/irdma/irdma_kcompat.c",
+        "sys/dev/irdma/irdma_pble.c",
+        "sys/dev/irdma/irdma_puda.c",
+        "sys/dev/irdma/irdma_uda.c",
+        "sys/dev/irdma/irdma_uk.c",
+        "sys/dev/irdma/irdma_utils.c",
+        "sys/dev/irdma/irdma_verbs.c",
+        "sys/dev/irdma/irdma_ws.c"
+      ],
+      "capabilities": [
+        "base",
+        "ifnet",
+        "interrupt",
+        "memory",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "taskqueue",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

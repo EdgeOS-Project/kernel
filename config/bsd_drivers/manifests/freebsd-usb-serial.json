@@ -1,0 +1,120 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-usb-serial",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD USB serial and printer driver family, including CDC ACM, FTDI, CH34x, CP210x, PL2303, modem, and legacy adapters.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "USB_VERBOSE"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-2-Clause-NetBSD",
+      "ISC"
+    ],
+    "license_exceptions": {
+      "sys/dev/usb/serial/uftdi_reg.h": {
+        "license": "BSD-2-Clause-NetBSD",
+        "evidence": "The definitions originated with NetBSD and are distributed as part of FreeBSD's BSD-licensed uftdi driver."
+      }
+    }
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/usb/serial/u3g.c",
+      "sys/dev/usb/serial/uark.c",
+      "sys/dev/usb/serial/ubsa.c",
+      "sys/dev/usb/serial/ubser.c",
+      "sys/dev/usb/serial/uchcom.c",
+      "sys/dev/usb/serial/ucycom.c",
+      "sys/dev/usb/serial/udbc.c",
+      "sys/dev/usb/serial/ufintek.c",
+      "sys/dev/usb/serial/ufoma.c",
+      "sys/dev/usb/serial/uftdi.c",
+      "sys/dev/usb/serial/uftdi_reg.h",
+      "sys/dev/usb/serial/ugensa.c",
+      "sys/dev/usb/serial/uipaq.c",
+      "sys/dev/usb/serial/ulpt.c",
+      "sys/dev/usb/serial/umcs.c",
+      "sys/dev/usb/serial/umcs.h",
+      "sys/dev/usb/serial/umct.c",
+      "sys/dev/usb/serial/umodem.c",
+      "sys/dev/usb/serial/umoscom.c",
+      "sys/dev/usb/serial/uplcom.c",
+      "sys/dev/usb/serial/usb_serial.c",
+      "sys/dev/usb/serial/usb_serial.h",
+      "sys/dev/usb/serial/uslcom.c",
+      "sys/dev/usb/serial/uvisor.c",
+      "sys/dev/usb/serial/uvscom.c",
+      "sys/dev/usb/uftdiio.h",
+      "sys/dev/usb/usb_cdc.h"
+    ],
+    "file_count": 27,
+    "tree_sha256": "fc6f6b7d52fd7348387d37ad59123185c7140b5bc7ecf1bb8bc65e28d6b5b1a3"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "usb-serial-complete",
+      "sources": [
+        "sys/dev/usb/serial/usb_serial.c",
+        "sys/dev/usb/serial/u3g.c",
+        "sys/dev/usb/serial/uark.c",
+        "sys/dev/usb/serial/ubsa.c",
+        "sys/dev/usb/serial/ubser.c",
+        "sys/dev/usb/serial/uchcom.c",
+        "sys/dev/usb/serial/ucycom.c",
+        "sys/dev/usb/serial/udbc.c",
+        "sys/dev/usb/serial/ufintek.c",
+        "sys/dev/usb/serial/ufoma.c",
+        "sys/dev/usb/serial/uftdi.c",
+        "sys/dev/usb/serial/ugensa.c",
+        "sys/dev/usb/serial/uipaq.c",
+        "sys/dev/usb/serial/ulpt.c",
+        "sys/dev/usb/serial/umcs.c",
+        "sys/dev/usb/serial/umct.c",
+        "sys/dev/usb/serial/umodem.c",
+        "sys/dev/usb/serial/umoscom.c",
+        "sys/dev/usb/serial/uplcom.c",
+        "sys/dev/usb/serial/uslcom.c",
+        "sys/dev/usb/serial/uvisor.c",
+        "sys/dev/usb/serial/uvscom.c"
+      ],
+      "capabilities": [
+        "base",
+        "callout",
+        "character-device",
+        "generated",
+        "memory",
+        "module",
+        "newbus",
+        "synchronization",
+        "sysctl",
+        "tty",
+        "usb"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "provider": "netbsd",
+  "capabilities": {
+    "base": {
+      "status": "implemented",
+      "architectures": ["x86_64", "arm64"],
+      "owner": "core"
+    },
+    "character-device": {
+      "status": "implemented",
+      "architectures": ["x86_64", "arm64"],
+      "owner": "character-device"
+    },
+    "display": {
+      "status": "implemented",
+      "architectures": ["x86_64", "arm64"],
+      "owner": "display"
+    },
+    "firmware": {
+      "status": "implemented",
+      "architectures": ["x86_64", "arm64"],
+      "owner": "firmware"
+    },
+    "framebuffer": {
+      "status": "implemented",
+      "architectures": ["x86_64", "arm64"],
+      "owner": "display"
+    },
+    "memory": {
+      "status": "implemented",
+      "architectures": ["x86_64", "arm64"],
+      "owner": "memory"
+    },
+    "module": {
+      "status": "implemented",
+      "architectures": ["x86_64", "arm64"],
+      "owner": "module"
+    },
+    "pci": {
+      "status": "implemented",
+      "architectures": ["x86_64", "arm64"],
+      "owner": "pci"
+    },
+    "synchronization": {
+      "status": "implemented",
+      "architectures": ["x86_64", "arm64"],
+      "owner": "synchronization"
+    },
+    "sysctl": {
+      "status": "implemented",
+      "architectures": ["x86_64", "arm64"],
+      "owner": "sysctl"
+    },
+    "taskqueue": {
+      "status": "implemented",
+      "architectures": ["x86_64", "arm64"],
+      "owner": "taskqueue"
+    },
+    "vm": {
+      "status": "implemented",
+      "architectures": ["x86_64", "arm64"],
+      "owner": "memory"
+    }
+  }
+}

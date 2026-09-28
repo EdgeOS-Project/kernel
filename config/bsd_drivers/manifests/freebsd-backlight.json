@@ -1,0 +1,66 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-backlight",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD generic backlight class, device interface, and public ABI.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": [],
+    "include_groups": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/backlight/backlight.c",
+      "sys/dev/backlight/backlight.h",
+      "sys/dev/backlight/backlight_if.m",
+      "sys/sys/backlight.h"
+    ],
+    "file_count": 4,
+    "tree_sha256": "9a8a7b7d86cc7a1bbd2fffd937bf7d4058d4b5770ce18e632bb9f33122cf71f7"
+  },
+  "generated_interfaces": [
+    "sys/dev/backlight/backlight_if.m"
+  ],
+  "modules": [
+    {
+      "id": "backlight-core",
+      "sources": [
+        "sys/dev/backlight/backlight.c"
+      ],
+      "capabilities": [
+        "base",
+        "character-device",
+        "generated",
+        "memory",
+        "module",
+        "newbus",
+        "synchronization"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

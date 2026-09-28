@@ -1,0 +1,53 @@
+/* SPDX-License-Identifier: MPL-2.0 */
+/*
+ * Original EdgeOS architecture-independent anonymous descriptor readiness.
+ * Copyright (c) EdgeOS Contributors.
+ */
+
+#include "kernel/anonymous_fd.h"
+
+uint32_t kernel_anonymous_fd_poll_events(
+    const kernel_anonymous_fd_poll_state_t *state) {
+    uint32_t events = 0;
+
+    if (!state || !state->valid) return KERNEL_ANONYMOUS_FD_POLL_NVAL;
+    switch (state->kind) {
+    case KERNEL_ANONYMOUS_FD_EVENT:
+        if (state->counter) events |= KERNEL_ANONYMOUS_FD_POLL_INPUT;
+        if (state->counter < UINT64_MAX - 1u)
+            events |= KERNEL_ANONYMOUS_FD_POLL_OUTPUT;
+        break;
+    case KERNEL_ANONYMOUS_FD_TIMER:
+        if (state->counter || state->canceled)
+            events |= KERNEL_ANONYMOUS_FD_POLL_INPUT;
+        break;
+    case KERNEL_ANONYMOUS_FD_SIGNAL:
+    case KERNEL_ANONYMOUS_FD_INOTIFY:
+    case KERNEL_ANONYMOUS_FD_FANOTIFY:
+    case KERNEL_ANONYMOUS_FD_USERFAULTFD:
+    case KERNEL_ANONYMOUS_FD_PERF_EVENT:
+    case KERNEL_ANONYMOUS_FD_PID:
+    case KERNEL_ANONYMOUS_FD_DRM_SYNC:
+        if (state->pending) events |= KERNEL_ANONYMOUS_FD_POLL_INPUT;
+        break;
+    case KERNEL_ANONYMOUS_FD_MESSAGE_QUEUE:
+        if (state->pending) events |= KERNEL_ANONYMOUS_FD_POLL_INPUT;
+        if (state->writable) events |= KERNEL_ANONYMOUS_FD_POLL_OUTPUT;
+        break;
+    case KERNEL_ANONYMOUS_FD_IO_URING:
+        if (state->pending) events |= KERNEL_ANONYMOUS_FD_POLL_INPUT;
+        break;
+    case KERNEL_ANONYMOUS_FD_BPF:
+        if (state->pending) events |= KERNEL_ANONYMOUS_FD_POLL_INPUT;
+        if (state->writable) events |= KERNEL_ANONYMOUS_FD_POLL_OUTPUT;
+        if (state->error) events |= KERNEL_ANONYMOUS_FD_POLL_ERROR;
+        break;
+    case KERNEL_ANONYMOUS_FD_SECCOMP:
+        if (state->pending) events |= KERNEL_ANONYMOUS_FD_POLL_INPUT;
+        if (state->writable) events |= KERNEL_ANONYMOUS_FD_POLL_OUTPUT;
+        break;
+    default:
+        return KERNEL_ANONYMOUS_FD_POLL_NVAL;
+    }
+    return events;
+}

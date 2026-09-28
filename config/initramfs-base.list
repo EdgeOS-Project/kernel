@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: MPL-2.0
+# Minimal early userspace entries shared by generated initramfs images.
+dir /dev 0755 0 0
+dir /dev/pts 0755 0 0
+nod /dev/console 0600 0 0 c 5 1
+nod /dev/null 0666 0 0 c 1 3
+nod /dev/zero 0666 0 0 c 1 5
+nod /dev/full 0666 0 0 c 1 7
+nod /dev/random 0666 0 0 c 1 8
+nod /dev/urandom 0666 0 0 c 1 9
+nod /dev/tty 0666 0 0 c 5 0
+nod /dev/ptmx 0666 0 0 c 5 2
+nod /dev/tty0 0620 0 0 c 4 0
+nod /dev/ttyAMA0 0620 0 0 c 204 64
+slink /init /sbin/init 0777 0 0

@@ -1,0 +1,93 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-hid-core",
+  "provider": "freebsd",
+  "description": "Unmodified complete architecture-neutral FreeBSD HID bus, mapping, quirks, keyboard, mouse, multitouch, pen, game controller, consumer control, and Elan touchpad drivers.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "EVDEV_SUPPORT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/hid/hconf.c",
+      "sys/dev/hid/hconf.h",
+      "sys/dev/hid/hcons.c",
+      "sys/dev/hid/hgame.c",
+      "sys/dev/hid/hgame.h",
+      "sys/dev/hid/hidbus.c",
+      "sys/dev/hid/hidbus.h",
+      "sys/dev/hid/hidmap.c",
+      "sys/dev/hid/hidmap.h",
+      "sys/dev/hid/hidquirk.c",
+      "sys/dev/hid/hidrdesc.h",
+      "sys/dev/hid/hkbd.c",
+      "sys/dev/hid/hms.c",
+      "sys/dev/hid/hmt.c",
+      "sys/dev/hid/hpen.c",
+      "sys/dev/hid/ietp.c"
+    ],
+    "file_count": 16,
+    "tree_sha256": "da87c2cd93cbef98bb6e4f1ad9e93cb995de6005eae0366158c744ae4159c8ad"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "hid-core-complete",
+      "sources": [
+        "sys/dev/hid/hconf.c",
+        "sys/dev/hid/hcons.c",
+        "sys/dev/hid/hgame.c",
+        "sys/dev/hid/hidbus.c",
+        "sys/dev/hid/hidmap.c",
+        "sys/dev/hid/hidquirk.c",
+        "sys/dev/hid/hkbd.c",
+        "sys/dev/hid/hms.c",
+        "sys/dev/hid/hmt.c",
+        "sys/dev/hid/hpen.c",
+        "sys/dev/hid/ietp.c"
+      ],
+      "capabilities": [
+        "base",
+        "callout",
+        "character-device",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

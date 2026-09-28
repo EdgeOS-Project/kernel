@@ -1,0 +1,76 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-psci",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD PSCI, SMCCC, CPU-feature, firmware random, and errata-management drivers for ARM64 platforms.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/arm64/arm64/cpu_feat.c",
+      "sys/arm64/include/cpu_feat.h",
+      "sys/arm64/include/machdep.h",
+      "sys/dev/psci",
+      "sys/dev/psci/psci.c",
+      "sys/dev/psci/smccc.c",
+      "sys/dev/psci/smccc_errata.c",
+      "sys/dev/psci/smccc_trng.c"
+    ],
+    "file_count": 11,
+    "tree_sha256": "928f902896616a21f4f62465fe16d73ece6c2ffdd30efac074cfe0267b420c67"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "psci-smccc",
+      "sources": [
+        "sys/arm64/arm64/cpu_feat.c",
+        "sys/dev/psci/psci.c",
+        "sys/dev/psci/smccc.c",
+        "sys/dev/psci/smccc_errata.c",
+        "sys/dev/psci/smccc_trng.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "fdt",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "random",
+        "synchronization",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

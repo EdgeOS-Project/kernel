@@ -1,0 +1,75 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-regulator",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD regulator core and fixed regulator driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/regulator/regdev_if.m",
+      "sys/dev/regulator/regnode_if.m",
+      "sys/dev/regulator/regulator.c",
+      "sys/dev/regulator/regulator.h",
+      "sys/dev/regulator/regulator_fixed.c",
+      "sys/dev/regulator/regulator_fixed.h"
+    ],
+    "file_count": 6,
+    "tree_sha256": "82ff34eb2f9df14ae59c1715dbec56f9329136d7eba6c92f960592de0e3b8c7c"
+  },
+  "generated_interfaces": [
+    "sys/dev/regulator/regdev_if.m",
+    "sys/dev/regulator/regnode_if.m"
+  ],
+  "modules": [
+    {
+      "id": "regulator-core",
+      "sources": [
+        "sys/dev/regulator/regulator.c",
+        "sys/dev/regulator/regulator_fixed.c"
+      ],
+      "capabilities": [
+        "base",
+        "character-device",
+        "fdt",
+        "generated",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

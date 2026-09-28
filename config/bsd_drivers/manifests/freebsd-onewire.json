@@ -1,0 +1,77 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-onewire",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD 1-Wire bus, GPIO controller, and temperature sensor drivers.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {
+      "sys/dev/ow/README.txt": {
+        "license": "BSD-2-Clause",
+        "evidence": "Documentation distributed as part of the BSD-2-Clause FreeBSD 1-Wire driver directory."
+      }
+    }
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/ow",
+      "sys/dev/ow/ow.c",
+      "sys/dev/ow/ow_temp.c",
+      "sys/dev/ow/owc_gpiobus.c",
+      "sys/dev/ow/owll_if.m",
+      "sys/dev/ow/own_if.m"
+    ],
+    "file_count": 9,
+    "tree_sha256": "851817843410c1f31e8be1c3cbc60c3087500c68d2a6608a5baf2504a7629238"
+  },
+  "generated_interfaces": [
+    "sys/dev/ow/owll_if.m",
+    "sys/dev/ow/own_if.m"
+  ],
+  "modules": [
+    {
+      "id": "onewire",
+      "sources": [
+        "sys/dev/ow/ow.c",
+        "sys/dev/ow/ow_temp.c",
+        "sys/dev/ow/owc_gpiobus.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "generated",
+        "memory",
+        "module",
+        "newbus",
+        "synchronization",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

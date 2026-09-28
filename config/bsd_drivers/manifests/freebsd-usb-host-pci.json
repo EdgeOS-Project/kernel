@@ -1,0 +1,164 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-usb-host-pci",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD PCI USB host controller families imported through the EdgeOS BSD Driver Bridge.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "USB_VERBOSE"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/usb/controller/ehci.c",
+      "sys/dev/usb/controller/ehci.h",
+      "sys/dev/usb/controller/ehci_pci.c",
+      "sys/dev/usb/controller/ehcireg.h",
+      "sys/dev/usb/controller/ohci.c",
+      "sys/dev/usb/controller/ohci.h",
+      "sys/dev/usb/controller/ohci_pci.c",
+      "sys/dev/usb/controller/ohcireg.h",
+      "sys/dev/usb/controller/uhci.c",
+      "sys/dev/usb/controller/uhci.h",
+      "sys/dev/usb/controller/uhci_pci.c",
+      "sys/dev/usb/controller/uhcireg.h",
+      "sys/dev/usb/controller/xhci.c",
+      "sys/dev/usb/controller/xhci.h",
+      "sys/dev/usb/controller/xhci_pci.c",
+      "sys/dev/usb/controller/xhcireg.h",
+      "sys/dev/usb/usb_pci.h"
+    ],
+    "file_count": 17,
+    "tree_sha256": "ca4146e55234f6c1473491562668024a2f6a3b3990818d012659363fe10618f4"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "xhci-pci",
+      "sources": [
+        "sys/dev/usb/controller/xhci.c",
+        "sys/dev/usb/controller/xhci_pci.c"
+      ],
+      "capabilities": [
+        "base",
+        "callout",
+        "character-device",
+        "generated",
+        "interrupt",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "usb"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "ehci-pci",
+      "sources": [
+        "sys/dev/usb/controller/ehci.c",
+        "sys/dev/usb/controller/ehci_pci.c"
+      ],
+      "capabilities": [
+        "base",
+        "callout",
+        "character-device",
+        "generated",
+        "interrupt",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "usb"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "ohci-pci",
+      "sources": [
+        "sys/dev/usb/controller/ohci.c",
+        "sys/dev/usb/controller/ohci_pci.c"
+      ],
+      "capabilities": [
+        "base",
+        "callout",
+        "character-device",
+        "generated",
+        "interrupt",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "usb"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "uhci-pci",
+      "sources": [
+        "sys/dev/usb/controller/uhci.c",
+        "sys/dev/usb/controller/uhci_pci.c"
+      ],
+      "capabilities": [
+        "base",
+        "callout",
+        "character-device",
+        "generated",
+        "interrupt",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "usb"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

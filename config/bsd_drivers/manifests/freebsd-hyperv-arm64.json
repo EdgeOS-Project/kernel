@@ -1,0 +1,74 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-hyperv-arm64",
+  "provider": "freebsd",
+  "description": "Unmodified FreeBSD Hyper-V platform drivers required only by ARM64 guests.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "EDGEOS_BSD_FULL_ACPICA",
+      "INTRNG"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "acpica"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/arm64/include/intr.h",
+      "sys/dev/hyperv/vmbus/aarch64"
+    ],
+    "file_count": 6,
+    "tree_sha256": "64694167d5bc7035441be80e7c3a539b4d06369d82f426bbe2145729eed4b379"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "hyperv-arm64-platform",
+      "sources": [
+        "sys/dev/hyperv/vmbus/aarch64/hyperv_aarch64.c",
+        "sys/dev/hyperv/vmbus/aarch64/hyperv_machdep.c",
+        "sys/dev/hyperv/vmbus/aarch64/vmbus_aarch64.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

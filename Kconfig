@@ -1,0 +1,366 @@
+mainmenu "EdgeOS Kernel Configuration"
+
+menu "General setup"
+
+choice
+    prompt "Target architecture"
+    default ARCH_X86_64
+
+config ARCH_X86_64
+    bool "x86_64"
+
+config ARCH_ARM64
+    bool "ARM64"
+
+endchoice
+
+config KERNEL_VERSION
+    string "EdgeOS kernel version"
+    default "2.0.8"
+    help
+      Product release used by the EdgeOS boot banner and build metadata.
+
+config KERNEL_VERSION_APPEND
+    string "Local version - append to kernel release"
+    default "+arm64" if ARCH_ARM64
+    default "+86_64"
+    help
+      Architecture suffix appended to the EdgeOS product release.
+
+config LINUX_ABI_RELEASE
+    string "Linux ABI release"
+    default "6.12.0-edgeos"
+    help
+      Release reported by Linux ABI interfaces such as uname and procfs.
+      Keep this architecture-neutral so Linux userspace selects the same
+      feature set on every supported architecture.
+
+config SYSFS_SYSCALL
+    bool "Legacy Linux sysfs system call"
+    default y
+    help
+      Enable the obsolete sysfs system call used to enumerate registered
+      filesystem types. Disable it to expose the same ENOSYS behavior as a
+      Linux kernel built without CONFIG_SYSFS_SYSCALL.
+
+config SMP
+    bool "Symmetric multiprocessing"
+    default y
+    help
+      Enable architecture secondary CPU startup and the shared per-CPU
+      scheduler, interrupt, memory-ordering, and hotplug foundations.
+
+config NR_CPUS
+    int "Maximum supported CPUs"
+    depends on SMP
+    range 2 256
+    default 64
+    help
+      Compile-time storage ceiling for per-CPU kernel objects. Runtime CPU
+      masks retain the firmware-discovered width and are not limited to one
+      64-bit word.
+
+config BSD_DRIVER_BRIDGE
+    bool "FreeBSD source-compatible driver bridge"
+    default n
+    help
+      Build the shared compatibility services used to compile unmodified
+      BSD-licensed driver sources. Driver families remain separately
+      selectable and must pass their device-specific runtime tests.
+
+config BSD_DRIVER_ACPICA
+    bool "Complete ACPICA namespace and method runtime"
+    depends on BSD_DRIVER_BRIDGE && ACPI
+    default y
+    help
+      Build the vendored ACPICA runtime with the shared EdgeOS operating-
+      system layer. This enables firmware namespace enumeration and method
+      execution required by laptop I2C, HID, battery, button, and thermal
+      drivers.
+
+config BSD_DRIVER_MODULES
+    bool "Load source-built BSD drivers from relocatable modules"
+    depends on BSD_DRIVER_BRIDGE
+    default y
+    help
+      Enable the shared ELF64 and ARM64 COFF object loader so driver
+      packages can remain outside the kernel image and load from the root
+      filesystem.
+
+config MODULES
+    bool "Linux module loading UAPI"
+    depends on BSD_DRIVER_MODULES
+    default y
+    help
+      Expose Linux init_module, finit_module, and delete_module system calls
+      over the source-built EdgeOS module loader. Public flags and errors
+      follow the selected Linux UAPI release.
+
+config SYSVIPC
+    bool "System V IPC"
+    default y
+    help
+      Enable Linux-compatible shared memory, semaphore arrays, and message
+      queues with IPC namespace isolation and common cross-architecture
+      policy.
+
+config CHECKPOINT_RESTORE
+    bool "Checkpoint and restore support"
+    default y
+    help
+      Enable Linux checkpoint and restore UAPI details implemented by
+      supported subsystems, including nondestructive SysV message reads.
+
+config POSIX_MQUEUE
+    bool "POSIX message queues"
+    default y
+    help
+      Enable Linux-compatible named POSIX message queues, descriptors,
+      notification, polling, and IPC namespace isolation.
+
+config AIO
+    bool "Legacy Linux asynchronous I/O"
+    default y
+    help
+      Enable Linux io_setup, io_submit, io_getevents, io_cancel, and
+      io_destroy over the shared descriptor I/O runtime.
+
+config IO_URING
+    bool "Linux io_uring"
+    default y
+    help
+      Enable Linux io_uring setup, shared submission and completion rings,
+      registration, and asynchronous descriptor operations.
+
+config QUOTA
+    bool "Linux filesystem quotas"
+    default y
+    help
+      Enable Linux quotactl and quotactl_fd control, quota formats, grace
+      information, and per-user, per-group, and per-project limit records.
+
+config BSD_PROCESS_ACCT
+    bool "BSD process accounting"
+    default y
+    help
+      Enable Linux acct and version 3 process accounting records, including
+      per-PID-namespace output files and thread-group exit aggregation.
+
+config KEYS
+    bool "Linux key retention service"
+    default y
+    help
+      Enable Linux add_key, request_key, and keyctl over the shared keyring,
+      permission, payload, search, timeout, and persistent-keyring runtime.
+
+config WATCH_QUEUE
+    bool "Linux notification pipes"
+    default y
+    help
+      Enable notification pipes, watch queue sizing and notification filters
+      for kernel event sources.
+
+config KEY_NOTIFICATIONS
+    bool "Key retention service notifications"
+    depends on KEYS && WATCH_QUEUE
+    default y
+    help
+      Allow key and keyring changes to be delivered through Linux notification
+      pipes with KEYCTL_WATCH_KEY.
+
+config FANOTIFY
+    bool "Linux fanotify notification service"
+    default y
+    help
+      Enable Linux fanotify notification groups, inode marks, event queues,
+      polling, and event file descriptors over the shared VFS event source.
+
+config USERFAULTFD
+    bool "Linux userfaultfd missing-page service"
+    default y
+    help
+      Enable Linux userfaultfd missing-page registration, page-fault events,
+      polling, and userspace COPY, ZEROPAGE, and WAKE resolution.
+
+config SECRETMEM
+    bool "Linux secret-memory file descriptors"
+    default y
+    help
+      Enable Linux memfd_secret descriptors, shared locked mappings,
+      non-pageable backing, and exclusion from cross-process memory access.
+
+config PERF_EVENTS
+    bool "Linux performance events"
+    default y
+    help
+      Enable Linux perf_event_open software counters, event groups,
+      descriptor reads, and event control operations.
+
+config BPF_SYSCALL
+    bool "Linux BPF system call"
+    default y
+    help
+      Enable Linux BPF object descriptors, hash and array maps, verified
+      cgroup-device programs, object enumeration, and information queries.
+
+config LANDLOCK
+    bool "Linux Landlock filesystem access control"
+    default y
+    help
+      Enable Linux Landlock rulesets, path-beneath rules, stacked task
+      domains, and cross-architecture VFS enforcement.
+
+config RSEQ
+    bool "Linux restartable sequences"
+    default y
+    help
+      Enable per-thread restartable-sequence registration, CPU and memory
+      concurrency identifiers, critical-section aborts, and Linux rseq UAPI.
+
+config RSEQ_SLICE_EXTENSION
+    bool "Restartable-sequence time-slice extension"
+    depends on RSEQ
+    default y
+    help
+      Enable Linux rseq v2 time-slice requests, PR_RSEQ_SLICE_EXTENSION,
+      and rseq_slice_yield over the shared scheduler integration.
+
+config BSD_DRIVER_FDT_INVENTORY
+    bool "Inventory Device Tree devices for BSD drivers"
+    depends on BSD_DRIVER_BRIDGE && DEVICE_TREE
+    default y
+    help
+      Create a non-attaching newbus inventory from the validated firmware
+      Device Tree. Imported drivers may claim matching devices after their
+      modules load, while native EdgeOS drivers retain ownership by default.
+
+config BSD_DRIVER_MODULE_DIRECTORY
+    string "BSD driver module directory"
+    depends on BSD_DRIVER_MODULES
+    default "/usr/lib/edgeos/modules"
+    help
+      Absolute directory containing source-built BSD driver modules. Bare
+      entries in the module list resolve below this directory.
+
+config BSD_DRIVER_MODULE_AUTOLOAD
+    bool "Load BSD driver modules during boot"
+    depends on BSD_DRIVER_MODULES
+    default y
+    help
+      Load the ordered module list after built-in compatibility services
+      start and before buses attach devices.
+
+config BSD_DRIVER_MODULE_CONFIG
+    string "BSD driver module list"
+    depends on BSD_DRIVER_MODULE_AUTOLOAD
+    default "/etc/modules.load"
+    help
+      Absolute path to the ordered module list in the initial root
+      filesystem. Bare names resolve below BSD_DRIVER_MODULE_DIRECTORY.
+
+endmenu
+
+menu "Virtualization"
+
+config EDGE_KVM
+    bool "EdgeOS KVM compatibility layer"
+    depends on ARCH_X86_64 || ARCH_ARM64
+    default n
+    help
+      Expose an EdgeOS-owned Linux KVM ABI facade backed by the imported
+      FreeBSD vmm subsystem. The ABI layer advertises only capabilities that
+      the active hardware backend and translation layer implement.
+
+config EDGE_KVM_BHYVE
+    bool "FreeBSD vmm hardware backend"
+    depends on EDGE_KVM
+    default y
+    help
+      Build the FreeBSD vmm adaptation layer for AMD SVM, Intel VMX, and
+      ARM64 virtualization hardware. Vendored upstream files stay unmodified;
+      EdgeOS-specific integration belongs in separate adapter sources.
+
+endmenu
+
+menu "Boot options"
+
+config DEVTMPFS_MOUNT
+    bool "Mount devtmpfs before starting init"
+    default n
+    help
+      Populate /dev with the kernel device registry before starting userspace.
+      Leave disabled when the root filesystem or init manages /dev itself.
+
+config ARM64_MATERIALIZE_DATA
+    bool "Store ARM64 zero-filled data in the EFI file"
+    depends on ARCH_ARM64
+    default y
+    help
+      Preserve the existing full-profile EFI file layout. Disabling this
+      uses PE virtual zero-fill instead of storing zero bytes on disk, which
+      reduces firmware file-loading memory. Validate the selected firmware's
+      PE zero-fill behavior before using the compact image.
+
+config INITRAMFS
+    bool "Linux initramfs cpio support"
+    default y
+    help
+      Unpack Linux-compatible newc and crc cpio archives as the initial root
+      filesystem. Both x86_64 Multiboot modules and ARM64 UEFI handoff images
+      use the same architecture-neutral unpacker.
+
+config INITRAMFS_SOURCE
+    string "Initramfs source directory"
+    depends on INITRAMFS
+    default ""
+    help
+      Directory packed by the initramfs build target. Leave this empty when an
+      externally generated archive is supplied by the boot loader.
+
+config INITRAMFS_MAX_INODES
+    int "Maximum initramfs inode count"
+    depends on INITRAMFS
+    range 512 65536
+    default 8192
+    help
+      Maximum number of files, directories, links, and device nodes in the
+      initial root filesystem. Metadata storage is allocated only when the
+      initramfs root is mounted.
+
+config INITRAMFS_MAX_BYTES
+    int "Maximum uncompressed initramfs size"
+    depends on INITRAMFS
+    range 1048576 1073741824
+    default 268435456
+    help
+      Reject compressed initial root filesystems whose advertised
+      uncompressed size exceeds this bound.
+
+config INITRAMFS_GZIP
+    bool "gzip-compressed initramfs support"
+    depends on INITRAMFS
+    default y
+    help
+      Decode gzip-compressed initial root filesystems with the permissively
+      licensed zlib implementation imported with the FreeBSD source tree.
+
+config INITRAMFS_COMPRESSION_GZIP
+    bool "Compress generated initramfs images with gzip"
+    depends on INITRAMFS_GZIP
+    default y
+    help
+      Make initramfs build targets emit deterministic gzip streams instead of
+      uncompressed cpio files.
+
+config INITRAMFS_CRC
+    bool "Generate crc cpio archives"
+    depends on INITRAMFS && INITRAMFS_SOURCE != ""
+    default n
+    help
+      Generate the Linux crc cpio variant and verify each payload while
+      unpacking. The default newc format omits payload checksums.
+
+endmenu
+
+source "config/Kconfig.runtime"
+source "arch/x86/Kconfig"

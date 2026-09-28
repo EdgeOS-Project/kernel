@@ -1,0 +1,61 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-amdpm",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD AMD 756/766/768/8111 SMBus controller driver.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/amdpm/amdpm.c"
+    ],
+    "file_count": 1,
+    "tree_sha256": "674f00b1291d0a609d26d9fd1134881ee8d66e348b9abb0e0746815d4bd3c5b2"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "amdpm",
+      "sources": [
+        "sys/dev/amdpm/amdpm.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

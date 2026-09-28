@@ -1,0 +1,140 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-usb-network-extra",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD USB Ethernet drivers for Apple iPhone tethering, Microchip LAN78xx, SMSC LAN95xx, and Davicom DM9601 devices using the shared USB Ethernet and MII cores.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "USB_VERBOSE"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/usb/net/if_ipheth.c",
+      "sys/dev/usb/net/if_iphethvar.h",
+      "sys/dev/usb/net/if_muge.c",
+      "sys/dev/usb/net/if_mugereg.h",
+      "sys/dev/usb/net/if_smsc.c",
+      "sys/dev/usb/net/if_smscreg.h",
+      "sys/dev/usb/net/if_udav.c",
+      "sys/dev/usb/net/if_udavreg.h"
+    ],
+    "file_count": 8,
+    "tree_sha256": "0f5d7f9a79479ec59617002a6da5de040697e3cfad49f4810fb895c48ede0a48"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "ipheth-complete",
+      "sources": [
+        "sys/dev/usb/net/if_ipheth.c"
+      ],
+      "capabilities": [
+        "base",
+        "callout",
+        "generated",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "synchronization",
+        "sysctl",
+        "usb"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "muge-complete",
+      "sources": [
+        "sys/dev/usb/net/if_muge.c"
+      ],
+      "capabilities": [
+        "base",
+        "callout",
+        "generated",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "synchronization",
+        "sysctl",
+        "usb"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "smsc-complete",
+      "sources": [
+        "sys/dev/usb/net/if_smsc.c"
+      ],
+      "capabilities": [
+        "base",
+        "callout",
+        "generated",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "synchronization",
+        "sysctl",
+        "usb"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "udav-complete",
+      "sources": [
+        "sys/dev/usb/net/if_udav.c"
+      ],
+      "capabilities": [
+        "base",
+        "callout",
+        "generated",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "synchronization",
+        "sysctl",
+        "usb"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

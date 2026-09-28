@@ -1,0 +1,78 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-mpi3mr",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Broadcom MPI3 SAS, SATA, NVMe, and RAID storage driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "complete=mpi3mr_complete",
+      "init_completion=mpi3mr_init_completion",
+      "wait_for_completion_timeout=mpi3mr_wait_for_completion_timeout"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-2-Clause-FreeBSD"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/mpi3mr"
+    ],
+    "file_count": 19,
+    "tree_sha256": "4a6bc7d99a7b321532be5cd934cae803a61623b43d60dc3f76018eb40f03aad1"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "mpi3mr",
+      "sources": [
+        "sys/dev/mpi3mr/mpi3mr.c",
+        "sys/dev/mpi3mr/mpi3mr_pci.c",
+        "sys/dev/mpi3mr/mpi3mr_cam.c",
+        "sys/dev/mpi3mr/mpi3mr_app.c"
+      ],
+      "capabilities": [
+        "base",
+        "block",
+        "callout",
+        "cam",
+        "character-device",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "scsi",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

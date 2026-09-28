@@ -1,0 +1,61 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-smbios",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD SMBIOS firmware device driver.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/smbios",
+      "sys/dev/smbios/smbios.c"
+    ],
+    "file_count": 2,
+    "tree_sha256": "2a699ff15a1f3f9e80b8152edd20632838d2e78168c6b4581a0b80e35fe63f8f"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "smbios",
+      "sources": [
+        "sys/dev/smbios/smbios.c"
+      ],
+      "capabilities": [
+        "base",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+[Unit]
+Description=EdgeOS process_mrelease ABI acceptance probe
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/root/process_mrelease_abi_probe
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/ttyS0
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

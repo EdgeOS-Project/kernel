@@ -1,0 +1,6 @@
+#ifndef _EDGEOS_LINUXKPI_DEVICE_DEVRES_H_
+#define _EDGEOS_LINUXKPI_DEVICE_DEVRES_H_
+
+#include <linux/device.h>
+
+#endif /* _EDGEOS_LINUXKPI_DEVICE_DEVRES_H_ */

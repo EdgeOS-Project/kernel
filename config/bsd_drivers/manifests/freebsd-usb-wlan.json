@@ -1,0 +1,95 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-usb-wlan",
+  "provider": "freebsd",
+  "description": "Complete FreeBSD USB wireless driver family, including MediaTek MT7601 and MT7610 devices, imported through the EdgeOS BSD Driver Bridge.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "__FreeBSD__=14"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "patched",
+    "allow_inline_patches": true,
+    "patches": [
+      {
+        "path": "sys/dev/usb/wlan/if_mtwvar.h",
+        "upstream_sha256": "91143bfa2d3a89f205d104fb06acc63f18fd43d013a0c1f2b85efcee509b30e0",
+        "reason": "The upstream array uses the zero-valued MTW_BULK_RX enum as a length while the complete driver indexes MTW_EP_QUEUES queues; size the storage to the queue count to prevent memory corruption."
+      }
+    ],
+    "allowed_licenses": [
+      "(BSD-2-Clause AND BSD-1-Clause)",
+      "BSD-1-Clause",
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "ISC",
+      "OSF-Permissive",
+      "Public-Domain"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/usb/wlan",
+      "sys/dev/usb/wlan/if_rsu.c",
+      "sys/dev/usb/wlan/if_rum.c",
+      "sys/dev/usb/wlan/if_run.c",
+      "sys/dev/usb/wlan/if_uath.c",
+      "sys/dev/usb/wlan/if_upgt.c",
+      "sys/dev/usb/wlan/if_ural.c",
+      "sys/dev/usb/wlan/if_urtw.c",
+      "sys/dev/usb/wlan/if_zyd.c"
+    ],
+    "file_count": 26,
+    "tree_sha256": "fc466baac3a4e3fce36f9c96d8a74f47325bb4d4261435fe5597d641a02e7469"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "usb-wlan-family",
+      "sources": [
+        "sys/dev/usb/wlan/if_mtw.c",
+        "sys/dev/usb/wlan/if_rsu.c",
+        "sys/dev/usb/wlan/if_rum.c",
+        "sys/dev/usb/wlan/if_run.c",
+        "sys/dev/usb/wlan/if_uath.c",
+        "sys/dev/usb/wlan/if_upgt.c",
+        "sys/dev/usb/wlan/if_ural.c",
+        "sys/dev/usb/wlan/if_urtw.c",
+        "sys/dev/usb/wlan/if_zyd.c"
+      ],
+      "capabilities": [
+        "base",
+        "character-device",
+        "generated",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "synchronization",
+        "sysctl",
+        "usb"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

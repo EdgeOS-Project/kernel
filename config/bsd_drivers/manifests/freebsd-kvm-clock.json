@@ -1,0 +1,64 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-kvm-clock",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD KVM paravirtual clock driver.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/kvm_clock/kvm_clock.c",
+      "sys/kern/clock_if.m"
+    ],
+    "file_count": 2,
+    "tree_sha256": "ffe8d9ae0d5670545ae30b266ea679a324068223c792f1fa41f10bdb186b67c1"
+  },
+  "generated_interfaces": [
+    "sys/kern/clock_if.m"
+  ],
+  "modules": [
+    {
+      "id": "kvm-clock",
+      "sources": [
+        "sys/dev/kvm_clock/kvm_clock.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "sysctl",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

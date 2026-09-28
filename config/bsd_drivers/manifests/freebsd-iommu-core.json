@@ -1,0 +1,67 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-iommu-core",
+  "provider": "freebsd",
+  "description": "Unmodified FreeBSD architecture-independent busdma IOMMU and guest-address-space core.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "EDGEOS_BSD_FULL_IOMMU"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/iommu"
+    ],
+    "file_count": 7,
+    "tree_sha256": "c8424a1e476712597743b9dd01adab48a39338ee5dc1a7f0ae5a60d11b102f5e"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "iommu-core",
+      "sources": [
+        "sys/dev/iommu/busdma_iommu.c",
+        "sys/dev/iommu/iommu_gas.c"
+      ],
+      "capabilities": [
+        "base",
+        "machine",
+        "memory",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

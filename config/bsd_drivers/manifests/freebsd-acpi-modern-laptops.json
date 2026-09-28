@@ -1,0 +1,86 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-acpi-modern-laptops",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD ACPI platform drivers for modern ASUS WMI and System76 laptop systems.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [
+      "EDGEOS_BSD_FULL_ACPICA"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "acpica"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/acpi_support/acpi_asus_wmi.c",
+      "sys/dev/acpi_support/acpi_system76.c"
+    ],
+    "file_count": 2,
+    "tree_sha256": "091be64924d7d6f2660b5d911a2dfba0cf73bd7c6815bdbedeb6a77db21e5ef2"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "asus-wmi",
+      "sources": [
+        "sys/dev/acpi_support/acpi_asus_wmi.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "character-device",
+        "generated",
+        "memory",
+        "module",
+        "newbus",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "system76-laptop",
+      "sources": [
+        "sys/dev/acpi_support/acpi_system76.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "character-device",
+        "generated",
+        "memory",
+        "module",
+        "newbus",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

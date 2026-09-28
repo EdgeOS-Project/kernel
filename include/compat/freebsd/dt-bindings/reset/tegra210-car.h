@@ -1,0 +1,8 @@
+/* SPDX-License-Identifier: MPL-2.0 */
+#ifndef EDGEOS_DT_TEGRA210_RESET_IDS_H
+#define EDGEOS_DT_TEGRA210_RESET_IDS_H
+
+#define TEGRA210_RST_DFLL_DVCO 224
+#define TEGRA210_RST_ADSP 225
+
+#endif

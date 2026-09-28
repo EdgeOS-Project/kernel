@@ -1,0 +1,344 @@
+# Shared runtime capacities. Defaults preserve the full system profile.
+menu "Runtime object capacities"
+
+config RUNTIME_MAX_TASKS
+    int "max tasks"
+    range 32 4096
+    default 4096
+    help
+      Build-time capacity shared by both architectures. Reducing this limit
+      can reduce reserved memory, but also limits concurrent workloads.
+      The default preserves the full system configuration.
+
+config RUNTIME_MAX_OPEN_FILES
+    int "max open files"
+    range 32 1024
+    default 1024
+    help
+      Build-time capacity shared by both architectures. Reducing this limit
+      can reduce reserved memory, but also limits concurrent workloads.
+      The default preserves the full system configuration.
+
+config RUNTIME_MAX_PIPES
+    int "max pipes"
+    range 1 1024
+    default 1024
+    help
+      Build-time capacity shared by both architectures. Reducing this limit
+      can reduce reserved memory, but also limits concurrent workloads.
+      The default preserves the full system configuration.
+
+config RUNTIME_MAX_SOCKETS
+    int "max sockets"
+    range 1 4096
+    default 4096
+    help
+      Build-time capacity shared by both architectures. Reducing this limit
+      can reduce reserved memory, but also limits concurrent workloads.
+      The default preserves the full system configuration.
+
+config RUNTIME_MAX_EVENTFDS
+    int "max eventfds"
+    range 1 1024
+    default 1024
+    help
+      Build-time capacity shared by both architectures. Reducing this limit
+      can reduce reserved memory, but also limits concurrent workloads.
+      The default preserves the full system configuration.
+
+config RUNTIME_MAX_TIMERFDS
+    int "max timerfds"
+    range 1 128
+    default 128
+    help
+      Build-time capacity shared by both architectures. Reducing this limit
+      can reduce reserved memory, but also limits concurrent workloads.
+      The default preserves the full system configuration.
+
+config RUNTIME_MAX_SIGNALFDS
+    int "max signalfds"
+    range 1 128
+    default 128
+    help
+      Build-time capacity shared by both architectures. Reducing this limit
+      can reduce reserved memory, but also limits concurrent workloads.
+      The default preserves the full system configuration.
+
+config RUNTIME_MAX_INOTIFY_INSTANCES
+    int "max inotify instances"
+    range 1 256
+    default 128
+    help
+      Build-time capacity shared by both architectures. Reducing this limit
+      can reduce reserved memory, but also limits concurrent workloads.
+      The default preserves the full system configuration.
+
+config RUNTIME_MAX_INOTIFY_WATCHES
+    int "max inotify watches"
+    range 1 8192
+    default 4096
+    help
+      Build-time capacity shared by both architectures. Reducing this limit
+      can reduce reserved memory, but also limits concurrent workloads.
+      The default supports systemd and a full graphical desktop. Small-memory
+      profiles should select a lower fixed capacity.
+
+config RUNTIME_MAX_FANOTIFY_GROUPS
+    int "max fanotify groups"
+    range 1 32
+    default 32
+    help
+      Build-time capacity shared by both architectures. Reducing this limit
+      can reduce reserved memory, but also limits concurrent workloads.
+      The default preserves the full system configuration.
+
+config RUNTIME_MAX_FANOTIFY_MARKS
+    int "max fanotify marks"
+    range 1 512
+    default 512
+    help
+      Build-time capacity shared by both architectures. Reducing this limit
+      can reduce reserved memory, but also limits concurrent workloads.
+      The default preserves the full system configuration.
+
+config RUNTIME_MAX_USERFAULTFDS
+    int "max userfaultfds"
+    range 1 64
+    default 64
+    help
+      Build-time capacity shared by both architectures. Reducing this limit
+      can reduce reserved memory, but also limits concurrent workloads.
+      The default preserves the full system configuration.
+
+config RUNTIME_MAX_USERFAULTFD_RANGES
+    int "max userfaultfd ranges"
+    range 1 256
+    default 256
+    help
+      Build-time capacity shared by both architectures. Reducing this limit
+      can reduce reserved memory, but also limits concurrent workloads.
+      The default preserves the full system configuration.
+
+config RUNTIME_MAX_PERF_EVENTS
+    int "max perf events"
+    range 1 128
+    default 128
+    help
+      Build-time capacity shared by both architectures. Reducing this limit
+      can reduce reserved memory, but also limits concurrent workloads.
+      The default preserves the full system configuration.
+
+config RUNTIME_MAX_BPF_OBJECTS
+    int "max bpf objects"
+    range 1 128
+    default 128
+    help
+      Build-time capacity shared by both architectures. Reducing this limit
+      can reduce reserved memory, but also limits concurrent workloads.
+      The default preserves the full system configuration.
+
+config RUNTIME_MAX_BPF_ATTACHMENTS
+    int "max bpf attachments"
+    range 1 256
+    default 256
+    help
+      Build-time capacity shared by both architectures. Reducing this limit
+      can reduce reserved memory, but also limits concurrent workloads.
+      The default preserves the full system configuration.
+
+config RUNTIME_MAX_QUOTA_FILESYSTEMS
+    int "max quota filesystems"
+    range 1 32
+    default 32
+    help
+      Build-time capacity shared by both architectures. Reducing this limit
+      can reduce reserved memory, but also limits concurrent workloads.
+      The default preserves the full system configuration.
+
+config RUNTIME_MAX_QUOTA_ENTRIES
+    int "max quota entries"
+    range 1 512
+    default 512
+    help
+      Build-time capacity shared by both architectures. Reducing this limit
+      can reduce reserved memory, but also limits concurrent workloads.
+      The default preserves the full system configuration.
+
+config RUNTIME_MAX_FUSE_SESSIONS
+    int "max fuse sessions"
+    range 1 256
+    default 256
+    help
+      Build-time capacity shared by both architectures. Reducing this limit
+      can reduce reserved memory, but also limits concurrent workloads.
+      The default preserves the full system configuration.
+
+config RUNTIME_SIGNAL_QUEUE_SIZE
+    int "signal queue size"
+    range 1 16384
+    default 16384
+    help
+      Build-time capacity shared by both architectures. Reducing this limit
+      can reduce reserved memory, but also limits concurrent workloads.
+      The default preserves the full system configuration.
+
+config RUNTIME_MAX_EPOLL_IDS
+    int "max epoll ids"
+    range 1 4096
+    default 4096
+    help
+      Build-time capacity shared by both architectures. Reducing this limit
+      can reduce reserved memory, but also limits concurrent workloads.
+      The default preserves the full system configuration.
+
+config RUNTIME_MAX_EPOLL_WATCHES
+    int "max epoll watches"
+    range 1 1048576
+    default 1048576
+    help
+      Build-time capacity shared by both architectures. Reducing this limit
+      can reduce reserved memory, but also limits concurrent workloads.
+      The default preserves the full system configuration.
+
+config RUNTIME_SOCKET_BACKLOG
+    int "socket backlog"
+    range 1 128
+    default 128
+    help
+      Build-time capacity shared by both architectures. Reducing this limit
+      can reduce reserved memory, but also limits concurrent workloads.
+      The default preserves the full system configuration.
+
+config RUNTIME_PIPE_CAPACITY
+    int "Pipe buffer bytes"
+    range 4096 65536
+    default 65536
+    help
+      Full-profile default is preserved. Lower values reduce reserved storage
+      and constrain this subsystem in a separately validated small build.
+
+config RUNTIME_IO_URING_RINGS
+    int "Concurrent io_uring rings"
+    range 1 64
+    default 64
+    help
+      Full-profile default is preserved. Lower values reduce reserved storage
+      and constrain this subsystem in a separately validated small build.
+
+config RUNTIME_KEY_OBJECTS
+    int "Key objects"
+    range 1 256
+    default 256
+    help
+      Full-profile default is preserved. Lower values reduce reserved storage
+      and constrain this subsystem in a separately validated small build.
+
+config RUNTIME_KEY_TASKS
+    int "Key task records"
+    range 1 2048
+    default 2048
+    help
+      Full-profile default is preserved. Lower values reduce reserved storage
+      and constrain this subsystem in a separately validated small build.
+
+config RUNTIME_DRM_BUFFERS
+    int "DRM buffer objects"
+    range 1 64
+    default 64
+    help
+      Full-profile default is preserved. Lower values reduce reserved storage
+      and constrain this subsystem in a separately validated small build.
+
+config RUNTIME_FRAMEBUFFER_BYTES
+    int "Early framebuffer buffer bytes"
+    range 4096 16777216
+    default 16777216
+    help
+      Full-profile default is preserved. Lower values reduce reserved storage
+      and constrain this subsystem in a separately validated small build.
+
+config RUNTIME_TMPFS_BLOCK_ORDER
+    int "Log2 of tmpfs page metadata capacity"
+    range 8 18
+    default 18
+    help
+      Full-profile default is preserved. Lower values reduce reserved storage
+      and constrain this subsystem in a separately validated small build.
+
+endmenu
+
+menu "Mapping metadata capacities"
+config RUNTIME_EXEC_ARGUMENT_BYTES
+    int "Maximum aggregate exec argument and environment bytes"
+    range 131072 2097152
+    default 2097152
+    help
+      Full profiles retain the existing 2 MiB payload limit. Small profiles
+      can use the 128 KiB floor to reduce each exec staging allocation.
+      Requests exceeding the configured budget fail with E2BIG.
+
+config RUNTIME_ARM64_VMA_MIN_ORDER
+    int "Log2 of minimum ARM64 VMA records"
+    range 8 14
+    default 14
+
+config RUNTIME_ARM64_FILE_PAGE_MIN_ORDER
+    int "Log2 of minimum ARM64 file cache records"
+    range 10 16
+    default 16
+
+config RUNTIME_CGROUP_NODES
+    int "Cgroup hierarchy nodes"
+    range 32 4096
+    default 4096
+
+config RUNTIME_ARM64_MAPPING_ORDER
+    int "Log2 of ARM64 user mapping records"
+    range 14 22
+    default 22
+
+config RUNTIME_RIGHTS_RECORDS
+    int "SCM_RIGHTS token and record capacity"
+    range 256 8192
+    default 8192
+
+config RUNTIME_MQ_MESSAGES
+    int "POSIX message storage slots"
+    range 64 512
+    default 512
+
+config RUNTIME_MEMFD_OBJECTS
+    int "Memfd objects"
+    range 4 128
+    default 128
+
+config RUNTIME_FILE_DESCRIPTION_ORDER
+    int "Log2 of file description slots"
+    range 6 15
+    default 15
+
+config RUNTIME_OVERLAY_INITIAL_CONTEXTS
+    int "Initially reserved overlay scratch contexts"
+    range 1 16
+    default 16
+
+config RUNTIME_PHYSICAL_POOL_MIB
+    int "Physical backing pool ceiling in MiB"
+    range 128 8192
+    default 8192
+    help
+      Upper bound for x86 backing-page metadata. Actual pages still come
+      from firmware-reported usable RAM. Full builds retain the existing cap.
+
+config RUNTIME_MAPPED_FILES
+    int "Concurrent mapped file records"
+    range 64 4096
+    default 4096
+
+config RUNTIME_FILE_CACHE_ORDER
+    int "Log2 of mapped file cache entries"
+    range 8 18
+    default 18
+    help
+      A power-of-two capacity preserves the cache hash mask invariant.
+endmenu

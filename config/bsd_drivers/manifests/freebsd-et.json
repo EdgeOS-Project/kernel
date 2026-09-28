@@ -1,0 +1,67 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-et",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Agere ET1310 Gigabit Ethernet driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "ISC"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/et",
+      "sys/dev/et/if_et.c"
+    ],
+    "file_count": 3,
+    "tree_sha256": "50f1f951f2599004a3e4698bc1f0a8bd441ea61eac121e55f304b5bb13f99c25"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "et",
+      "sources": [
+        "sys/dev/et/if_et.c"
+      ],
+      "capabilities": [
+        "base",
+        "generated",
+        "machine",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

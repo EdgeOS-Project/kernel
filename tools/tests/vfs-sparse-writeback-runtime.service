@@ -1,0 +1,10 @@
+[Unit]
+Description=EdgeOS sparse file and page writeback runtime test
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/libexec/vfs_sparse_writeback_runtime_test.py
+
+[Install]
+WantedBy=multi-user.target

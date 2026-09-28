@@ -1,0 +1,86 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-nxp-qoriq",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD NXP QorIQ ARM64 platform driver set.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT",
+      "INTRNG"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "LicenseRef-Upstream-Unmarked"
+    ],
+    "allow_unmarked_files": true,
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/arm64/qoriq",
+      "sys/dev/gpio/qoriq_gpio.c",
+      "sys/dev/gpio/qoriq_gpio.h"
+    ],
+    "file_count": 15,
+    "tree_sha256": "d4e1919f211d4aa1e3cac463bc2e655395c1b48fd207c86c3270adde00fd2c9e"
+  },
+  "generated_interfaces": [
+    "sys/arm64/qoriq/qoriq_therm_if.m"
+  ],
+  "modules": [
+    {
+      "id": "nxp-qoriq",
+      "sources": [
+        "sys/arm64/qoriq/clk/ls1028a_clkgen.c",
+        "sys/arm64/qoriq/clk/ls1028a_flexspi_clk.c",
+        "sys/arm64/qoriq/clk/ls1046a_clkgen.c",
+        "sys/arm64/qoriq/clk/ls1088a_clkgen.c",
+        "sys/arm64/qoriq/clk/lx2160a_clkgen.c",
+        "sys/arm64/qoriq/clk/qoriq_clk_pll.c",
+        "sys/arm64/qoriq/clk/qoriq_clkgen.c",
+        "sys/arm64/qoriq/qoriq_dw_pci.c",
+        "sys/arm64/qoriq/qoriq_gpio_pic.c",
+        "sys/arm64/qoriq/qoriq_therm.c",
+        "sys/dev/gpio/qoriq_gpio.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl"
+      ],
+      "kconfig_requires": [
+        "DEVICE_TREE"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

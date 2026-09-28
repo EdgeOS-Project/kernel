@@ -1,0 +1,658 @@
+/* SPDX-License-Identifier: MPL-2.0 */
+
+#include <assert.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "kernel/linux_errno.h"
+#include "kernel/userfaultfd.h"
+
+static int changed_context = -1;
+static int installed_context = -1;
+static int writeprotect_calls;
+static uint64_t writeprotect_address;
+static int writeprotect_enable;
+static int shmem_page_state;
+
+void kernel_userfaultfd_state_changed(int context_id) {
+    changed_context = context_id;
+}
+
+void arch_userfaultfd_wait_event(int context_id, uint64_t ticket,
+                                 int64_t completion_result) {
+    assert(context_id >= 0);
+    assert(ticket != 0);
+    (void)completion_result;
+}
+
+int arch_userfaultfd_consume_completed_event(int64_t *completion_result) {
+    (void)completion_result;
+    return 0;
+}
+
+int kernel_userfaultfd_install_existing_descriptor(
+        int context_id, uint32_t flags) {
+    assert(context_id >= 0);
+    assert((flags & KERNEL_UFFD_NONBLOCK) != 0);
+    installed_context = context_id;
+    return 42;
+}
+
+int arch_mm_address_space_write_protect(
+        uint64_t address_space, uint64_t address, uint64_t length,
+        int enable) {
+    assert(address_space != 0);
+    writeprotect_address = address;
+    writeprotect_enable = enable;
+    ++writeprotect_calls;
+    (void)length;
+    return 0;
+}
+
+int arch_mm_address_space_shmem_page_state(
+        uint64_t address_space, uint64_t address) {
+    assert(address_space != 0);
+    (void)address;
+    return shmem_page_state;
+}
+
+static int copy_message(void *opaque, uint64_t offset,
+                        const void *record, uint32_t length) {
+    uint8_t *destination = (uint8_t *)opaque;
+    memcpy(destination + offset, record, length);
+    return 0;
+}
+
+int main(void) {
+    kernel_userfaultfd_state_t state;
+    kernel_uffdio_api_t api = {
+        .api = KERNEL_UFFD_API,
+        .features = KERNEL_UFFD_FEATURE_THREAD_ID |
+                    KERNEL_UFFD_FEATURE_PAGEFAULT_FLAG_WP |
+                    KERNEL_UFFD_FEATURE_MISSING_SHMEM |
+                    KERNEL_UFFD_FEATURE_EXACT_ADDRESS |
+                    KERNEL_UFFD_FEATURE_WP_UNPOPULATED |
+                    KERNEL_UFFD_FEATURE_POISON |
+                    KERNEL_UFFD_FEATURE_MOVE,
+    };
+    kernel_uffdio_register_t registration = {
+        .range = { .start = 0x400000u, .length = 0x4000u },
+        .mode = KERNEL_UFFD_REGISTER_MODE_MISSING,
+    };
+    kernel_userfaultfd_message_t message;
+    int context_id;
+    int fault_context = -1;
+    uint64_t ticket = 0;
+
+    context_id = kernel_userfaultfd_create(
+        0x12345000u, 77, KERNEL_UFFD_NONBLOCK);
+    assert(context_id >= 0);
+    assert(kernel_userfaultfd_query(context_id, &state) == 0);
+    assert(!state.api_ready && state.address_space == 0x12345000u);
+    assert(kernel_userfaultfd_negotiate(context_id, &api) == 0);
+    assert(api.features == KERNEL_UFFD_SUPPORTED_FEATURES &&
+           api.ioctls == KERNEL_UFFD_API_IOCTLS);
+    assert(kernel_userfaultfd_register(context_id, &registration) == 0);
+    assert(registration.ioctls ==
+           (KERNEL_UFFD_RANGE_IOCTLS &
+            ~(1ULL << KERNEL_UFFDIO_CONTINUE_NUMBER)));
+
+    assert(kernel_userfaultfd_missing_fault(
+        0x12345000u, 0x401234u, 1, 91,
+        &fault_context, &ticket) == 1);
+    assert(fault_context == context_id && ticket != 0);
+    assert(changed_context == context_id);
+    assert(kernel_userfaultfd_fault_pending(context_id, ticket) == 1);
+    assert(kernel_userfaultfd_query(context_id, &state) == 0);
+    assert(state.queued_events == 1 && state.unresolved_faults == 1);
+    {
+        int duplicate_context = -1;
+        uint64_t duplicate_ticket = 0;
+        assert(kernel_userfaultfd_missing_fault(
+            0x12345000u, 0x401678u, 0, 92,
+            &duplicate_context, &duplicate_ticket) == 1);
+        assert(duplicate_context == context_id &&
+               duplicate_ticket == ticket);
+        assert(kernel_userfaultfd_query(context_id, &state) == 0);
+        assert(state.queued_events == 1 && state.unresolved_faults == 1);
+    }
+
+    memset(&message, 0, sizeof(message));
+    assert(kernel_userfaultfd_read(
+        context_id, copy_message, &message, sizeof(message)) ==
+        (int64_t)sizeof(message));
+    assert(message.event == KERNEL_UFFD_EVENT_PAGEFAULT);
+    assert(message.flags == KERNEL_UFFD_PAGEFAULT_FLAG_WRITE);
+    assert(message.address == 0x401234u);
+    assert(message.thread_id == 91);
+    assert(kernel_userfaultfd_query(context_id, &state) == 0);
+    assert(state.queued_events == 0 && state.unresolved_faults == 1);
+
+    assert(kernel_userfaultfd_resolve(
+        context_id, &(kernel_uffdio_range_t){
+            .start = 0x401000u, .length = 0x1000u }) == 1);
+    assert(kernel_userfaultfd_fault_pending(context_id, ticket) == 0);
+    assert(kernel_userfaultfd_query(context_id, &state) == 0);
+    assert(state.unresolved_faults == 0);
+
+    assert(kernel_userfaultfd_unregister(
+        context_id, &(kernel_uffdio_range_t){
+            .start = 0x401000u, .length = 0x1000u }) == 0);
+    assert(kernel_userfaultfd_missing_fault(
+        0x12345000u, 0x401678u, 0, 93,
+        &fault_context, &ticket) == 0);
+    assert(kernel_userfaultfd_missing_fault(
+        0x12345000u, 0x400678u, 0, 94,
+        &fault_context, &ticket) == 1);
+    assert(kernel_userfaultfd_missing_fault(
+        0x12345000u, 0x402678u, 0, 95,
+        &fault_context, &ticket) == 1);
+    assert(kernel_userfaultfd_unregister(
+        context_id, &registration.range) == 0);
+    {
+        kernel_uffdio_register_t writeprotect_registration = {
+            .range = { .start = 0x500000u, .length = 0x4000u },
+            .mode = KERNEL_UFFD_REGISTER_MODE_WP,
+        };
+        kernel_uffdio_range_t protected_range = {
+            .start = 0x500000u, .length = 0x4000u,
+        };
+        uint64_t address_space = 0;
+
+        assert(kernel_userfaultfd_register(
+            context_id, &writeprotect_registration) == 0);
+        assert(writeprotect_registration.ioctls ==
+               KERNEL_UFFD_WP_RANGE_IOCTLS);
+        assert(kernel_userfaultfd_validate_resolution(
+            context_id, &protected_range, 0,
+            &address_space) == -EDGE_LINUX_ENOENT);
+        assert(kernel_userfaultfd_writeprotect_validate(
+            context_id, &protected_range,
+            KERNEL_UFFDIO_WRITEPROTECT_MODE_WP |
+            KERNEL_UFFDIO_WRITEPROTECT_MODE_DONTWAKE,
+            &address_space) == -EDGE_LINUX_EINVAL);
+        assert(kernel_userfaultfd_writeprotect_validate(
+            context_id, &protected_range,
+            KERNEL_UFFDIO_WRITEPROTECT_MODE_WP,
+            &address_space) == 0);
+        assert(address_space == 0x12345000u);
+        assert(kernel_userfaultfd_writeprotect_commit(
+            context_id, &protected_range,
+            KERNEL_UFFDIO_WRITEPROTECT_MODE_WP) == 0);
+        assert(kernel_userfaultfd_apply_writeprotect(
+            address_space, 0x501234u) == 0);
+        assert(writeprotect_calls == 1 &&
+               writeprotect_address == 0x501000u &&
+               writeprotect_enable == 1);
+        assert(kernel_userfaultfd_page_fault(
+            address_space, 0x501234u, 0, 1, 96,
+            &fault_context, &ticket) == 0);
+        assert(kernel_userfaultfd_page_fault(
+            address_space, 0x501234u, 1, 1, 97,
+            &fault_context, &ticket) == 1);
+        memset(&message, 0, sizeof(message));
+        assert(kernel_userfaultfd_read(
+            context_id, copy_message, &message, sizeof(message)) ==
+            (int64_t)sizeof(message));
+        assert(message.flags ==
+               (KERNEL_UFFD_PAGEFAULT_FLAG_WRITE |
+                KERNEL_UFFD_PAGEFAULT_FLAG_WP));
+        assert(message.thread_id == 97);
+        assert(kernel_userfaultfd_writeprotect_commit(
+            context_id, &protected_range, 0) == 0);
+        assert(kernel_userfaultfd_fault_pending(
+            context_id, ticket) == 0);
+        assert(kernel_userfaultfd_page_fault(
+            address_space, 0x501234u, 1, 1, 98,
+            &fault_context, &ticket) == 0);
+        assert(kernel_userfaultfd_unregister(
+            context_id, &protected_range) == 0);
+    }
+    {
+        kernel_uffdio_register_t minor_registration = {
+            .range = { .start = 0x900000u, .length = 0x2000u },
+            .mode = KERNEL_UFFD_REGISTER_MODE_MINOR,
+        };
+        kernel_uffdio_range_t minor_page = {
+            .start = 0x900000u, .length = 0x1000u,
+        };
+        uint64_t minor_address_space = 0;
+
+        shmem_page_state = 1;
+        assert(kernel_userfaultfd_register(
+            context_id, &minor_registration) == 0);
+        assert((minor_registration.ioctls &
+                (1ULL << KERNEL_UFFDIO_CONTINUE_NUMBER)) != 0);
+        assert(kernel_userfaultfd_page_fault(
+            0x12345000u, 0x900123u, 0, 0, 106,
+            &fault_context, &ticket) == KERNEL_UFFD_FAULT_QUEUED);
+        memset(&message, 0, sizeof(message));
+        assert(kernel_userfaultfd_read(
+            context_id, copy_message, &message, sizeof(message)) ==
+            (int64_t)sizeof(message));
+        assert(message.flags == KERNEL_UFFD_PAGEFAULT_FLAG_MINOR);
+        assert(kernel_userfaultfd_continue_validate(
+            context_id, &minor_page, 0, &minor_address_space) == 0);
+        assert(minor_address_space == 0x12345000u);
+        assert(kernel_userfaultfd_continue_resolve(
+            context_id, &minor_page) == 1);
+        assert(kernel_userfaultfd_fault_pending(
+            context_id, ticket) == 0);
+        shmem_page_state = 0;
+        assert(kernel_userfaultfd_page_fault(
+            0x12345000u, 0x901123u, 0, 0, 107,
+            &fault_context, &ticket) == 0);
+        assert(kernel_userfaultfd_unregister(
+            context_id, &minor_registration.range) == 0);
+    }
+    {
+        kernel_uffdio_register_t lifecycle_registration = {
+            .range = { .start = 0x700000u, .length = 0x3000u },
+            .mode = KERNEL_UFFD_REGISTER_MODE_MISSING,
+        };
+        kernel_uffdio_range_t middle = {
+            .start = 0x701000u, .length = 0x1000u,
+        };
+        uint64_t lifecycle_ticket = 0;
+
+        assert(kernel_userfaultfd_register(
+            context_id, &lifecycle_registration) == 0);
+        kernel_userfaultfd_mapping_unmap(0x12345000u, &middle, 0);
+        assert(kernel_userfaultfd_missing_fault(
+            0x12345000u, 0x701077u, 0, 100,
+            &fault_context, &lifecycle_ticket) == 0);
+        assert(kernel_userfaultfd_missing_fault(
+            0x12345000u, 0x700077u, 0, 101,
+            &fault_context, &lifecycle_ticket) ==
+            KERNEL_UFFD_FAULT_QUEUED);
+        kernel_userfaultfd_mapping_unmap(
+            0x12345000u, &(kernel_uffdio_range_t){
+                .start = 0x700000u, .length = 0x1000u,
+            }, 0);
+        assert(kernel_userfaultfd_fault_pending(
+            context_id, lifecycle_ticket) == 0);
+        assert(kernel_userfaultfd_missing_fault(
+            0x12345000u, 0x702077u, 0, 102,
+            &fault_context, &lifecycle_ticket) ==
+            KERNEL_UFFD_FAULT_QUEUED);
+        assert(kernel_userfaultfd_resolve(
+            context_id, &(kernel_uffdio_range_t){
+                .start = 0x702000u, .length = 0x1000u,
+            }) == 1);
+        assert(kernel_userfaultfd_unregister(
+            context_id, &(kernel_uffdio_range_t){
+                .start = 0x702000u, .length = 0x1000u,
+            }) == 0);
+    }
+    {
+        kernel_uffdio_api_t event_api = {
+            .api = KERNEL_UFFD_API,
+            .features = KERNEL_UFFD_FEATURE_EVENT_REMOVE |
+                        KERNEL_UFFD_FEATURE_EVENT_UNMAP,
+        };
+        kernel_uffdio_register_t event_registration = {
+            .range = { .start = 0xa00000u, .length = 0x2000u },
+            .mode = KERNEL_UFFD_REGISTER_MODE_MISSING,
+        };
+        int event_context = kernel_userfaultfd_create(
+            0x22345000u, 78, KERNEL_UFFD_NONBLOCK);
+
+        assert(event_context >= 0);
+        assert(kernel_userfaultfd_negotiate(
+            event_context, &event_api) == 0);
+        assert(kernel_userfaultfd_register(
+            event_context, &event_registration) == 0);
+        kernel_userfaultfd_mapping_remove(
+            0x22345000u, &(kernel_uffdio_range_t){
+                .start = 0xa00000u, .length = 0x1000u,
+            });
+        memset(&message, 0, sizeof(message));
+        assert(kernel_userfaultfd_read(
+            event_context, copy_message, &message, sizeof(message)) ==
+            (int64_t)sizeof(message));
+        assert(message.event == KERNEL_UFFD_EVENT_REMOVE);
+        assert(message.flags == 0xa00000u);
+        assert(message.address == 0xa01000u);
+        kernel_userfaultfd_mapping_unmap(
+            0x22345000u, &(kernel_uffdio_range_t){
+                .start = 0xa01000u, .length = 0x1000u,
+            }, 0);
+        memset(&message, 0, sizeof(message));
+        assert(kernel_userfaultfd_read(
+            event_context, copy_message, &message, sizeof(message)) ==
+            (int64_t)sizeof(message));
+        assert(message.event == KERNEL_UFFD_EVENT_UNMAP);
+        assert(message.flags == 0xa01000u);
+        assert(message.address == 0xa02000u);
+        assert(kernel_userfaultfd_missing_fault(
+            0x22345000u, 0xa01020u, 0, 108,
+            &fault_context, &ticket) == 0);
+        kernel_userfaultfd_release(event_context);
+    }
+    {
+        kernel_uffdio_api_t remap_api = {
+            .api = KERNEL_UFFD_API,
+            .features = KERNEL_UFFD_FEATURE_EVENT_REMAP |
+                        KERNEL_UFFD_FEATURE_EVENT_UNMAP,
+        };
+        kernel_uffdio_register_t remap_registration = {
+            .range = { .start = 0xb00000u, .length = 0x2000u },
+            .mode = KERNEL_UFFD_REGISTER_MODE_MISSING,
+        };
+        int remap_context = kernel_userfaultfd_create(
+            0x32345000u, 79, KERNEL_UFFD_NONBLOCK);
+
+        assert(remap_context >= 0);
+        assert(kernel_userfaultfd_negotiate(
+            remap_context, &remap_api) == 0);
+        assert(kernel_userfaultfd_register(
+            remap_context, &remap_registration) == 0);
+        kernel_userfaultfd_mapping_remap(
+            0x32345000u, 0xb00000u, 0x2000u,
+            0xc00000u, 0x2000u, 0xc00000u);
+        memset(&message, 0, sizeof(message));
+        assert(kernel_userfaultfd_read(
+            remap_context, copy_message, &message, sizeof(message)) ==
+            (int64_t)sizeof(message));
+        assert(message.event == KERNEL_UFFD_EVENT_REMAP);
+        assert(message.flags == 0xb00000u);
+        assert(message.address == 0xc00000u);
+        assert(message.length == 0x2000u);
+        memset(&message, 0, sizeof(message));
+        assert(kernel_userfaultfd_read(
+            remap_context, copy_message, &message, sizeof(message)) ==
+            (int64_t)sizeof(message));
+        assert(message.event == KERNEL_UFFD_EVENT_UNMAP);
+        assert(message.flags == 0xb00000u);
+        assert(message.address == 0xb02000u);
+        assert(kernel_userfaultfd_missing_fault(
+            0x32345000u, 0xb00020u, 0, 109,
+            &fault_context, &ticket) == 0);
+        assert(kernel_userfaultfd_missing_fault(
+            0x32345000u, 0xc00020u, 0, 110,
+            &fault_context, &ticket) == KERNEL_UFFD_FAULT_QUEUED);
+        assert(kernel_userfaultfd_resolve(
+            remap_context, &(kernel_uffdio_range_t){
+                .start = 0xc00000u, .length = 0x1000u,
+            }) == 1);
+        kernel_userfaultfd_mapping_expand(
+            0x32345000u, 0xc00000u, 0x2000u, 0x3000u);
+        assert(kernel_userfaultfd_missing_fault(
+            0x32345000u, 0xc02020u, 0, 111,
+            &fault_context, &ticket) == KERNEL_UFFD_FAULT_QUEUED);
+        assert(kernel_userfaultfd_resolve(
+            remap_context, &(kernel_uffdio_range_t){
+                .start = 0xc02000u, .length = 0x1000u,
+            }) == 1);
+        kernel_userfaultfd_release(remap_context);
+    }
+    {
+        kernel_uffdio_api_t fork_api = {
+            .api = KERNEL_UFFD_API,
+            .features = KERNEL_UFFD_FEATURE_EVENT_FORK,
+        };
+        kernel_uffdio_register_t fork_registration = {
+            .range = { .start = 0xd00000u, .length = 0x2000u },
+            .mode = KERNEL_UFFD_REGISTER_MODE_MISSING,
+        };
+        int fork_context = kernel_userfaultfd_create(
+            0x42345000u, 89, KERNEL_UFFD_NONBLOCK);
+        int wait_context = -1;
+        uint64_t wait_ticket = 0;
+
+        assert(fork_context >= 0);
+        assert(kernel_userfaultfd_negotiate(
+            fork_context, &fork_api) == 0);
+        assert(kernel_userfaultfd_register(
+            fork_context, &fork_registration) == 0);
+        installed_context = -1;
+        assert(kernel_userfaultfd_address_space_fork(
+            0x42345000u, 0x52345000u, 90,
+            &wait_context, &wait_ticket) == 0);
+        assert(wait_context == fork_context && wait_ticket != 0);
+        memset(&message, 0, sizeof(message));
+        assert(kernel_userfaultfd_read(
+            fork_context, copy_message, &message, sizeof(message)) ==
+            (int64_t)sizeof(message));
+        assert(message.event == KERNEL_UFFD_EVENT_FORK);
+        assert(message.fork_ufd == 42u);
+        assert(installed_context >= 0);
+        assert(kernel_userfaultfd_missing_fault(
+            0x52345000u, 0xd00020u, 0, 120,
+            &fault_context, &ticket) == KERNEL_UFFD_FAULT_QUEUED);
+        assert(fault_context == installed_context);
+        assert(kernel_userfaultfd_resolve(
+            installed_context, &(kernel_uffdio_range_t){
+                .start = 0xd00000u, .length = 0x1000u,
+            }) == 1);
+        kernel_userfaultfd_release(installed_context);
+        kernel_userfaultfd_release(fork_context);
+    }
+    {
+        kernel_uffdio_api_t no_fork_api = {
+            .api = KERNEL_UFFD_API,
+        };
+        kernel_uffdio_register_t no_fork_registration = {
+            .range = { .start = 0xe00000u, .length = 0x1000u },
+            .mode = KERNEL_UFFD_REGISTER_MODE_MISSING,
+        };
+        int no_fork_context = kernel_userfaultfd_create(
+            0x62345000u, 91, KERNEL_UFFD_NONBLOCK);
+        int no_fork_fault;
+        int wait_context = -1;
+        uint64_t wait_ticket = 0;
+
+        assert(no_fork_context >= 0);
+        assert(kernel_userfaultfd_negotiate(
+            no_fork_context, &no_fork_api) == 0);
+        assert(kernel_userfaultfd_register(
+            no_fork_context, &no_fork_registration) == 0);
+        assert(kernel_userfaultfd_address_space_fork(
+            0x62345000u, 0x72345000u, 92,
+            &wait_context, &wait_ticket) == 0);
+        assert(wait_context == -1 && wait_ticket == 0);
+        assert(kernel_userfaultfd_read(
+            no_fork_context, copy_message, &message, sizeof(message)) ==
+            -EDGE_LINUX_EAGAIN);
+        no_fork_fault = kernel_userfaultfd_missing_fault(
+            0x72345000u, 0xe00020u, 0, 121,
+            &fault_context, &ticket);
+        assert(no_fork_fault == 0);
+        kernel_userfaultfd_release(no_fork_context);
+    }
+    {
+        kernel_uffdio_api_t first_api = {
+            .api = KERNEL_UFFD_API,
+            .features = KERNEL_UFFD_FEATURE_EVENT_FORK,
+        };
+        kernel_uffdio_api_t second_api = first_api;
+        kernel_uffdio_register_t first_registration = {
+            .range = { .start = 0xf00000u, .length = 0x1000u },
+            .mode = KERNEL_UFFD_REGISTER_MODE_MISSING,
+        };
+        kernel_uffdio_register_t second_registration = {
+            .range = { .start = 0xf01000u, .length = 0x1000u },
+            .mode = KERNEL_UFFD_REGISTER_MODE_MISSING,
+        };
+        int wait_context = -1;
+        uint64_t wait_ticket = 0;
+        int first_context = kernel_userfaultfd_create(
+            0x82345000u, 93, KERNEL_UFFD_NONBLOCK);
+        int second_context = kernel_userfaultfd_create(
+            0x82345000u, 93, KERNEL_UFFD_NONBLOCK);
+
+        assert(first_context >= 0 && second_context >= 0);
+        assert(kernel_userfaultfd_negotiate(
+            first_context, &first_api) == 0);
+        assert(kernel_userfaultfd_negotiate(
+            second_context, &second_api) == 0);
+        assert(kernel_userfaultfd_register(
+            first_context, &first_registration) == 0);
+        assert(kernel_userfaultfd_register(
+            second_context, &second_registration) == 0);
+        assert(kernel_userfaultfd_address_space_fork(
+            0x82345000u, 0x92345000u, 94,
+            &wait_context, &wait_ticket) == 0);
+        assert(wait_context == first_context && wait_ticket != 0);
+        assert(kernel_userfaultfd_fault_pending(
+            wait_context, wait_ticket) == 1);
+        assert(kernel_userfaultfd_read(
+            first_context, copy_message, &message, sizeof(message)) ==
+            (int64_t)sizeof(message));
+        assert(message.event == KERNEL_UFFD_EVENT_FORK);
+        assert(kernel_userfaultfd_fault_pending(
+            wait_context, wait_ticket) == 1);
+        assert(kernel_userfaultfd_read(
+            second_context, copy_message, &message, sizeof(message)) ==
+            (int64_t)sizeof(message));
+        assert(message.event == KERNEL_UFFD_EVENT_FORK);
+        assert(kernel_userfaultfd_fault_pending(
+            wait_context, wait_ticket) == 0);
+        kernel_userfaultfd_address_space_release(0x92345000u);
+        kernel_userfaultfd_release(first_context);
+        kernel_userfaultfd_release(second_context);
+    }
+    {
+        kernel_uffdio_api_t first_api = {
+            .api = KERNEL_UFFD_API,
+            .features = KERNEL_UFFD_FEATURE_EVENT_FORK,
+        };
+        kernel_uffdio_api_t second_api = first_api;
+        kernel_uffdio_register_t first_registration = {
+            .range = { .start = 0x1100000u, .length = 0x1000u },
+            .mode = KERNEL_UFFD_REGISTER_MODE_MISSING,
+        };
+        kernel_uffdio_register_t second_registration = {
+            .range = { .start = 0x1101000u, .length = 0x1000u },
+            .mode = KERNEL_UFFD_REGISTER_MODE_MISSING,
+        };
+        kernel_userfaultfd_state_t child_state;
+        int wait_context = -1;
+        uint64_t wait_ticket = 0;
+        int first_child_context;
+        int first_context = kernel_userfaultfd_create(
+            0xa2345000u, 95, KERNEL_UFFD_NONBLOCK);
+        int second_context = kernel_userfaultfd_create(
+            0xa2345000u, 95, KERNEL_UFFD_NONBLOCK);
+
+        assert(first_context >= 0 && second_context >= 0);
+        assert(kernel_userfaultfd_negotiate(
+            first_context, &first_api) == 0);
+        assert(kernel_userfaultfd_negotiate(
+            second_context, &second_api) == 0);
+        assert(kernel_userfaultfd_register(
+            first_context, &first_registration) == 0);
+        assert(kernel_userfaultfd_register(
+            second_context, &second_registration) == 0);
+        assert(kernel_userfaultfd_address_space_fork(
+            0xa2345000u, 0xb2345000u, 96,
+            &wait_context, &wait_ticket) == 0);
+        installed_context = -1;
+        assert(kernel_userfaultfd_read(
+            first_context, copy_message, &message, sizeof(message)) ==
+            (int64_t)sizeof(message));
+        first_child_context = installed_context;
+        assert(first_child_context >= 0);
+        kernel_userfaultfd_release(first_context);
+        assert(kernel_userfaultfd_query(
+            first_child_context, &child_state) == 0);
+        assert(kernel_userfaultfd_read(
+            second_context, copy_message, &message, sizeof(message)) ==
+            -EDGE_LINUX_EAGAIN);
+        kernel_userfaultfd_release(first_child_context);
+        kernel_userfaultfd_release(second_context);
+    }
+    kernel_userfaultfd_release(context_id);
+    assert(kernel_userfaultfd_query(context_id, &state) ==
+           -EDGE_LINUX_EBADF);
+    {
+        kernel_uffdio_api_t sigbus_api = {
+            .api = KERNEL_UFFD_API,
+            .features = KERNEL_UFFD_FEATURE_SIGBUS,
+        };
+        kernel_uffdio_register_t sigbus_registration = {
+            .range = { .start = 0x600000u, .length = 0x1000u },
+            .mode = KERNEL_UFFD_REGISTER_MODE_MISSING,
+        };
+
+        context_id = kernel_userfaultfd_create(
+            0x22345000u, 78, KERNEL_UFFD_NONBLOCK);
+        assert(context_id >= 0);
+        assert(kernel_userfaultfd_negotiate(
+            context_id, &sigbus_api) == 0);
+        assert(kernel_userfaultfd_register(
+            context_id, &sigbus_registration) == 0);
+        assert(kernel_userfaultfd_missing_fault(
+            0x22345000u, 0x600077u, 0, 99,
+            &fault_context, &ticket) == KERNEL_UFFD_FAULT_SIGBUS);
+        assert(kernel_userfaultfd_query(context_id, &state) == 0);
+        assert(state.queued_events == 0 && state.unresolved_faults == 0);
+        kernel_userfaultfd_release(context_id);
+    }
+    {
+        kernel_uffdio_api_t async_api = {
+            .api = KERNEL_UFFD_API,
+            .features = KERNEL_UFFD_FEATURE_WP_ASYNC,
+        };
+        kernel_uffdio_register_t async_registration = {
+            .range = { .start = 0x800000u, .length = 0x2000u },
+            .mode = KERNEL_UFFD_REGISTER_MODE_WP,
+        };
+        kernel_uffdio_range_t first_page = {
+            .start = 0x800000u, .length = 0x1000u,
+        };
+        kernel_uffdio_range_t second_page = {
+            .start = 0x801000u, .length = 0x1000u,
+        };
+        int calls_before;
+
+        context_id = kernel_userfaultfd_create(
+            0x32345000u, 79, KERNEL_UFFD_NONBLOCK);
+        assert(context_id >= 0);
+        assert(kernel_userfaultfd_negotiate(
+            context_id, &async_api) == 0);
+        assert((async_api.features &
+                (KERNEL_UFFD_FEATURE_WP_ASYNC |
+                 KERNEL_UFFD_FEATURE_WP_UNPOPULATED)) ==
+               (KERNEL_UFFD_FEATURE_WP_ASYNC |
+                KERNEL_UFFD_FEATURE_WP_UNPOPULATED));
+        assert(kernel_userfaultfd_register(
+            context_id, &async_registration) == 0);
+        assert(kernel_userfaultfd_writeprotect_commit(
+            context_id, &async_registration.range,
+            KERNEL_UFFDIO_WRITEPROTECT_MODE_WP) == 0);
+        assert(kernel_userfaultfd_page_fault(
+            0x32345000u, 0x800044u, 1, 0, 103,
+            &fault_context, &ticket) == 0);
+        assert(kernel_userfaultfd_query(context_id, &state) == 0);
+        assert(state.queued_events == 0 && state.unresolved_faults == 0);
+        calls_before = writeprotect_calls;
+        assert(kernel_userfaultfd_apply_writeprotect(
+            0x32345000u, 0x800044u) == 0);
+        assert(writeprotect_calls == calls_before);
+        assert(kernel_userfaultfd_page_fault(
+            0x32345000u, 0x801044u, 0, 0, 104,
+            &fault_context, &ticket) == 0);
+        assert(kernel_userfaultfd_apply_writeprotect(
+            0x32345000u, 0x801044u) == 0);
+        assert(writeprotect_calls == calls_before + 1 &&
+               writeprotect_address == second_page.start);
+        assert(kernel_userfaultfd_page_fault(
+            0x32345000u, 0x801044u, 1, 1, 105,
+            &fault_context, &ticket) == 0);
+        assert(writeprotect_calls == calls_before + 2 &&
+               writeprotect_address == second_page.start &&
+               writeprotect_enable == 0);
+        assert(kernel_userfaultfd_apply_writeprotect(
+            0x32345000u, 0x801044u) == 0);
+        assert(writeprotect_calls == calls_before + 2);
+        assert(kernel_userfaultfd_unregister(
+            context_id, &first_page) == 0);
+        assert(kernel_userfaultfd_unregister(
+            context_id, &second_page) == 0);
+        kernel_userfaultfd_release(context_id);
+    }
+    puts("userfaultfd_runtime_unit: PASS");
+    return 0;
+}

@@ -1,0 +1,161 @@
+{
+  "schema": 1,
+  "description": "Exact cross-architecture implementation inventory. Remove entries as policy moves into common code; do not expand debt to make validation pass.",
+  "common_runtime_roots": [
+    "src/kernel"
+  ],
+  "true_architecture_mechanisms": {
+    "kernel_arch_boottime_initialize": {
+      "category": "clock source",
+      "reason": "Reads and initializes the hardware-specific monotonic clock source."
+    },
+    "kernel_arch_boottime_monotonic_us": {
+      "category": "clock source",
+      "reason": "Reads the current architecture timer and converts its counter value."
+    },
+    "kernel_arch_boottime_refine": {
+      "category": "clock source",
+      "reason": "Refines boot time against the architecture-specific timer frequency."
+    },
+    "kernel_arch_boottime_source_hz": {
+      "category": "clock source",
+      "reason": "Reports the frequency of the selected hardware clock source."
+    },
+    "kernel_arch_boottime_source_name": {
+      "category": "clock source",
+      "reason": "Reports the name of the selected hardware clock source."
+    },
+    "kernel_arch_boottime_timer_tick": {
+      "category": "clock source",
+      "reason": "Receives ticks from the architecture-specific timer interrupt."
+    },
+    "kernel_arch_boottime_vdso_snapshot": {
+      "category": "clock source",
+      "reason": "Snapshots the architecture counter state used by the shared vDSO time conversion."
+    },
+    "kernel_arch_current_request_reschedule": {
+      "category": "scheduler entry mechanics",
+      "reason": "Marks the native current task or per-CPU target so each architecture schedules after the shared syscall policy completes."
+    },
+    "kernel_arch_current_rseq_slice_timer_arm": {
+      "category": "scheduler entry mechanics",
+      "reason": "Programs the native per-CPU high-resolution timer after the shared rseq state machine grants a bounded slice."
+    },
+    "kernel_arch_current_rseq_slice_timer_cancel": {
+      "category": "scheduler entry mechanics",
+      "reason": "Restores the native periodic timer after shared rseq syscall entry or revocation ends a slice grant."
+    },
+    "kernel_arch_display_deadline_request": {
+      "category": "scheduler entry mechanics",
+      "reason": "Programs the native APIC or ARM counter alarm for a deadline selected by shared display policy and timer arbitration."
+    },
+    "kernel_arch_input_work_request": {
+      "category": "scheduler entry mechanics",
+      "reason": "Wakes the architecture scheduler when shared deferred input work is queued from interrupt or process context."
+    },
+    "kernel_arch_network_work_request": {
+      "category": "scheduler entry mechanics",
+      "reason": "Wakes the architecture scheduler when a network interrupt queues protocol processing outside hard interrupt context."
+    },
+    "kernel_arch_scheduler_cpu_stats": {
+      "category": "CPU topology",
+      "reason": "Snapshots counters owned by each architecture scheduler while common code defines their Linux-visible format."
+    },
+    "kernel_arch_scheduler_online_cpu_mask": {
+      "category": "CPU topology",
+      "reason": "Reports CPUs discovered and brought online by architecture startup code."
+    },
+    "kernel_arch_serial_console_device": {
+      "category": "console hardware",
+      "reason": "Maps platform UART hardware to its Linux-visible serial device identity."
+    },
+    "kernel_arch_signal_user_stack_pointer": {
+      "category": "signal frame mechanics",
+      "reason": "Reads the user stack pointer from the architecture-specific saved register frame."
+    },
+    "kernel_arch_signal_wait_block": {
+      "category": "signal frame mechanics",
+      "reason": "Parks either a saved user frame or the live syscall stack as required by the entry mechanism."
+    },
+    "kernel_arch_vfs_read_resident": {
+      "category": "address-space mechanics",
+      "reason": "Copies a resident prefix from native file-page backing storage with architecture cache pins, backing generations and physical-alias maintenance. Immutable-file eligibility and EOF policy remain in the common VFS reader."
+    },
+    "kernel_arch_wait_deadline_request": {
+      "category": "scheduler entry mechanics",
+      "reason": "Programs the native per-CPU APIC or ARM counter using shared finite-wait deadline validation and timer arbitration."
+    },
+    "kernel_drm_waiter_cancelled": {
+      "category": "scheduler entry mechanics",
+      "reason": "Resumes the native descriptor wait after shared DRM final-close cancellation: x86 resumes a blocked syscall stack, while ARM re-evaluates and completes a saved poll/select/epoll frame. Client lifetime and cancellation selection remain in common DRM code."
+    },
+    "kernel_drm_waiter_ready": {
+      "category": "scheduler entry mechanics",
+      "reason": "Maps a shared DRM waiter notification to native task wake mechanics: x86 resumes a blocked descriptor syscall, while ARM re-evaluates and completes its saved wait frame. Shared DRM code owns event enqueue, waiter identity, registration and readiness ordering."
+    },
+    "kernel_drm_waiter_wake_batch_complete": {
+      "category": "scheduler entry mechanics",
+      "reason": "Completes architecture-specific scheduling after a shared DRM waiter callback batch: x86 wakeups already enter its runqueue directly, while ARM selects one runnable target after all saved wait frames have been completed."
+    },
+    "kernel_edge_kvm_descriptor_runtime_initialize": {
+      "category": "descriptor table mechanics",
+      "reason": "Connects common KVM objects to each architecture's native process descriptor table and file lifetime rules."
+    },
+    "kernel_ptrace_current_syscall": {
+      "category": "register ABI conversion",
+      "reason": "Decodes syscall arguments and results from the architecture-specific saved register frame."
+    },
+    "kernel_ptrace_get_regset": {
+      "category": "register ABI conversion",
+      "reason": "Exports architecture-specific Linux general-purpose, floating-point, and extension register sets."
+    },
+    "kernel_ptrace_get_thread_area": {
+      "category": "register ABI conversion",
+      "reason": "Exports an architecture-specific Linux thread-local descriptor where the architecture provides that facility."
+    },
+    "kernel_ptrace_read_user_area": {
+      "category": "register ABI conversion",
+      "reason": "Reads the architecture-specific Linux ptrace user-register layout at a byte offset."
+    },
+    "kernel_ptrace_set_regset": {
+      "category": "register ABI conversion",
+      "reason": "Imports architecture-specific Linux general-purpose, floating-point, and extension register sets."
+    },
+    "kernel_ptrace_set_thread_area": {
+      "category": "register ABI conversion",
+      "reason": "Imports an architecture-specific Linux thread-local descriptor where the architecture provides that facility."
+    },
+    "kernel_ptrace_write_user_area": {
+      "category": "register ABI conversion",
+      "reason": "Updates the architecture-specific Linux ptrace user-register layout at a byte offset."
+    },
+    "kernel_sysv_shm_arch_current_address_space": {
+      "category": "address-space mechanics",
+      "reason": "Returns the native address-space handle used by architecture VM operations."
+    },
+    "kernel_sysv_shm_arch_map": {
+      "category": "address-space mechanics",
+      "reason": "Maps validated shared-memory pages using architecture page-table mechanics."
+    },
+    "kernel_sysv_shm_arch_page_allocate": {
+      "category": "address-space mechanics",
+      "reason": "Allocates a native page handle through the architecture VM allocator."
+    },
+    "kernel_sysv_shm_arch_page_release": {
+      "category": "address-space mechanics",
+      "reason": "Releases a native page handle through the architecture VM allocator."
+    },
+    "kernel_sysv_shm_arch_unmap": {
+      "category": "address-space mechanics",
+      "reason": "Unmaps shared memory using architecture page-table mechanics."
+    },
+    "kernel_wait_deadline_poll": {
+      "category": "scheduler entry mechanics",
+      "reason": "Traverses native blocked-task representations and wakes expired shared-policy waits under the x86 owner runqueue lock or ARM serialized runtime lock."
+    }
+  },
+  "duplicate_policy_migration_target": "Move every listed service to one architecture-neutral implementation and retain only the smallest required architecture operation callback.",
+  "duplicate_policy_debt": [],
+  "architecture_reference_allowlist": [],
+  "architecture_leakage_debt": []
+}

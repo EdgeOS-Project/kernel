@@ -1,0 +1,75 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-acpi-power",
+  "provider": "freebsd",
+  "description": "Unmodified FreeBSD AC adapter and control-method battery drivers with Linux power-supply export.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [
+      "EDGEOS_BSD_FULL_ACPICA"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "acpica"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/acpica/acpi_acad.c",
+      "sys/dev/acpica/acpi_battery.c",
+      "sys/dev/acpica/acpi_cmbat.c",
+      "sys/dev/acpica/acpi_package.c",
+      "sys/dev/acpica/acpiio.h"
+    ],
+    "file_count": 5,
+    "tree_sha256": "d1e57d354ba756be7ed50a8061361c5db77146353404b2959073bf5f4e632d42"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "laptop-power",
+      "sources": [
+        "sys/dev/acpica/acpi_acad.c",
+        "sys/dev/acpica/acpi_battery.c",
+        "sys/dev/acpica/acpi_cmbat.c",
+        "sys/dev/acpica/acpi_package.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "character-device",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

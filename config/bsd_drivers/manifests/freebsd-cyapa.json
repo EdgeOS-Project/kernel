@@ -1,0 +1,65 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-cyapa",
+  "provider": "freebsd",
+  "description": "Unmodified FreeBSD Cypress APA I2C trackpad driver with evdev and character-device interfaces.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [
+      "EVDEV_SUPPORT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/cyapa/cyapa.c",
+      "sys/dev/cyapa/cyapa.h"
+    ],
+    "file_count": 2,
+    "tree_sha256": "11aa1b4ebb8ee2c86b3792317b33c2a8d4f6fa75a83033384cc9a69a7c97b45f"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "cyapa-trackpad",
+      "sources": [
+        "sys/dev/cyapa/cyapa.c"
+      ],
+      "capabilities": [
+        "base",
+        "character-device",
+        "generated",
+        "mbuf",
+        "memory",
+        "module",
+        "newbus",
+        "synchronization",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

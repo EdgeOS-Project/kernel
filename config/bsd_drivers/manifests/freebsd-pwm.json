@@ -1,0 +1,117 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-pwm",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD PWM bus, backlight, and character-device drivers.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/pwm",
+      "sys/dev/pwm/ofw_pwm.c",
+      "sys/dev/pwm/ofw_pwmbus.c",
+      "sys/dev/pwm/pwm_backlight.c",
+      "sys/dev/pwm/pwmbus.c",
+      "sys/dev/pwm/pwmbus_if.m",
+      "sys/dev/pwm/pwmc.c"
+    ],
+    "file_count": 11,
+    "tree_sha256": "d3fa14570f0df12ddcb3b0ebada173a01242c601b007b1294dce1ec9e1f57666"
+  },
+  "generated_interfaces": [
+    "sys/dev/pwm/pwmbus_if.m"
+  ],
+  "modules": [
+    {
+      "id": "pwm",
+      "sources": [
+        "sys/dev/pwm/ofw_pwm.c",
+        "sys/dev/pwm/ofw_pwmbus.c",
+        "sys/dev/pwm/pwm_backlight.c",
+        "sys/dev/pwm/pwmbus.c",
+        "sys/dev/pwm/pwmc.c"
+      ],
+      "capabilities": [
+        "base",
+        "block",
+        "character-device",
+        "fdt",
+        "generated",
+        "memory",
+        "module",
+        "newbus",
+        "synchronization",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "pwm-allwinner",
+      "sources": [
+        "sys/dev/pwm/controller/allwinner/aw_pwm.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "generated",
+        "machine",
+        "memory",
+        "mmio",
+        "module",
+        "newbus",
+        "resource"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "pwm-rockchip",
+      "sources": [
+        "sys/dev/pwm/controller/rockchip/rk_pwm.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "generated",
+        "machine",
+        "memory",
+        "mmio",
+        "module",
+        "newbus",
+        "resource"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

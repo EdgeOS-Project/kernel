@@ -1,0 +1,74 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-iavf",
+  "provider": "freebsd",
+  "description": "Unmodified complete standard FreeBSD Intel Adaptive Virtual Function PCIe Ethernet driver.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "RSS"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/iavf",
+      "sys/dev/iavf/iavf_adminq.c",
+      "sys/dev/iavf/iavf_common.c",
+      "sys/dev/iavf/iavf_lib.c",
+      "sys/dev/iavf/iavf_osdep.c",
+      "sys/dev/iavf/iavf_txrx_iflib.c",
+      "sys/dev/iavf/iavf_vc_common.c",
+      "sys/dev/iavf/iavf_vc_iflib.c",
+      "sys/dev/iavf/if_iavf_iflib.c",
+      "sys/sys/pciio.h"
+    ],
+    "file_count": 28,
+    "tree_sha256": "cb77bc714f129cac3eee7e75108332b7908268dac6c5a12b2a4f00dd9e0ab8b0"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "iavf",
+      "sources": [
+        "sys/dev/iavf/iavf_adminq.c",
+        "sys/dev/iavf/iavf_common.c",
+        "sys/dev/iavf/iavf_lib.c",
+        "sys/dev/iavf/iavf_osdep.c",
+        "sys/dev/iavf/iavf_txrx_iflib.c",
+        "sys/dev/iavf/iavf_vc_common.c",
+        "sys/dev/iavf/iavf_vc_iflib.c",
+        "sys/dev/iavf/if_iavf_iflib.c"
+      ],
+      "capabilities": [
+        "base",
+        "network"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

@@ -1,0 +1,108 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-dpaa2",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD NXP DPAA2 management complex, Ethernet, buffer pool, console, and MDIO driver family.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "DEV_ACPI",
+      "EDGEOS_BSD_FULL_ACPICA",
+      "FDT",
+      "INTRNG",
+      "RSS"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "acpica"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/arm64/acpica/acpi_iort.c",
+      "sys/dev/acpica/acpi_bus_if.m",
+      "sys/dev/acpica/acpi_if.m",
+      "sys/dev/dpaa2"
+    ],
+    "file_count": 40,
+    "tree_sha256": "f48bbb818ba04d1be56cdc77c329cfb87f0631f94cde9cf92d32851f25ec8a97"
+  },
+  "generated_interfaces": [
+    "sys/dev/acpica/acpi_bus_if.m",
+    "sys/dev/acpica/acpi_if.m",
+    "sys/dev/dpaa2/dpaa2_cmd_if.m",
+    "sys/dev/dpaa2/dpaa2_mc_if.m",
+    "sys/dev/dpaa2/dpaa2_swp_if.m",
+    "sys/dev/dpaa2/memac_mdio_if.m"
+  ],
+  "modules": [
+    {
+      "id": "dpaa2",
+      "sources": [
+        "sys/arm64/acpica/acpi_iort.c",
+        "sys/dev/dpaa2/dpaa2_bp.c",
+        "sys/dev/dpaa2/dpaa2_buf.c",
+        "sys/dev/dpaa2/dpaa2_channel.c",
+        "sys/dev/dpaa2/dpaa2_con.c",
+        "sys/dev/dpaa2/dpaa2_console.c",
+        "sys/dev/dpaa2/dpaa2_frame.c",
+        "sys/dev/dpaa2/dpaa2_io.c",
+        "sys/dev/dpaa2/dpaa2_mac.c",
+        "sys/dev/dpaa2/dpaa2_mc.c",
+        "sys/dev/dpaa2/dpaa2_mc_acpi.c",
+        "sys/dev/dpaa2/dpaa2_mc_fdt.c",
+        "sys/dev/dpaa2/dpaa2_mcp.c",
+        "sys/dev/dpaa2/dpaa2_ni.c",
+        "sys/dev/dpaa2/dpaa2_rc.c",
+        "sys/dev/dpaa2/dpaa2_swp.c",
+        "sys/dev/dpaa2/dpaa2_types.c",
+        "sys/dev/dpaa2/memac_mdio_acpi.c",
+        "sys/dev/dpaa2/memac_mdio_common.c",
+        "sys/dev/dpaa2/memac_mdio_fdt.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "character-device",
+        "fdt",
+        "generated",
+        "machine",
+        "mbuf",
+        "memory",
+        "module",
+        "network",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

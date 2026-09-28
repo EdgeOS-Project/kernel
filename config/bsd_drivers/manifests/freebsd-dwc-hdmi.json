@@ -1,0 +1,75 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-dwc-hdmi",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Synopsys DesignWare HDMI core and FDT frontend.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT",
+      "hdmi_get_edid_desc=crtc_get_edid_desc",
+      "hdmi_get_edid_t=crtc_get_edid_t",
+      "hdmi_set_videomode_desc=crtc_set_videomode_desc",
+      "hdmi_set_videomode_t=crtc_set_videomode_t"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/hdmi",
+      "sys/dev/hdmi/dwc_hdmi.c",
+      "sys/dev/hdmi/dwc_hdmi_fdt.c",
+      "sys/dev/video/crtc_if.m"
+    ],
+    "file_count": 5,
+    "tree_sha256": "a6ee22c895c9d0bbaa02217b76784b2b211c749e974097610ec497d547d1d4a8"
+  },
+  "generated_interfaces": [
+    "sys/dev/video/crtc_if.m"
+  ],
+  "modules": [
+    {
+      "id": "dwc-hdmi",
+      "sources": [
+        "sys/dev/hdmi/dwc_hdmi.c",
+        "sys/dev/hdmi/dwc_hdmi_fdt.c"
+      ],
+      "capabilities": [
+        "base",
+        "display",
+        "fdt",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

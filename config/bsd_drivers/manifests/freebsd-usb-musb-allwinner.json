@@ -1,0 +1,67 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-usb-musb-allwinner",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Allwinner Device Tree frontend for the shared Mentor MUSB core.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT",
+      "USB_VERBOSE"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/usb/controller/musb_otg_allwinner.c"
+    ],
+    "file_count": 1,
+    "tree_sha256": "dac1fe046971d5246858c220bea7bbfc5dd3aa1d5a60e436582e1bab1771e750"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "usb-musb-allwinner",
+      "sources": [
+        "sys/dev/usb/controller/musb_otg_allwinner.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization",
+        "usb"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

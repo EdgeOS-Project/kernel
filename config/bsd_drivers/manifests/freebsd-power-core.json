@@ -1,0 +1,60 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-power-core",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD generic power transition and power profile core.",
+  "architectures": [
+    "x86_64",
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": [],
+    "include_groups": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/kern/subr_power.c"
+    ],
+    "file_count": 1,
+    "tree_sha256": "d7404b1660afa505d37054417598ff6f5287d1ff08cf313bfed2dcea3968435a"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "power-core",
+      "sources": [
+        "sys/kern/subr_power.c"
+      ],
+      "capabilities": [
+        "base",
+        "character-device",
+        "memory",
+        "module",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

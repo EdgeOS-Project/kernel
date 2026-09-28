@@ -1,0 +1,13 @@
+[Unit]
+Description=EdgeOS advanced scheduler runtime acceptance
+After=local-fs.target
+
+[Service]
+Type=oneshot
+Environment=EDGEOS_EXPECT_CPUS=2
+EnvironmentFile=-/etc/default/edgeos-scheduler-acceptance
+ExecStart=/bin/sh -c '/opt/edgeos-tests/scheduler_advanced_runtime_test.sh > /var/log/edgeos-scheduler-acceptance.log 2>&1; result=$?; echo "$result" > /var/log/edgeos-scheduler-acceptance.status; systemctl --no-block poweroff; exit "$result"'
+TimeoutStartSec=5min
+
+[Install]
+WantedBy=multi-user.target

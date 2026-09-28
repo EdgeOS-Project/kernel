@@ -1,0 +1,74 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-fdt-audio",
+  "provider": "freebsd",
+  "description": "Unmodified FreeBSD FDT audio DAI framework and generic codecs.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "LicenseRef-Upstream-Unmarked"
+    ],
+    "allow_unmarked_files": true,
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/sound/fdt",
+      "sys/dev/sound/fdt/audio_dai_if.m",
+      "sys/dev/sound/fdt/audio_soc.c",
+      "sys/dev/sound/fdt/dummy_codec.c",
+      "sys/dev/sound/fdt/simple_amplifier.c"
+    ],
+    "file_count": 5,
+    "tree_sha256": "c7424ae1ae7b31cb5b2eec0d94385d38df8ed167afe3d878a898180d1c4f9b43"
+  },
+  "generated_interfaces": [
+    "sys/dev/sound/fdt/audio_dai_if.m"
+  ],
+  "modules": [
+    {
+      "id": "fdt-audio",
+      "sources": [
+        "sys/dev/sound/fdt/audio_soc.c",
+        "sys/dev/sound/fdt/dummy_codec.c",
+        "sys/dev/sound/fdt/simple_amplifier.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

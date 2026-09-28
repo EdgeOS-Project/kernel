@@ -1,0 +1,14 @@
+[Unit]
+Description=EdgeOS FUSE runtime acceptance test
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /root/fuse_runtime_test.py
+ExecStartPost=/usr/sbin/poweroff -f
+TimeoutStartSec=300
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,14 @@
+[Unit]
+Description=EdgeOS SquashFS runtime acceptance test
+After=local-fs.target dev-loop-control.device
+Wants=dev-loop-control.device
+
+[Service]
+Type=oneshot
+ExecStart=/root/squashfs_runtime_test.sh
+TimeoutStartSec=120
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

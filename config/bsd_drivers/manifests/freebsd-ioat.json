@@ -1,0 +1,69 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-ioat",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Intel I/OAT DMA engine driver and diagnostic interface.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/ioat",
+      "sys/dev/ioat/ioat.c",
+      "sys/dev/ioat/ioat_test.c"
+    ],
+    "file_count": 6,
+    "tree_sha256": "3c209f6ea185331fe5294f52abf53348f3ae38aa1e2c908657a34e5af1ede8cb"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "ioat",
+      "sources": [
+        "sys/dev/ioat/ioat.c",
+        "sys/dev/ioat/ioat_test.c"
+      ],
+      "capabilities": [
+        "base",
+        "character-device",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

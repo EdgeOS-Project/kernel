@@ -1,0 +1,155 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-raspberrypi-platform",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD Raspberry Pi firmware, mailbox, clock, DMA, GPIO, I2C, SPI, PWM, random, watchdog, CPU frequency, and SD/MMC platform drivers.",
+  "architectures": [
+    "arm64"
+  ],
+  "compile": {
+    "definitions": [
+      "FDT",
+      "INTRNG"
+    ],
+    "undefinitions": []
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/arm/broadcom/bcm2835",
+      "sys/dev/mbox/mbox_if.m"
+    ],
+    "file_count": 29,
+    "tree_sha256": "cd24ab8a17680933ef21780a615f86273e0cb1219560deaec40ff922e6fb3aa4"
+  },
+  "generated_interfaces": [
+    "sys/dev/mbox/mbox_if.m"
+  ],
+  "modules": [
+    {
+      "id": "raspberrypi-firmware",
+      "sources": [
+        "sys/arm/broadcom/bcm2835/bcm2835_firmware.c",
+        "sys/arm/broadcom/bcm2835/bcm2835_mbox.c",
+        "sys/arm/broadcom/bcm2835/bcm2835_vcbus.c",
+        "sys/arm/broadcom/bcm2835/bcm2835_vcio.c"
+      ],
+      "capabilities": [
+        "base",
+        "character-device",
+        "fdt",
+        "firmware",
+        "generated",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "raspberrypi-peripherals",
+      "sources": [
+        "sys/arm/broadcom/bcm2835/bcm2835_bsc.c",
+        "sys/arm/broadcom/bcm2835/bcm2835_clkman.c",
+        "sys/arm/broadcom/bcm2835/bcm2835_dma.c",
+        "sys/arm/broadcom/bcm2835/bcm2835_gpio.c",
+        "sys/arm/broadcom/bcm2835/bcm2835_pwm.c",
+        "sys/arm/broadcom/bcm2835/bcm2835_rng.c",
+        "sys/arm/broadcom/bcm2835/bcm2835_spi.c",
+        "sys/arm/broadcom/bcm2835/bcm2835_wdog.c",
+        "sys/arm/broadcom/bcm2835/raspberrypi_gpio.c",
+        "sys/arm/broadcom/bcm2835/raspberrypi_virtgpio.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "random",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue",
+        "vm"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "raspberrypi-cpufreq",
+      "sources": [
+        "sys/arm/broadcom/bcm2835/bcm2835_cpufreq.c"
+      ],
+      "capabilities": [
+        "base",
+        "fdt",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    },
+    {
+      "id": "raspberrypi-storage",
+      "sources": [
+        "sys/arm/broadcom/bcm2835/bcm2835_sdhci.c",
+        "sys/arm/broadcom/bcm2835/bcm2835_sdhost.c"
+      ],
+      "capabilities": [
+        "base",
+        "block",
+        "cam",
+        "fdt",
+        "generated",
+        "interrupt",
+        "machine",
+        "memory",
+        "module",
+        "newbus",
+        "resource",
+        "synchronization",
+        "sysctl",
+        "taskqueue"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

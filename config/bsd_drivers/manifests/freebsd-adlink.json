@@ -1,0 +1,36 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-adlink",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD ADLINK PCI data acquisition driver.",
+  "architectures": ["x86_64", "arm64"],
+  "compile": {"definitions": [], "undefinitions": []},
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": ["BSD-3-Clause"],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": ["sys/dev/adlink"],
+    "file_count": 1,
+    "tree_sha256": "8e41336b02dfce124c507699a1d4d44fba98e1fb4723af344fe258b6c4c9f851"
+  },
+  "generated_interfaces": [],
+  "modules": [{
+    "id": "adlink",
+    "sources": ["sys/dev/adlink/adlink.c"],
+    "capabilities": ["base", "character-device", "generated", "machine", "memory", "module", "newbus", "pci", "resource", "vm"],
+    "build": {"mode": "builtin"}
+  }]
+}

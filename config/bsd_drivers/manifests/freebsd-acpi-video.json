@@ -1,0 +1,67 @@
+{
+  "schema_version": 2,
+  "id": "freebsd-acpi-video",
+  "provider": "freebsd",
+  "description": "Unmodified complete FreeBSD ACPI video extension driver for output discovery, switching, and firmware brightness control.",
+  "architectures": [
+    "x86_64"
+  ],
+  "compile": {
+    "definitions": [
+      "EDGEOS_BSD_FULL_ACPICA"
+    ],
+    "undefinitions": [],
+    "include_groups": [
+      "acpica"
+    ]
+  },
+  "upstream": {
+    "project": "FreeBSD",
+    "repository": "https://github.com/freebsd/freebsd-src.git",
+    "root": "src/compat/freebsd/upstream",
+    "vendored": true,
+    "commit": "bb5c77e9d281d6def6835d48249898764bc6a5fe",
+    "branch": "main",
+    "version": "16.0-CURRENT",
+    "freebsd_version": 1600019
+  },
+  "source_policy": {
+    "mode": "unmodified",
+    "allow_inline_patches": false,
+    "allowed_licenses": [
+      "BSD-2-Clause",
+      "BSD-3-Clause"
+    ],
+    "license_exceptions": {}
+  },
+  "source_lock": {
+    "paths": [
+      "sys/dev/acpica/acpi_video.c"
+    ],
+    "file_count": 1,
+    "tree_sha256": "25ffd293da3513b9d96aa8a49ec703e1ebc0cb2d86ebb2f48f93a9fc58f773a9"
+  },
+  "generated_interfaces": [],
+  "modules": [
+    {
+      "id": "acpi-video",
+      "sources": [
+        "sys/dev/acpica/acpi_video.c"
+      ],
+      "capabilities": [
+        "acpi",
+        "base",
+        "display",
+        "generated",
+        "memory",
+        "module",
+        "newbus",
+        "pci",
+        "sysctl"
+      ],
+      "build": {
+        "mode": "builtin"
+      }
+    }
+  ]
+}

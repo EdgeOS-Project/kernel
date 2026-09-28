@@ -1,0 +1,8 @@
+#!/bin/sh
+# Original EdgeOS test script, licensed under MPL-2.0.
+exec >/dev/console 2>&1
+echo GROUPS_TEST_BEGIN
+/root/groups_abi_probe
+echo groups_probe_rc:$?
+uname -m
+echo GROUPS_TEST_END
