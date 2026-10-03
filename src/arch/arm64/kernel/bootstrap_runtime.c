@@ -20899,6 +20899,13 @@ static void socket_option_apply_ip_state(kernel_socket_t *socket) {
             ip_set_option(socket->tcp, SOF_KEEPALIVE);
         else
             ip_reset_option(socket->tcp, SOF_KEEPALIVE);
+        /* A listener has only the common PCB prefix. Transport fields in
+         * tcp_pcb overlap its accept callback or extend past its allocation.
+         * Keep these options in option_state for accepted connections. */
+        if (socket->tcp->state == LISTEN) {
+            lwip_stack_core_exit();
+            return;
+        }
         if (state->tcp_nodelay)
             tcp_nagle_disable(socket->tcp);
         else
