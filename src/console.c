@@ -769,6 +769,32 @@ static void printf_emit_padded(const char *s, int pad, int pad0) {
     printf_emit_str(s ? s : "");
 }
 
+static const char *printf_emit_log_prefix(const char *format) {
+    while (*format == '[') {
+        const char *tag = format + 1;
+        const char *end = tag;
+
+        if (!((*end >= 'a' && *end <= 'z') ||
+              (*end >= 'A' && *end <= 'Z')))
+            break;
+        while (end - tag < 32 &&
+               ((*end >= 'a' && *end <= 'z') ||
+                (*end >= 'A' && *end <= 'Z') ||
+                (*end >= '0' && *end <= '9') ||
+                *end == '-' || *end == '_'))
+            ++end;
+        if (*end != ']' ||
+            (end[1] != ' ' && end[1] != '[' &&
+             end[1] != '\n' && end[1] != 0))
+            break;
+        while (tag < end) printf_emit_char(*tag++);
+        printf_emit_char(':');
+        format = end + 1;
+        if (*format == '[') printf_emit_char(' ');
+    }
+    return format;
+}
+
 static void vprintf_core(uint32_t color, const char *format, va_list ap) {
     int vt = console_current_vt();
     console_state_t *st = console_state_for_vt(vt);
@@ -777,6 +803,7 @@ static void vprintf_core(uint32_t color, const char *format, va_list ap) {
     char buf[64];
 
     st->fg = color;
+    format = printf_emit_log_prefix(format);
     while ((c = *format++) != 0) {
         if (c != '%') {
             printf_emit_char((char)c);
@@ -874,6 +901,15 @@ void printf(const char *format, ...) {
     va_start(ap, format);
     vprintf_core(0xFFFFFFFF, format, ap);
     va_end(ap);
+    console_output_batch_end();
+    spin_unlock_irqrestore(&g_printf_lock, flags);
+}
+
+void console_printf_text(const char *text) {
+    uint64_t flags;
+    if (!text || !spin_trylock_irqsave(&g_printf_lock, &flags)) return;
+    console_output_batch_begin();
+    printf_emit_str(printf_emit_log_prefix(text));
     console_output_batch_end();
     spin_unlock_irqrestore(&g_printf_lock, flags);
 }

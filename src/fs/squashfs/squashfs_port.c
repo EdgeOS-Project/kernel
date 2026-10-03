@@ -29,7 +29,7 @@ void *edge_sqfs_alloc(size_t size) {
     if (required > UINT32_MAX) return 0;
     pages = (uint32_t)((required + EDGE_SQFS_PAGE_SIZE - 1u) /
                        EDGE_SQFS_PAGE_SIZE);
-    allocation = (edge_sqfs_allocation_t *)arch_vm_alloc_pages(pages);
+    allocation = (edge_sqfs_allocation_t *)arch_vm_alloc_mapped_pages(pages);
     if (!allocation) return 0;
     allocation->magic = EDGE_SQFS_ALLOCATION_MAGIC;
     allocation->pages = pages;
@@ -54,12 +54,9 @@ void edge_sqfs_free(void *pointer) {
     if (!pointer) return;
     allocation = (edge_sqfs_allocation_t *)pointer - 1;
     if (allocation->magic != EDGE_SQFS_ALLOCATION_MAGIC) return;
-    /* The first page can be reused as soon as arch_vm_free_page returns. */
     pages = allocation->pages;
     allocation->magic = 0;
-    for (uint32_t page = 0; page < pages; ++page)
-        arch_vm_free_page((uint8_t *)allocation +
-                          (uint64_t)page * EDGE_SQFS_PAGE_SIZE);
+    arch_vm_free_mapped_pages(allocation, pages);
 }
 
 ssize_t sqfs_pread(sqfs_fd_t device, void *buffer, size_t count,

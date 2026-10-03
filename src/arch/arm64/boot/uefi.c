@@ -780,7 +780,7 @@ static void edgeos_puts_color(const char *s, uint32_t fg) {
 
 static void fb_log(const char *s, uint32_t color) {
     console_output_batch_begin();
-    edgeos_puts_color("[edgeos] ", pixel(80, 220, 150));
+    edgeos_puts_color("edgeos: ", pixel(80, 220, 150));
     edgeos_puts_color(s, color);
     edgeos_putchar_color('\n', color);
     /* Present and clean only the dirty text rectangle once per complete line. */

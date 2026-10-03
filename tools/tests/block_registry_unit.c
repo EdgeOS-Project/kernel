@@ -17,7 +17,12 @@ static uint32_t test_last_read_count;
 static uint32_t test_flush_calls;
 static uint32_t test_task_scratch_calls;
 static uint8_t test_task_scratch[BLOCK_MAX_SECTOR_SIZE];
+static uint8_t test_nested_task_scratch[BLOCK_MAX_SECTOR_SIZE];
 static uint8_t test_readahead_scratch[32u * 4096u];
+static uint8_t test_nested_readahead_scratch[32u * 4096u];
+static int test_task_scratch_busy;
+static int test_readahead_scratch_busy;
+static block_device_t *test_nested_parent;
 
 void
 spinlock_contention_relax(void)
@@ -66,14 +71,35 @@ void *
 kernel_task_block_scratch_acquire(uint32_t capacity)
 {
     test_task_scratch_calls++;
-    return capacity <= sizeof(test_task_scratch) ? test_task_scratch : 0;
+    if (capacity > sizeof(test_task_scratch)) return 0;
+    if (test_task_scratch_busy) return test_nested_task_scratch;
+    test_task_scratch_busy = 1;
+    return test_task_scratch;
+}
+
+void
+kernel_task_block_scratch_release(void *memory, uint32_t capacity)
+{
+    (void)capacity;
+    if (memory == test_task_scratch) test_task_scratch_busy = 0;
 }
 
 void *
 kernel_task_block_readahead_scratch_acquire(uint32_t capacity)
 {
-    return capacity <= sizeof(test_readahead_scratch) ?
-        test_readahead_scratch : 0;
+    if (capacity > sizeof(test_readahead_scratch)) return 0;
+    if (test_readahead_scratch_busy) return test_nested_readahead_scratch;
+    test_readahead_scratch_busy = 1;
+    return test_readahead_scratch;
+}
+
+void
+kernel_task_block_readahead_scratch_release(void *memory,
+    uint32_t capacity)
+{
+    (void)capacity;
+    if (memory == test_readahead_scratch)
+        test_readahead_scratch_busy = 0;
 }
 
 uint64_t
@@ -100,6 +126,18 @@ test_read(block_device_t *device, uint32_t lba, uint32_t count, void *output)
     for (uint32_t sector = 0; sector < count; ++sector)
         memset((uint8_t *)output + sector * 512u,
                (uint8_t)(lba + sector), 512u);
+    return 0;
+}
+
+static int
+test_nested_read(block_device_t *device, uint32_t lba, uint32_t count,
+    void *output)
+{
+    uint8_t nested[4096];
+    (void)device;
+    memset(output, 0xa7, count * 512u);
+    if (lba >= 8u)
+        assert(block_read_sectors(test_nested_parent, 8u, 8u, nested) == 0);
     return 0;
 }
 
@@ -263,6 +301,25 @@ main(void)
         assert(read_buffer[index] == 6);
     assert(block_unregister(partition) == 0);
     assert(block_unregister(disk0) == 0);
+
+    assert(block_register("backing", 512, 128, 0, 0, operations) == 0);
+    test_nested_parent = block_get(0);
+    assert(test_nested_parent != 0);
+    assert(block_register("loop-like", 512, 128, 0, 0,
+        (block_ops_t){ .read_sectors = test_nested_read }) == 1);
+    disk1 = block_get(1);
+    assert(disk1 != 0);
+    {
+        uint8_t page[4096];
+        assert(block_read_sectors(test_nested_parent, 0u, 8u, page) == 0);
+        assert(block_read_sectors(disk1, 0u, 8u, page) == 0);
+        assert(block_read_sectors(disk1, 8u, 8u, page) == 0);
+        for (uint32_t index = 0; index < sizeof(page); ++index)
+            assert(page[index] == 0xa7);
+        assert(!test_readahead_scratch_busy);
+    }
+    assert(block_unregister(disk1) == 0);
+    assert(block_unregister(test_nested_parent) == 0);
 
     return 0;
 }

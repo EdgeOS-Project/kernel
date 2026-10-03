@@ -17,7 +17,7 @@ static uint32_t free_calls;
 static uint32_t replacement_pages;
 static uint32_t disposed;
 
-void *arch_vm_alloc_pages(uint64_t count) {
+void *arch_vm_alloc_mapped_pages(uint64_t count) {
     ++allocation_calls;
     if (!count || count > TEST_PAGES) return NULL;
     for (uint32_t start = 0; start <= TEST_PAGES - count; ++start) {
@@ -32,13 +32,16 @@ void *arch_vm_alloc_pages(uint64_t count) {
     return NULL;
 }
 
-void arch_vm_free_page(void *page) {
+void arch_vm_free_mapped_pages(void *page, uint64_t count) {
     uintptr_t offset = (uintptr_t)page - (uintptr_t)arena;
     assert(offset < sizeof(arena) && offset % 4096u == 0);
     uint32_t index = (uint32_t)(offset / 4096u);
-    assert(allocated[index]);
-    allocated[index] = 0;
-    ++free_calls;
+    assert(count && count <= TEST_PAGES - index);
+    for (uint32_t current = 0; current < count; ++current) {
+        assert(allocated[index + current]);
+        allocated[index + current] = 0;
+        ++free_calls;
+    }
     /* Model another CPU replacing the header before the free call returns. */
     memset(page, 0xa5, 4096u);
     ((edge_sqfs_allocation_t *)page)->pages = replacement_pages;

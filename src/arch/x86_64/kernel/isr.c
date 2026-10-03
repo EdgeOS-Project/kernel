@@ -33,6 +33,8 @@
 #define MAX_HANDLERS_PER_VECTOR 8
 #define MAX_CONTEXT_HANDLERS_PER_VECTOR 8
 
+extern void isr_return_iret(void);
+
 static ISR g_interrupt_handlers[NO_INTERRUPT_HANDLERS][MAX_HANDLERS_PER_VECTOR];
 static uint8_t g_interrupt_handler_count[NO_INTERRUPT_HANDLERS];
 typedef struct {
@@ -1133,6 +1135,24 @@ void isr_exception_handler(REGISTERS *reg) {
 
     if (reg->int_no == 13) {
         emergency_serial_exception("gpf", reg, read_cr2());
+        if (reg->rip == (uint64_t)(uintptr_t)isr_return_iret) {
+            const uint64_t *pending = (const uint64_t *)(uintptr_t)reg->rsp;
+            emergency_serial_puts("[iret-gpf] frame_at=");
+            emergency_serial_hex64((uint64_t)(uintptr_t)pending);
+            emergency_serial_puts(" target_rip=");
+            emergency_serial_hex64(pending[0]);
+            emergency_serial_puts(" target_cs=");
+            emergency_serial_hex64(pending[1]);
+            emergency_serial_puts(" target_rflags=");
+            emergency_serial_hex64(pending[2]);
+            if ((pending[1] & 3u) == 3u) {
+                emergency_serial_puts(" target_rsp=");
+                emergency_serial_hex64(pending[3]);
+                emergency_serial_puts(" target_ss=");
+                emergency_serial_hex64(pending[4]);
+            }
+            emergency_serial_puts("\n");
+        }
         if (emulate_user_gpf_sse(reg)) return;
         if ((reg->cs & 0x3) == 0 && scheduler_fault_in_switch_window(reg->rip)) {
             if (g_kernel_nontext_exception_budget > 0) {

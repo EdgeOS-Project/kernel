@@ -36,6 +36,10 @@
 #include "stdio.h"
 #include "sys/bootlog.h"
 
+#if defined(__x86_64__)
+#include "sys/process.h"
+#endif
+
 #if defined(__aarch64__)
 #include "compat/freebsd/edgeos/ofw.h"
 #endif
@@ -1844,7 +1848,19 @@ static int proc_generate(vfs_superblock_t *sb, uint32_t node, int32_t pid, uint3
         memory.available_bytes = memory.free_bytes;
         memory.buffer_bytes = 0;
         memory.cache_bytes = tmpfs_resident_bytes();
-        memory.shared_bytes = memory.cache_bytes +
+#if defined(__x86_64__)
+        {
+            uint64_t file_cache_bytes = 0;
+            uint64_t reclaimable_bytes = 0;
+            process_user_mmap_file_cache_stats(&file_cache_bytes,
+                                                &reclaimable_bytes);
+            memory.cache_bytes += file_cache_bytes;
+            memory.available_bytes += reclaimable_bytes;
+            if (memory.available_bytes > memory.total_bytes)
+                memory.available_bytes = memory.total_bytes;
+        }
+#endif
+        memory.shared_bytes = tmpfs_resident_bytes() +
                               kernel_runtime_sysv_shmem_bytes();
         memory.slab_reclaimable_bytes = 0;
         memory.slab_unreclaimable_bytes = 0;

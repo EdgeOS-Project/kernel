@@ -7,6 +7,7 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 typedef struct copy_fault_context {
@@ -26,6 +27,49 @@ typedef struct io_stress_context {
     uint8_t value;
     uint32_t count;
 } io_stress_context_t;
+
+typedef struct allocation_context {
+    kernel_pipe_runtime_t *pipes;
+    volatile uint32_t *start;
+    int index;
+} allocation_context_t;
+
+static void *allocation_worker(void *opaque) {
+    allocation_context_t *context = opaque;
+
+    while (!__atomic_load_n(context->start, __ATOMIC_ACQUIRE)) {
+    }
+    context->index = kernel_pipe_object_allocate(context->pipes, 8u);
+    return 0;
+}
+
+static void test_concurrent_allocation(void) {
+    enum { WORKERS = 8, ROUNDS = 100 };
+    kernel_pipe_runtime_t *pipes = calloc(WORKERS, sizeof(*pipes));
+    allocation_context_t contexts[WORKERS];
+    pthread_t workers[WORKERS];
+
+    assert(pipes);
+    for (int round = 0; round < ROUNDS; ++round) {
+        volatile uint32_t start = 0;
+        for (int index = 0; index < WORKERS; ++index) {
+            contexts[index] = (allocation_context_t){pipes, &start, -1};
+            assert(pthread_create(&workers[index], 0, allocation_worker,
+                                  &contexts[index]) == 0);
+        }
+        __atomic_store_n(&start, 1u, __ATOMIC_RELEASE);
+        for (int index = 0; index < WORKERS; ++index) {
+            assert(pthread_join(workers[index], 0) == 0);
+            assert(contexts[index].index >= 0);
+            for (int previous = 0; previous < index; ++previous)
+                assert(contexts[index].index != contexts[previous].index);
+        }
+        for (int index = 0; index < WORKERS; ++index)
+            assert(kernel_pipe_object_release_if_unused(
+                       &pipes[contexts[index].index]) == 1);
+    }
+    free(pipes);
+}
 
 static void *endpoint_stress_worker(void *opaque) {
     endpoint_stress_context_t *context = opaque;
@@ -529,6 +573,7 @@ static void test_notification_pipe(void) {
 }
 
 int main(void) {
+    test_concurrent_allocation();
     test_wraparound();
     test_copy_fault_commit_order();
     test_endpoint_lifetime();

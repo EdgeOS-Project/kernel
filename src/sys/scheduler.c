@@ -666,6 +666,7 @@ static void scheduler_log_bad_context(const char *where, const task_t *t) {
     uint64_t active_phys;
     uint64_t task_phys;
     uint64_t kernel_phys;
+    task_t *stack_owner;
     uint32_t resume_live = 0u;
     uint32_t outer_live = 0u;
 
@@ -679,6 +680,8 @@ static void scheduler_log_bad_context(const char *where, const task_t *t) {
             t, t->context.outer_resume_cookie_addr))
         outer_live = (uint32_t)*(const volatile uint64_t *)(uintptr_t)
             t->context.outer_resume_cookie_addr;
+    stack_owner = t ? process_task_for_kernel_stack(
+        t->context.resume_cookie_addr) : 0;
     printf("[sched][ERR] %s bad context pid=%d rip=0x%x rsp=0x%x state=%s ready=%u oncpu=%u onrq=%u generation=%u/%u cookie=0x%x/0x%x live=0x%x outer=0x%x/0x%x live=0x%x\n",
            where,
            t ? t->pid : -1,
@@ -696,6 +699,11 @@ static void scheduler_log_bad_context(const char *where, const task_t *t) {
            t ? (uint32_t)t->context.outer_resume_cookie_addr : 0u,
            t ? (uint32_t)t->context.outer_resume_cookie_value : 0u,
            outer_live);
+    printf("[sched][ERR] context stack pid=%d owner=%d task_top=0x%x owner_top=0x%x\n",
+           t ? t->pid : -1,
+           stack_owner ? stack_owner->pid : -1,
+           t ? (uint32_t)t->kernel_stack_top : 0u,
+           stack_owner ? (uint32_t)stack_owner->kernel_stack_top : 0u);
     active_cr3 = cr3_read();
     active_phys = scheduler_translate_address(
         active_cr3, t ? t->context.resume_cookie_addr : 0u);
@@ -1815,6 +1823,13 @@ static void scheduler_task_make_runnable_checked(task_t *t, uint32_t cpu_id,
         }
 
         if (t->state == TASK_ZOMBIE || t->state == TASK_UNUSED) {
+            spin_unlock_irqrestore(&old_cpu->rq_lock, flags);
+            return;
+        }
+
+        /* A new task is visible by PID before its initial context is built.
+         * Its creator will publish it after scheduler_task_context_ready(). */
+        if (!t->context_ready && !t->on_cpu) {
             spin_unlock_irqrestore(&old_cpu->rq_lock, flags);
             return;
         }

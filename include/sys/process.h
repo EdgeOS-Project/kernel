@@ -205,6 +205,8 @@ typedef struct edge_task_struct {
     int32_t user_vma_mutation_owner_pid;
     uint16_t user_vma_mutation_depth;
     uint16_t _user_vma_mutation_pad;
+    volatile uint64_t user_vma_mutation_sequence;
+    volatile uint32_t user_vma_mutation_waiters;
     volatile uint32_t user_page_table_lock;
     int32_t user_page_table_owner_pid;
     uint16_t user_page_table_lock_depth;
@@ -622,6 +624,9 @@ void process_user_fbdev_collect_dirty_all(void);
 uint32_t process_user_mmap_backing_used_pages(void);
 uint32_t process_user_mmap_backing_total_pages(void);
 uint64_t process_user_mmap_backing_free_bytes(void);
+void process_user_mmap_file_cache_stats(uint64_t *cached_bytes,
+                                        uint64_t *reclaimable_bytes);
+uint32_t process_user_mmap_reclaim_clean_file_pages(uint32_t target_pages);
 int process_page_allocator_snapshot(edge_page_allocator_snapshot_t *snapshot);
 uint32_t process_user_mmap_pt_used_pages(void);
 uint32_t process_user_mmap_pt_total_pages(void);

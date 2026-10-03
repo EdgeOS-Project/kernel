@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -25,15 +26,33 @@ static int fail(const char *operation) {
     return 1;
 }
 
-static int test_queue_and_blocking_wakeup(void) {
+static int test_queue_and_blocking_wakeup(int one_way, int use_recv) {
     enum { MAX_RECORDS = 4096 };
     int descriptors[2];
     uint32_t value = 0;
     uint32_t queued = 0;
     pid_t child;
 
-    if (socketpair(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0, descriptors) < 0)
+    if (one_way) {
+        struct sockaddr_un address = { .sun_family = AF_UNIX };
+        socklen_t address_length;
+        descriptors[0] = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+        descriptors[1] = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+        if (descriptors[0] < 0 || descriptors[1] < 0)
+            return fail("one-way datagram sockets");
+        snprintf(address.sun_path + 1, sizeof(address.sun_path) - 1,
+                 "edgeos-dgram-wake-%ld", (long)getpid());
+        address_length = (socklen_t)(sizeof(address.sun_family) + 1 +
+                                     strlen(address.sun_path + 1));
+        if (bind(descriptors[0], (struct sockaddr *)&address,
+                 address_length) < 0 ||
+            connect(descriptors[1], (struct sockaddr *)&address,
+                    address_length) < 0)
+            return fail("one-way datagram connect");
+    } else if (socketpair(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC,
+                          0, descriptors) < 0) {
         return fail("blocking socketpair");
+    }
     if (fcntl(descriptors[1], F_SETFL,
               fcntl(descriptors[1], F_GETFL) | O_NONBLOCK) < 0)
         return fail("writer O_NONBLOCK");
@@ -73,8 +92,12 @@ static int test_queue_and_blocking_wakeup(void) {
             return fail("full queue did not block writer");
         }
     }
-    if (read(descriptors[0], &value, sizeof(value)) != (ssize_t)sizeof(value))
-        return fail("free datagram queue slot");
+    for (uint32_t index = 0; index < queued; ++index) {
+        if ((use_recv ? recv(descriptors[0], &value, sizeof(value), 0) :
+                        read(descriptors[0], &value, sizeof(value))) !=
+            (ssize_t)sizeof(value))
+            return fail("drain datagram queue");
+    }
     for (unsigned attempt = 0; attempt < 500u; ++attempt) {
         int status;
         pid_t waited = waitpid(child, &status, WNOHANG);
@@ -91,7 +114,9 @@ static int test_queue_and_blocking_wakeup(void) {
         usleep(10000);
     }
     errno = ETIMEDOUT;
-    return fail("blocked writer wakeup");
+    return fail(one_way ? (use_recv ? "one-way recv writer wakeup" :
+                                    "one-way read writer wakeup") :
+                 "socketpair blocked writer wakeup");
 }
 
 int main(void) {
@@ -159,7 +184,9 @@ int main(void) {
     }
     close(descriptors[0]);
 
-    if (test_queue_and_blocking_wakeup() != 0) return 1;
+    if (test_queue_and_blocking_wakeup(0, 0) != 0) return 1;
+    if (test_queue_and_blocking_wakeup(1, 0) != 0) return 1;
+    if (test_queue_and_blocking_wakeup(1, 1) != 0) return 1;
 
     puts("unix_dgram_worker_abi_probe: PASS");
     return 0;

@@ -128,9 +128,13 @@ void *kernel_task_block_scratch_acquire(uint32_t capacity) {
     void *memory;
 
     if (!scratch || !capacity) return 0;
-    if (scratch->block_io_scratch_capacity >= capacity)
-        return scratch->block_io_scratch;
     pages = ((uint64_t)capacity + EDGE_PAGE_SIZE - 1u) / EDGE_PAGE_SIZE;
+    if (scratch->block_io_scratch_busy)
+        return arch_vm_alloc_pages(pages);
+    if (scratch->block_io_scratch_capacity >= capacity) {
+        scratch->block_io_scratch_busy = 1u;
+        return scratch->block_io_scratch;
+    }
     memory = arch_vm_alloc_pages(pages);
     if (!memory) return 0;
     memset(memory, 0, pages * EDGE_PAGE_SIZE);
@@ -140,7 +144,19 @@ void *kernel_task_block_scratch_acquire(uint32_t capacity) {
             scratch->block_io_scratch_capacity);
     scratch->block_io_scratch = memory;
     scratch->block_io_scratch_capacity = (uint32_t)(pages * EDGE_PAGE_SIZE);
+    scratch->block_io_scratch_busy = 1u;
     return memory;
+}
+
+void kernel_task_block_scratch_release(void *memory, uint32_t capacity) {
+    kernel_task_scratch_t *scratch = arch_task_scratch_current();
+
+    if (!memory) return;
+    if (scratch && memory == scratch->block_io_scratch) {
+        scratch->block_io_scratch_busy = 0u;
+        return;
+    }
+    scratch_pages_release(memory, capacity);
 }
 
 void *kernel_task_block_readahead_scratch_acquire(uint32_t capacity) {
@@ -149,9 +165,13 @@ void *kernel_task_block_readahead_scratch_acquire(uint32_t capacity) {
     void *memory;
 
     if (!scratch || !capacity) return 0;
-    if (scratch->block_readahead_scratch_capacity >= capacity)
-        return scratch->block_readahead_scratch;
     pages = ((uint64_t)capacity + EDGE_PAGE_SIZE - 1u) / EDGE_PAGE_SIZE;
+    if (scratch->block_readahead_scratch_busy)
+        return arch_vm_alloc_pages(pages);
+    if (scratch->block_readahead_scratch_capacity >= capacity) {
+        scratch->block_readahead_scratch_busy = 1u;
+        return scratch->block_readahead_scratch;
+    }
     memory = arch_vm_alloc_pages(pages);
     if (!memory) return 0;
     memset(memory, 0, pages * EDGE_PAGE_SIZE);
@@ -162,7 +182,20 @@ void *kernel_task_block_readahead_scratch_acquire(uint32_t capacity) {
     scratch->block_readahead_scratch = memory;
     scratch->block_readahead_scratch_capacity =
         (uint32_t)(pages * EDGE_PAGE_SIZE);
+    scratch->block_readahead_scratch_busy = 1u;
     return memory;
+}
+
+void kernel_task_block_readahead_scratch_release(void *memory,
+                                                 uint32_t capacity) {
+    kernel_task_scratch_t *scratch = arch_task_scratch_current();
+
+    if (!memory) return;
+    if (scratch && memory == scratch->block_readahead_scratch) {
+        scratch->block_readahead_scratch_busy = 0u;
+        return;
+    }
+    scratch_pages_release(memory, capacity);
 }
 
 void *kernel_task_loop_io_scratch_acquire(uint32_t capacity) {

@@ -353,6 +353,27 @@ config FB_CONSOLE
     bool "Framebuffer console"
     default y
 
+menuconfig LOGO
+    bool "Boot logo on the framebuffer console"
+    depends on FB_CONSOLE
+    default y
+
+if LOGO
+choice
+    prompt "EdgeOS boot logo color depth"
+    default LOGO_EDGEOS_CLUT224
+
+config LOGO_EDGEOS_MONO
+    bool "Monochrome Lotor logo"
+
+config LOGO_EDGEOS_VGA16
+    bool "16-color Lotor logo"
+
+config LOGO_EDGEOS_CLUT224
+    bool "224-color Lotor logo"
+endchoice
+endif
+
 config GRAPHICS_BGA
     bool "Bochs Graphics Adapter framebuffer"
     default y

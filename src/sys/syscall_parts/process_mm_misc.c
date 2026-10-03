@@ -1507,12 +1507,7 @@ record_wait:
         socket_rights_note_packet_read(socket);
         spin_unlock_irqrestore(
             &socket->io_lock, irq_flags);
-
-        if (socket->unix_peer_id >= 0 &&
-            socket->unix_peer_id < EDGE_MAX_SOCKETS)
-            fd_wake_socket_waiters_events(
-                socket->unix_peer_id,
-                LINUX_POLLOUT | LINUX_POLLWRNORM);
+        unix_record_wake_senders_after_drain(socket);
         return copy_error ? copy_error : (int64_t)copied;
     }
 }
@@ -3517,7 +3512,9 @@ static user_mmap_file_page_cache_t g_user_mmap_file_page_cache[USER_MMAP_FILE_PA
 static int g_user_mmap_file_page_cache_hash[USER_MMAP_FILE_PAGE_CACHE_HASH_MAX];
 static int g_user_mmap_file_page_cache_high;
 static int g_user_mmap_file_page_cache_free_hint;
+static int g_user_mmap_file_page_cache_reclaim_cursor;
 static volatile int g_user_mmap_file_page_cache_lock;
+static task_t *g_user_mmap_file_page_cache_owner;
 static uint64_t g_user_mmap_file_page_cache_sequence;
 
 static int g_user_mmap_debug_budget = 0;
@@ -3726,11 +3723,19 @@ static void user_mmap_file_slot_mapping_release(uint16_t file_slot) {
 }
 
 static void user_mmap_file_slot_pending_release(uint16_t file_slot) {
+    int drain = 0;
     if (file_slot >= USER_MMAP_FILE_SLOT_MAX) return;
     user_mmap_file_slot_lock();
     if (g_user_mmap_file_slots[file_slot].pending_refs)
         --g_user_mmap_file_slots[file_slot].pending_refs;
+    if (g_user_mmap_file_slots[file_slot].used &&
+        g_user_mmap_file_slots[file_slot].orphaned &&
+        g_user_mmap_file_slots[file_slot].orphan_ref &&
+        !g_user_mmap_file_slots[file_slot].pending_refs &&
+        !g_user_mmap_file_slots[file_slot].mapping_refs)
+        drain = 1;
     user_mmap_file_slot_unlock();
+    if (drain) (void)x86_mmap_orphan_drain(1u);
 }
 
 static int user_mmap_file_slot_is_orphaned(uint16_t file_slot) {
@@ -3756,9 +3761,13 @@ static void user_mmap_file_cache_lock(void) {
             (spins & 0x3fffu) == 0u)
             scheduler_yield();
     }
+    __atomic_store_n(&g_user_mmap_file_page_cache_owner,
+                     process_current_task(), __ATOMIC_RELEASE);
 }
 
 static void user_mmap_file_cache_unlock(void) {
+    __atomic_store_n(&g_user_mmap_file_page_cache_owner, 0,
+                     __ATOMIC_RELEASE);
     __sync_lock_release(&g_user_mmap_file_page_cache_lock);
 }
 
@@ -4325,6 +4334,70 @@ static int user_mmap_file_cache_reclaim_one_locked(void) {
 
     (void)user_mmap_file_cache_reclaim_locked(1u, &first_slot, 0);
     return first_slot;
+}
+
+void process_user_mmap_file_cache_stats(uint64_t *cached_bytes,
+                                        uint64_t *reclaimable_bytes) {
+    uint64_t cached = 0;
+    uint64_t reclaimable = 0;
+
+    user_mmap_file_cache_lock();
+    for (int index = 0; index < g_user_mmap_file_page_cache_high; ++index) {
+        const user_mmap_file_page_cache_t *page =
+            &g_user_mmap_file_page_cache[index];
+        if (!page->used ||
+            process_user_mmap_backing_page_generation(page->backing_idx) !=
+                page->backing_generation)
+            continue;
+        cached += KERNEL_MM_USER_PAGE_SIZE;
+        if (!page->writable_seen &&
+            process_user_mmap_backing_page_refcount(page->backing_idx) == 1u)
+            reclaimable += KERNEL_MM_USER_PAGE_SIZE;
+    }
+    user_mmap_file_cache_unlock();
+    if (cached_bytes) *cached_bytes = cached;
+    if (reclaimable_bytes) *reclaimable_bytes = reclaimable;
+}
+
+uint32_t process_user_mmap_reclaim_clean_file_pages(uint32_t target_pages) {
+    uint32_t reclaimed = 0;
+    uint64_t scanned = 0;
+    int high;
+    int cursor;
+
+    if (!target_pages ||
+        (process_current_task() &&
+         __atomic_load_n(&g_user_mmap_file_page_cache_owner,
+                         __ATOMIC_ACQUIRE) == process_current_task()))
+        return 0;
+    user_mmap_file_cache_lock();
+    high = g_user_mmap_file_page_cache_high;
+    cursor = g_user_mmap_file_page_cache_reclaim_cursor;
+    if (cursor < 0 || cursor >= high) cursor = 0;
+    for (; scanned < (uint64_t)high && reclaimed < target_pages;
+         ++scanned) {
+        int index = cursor++;
+        user_mmap_file_page_cache_t *page;
+
+        if (cursor == high) cursor = 0;
+        page = &g_user_mmap_file_page_cache[index];
+        if (!page->used || page->writable_seen ||
+            process_user_mmap_backing_page_refcount(page->backing_idx) != 1u ||
+            process_user_mmap_backing_page_generation(page->backing_idx) !=
+                page->backing_generation)
+            continue;
+        user_mmap_file_cache_note_shadow(page, 0);
+        user_mmap_file_cache_hash_remove_slot(index);
+        process_user_mmap_release_backing_page(page->backing_idx);
+        memset(page, 0, sizeof(*page));
+        if (index < g_user_mmap_file_page_cache_free_hint)
+            g_user_mmap_file_page_cache_free_hint = index;
+        ++reclaimed;
+    }
+    g_user_mmap_file_page_cache_reclaim_cursor = cursor;
+    user_mmap_file_cache_unlock();
+    edge_mm_statistics_note_reclaim(scanned, reclaimed);
+    return reclaimed;
 }
 
 uint32_t arch_mm_reclaim_pages(uint32_t cgroup_id, uint32_t target_pages,
@@ -5187,6 +5260,7 @@ void edge_mmap_file_cache_invalidate_range(
 
 static int edge_mmap_file_cache_writeback_page(
     user_mmap_file_page_cache_t *page) {
+    static int diagnostic_budget = 8;
     user_mmap_file_slot_t *file;
     vfs_inode_t inode;
     void *backing;
@@ -5197,15 +5271,34 @@ static int edge_mmap_file_cache_writeback_page(
     file = &g_user_mmap_file_slots[page->file_slot];
     if (!file->used || !file->have_inode || !file->sb ||
         page->slot_generation != file->cache_generation ||
-        !file->sb->ops || !file->sb->ops->write)
+        !file->sb->ops || !file->sb->ops->write) {
+        if (file->reclaiming && diagnostic_budget > 0) {
+            --diagnostic_budget;
+            printf("[mmap-writeback-fail] identity slot=%u path=%s used=%u inode=%u sb=%u generation=%u/%u writable=%u\n",
+                   (uint32_t)page->file_slot, file->path,
+                   (uint32_t)file->used, (uint32_t)file->have_inode,
+                   (uint32_t)(file->sb != 0),
+                   page->slot_generation, file->cache_generation,
+                   (uint32_t)page->writable_seen);
+        }
         return -EIO;
+    }
     backing = process_user_mmap_backing_page_ptr(page->backing_idx);
     if (!backing ||
         process_user_mmap_backing_page_generation(page->backing_idx) !=
             page->backing_generation)
         return -EIO;
     inode = file->inode;
-    if (vfs_inode_refresh(file->sb, &inode) < 0) return -EIO;
+    if (vfs_inode_refresh(file->sb, &inode) < 0) {
+        if (file->reclaiming && diagnostic_budget > 0) {
+            --diagnostic_budget;
+            printf("[mmap-writeback-fail] refresh slot=%u path=%s size=%u off=%u\n",
+                   (uint32_t)page->file_slot, file->path,
+                   (uint32_t)file->inode.size,
+                   (uint32_t)page->file_page_off);
+        }
+        return -EIO;
+    }
     if (!vfs_inode_same_object(file->sb, &file->inode,
                                file->sb, &inode))
         return -EIO;
@@ -5408,7 +5501,7 @@ static int x86_mmap_orphan_drain(uint32_t maximum_slots) {
             user_mmap_file_slot_unlock();
             continue;
         }
-        if (slot->mapping_refs) {
+        if (slot->mapping_refs || slot->pending_refs) {
             user_mmap_orphan_enqueue_locked((uint16_t)file_slot);
             user_mmap_file_slot_unlock();
             continue;
@@ -5440,7 +5533,8 @@ static int x86_mmap_orphan_drain(uint32_t maximum_slots) {
         }
 
         user_mmap_file_slot_lock();
-        if (g_user_mmap_file_slots[file_slot].mapping_refs) {
+        if (g_user_mmap_file_slots[file_slot].mapping_refs ||
+            g_user_mmap_file_slots[file_slot].pending_refs) {
             user_mmap_orphan_enqueue_locked((uint16_t)file_slot);
             user_mmap_file_slot_unlock();
             continue;
@@ -5476,7 +5570,7 @@ static int x86_mmap_orphan_drain(uint32_t maximum_slots) {
             slot->cache_generation == cache_generation &&
             vfs_inode_same_object(slot->sb, &slot->inode,
                                   superblock, &inode)) {
-            if (slot->mapping_refs) {
+            if (slot->mapping_refs || slot->pending_refs) {
                 user_mmap_orphan_enqueue_locked((uint16_t)file_slot);
             } else {
                 memset(slot, 0, sizeof(*slot));
@@ -6355,9 +6449,12 @@ static int user_mmap_file_slot_live_in_snapshot(uint16_t file_slot) {
  * pages are committed before their identity is released.
  */
 static uint32_t user_mmap_file_slot_reclaim_unused(void) {
+    static int diagnostic_budget = 8;
     uint32_t selected = 0;
     uint32_t marked = 0;
     uint32_t freed = 0;
+    uint32_t writeback_failed = 0;
+    uint32_t recheck_failed = 0;
     uint32_t slot_limit;
 
     user_mmap_file_reclaim_lock();
@@ -6448,8 +6545,11 @@ static uint32_t user_mmap_file_slot_reclaim_unused(void) {
         if (candidate_index < 0 ||
             g_user_mmap_file_reclaim_failed[candidate_index])
             continue;
-        if (edge_mmap_file_cache_writeback_page(page) < 0)
+        if (edge_mmap_file_cache_writeback_page(page) < 0) {
+            if (!g_user_mmap_file_reclaim_failed[candidate_index])
+                ++writeback_failed;
             g_user_mmap_file_reclaim_failed[candidate_index] = 1;
+        }
     }
     for (int page_slot = 0;
          page_slot < g_user_mmap_file_page_cache_high; ++page_slot) {
@@ -6498,8 +6598,10 @@ static uint32_t user_mmap_file_slot_reclaim_unused(void) {
         uint16_t file_slot = candidate->slot;
 
         if (!g_user_mmap_file_reclaim_failed[candidate_index] &&
-            user_mmap_file_slot_live_in_snapshot(file_slot))
+            user_mmap_file_slot_live_in_snapshot(file_slot)) {
             g_user_mmap_file_reclaim_failed[candidate_index] = 1;
+            ++recheck_failed;
+        }
         user_mmap_file_slot_lock();
         slot = &g_user_mmap_file_slots[file_slot];
         if (!g_user_mmap_file_reclaim_failed[candidate_index] &&
@@ -6526,14 +6628,41 @@ static uint32_t user_mmap_file_slot_reclaim_unused(void) {
                 g_user_mmap_file_reclaim_superblocks[candidate_index]);
     }
     user_mmap_file_reclaim_unlock();
+    if (!freed && diagnostic_budget > 0) {
+        --diagnostic_budget;
+        printf("[mmap-file-reclaim] selected=%u marked=%u writeback_failed=%u recheck_failed=%u freed=%u\n",
+               selected, marked, writeback_failed, recheck_failed, freed);
+    }
     return freed;
+}
+
+static int user_mmap_file_slot_finish(int file_slot,
+                                      const vfs_inode_t *inode,
+                                      vfs_superblock_t *superblock) {
+    if (file_slot < 0 || !inode || !superblock ||
+        vfs_inode_link_count(inode) != 0)
+        return file_slot;
+    /* A file can be unlinked before its first mmap. Pin it before the
+     * descriptor or VMA drops its last reference to the inode. */
+    if (x86_mmap_orphan_pin_slot((uint16_t)file_slot,
+                                 superblock, inode, 1) == 0)
+        return file_slot;
+    user_mmap_file_slot_pending_release((uint16_t)file_slot);
+    return -1;
 }
 
 static int user_mmap_file_slot_ex(const char *path, const vfs_inode_t *inode, vfs_superblock_t *sb) {
     int free_slot = -1;
     int reclaim_attempted = 0;
     uint32_t slot_limit;
+    vfs_inode_t current_inode;
     if (!path || !path[0]) return -1;
+    if (inode && sb) {
+        current_inode = *inode;
+        if (vfs_inode_refresh(sb, &current_inode) < 0)
+            return -1;
+        inode = &current_inode;
+    }
 retry:
     free_slot = -1;
     user_mmap_file_slot_lock();
@@ -6570,7 +6699,7 @@ retry:
                     &g_user_mmap_file_slots[i]);
                 ++g_user_mmap_file_slots[i].pending_refs;
                 user_mmap_file_slot_unlock();
-                return (int)i;
+                return user_mmap_file_slot_finish((int)i, inode, sb);
             }
         }
     }
@@ -6622,7 +6751,7 @@ retry:
                     &g_user_mmap_file_slots[i]);
                 ++g_user_mmap_file_slots[i].pending_refs;
                 user_mmap_file_slot_unlock();
-                return (int)i;
+                return user_mmap_file_slot_finish((int)i, inode, sb);
             }
             continue;
         }
@@ -6638,6 +6767,28 @@ retry:
                 goto retry;
         }
         if (g_user_mmap_cache_fail_log_budget > 0) {
+            uint32_t used = 0, mapped = 0, pending = 0;
+            uint32_t orphan = 0, live = 0, stale_refs = 0;
+
+            user_mmap_file_reclaim_lock();
+            user_mmap_file_slot_snapshot_live_vmas();
+            user_mmap_file_slot_lock();
+            for (uint32_t i = 0; i < slot_limit; ++i) {
+                const user_mmap_file_slot_t *slot =
+                    &g_user_mmap_file_slots[i];
+                if (!slot->used) continue;
+                ++used;
+                if (slot->mapping_refs) ++mapped;
+                if (slot->pending_refs) ++pending;
+                if (slot->orphaned || slot->orphan_ref || slot->orphan_pending)
+                    ++orphan;
+                if (user_mmap_file_slot_live_in_snapshot((uint16_t)i))
+                    ++live;
+                else if (slot->mapping_refs)
+                    ++stale_refs;
+            }
+            user_mmap_file_slot_unlock();
+            user_mmap_file_reclaim_unlock();
             printf("[mmap-file-slot] full max=%u path=%s backing=%u/%u pt=%u/%u budget=%d\n",
                    (uint32_t)USER_MMAP_FILE_SLOT_MAX, path,
                    process_user_mmap_backing_used_pages(),
@@ -6645,6 +6796,8 @@ retry:
                    process_user_mmap_pt_used_pages(),
                    process_user_mmap_pt_total_pages(),
                    g_user_mmap_cache_fail_log_budget - 1);
+            printf("[mmap-file-slot] used=%u mapped=%u pending=%u orphan=%u live=%u stale_refs=%u\n",
+                   used, mapped, pending, orphan, live, stale_refs);
             g_user_mmap_cache_fail_log_budget--;
         }
         return -1;
@@ -6677,7 +6830,7 @@ retry:
     user_mmap_log_apk_libcrypto_inode(process_current_task(), "slot-new",
                                       path, free_slot, inode, sb);
     user_mmap_file_slot_unlock();
-    return free_slot;
+    return user_mmap_file_slot_finish(free_slot, inode, sb);
 }
 
 static int user_mmap_file_slot(const char *path) {
@@ -9975,6 +10128,19 @@ static int64_t futex_wait_block(edge_futex_waiter_t *waiter,
             return result;
         }
         spin_unlock_irqrestore(&g_futex_lock, flags);
+        /* A signal arriving after the first check but before TASK_BLOCKED
+         * cannot wake the task through the sender's blocked-state check. */
+        if (signal_pending_interrupt()) {
+            scheduler_task_set_running(current);
+            flags = futex_lock_irqsave();
+            futex_waiter_clear(waiter);
+            spin_unlock_irqrestore(&g_futex_lock, flags);
+            current->sleep_wait_active = 0;
+            current->sleep_deadline_us = 0;
+            current->futex_intr_count++;
+            current->last_futex_result = -EINTR;
+            return -EINTR;
+        }
         scheduler_yield();
         current = process_current_task();
         if (!current) return -EINTR;

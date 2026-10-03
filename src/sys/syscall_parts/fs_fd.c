@@ -4808,12 +4808,15 @@ typedef struct {
 } edge_named_fifo_t;
 
 static edge_named_fifo_t g_named_fifos[EDGE_NAMED_FIFO_MAX];
+static spinlock_t g_named_fifo_lock;
 
 static int named_fifo_pipe_for_inode(vfs_superblock_t *superblock,
                                      const vfs_inode_t *inode,
                                      int create) {
     int free_idx = -1;
+    uint64_t irq_flags;
     if (!superblock || !inode) return -1;
+    irq_flags = spin_lock_irqsave(&g_named_fifo_lock);
     for (int i = 0; i < EDGE_NAMED_FIFO_MAX; ++i) {
         edge_named_fifo_t *nf = &g_named_fifos[i];
         if (nf->used) {
@@ -4823,15 +4826,22 @@ static int named_fifo_pipe_for_inode(vfs_superblock_t *superblock,
                            nf->superblock, superblock) &&
                        nf->inode == inode->ino &&
                        nf->generation == inode->generation) {
+                spin_unlock_irqrestore(&g_named_fifo_lock, irq_flags);
                 return nf->pipe_id;
             }
         }
         if (!nf->used && free_idx < 0) free_idx = i;
     }
-    if (!create || free_idx < 0) return -1;
+    if (!create || free_idx < 0) {
+        spin_unlock_irqrestore(&g_named_fifo_lock, irq_flags);
+        return -1;
+    }
     {
         int pid = pipe_alloc();
-        if (pid < 0) return -1;
+        if (pid < 0) {
+            spin_unlock_irqrestore(&g_named_fifo_lock, irq_flags);
+            return -1;
+        }
         g_named_fifos[free_idx].used = 1;
         g_named_fifos[free_idx].pipe_id = pid;
         g_named_fifos[free_idx].superblock =
@@ -4839,6 +4849,7 @@ static int named_fifo_pipe_for_inode(vfs_superblock_t *superblock,
         g_named_fifos[free_idx].inode = inode->ino;
         g_named_fifos[free_idx].generation = inode->generation;
         g_pipes[pid].named_fifo = 1u;
+        spin_unlock_irqrestore(&g_named_fifo_lock, irq_flags);
         return pid;
     }
 }

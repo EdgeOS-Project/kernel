@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #else
+#include "console.h"
 #include "kernel/system_runtime.h"
 int process_getpid(void);
 int process_read_user_memory(int pid, uint64_t source, void *destination,
@@ -1252,7 +1253,11 @@ bsd_vprintf(const char *format, va_list arguments)
     if (!format)
         return -1;
     result = bsd_vsnprintf(buffer, sizeof(buffer), format, arguments);
+#ifdef BSD_BRIDGE_HOST_TEST
     printf("%s", buffer);
+#else
+    console_printf_text(buffer);
+#endif
     return result;
 }
 

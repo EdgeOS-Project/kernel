@@ -197,7 +197,7 @@ typedef struct {
 static usb_controller_t g_usb_ctrls[8];
 static int g_usb_ctrl_count;
 static int g_usb_have_mouse;
-static uint32_t g_usb_poll_ticks;
+static uint64_t g_usb_last_legacy_status_poll_us;
 static uint8_t g_usb_next_addr = 1;
 static int g_usb_primary_kind; /* 0=none,1=UHCI,4=XHCI */
 static int g_usb_initialized;
@@ -1132,7 +1132,7 @@ void usb_init(void) {
     g_usb_initialized = 1;
     g_usb_ctrl_count = 0;
     g_usb_have_mouse = 0;
-    g_usb_poll_ticks = 0;
+    g_usb_last_legacy_status_poll_us = 0;
     g_usb_next_addr = 1;
     g_usb_primary_kind = 0;
     memset(g_usb_ctrls, 0, sizeof(g_usb_ctrls));
@@ -1284,13 +1284,28 @@ int usb_storage_register_block_if_present(const char *name) {
 }
 #endif
 
+static int usb_legacy_status_poll_due(void) {
+    uint64_t now = boottime_monotonic_us();
+    uint64_t last = __atomic_load_n(&g_usb_last_legacy_status_poll_us,
+                                    __ATOMIC_RELAXED);
+
+    if (last != 0 && now >= last && now - last < 10000u) return 0;
+    return __atomic_compare_exchange_n(&g_usb_last_legacy_status_poll_us,
+                                       &last, now, 0,
+                                       __ATOMIC_RELAXED,
+                                       __ATOMIC_RELAXED);
+}
+
 void usb_poll(void) {
-    if (++g_usb_poll_ticks == 0) g_usb_poll_ticks = 1;
+    int poll_legacy_status = usb_legacy_status_poll_due();
     for (int i = 0; i < g_usb_ctrl_count; ++i) {
         if (!g_usb_ctrls[i].used || !g_usb_ctrls[i].active) continue;
-        if (g_usb_ctrls[i].kind == 1) uhci_poll_controller(&g_usb_ctrls[i].uhci);
-        if (g_usb_ctrls[i].kind == 2) ohci_poll_controller(&g_usb_ctrls[i].ohci);
-        if (g_usb_ctrls[i].kind == 3) ehci_poll_controller(&g_usb_ctrls[i].ehci);
+        if (poll_legacy_status && g_usb_ctrls[i].kind == 1)
+            uhci_poll_controller(&g_usb_ctrls[i].uhci);
+        if (poll_legacy_status && g_usb_ctrls[i].kind == 2)
+            ohci_poll_controller(&g_usb_ctrls[i].ohci);
+        if (poll_legacy_status && g_usb_ctrls[i].kind == 3)
+            ehci_poll_controller(&g_usb_ctrls[i].ehci);
         if (g_usb_ctrls[i].kind == 4) xhci_poll_controller(&g_usb_ctrls[i].xhci);
     }
     usb_poll_keyboard_queues();
@@ -1299,14 +1314,14 @@ void usb_poll(void) {
 }
 
 void usb_poll_irq(void) {
-    if (++g_usb_poll_ticks == 0) g_usb_poll_ticks = 1;
+    int poll_legacy_status = usb_legacy_status_poll_due();
     for (int i = 0; i < g_usb_ctrl_count; ++i) {
         if (!g_usb_ctrls[i].used || !g_usb_ctrls[i].active) continue;
-        if (g_usb_ctrls[i].kind == 1)
+        if (poll_legacy_status && g_usb_ctrls[i].kind == 1)
             uhci_poll_controller(&g_usb_ctrls[i].uhci);
-        if (g_usb_ctrls[i].kind == 2)
+        if (poll_legacy_status && g_usb_ctrls[i].kind == 2)
             ohci_poll_controller(&g_usb_ctrls[i].ohci);
-        if (g_usb_ctrls[i].kind == 3)
+        if (poll_legacy_status && g_usb_ctrls[i].kind == 3)
             ehci_poll_controller(&g_usb_ctrls[i].ehci);
         if (g_usb_ctrls[i].kind == 4)
             xhci_poll_controller_events(&g_usb_ctrls[i].xhci);

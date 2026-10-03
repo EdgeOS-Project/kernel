@@ -1035,7 +1035,6 @@ void syscall_tty_irq_poll(void) {
      * from process context; this timer path is only for cheap wakeups.
      */
     sleep_waiters_irq_poll();
-    futex_waiters_irq_poll();
     fb_console_tty_batch_maybe_flush();
     console_line_wake_input_waiters();
     if (!pending) return;

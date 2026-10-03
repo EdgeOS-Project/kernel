@@ -1706,6 +1706,12 @@ static void process_user_mm_release_abandoned_locks(task_t *task) {
         __atomic_store_n(&memory->user_vma_mutation_owner_pid, 0,
                          __ATOMIC_RELEASE);
         __sync_lock_release(&memory->user_vma_mutation_lock);
+        __atomic_add_fetch(&memory->user_vma_mutation_sequence, 1u,
+                           __ATOMIC_RELEASE);
+        if (__atomic_load_n(&memory->user_vma_mutation_waiters,
+                            __ATOMIC_ACQUIRE))
+            arch_runtime_notify_sequence(
+                &memory->user_vma_mutation_sequence);
         if (__sync_fetch_and_sub(&log_budget, 1) > 0)
             printf("[mm-lock] released abandoned VMA lock mm=%d owner=%d\n",
                    memory->pid, owner_pid);
@@ -1750,6 +1756,8 @@ void process_user_mm_cpu_enter(task_t *task, uint32_t cpu_id) {
                       UINT64_C(1) << cpu_id, __ATOMIC_RELEASE);
 }
 
+static int arch_runtime_can_yield(void);
+
 void process_user_vma_mutation_lock(task_t *task) {
     task_t *memory = task_vm_owner_local(task);
     task_t *current = process_current_task();
@@ -1765,13 +1773,28 @@ void process_user_vma_mutation_lock(task_t *task) {
     }
     while (__sync_lock_test_and_set(
                &memory->user_vma_mutation_lock, 1u)) {
-        ++spins;
-        __asm__ __volatile__("pause");
-        if ((spins & 0x3fffu) == 0u) {
-            current = process_current_task();
-            if (current && !scheduler_task_is_idle(current) &&
-                current->pid > 0 &&
-                current->state == TASK_RUNNING)
+        if (current && !scheduler_task_is_idle(current) &&
+            current->pid > 0 && current->state == TASK_RUNNING &&
+            arch_runtime_can_yield()) {
+            uint64_t observed;
+
+            __atomic_add_fetch(&memory->user_vma_mutation_waiters, 1u,
+                               __ATOMIC_ACQ_REL);
+            observed = __atomic_load_n(
+                &memory->user_vma_mutation_sequence, __ATOMIC_ACQUIRE);
+            if (__atomic_load_n(&memory->user_vma_mutation_lock,
+                                __ATOMIC_ACQUIRE))
+                (void)arch_runtime_wait_sequence(
+                    &memory->user_vma_mutation_sequence, observed,
+                    UINT64_MAX);
+            __atomic_sub_fetch(&memory->user_vma_mutation_waiters, 1u,
+                               __ATOMIC_ACQ_REL);
+        } else {
+            ++spins;
+            __asm__ __volatile__("pause");
+            if ((spins & 0x3fffu) == 0u && current &&
+                current->state == TASK_RUNNING &&
+                arch_runtime_can_yield())
                 scheduler_yield();
         }
     }
@@ -1794,6 +1817,11 @@ void process_user_vma_mutation_unlock(task_t *task) {
     memory->user_vma_mutation_depth = 0;
     memory->user_vma_mutation_owner_pid = 0;
     __sync_lock_release(&memory->user_vma_mutation_lock);
+    __atomic_add_fetch(&memory->user_vma_mutation_sequence, 1u,
+                       __ATOMIC_RELEASE);
+    if (__atomic_load_n(&memory->user_vma_mutation_waiters,
+                        __ATOMIC_ACQUIRE))
+        arch_runtime_notify_sequence(&memory->user_vma_mutation_sequence);
 }
 
 static void process_user_page_table_lock(task_t *task) {
@@ -4011,6 +4039,7 @@ static uint64_t sparse_mmap_backing_phys(int idx) {
 
 static int sparse_mmap_alloc_backing_index_mode_local(int clear_page) {
     int idx = -1;
+    int reclaimed_once = 0;
     uint8_t *page_ptr;
     uint32_t start;
     uint64_t flags;
@@ -4020,6 +4049,7 @@ static int sparse_mmap_alloc_backing_index_mode_local(int clear_page) {
                            __ATOMIC_RELAXED);
         return -1;
     }
+retry:
     flags = spin_lock_irqsave(&g_user_mmap_backing_lock);
     start = g_user_mmap_backing_alloc_hint;
     if (start >= g_user_mmap_backing_ready_pages) start = 0;
@@ -4079,9 +4109,14 @@ static int sparse_mmap_alloc_backing_index_mode_local(int clear_page) {
         }
     }
     if (idx < 0) {
+        spin_unlock_irqrestore(&g_user_mmap_backing_lock, flags);
+        if (!reclaimed_once &&
+            process_user_mmap_reclaim_clean_file_pages(256u) > 0u) {
+            reclaimed_once = 1;
+            goto retry;
+        }
         __atomic_add_fetch(&g_user_mmap_backing_allocation_failures, 1u,
                            __ATOMIC_RELAXED);
-        spin_unlock_irqrestore(&g_user_mmap_backing_lock, flags);
         return -1;
     }
     page_ptr = sparse_mmap_backing_ptr(idx);
@@ -4486,39 +4521,42 @@ out:
 
 static void mapped_pool_release_locked(uint32_t first,
                                        uint32_t page_count) {
-    uint32_t last_table;
+    int needs_shootdown = 0;
 
     if (!page_count) return;
-    last_table = (first + page_count - 1u) / 512u;
     for (uint32_t page = first; page < first + page_count; ++page) {
         uint32_t table = page / 512u;
         uint64_t *pt = g_mapped_pool_pt[table];
         uint64_t entry = pt ? pt[page % 512u] : 0;
         if (entry & PAGE_PRESENT) {
+            pt[page % 512u] = entry & ~PAGE_PRESENT;
+            invlpg_local(EDGE_MAPPED_POOL_BASE +
+                         (uint64_t)page * USER_PAGE_SIZE);
+            needs_shootdown = 1;
+        }
+    }
+    if (needs_shootdown && edge_smp_online_count() > 1u) {
+        edge_cpumask_t online;
+
+        edge_smp_online_mask(&online);
+        /* Retain the pages if another CPU may still cache their mapping. */
+        if (edge_smp_call(&online, EDGE_SMP_CALL_TLB_FLUSH) != 0) return;
+    }
+    for (uint32_t page = first; page < first + page_count; ++page) {
+        uint32_t table = page / 512u;
+        uint64_t *pt = g_mapped_pool_pt[table];
+        uint64_t entry = pt ? pt[page % 512u] : 0;
+
+        if (entry) {
             int index = sparse_mmap_backing_index_from_phys(
                 entry & ~(USER_PAGE_SIZE - 1u));
             pt[page % 512u] = 0;
-            invlpg_local(EDGE_MAPPED_POOL_BASE +
-                         (uint64_t)page * USER_PAGE_SIZE);
             if (index >= 0) process_user_mmap_release_backing_page(index);
         }
         bitmap_clear_idx(g_mapped_pool_used, EDGE_MAPPED_POOL_PAGES, page);
     }
-    for (uint32_t table = first / 512u; table <= last_table; ++table) {
-        uint64_t *pt = g_mapped_pool_pt[table];
-        int empty = 1;
-        if (!pt) continue;
-        for (uint32_t entry = 0; entry < 512u; ++entry)
-            if (pt[entry] & PAGE_PRESENT) {
-                empty = 0;
-                break;
-            }
-        if (!empty) continue;
-        g_mapped_pool_pd[table] = 0;
-        g_mapped_pool_pt[table] = 0;
-        process_user_mmap_release_backing_page(
-            process_user_mmap_backing_page_index(pt));
-    }
+    /* ponytail: retain pool page tables (at most 2 MiB); recycle after a
+     * measured need justifies an additional page-directory shootdown. */
 }
 
 void *process_user_mmap_alloc_mapped_backing_pages(uint32_t page_count) {

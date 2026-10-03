@@ -47,8 +47,10 @@ typedef struct kernel_task_scratch {
     kernel_fd_transfer_target_t socket_rights_target;
     uint8_t *block_io_scratch;
     uint32_t block_io_scratch_capacity;
+    uint32_t block_io_scratch_busy;
     uint8_t *block_readahead_scratch;
     uint32_t block_readahead_scratch_capacity;
+    uint32_t block_readahead_scratch_busy;
     uint8_t *loop_io_scratch;
     uint32_t loop_io_scratch_capacity;
     uint8_t *filesystem_io_scratch;
@@ -81,7 +83,10 @@ void kernel_task_scratch_release(uint32_t task_index);
 
 kernel_task_scratch_t *arch_task_scratch_current(void);
 void *kernel_task_block_scratch_acquire(uint32_t capacity);
+void kernel_task_block_scratch_release(void *memory, uint32_t capacity);
 void *kernel_task_block_readahead_scratch_acquire(uint32_t capacity);
+void kernel_task_block_readahead_scratch_release(void *memory,
+                                                 uint32_t capacity);
 void *kernel_task_loop_io_scratch_acquire(uint32_t capacity);
 void *kernel_task_filesystem_scratch_acquire(uint32_t capacity);
 void *kernel_task_filesystem_metadata_scratch(void);

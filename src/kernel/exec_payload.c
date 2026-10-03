@@ -393,7 +393,7 @@ kernel_exec_record_t *kernel_exec_record_acquire(uint32_t index) {
     if (!g_exec_records[index]) {
         uint64_t pages = (sizeof(kernel_exec_record_t) + EDGE_PAGE_SIZE - 1u) /
                          EDGE_PAGE_SIZE;
-        kernel_exec_record_t *record = arch_vm_alloc_pages(pages);
+        kernel_exec_record_t *record = arch_vm_alloc_mapped_pages(pages);
         if (!record) return 0;
         memset(record, 0, pages * EDGE_PAGE_SIZE);
         g_exec_records[index] = record;
@@ -406,8 +406,7 @@ void kernel_exec_record_release(uint32_t index) {
     if (!record) return;
     g_exec_records[index] = 0;
     uint64_t pages = (sizeof(*record) + EDGE_PAGE_SIZE - 1u) / EDGE_PAGE_SIZE;
-    for (uint64_t page = 0; page < pages; ++page)
-        arch_vm_free_page((uint8_t *)record + page * EDGE_PAGE_SIZE);
+    arch_vm_free_mapped_pages(record, pages);
 }
 
 void kernel_exec_record_reset(kernel_exec_record_t *record) {

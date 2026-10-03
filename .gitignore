@@ -40,3 +40,4 @@ GEMINI.md
 /*.d
 /docs/acceptance-128m.md
 /docs/memory-scaling-acceptance.md
+/tools/tests/ext4_acl_abi_probe.md

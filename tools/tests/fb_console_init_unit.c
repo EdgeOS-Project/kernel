@@ -53,6 +53,11 @@ static int present_calls;
 static int present_rect_calls;
 static uint32_t last_clear_color;
 static uint8_t draw_buffer[800u * 600u * 4u];
+#ifdef CONFIG_LOGO
+static uint32_t online_cpus = 1;
+static uint32_t logo_pixels;
+uint32_t edge_smp_online_count(void) { return online_cpus; }
+#endif
 
 uint64_t boottime_monotonic_us(void) { return 1000000u; }
 int display_backend_requires_present(void) { return 0; }
@@ -64,6 +69,9 @@ void fb_flush_rect(int x, int y, int w, int h) {
 }
 
 void fb_putpixel(int x, int y, uint32_t argb) {
+#ifdef CONFIG_LOGO
+    if (y < 80 && x >= 0 && x < 800 && argb != 0xFF000000u) ++logo_pixels;
+#endif
     (void)x;
     (void)y;
     (void)argb;
@@ -144,6 +152,20 @@ int main(void) {
     assert(present_calls == 1);
     assert(present_rect_calls == 0);
     assert_all_vts_reset(0);
+#ifdef CONFIG_LOGO
+    assert(logo_top_px == 80);
+    assert(row_y(0) == 80);
+    assert(logo_pixels > 0 && logo_pixels < 80u * 80u);
+    uint32_t one_logo_pixels = logo_pixels;
+    online_cpus = 4;
+    fb_console_refresh_logo();
+    assert(logo_pixels == 5u * one_logo_pixels);
+    draw_buffer[0] = 0xA5;
+    vt_scroll_visible_pixels(0);
+    assert(draw_buffer[0] == 0xA5);
+    vt_scroll_visible_pixels_down(0);
+    assert(draw_buffer[0] == 0xA5);
+#endif
 
     /* Readline rings BEL when Backspace is pressed at an empty prompt. */
     fb_console_putchar_vt(1, '$', 15, 0);

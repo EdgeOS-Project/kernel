@@ -6227,6 +6227,14 @@ ARM64_EDGE_OBJS := \
 	$(ARM64_EDGE_C_OBJS) $(ARM64_EDGE_ASM_OBJS) $(ARM64_EDGE_LWIP_C_OBJS)
 ARM64_UEFI_LINK_OBJS := $(ARM64_EDGE_OBJS) $(ARM64_EDGE_PREBUILT_OBJS)
 ARM64_EDGE_DEPS := $(ARM64_EDGE_OBJS:.obj=.d)
+LOGO_HEADER := $(VDSO_GENERATED)/lotor_logo.h
+
+$(LOGO_HEADER): assets/logo/lotor.ppm tools/logo/ppm_to_header.py
+	@mkdir -p $(dir $@)
+	@python3 tools/logo/ppm_to_header.py $< $@
+
+$(OBJ)/fb_console.o $(OBJ)/arm64-edge/src/fb_console.obj: $(LOGO_HEADER)
+
 ARM64_UEFI_COMPILE_FLAGS = \
 	-I$(INC) -I$(SRC) -I$(LWIP_DIR)/src/include -I$(VDSO_GENERATED) \
 	$(ARM64_VERSION_CFLAGS) $(ARM64_COFF_TARGET_FLAGS) \

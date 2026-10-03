@@ -157,6 +157,11 @@ static uint8_t *block_cache_readahead_buffer(void) {
         BLOCK_CACHE_READAHEAD_PAGES * BLOCK_CACHE_PAGE_SIZE);
 }
 
+static void block_cache_readahead_release(uint8_t *buffer) {
+    kernel_task_block_readahead_scratch_release(
+        buffer, BLOCK_CACHE_READAHEAD_PAGES * BLOCK_CACHE_PAGE_SIZE);
+}
+
 static uint32_t block_cache_hash(block_device_t *device,
                                  uint64_t page_index) {
     uint64_t value = ((uint64_t)(uintptr_t)device >> 4) ^
@@ -657,14 +662,14 @@ int block_read_sectors(block_device_t *dev, uint32_t lba, uint32_t count, void *
             int sequential = block_cache_sequential_access(cache_device,
                                                            page_index);
             int device_index = block_cache_device_index(cache_device);
-            uint8_t *readahead = block_cache_readahead_buffer();
             if (block_cache_copy_page(
                     cache_device, page_index,
                     dst + (uint64_t)done * dev->sector_size)) {
                 done += sectors_per_page;
                 continue;
             }
-            if (remaining == sectors_per_page && sequential && readahead) {
+            if (remaining == sectors_per_page && sequential) {
+                uint8_t *readahead = block_cache_readahead_buffer();
                 uint64_t logical_lba = (uint64_t)lba + done;
                 uint64_t available_sectors =
                     logical_lba < dev->sector_count ?
@@ -673,7 +678,7 @@ int block_read_sectors(block_device_t *dev, uint32_t lba, uint32_t count, void *
                     (uint32_t)(available_sectors / sectors_per_page);
                 if (read_pages > BLOCK_CACHE_READAHEAD_PAGES)
                     read_pages = BLOCK_CACHE_READAHEAD_PAGES;
-                if (read_pages > 1u && device_index >= 0) {
+                if (readahead && read_pages > 1u && device_index >= 0) {
                     uint32_t generation;
                     for (uint32_t page = 1; page < read_pages; ++page) {
                         if (block_cache_contains(cache_device,
@@ -685,6 +690,7 @@ int block_read_sectors(block_device_t *dev, uint32_t lba, uint32_t count, void *
                     if (block_cache_copy_page(
                             cache_device, page_index,
                             dst + (uint64_t)done * dev->sector_size)) {
+                        block_cache_readahead_release(readahead);
                         done += sectors_per_page;
                         continue;
                     }
@@ -695,6 +701,7 @@ int block_read_sectors(block_device_t *dev, uint32_t lba, uint32_t count, void *
                             dev, lba + done,
                             read_pages * sectors_per_page,
                             readahead) < 0) {
+                        block_cache_readahead_release(readahead);
                         return -1;
                     }
                     memcpy(dst + (uint64_t)done * dev->sector_size,
@@ -703,9 +710,11 @@ int block_read_sectors(block_device_t *dev, uint32_t lba, uint32_t count, void *
                     block_cache_store_pages(
                         cache_device, page_index, readahead,
                         read_pages, generation);
+                    block_cache_readahead_release(readahead);
                     done += sectors_per_page;
                     continue;
                 }
+                block_cache_readahead_release(readahead);
             }
             {
                 uint32_t run_pages = 1;
@@ -747,7 +756,6 @@ int block_read_sectors(block_device_t *dev, uint32_t lba, uint32_t count, void *
             uint64_t page_lba = page_index * sectors_per_page;
             uint64_t logical_page_lba;
             int device_index = block_cache_device_index(cache_device);
-            uint8_t *readahead = block_cache_readahead_buffer();
             if (partial > remaining) partial = remaining;
             if (block_cache_copy_sectors(
                     cache_device, page_index, first_sector, partial,
@@ -757,6 +765,7 @@ int block_read_sectors(block_device_t *dev, uint32_t lba, uint32_t count, void *
                 continue;
             }
             if (page_lba >= cache_lba_offset) {
+                uint8_t *readahead = block_cache_readahead_buffer();
                 uint32_t generation;
                 logical_page_lba = page_lba - cache_lba_offset;
                 if (readahead && device_index >= 0 &&
@@ -767,6 +776,7 @@ int block_read_sectors(block_device_t *dev, uint32_t lba, uint32_t count, void *
                             cache_device, page_index, first_sector, partial,
                             dev->sector_size,
                             dst + (uint64_t)done * dev->sector_size)) {
+                        block_cache_readahead_release(readahead);
                         done += partial;
                         continue;
                     }
@@ -785,10 +795,12 @@ int block_read_sectors(block_device_t *dev, uint32_t lba, uint32_t count, void *
                         block_cache_store_pages(
                             cache_device, page_index,
                             readahead, 1, generation);
+                        block_cache_readahead_release(readahead);
                         done += partial;
                         continue;
                     }
                 }
+                block_cache_readahead_release(readahead);
             }
             if (block_read_sectors_direct(
                     dev, lba + done, partial,
@@ -964,8 +976,13 @@ static uint8_t *block_byte_io_scratch(uint32_t size, int *shared) {
     return g_block_byte_scratch;
 }
 
-static void block_byte_io_scratch_release(int shared) {
-    if (shared) block_byte_io_unlock();
+static void block_byte_io_scratch_release(uint8_t *scratch, uint32_t size,
+                                          int shared) {
+    if (shared) {
+        block_byte_io_unlock();
+    } else {
+        kernel_task_block_scratch_release(scratch, size);
+    }
 }
 
 int64_t block_read_bytes(block_device_t *dev, uint64_t offset, void *out,
@@ -1006,7 +1023,7 @@ int64_t block_read_bytes(block_device_t *dev, uint64_t offset, void *out,
             uint8_t *scratch = block_byte_io_scratch(sector_size, &shared);
 
             if (!scratch || block_read_sectors(dev, lba, 1u, scratch) < 0) {
-                block_byte_io_scratch_release(shared);
+                block_byte_io_scratch_release(scratch, sector_size, shared);
                 return completed ? (int64_t)completed : -EDGE_LINUX_EIO;
             }
             {
@@ -1016,7 +1033,7 @@ int64_t block_read_bytes(block_device_t *dev, uint64_t offset, void *out,
                        scratch + sector_offset, count);
                 completed += count;
             }
-            block_byte_io_scratch_release(shared);
+            block_byte_io_scratch_release(scratch, sector_size, shared);
         }
     }
     return completed;
@@ -1062,7 +1079,7 @@ int64_t block_write_bytes(block_device_t *dev, uint64_t offset,
 
             if (!scratch || !dev->ops.read_sectors ||
                 block_read_sectors(dev, lba, 1u, scratch) < 0) {
-                block_byte_io_scratch_release(shared);
+                block_byte_io_scratch_release(scratch, sector_size, shared);
                 return completed ? (int64_t)completed : -EDGE_LINUX_EIO;
             }
             if (count > remaining) count = remaining;
@@ -1070,11 +1087,11 @@ int64_t block_write_bytes(block_device_t *dev, uint64_t offset,
                    source + completed, count);
             if (block_write_sectors(dev, lba, 1u,
                                     scratch) < 0) {
-                block_byte_io_scratch_release(shared);
+                block_byte_io_scratch_release(scratch, sector_size, shared);
                 return completed ? (int64_t)completed : -EDGE_LINUX_EIO;
             }
             completed += count;
-            block_byte_io_scratch_release(shared);
+            block_byte_io_scratch_release(scratch, sector_size, shared);
         }
     }
     return completed;

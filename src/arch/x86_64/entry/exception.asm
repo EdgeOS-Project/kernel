@@ -11,6 +11,7 @@ extern isr_exception_handler
 extern process_x86_compat_capture_user_segments
 extern process_x86_compat_user_segments
 global isr_return_from_frame
+global isr_return_iret
 
 %macro PUSH_GPRS 0
     push r15
@@ -118,6 +119,7 @@ isr_return_from_frame:
 .kernel_return:
     add rsp, 16
 .iret:
+isr_return_iret:
     iretq
 
 %macro EXC_NOERR 1

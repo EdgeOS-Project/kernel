@@ -15,6 +15,18 @@ typedef struct kernel_pipe_watch_header {
 } kernel_pipe_watch_header_t;
 
 static volatile uint64_t g_pipe_generation;
+static volatile uint32_t g_pipe_array_lock;
+
+static void pipe_array_lock(void) {
+    while (__sync_lock_test_and_set(&g_pipe_array_lock, 1u)) {
+        while (__atomic_load_n(&g_pipe_array_lock, __ATOMIC_RELAXED))
+            __atomic_signal_fence(__ATOMIC_ACQUIRE);
+    }
+}
+
+static void pipe_array_unlock(void) {
+    __sync_lock_release(&g_pipe_array_lock);
+}
 
 static void pipe_bytes_zero(void *destination, uint64_t size) {
     uint8_t *bytes = destination;
@@ -268,26 +280,36 @@ int kernel_pipe_object_allocate(kernel_pipe_runtime_t *objects,
                                 uint32_t object_count) {
     uint32_t index;
     if (!objects || !object_count) return -EDGE_LINUX_EINVAL;
+    pipe_array_lock();
     for (index = 0; index < object_count; ++index) {
         if (objects[index].used) continue;
         kernel_pipe_object_initialize(&objects[index]);
+        pipe_array_unlock();
         return (int)index;
     }
+    pipe_array_unlock();
     return -EDGE_LINUX_ENFILE;
 }
 
 int kernel_pipe_object_release_if_unused(kernel_pipe_runtime_t *pipe) {
     int release;
-    if (!pipe || !pipe->used) return 0;
+    if (!pipe) return 0;
+    pipe_array_lock();
+    if (!pipe->used) {
+        pipe_array_unlock();
+        return 0;
+    }
     kernel_pipe_metadata_lock(pipe);
     release = pipe->used && !pipe->readers && !pipe->writers &&
         !pipe->pending_readers && !pipe->pending_writers;
     if (!release) {
         kernel_pipe_metadata_unlock(pipe);
+        pipe_array_unlock();
         return 0;
     }
     pipe_bytes_zero(pipe, sizeof(*pipe));
     __atomic_store_n(&pipe->metadata_lock, 0u, __ATOMIC_RELEASE);
+    pipe_array_unlock();
     return 1;
 }
 

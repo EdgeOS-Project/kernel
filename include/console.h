@@ -26,6 +26,7 @@ void console_putstr(const char *str);
 void console_output_batch_begin(void);
 void console_output_batch_end(void);
 void console_kernel_log_putstr(const char *str);
+void console_printf_text(const char *text);
 void console_kernel_log_off(void);
 void console_kernel_log_on(void);
 int console_kernel_log_set_level(int level);

@@ -1906,6 +1906,7 @@ typedef struct {
     uint16_t local_port_be;
     uint32_t network_namespace;
     int unix_peer_id;
+    uint32_t record_send_waiters;
     int cred_pid;
     uint32_t cred_uid;
     uint32_t cred_gid;

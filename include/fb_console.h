@@ -11,6 +11,7 @@
 extern const console_backend_t FB_CONSOLE;
 
 void fb_console_present(void);
+void fb_console_refresh_logo(void);
 void fb_console_tick(uint32_t ticks);
 void fb_console_request_present(void);
 void fb_console_request_tick_from_irq(uint32_t ticks);

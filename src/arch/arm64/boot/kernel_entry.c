@@ -164,6 +164,7 @@ void edgeos_arm64_el1_main(edgeos_arm64_bootinfo_t *bootinfo) {
     boot_log_status = kernel_boot_log_configure();
     arm64_serial_puts("arm64: boot log policy configured\n");
     bootlog_init();
+    console_set_kernel_log_timestamps(1);
     arm64_serial_puts("arm64: boot log configured\n");
     if (boot_log_status < 0)
         bootlog_stage("bootlog: invalid loglevel or logfile option");
@@ -311,6 +312,7 @@ void edgeos_arm64_el1_main(edgeos_arm64_bootinfo_t *bootinfo) {
 #endif
     if (edgeos_arm64_smp_start_secondary_cpus() < 0)
         arm64_serial_puts("arm64: one or more secondary CPUs did not start\n");
+    fb_console_refresh_logo();
     if (edgeos_arm64_virtio_blk_enable_interrupts() < 0)
         arm64_serial_puts(
             "arm64: virtio block interrupts unavailable; retaining polling mode\n");

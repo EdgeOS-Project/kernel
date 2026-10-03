@@ -7,6 +7,10 @@
 #include "string.h"
 #include "sys/boottime.h"
 #include "sys/spinlock.h"
+#ifdef CONFIG_LOGO
+#include "kernel/smp.h"
+#include "lotor_logo.h"
+#endif
 
 enum { EDGE_FB_FONT_MAX_GLYPHS = 512, EDGE_FB_FONT_MAX_HEIGHT = 32 };
 enum { EDGE_FB_MAX_COLS = 160, EDGE_FB_MAX_ROWS = 100 };
@@ -26,6 +30,7 @@ typedef struct {
 static fb_vt_state_t g_vts[EDGE_FB_VT_COUNT];
 static int g_active_vt = 1;
 static int cols, rows;
+static int logo_top_px;
 static int cursor_enabled, cursor_visible;
 static uint32_t last_blink_tick;
 static int dirty;
@@ -56,7 +61,7 @@ static int font_pixel_h(void) { return (int)(g_font_height * g_font_scale); }
 static int cell_w(void){ return font_pixel_w() + 1; }
 static int cell_h(void){ return font_pixel_h() + 2; }
 static int col_x(int c){ return c * cell_w(); }
-static int row_y(int r){ return r * cell_h(); }
+static int row_y(int r){ return logo_top_px + r * cell_h(); }
 
 static uint32_t g_vga_palette[EDGE_FB_PALETTE_COLORS] = {
     0xFF000000,0xFF0000AA,0xFF00AA00,0xFF00AAAA,0xFFAA0000,0xFFAA00AA,0xFFAA5500,0xFFAAAAAA,
@@ -66,6 +71,57 @@ static uint32_t g_vga_palette[EDGE_FB_PALETTE_COLORS] = {
 static uint32_t vga_rgb(uint32_t idx) {
     return g_vga_palette[idx & 0x0F];
 }
+
+#ifdef CONFIG_LOGO
+static uint32_t logo_color(const unsigned char *rgb) {
+#if defined(CONFIG_LOGO_EDGEOS_MONO)
+    uint32_t brightness = 77u * rgb[0] + 150u * rgb[1] + 29u * rgb[2];
+    return brightness >= 128u * 256u ? 0xFFFFFFFFu : 0xFF000000u;
+#elif defined(CONFIG_LOGO_EDGEOS_VGA16)
+    uint32_t best = 0;
+    uint32_t best_distance = UINT32_MAX;
+    for (uint32_t index = 0; index < 16u; ++index) {
+        uint32_t candidate = vga_rgb(index);
+        int dr = (int)rgb[0] - (int)((candidate >> 16) & 255u);
+        int dg = (int)rgb[1] - (int)((candidate >> 8) & 255u);
+        int db = (int)rgb[2] - (int)(candidate & 255u);
+        uint32_t distance = (uint32_t)(dr * dr + dg * dg + db * db);
+        if (distance < best_distance) {
+            best_distance = distance;
+            best = candidate;
+        }
+    }
+    return best;
+#else
+    return 0xFF000000u | ((uint32_t)rgb[0] << 16) |
+           ((uint32_t)rgb[1] << 8) | rgb[2];
+#endif
+}
+
+static void draw_logo(void) {
+    uint32_t count, fit;
+    if (logo_top_px == 0) return;
+    for (int y = 0; y < logo_top_px; ++y)
+        for (uint32_t x = 0; x < fb.width; ++x)
+            fb_putpixel((int)x, y, 0xFF000000u);
+    fit = fb.width / EDGE_LOGO_WIDTH;
+    count = edge_smp_online_count();
+    if (count == 0) count = 1;
+    if (count > fit) count = fit;
+    for (uint32_t logo = 0; logo < count; ++logo) {
+        for (uint32_t y = 0; y < EDGE_LOGO_HEIGHT; ++y) {
+            for (uint32_t x = 0; x < EDGE_LOGO_WIDTH; ++x) {
+                const unsigned char *rgb = edge_logo_rgb +
+                    3u * (y * EDGE_LOGO_WIDTH + x);
+                fb_putpixel((int)(logo * EDGE_LOGO_WIDTH + x), (int)y,
+                            logo_color(rgb));
+            }
+        }
+    }
+}
+#else
+static void draw_logo(void) {}
+#endif
 
 static uint32_t palette_vga_index(uint32_t ansi_index) {
     /* VGA swaps the red and blue index bits used by ANSI SGR colors. */
@@ -164,8 +220,15 @@ static void fb_console_recompute_geometry(void) {
      */
     if (!g_font_user_loaded && fb.width >= 1600u && fb.height >= 900u) scale = 2;
     g_font_scale = scale;
+    logo_top_px = 0;
+#ifdef CONFIG_LOGO
+    if (fb.width >= EDGE_LOGO_WIDTH &&
+        fb.height >= EDGE_LOGO_HEIGHT + (uint32_t)cell_h())
+        logo_top_px = (int)(((EDGE_LOGO_HEIGHT + (uint32_t)cell_h() - 1u) /
+                             (uint32_t)cell_h()) * (uint32_t)cell_h());
+#endif
     cols = (int)(fb.width / (uint32_t)cell_w());
-    rows = (int)(fb.height / (uint32_t)cell_h());
+    rows = ((int)fb.height - logo_top_px) / cell_h();
     if (cols < 1) cols = 1;
     if (rows < 1) rows = 1;
     if (cols > EDGE_FB_MAX_COLS) cols = EDGE_FB_MAX_COLS;
@@ -235,6 +298,7 @@ static void vt_fill_blank(fb_vt_state_t *st, int col, int row, uint8_t bg) {
 static void vt_redraw(int vt) {
     fb_vt_state_t *st = vt_state(vt);
     if (!st) return;
+    draw_logo();
     for (int row = 0; row < rows; ++row) {
         for (int col = 0; col < cols; ++col) {
             fb_vt_cell_t *cell = vt_cell_at(st, col, row);
@@ -260,10 +324,11 @@ static void vt_scroll_visible_pixels(uint8_t bg) {
      * enough that getty appears missing. Move the rendered pixels and clear
      * only the newly exposed line; the cell array is moved separately below.
      */
+    base += (uint32_t)logo_top_px * fb.pitch;
     memmove(base, base + (uint32_t)scroll_px * fb.pitch, (uint32_t)(text_h - scroll_px) * fb.pitch);
     for (int y = text_h - scroll_px; y < text_h; ++y) {
         for (uint32_t x = 0; x < fb.width; ++x) {
-            fb_putpixel((int)x, y, bg_argb);
+            fb_putpixel((int)x, logo_top_px + y, bg_argb);
         }
     }
     mark_dirty_full();
@@ -276,11 +341,12 @@ static void vt_scroll_visible_pixels_down(uint8_t bg) {
     uint32_t bg_argb = vga_rgb(bg);
     if (!base || scroll_px <= 0 || text_h <= scroll_px) return;
 
+    base += (uint32_t)logo_top_px * fb.pitch;
     memmove(base + (uint32_t)scroll_px * fb.pitch, base,
             (uint32_t)(text_h - scroll_px) * fb.pitch);
     for (int y = 0; y < scroll_px; ++y) {
         for (uint32_t x = 0; x < fb.width; ++x)
-            fb_putpixel((int)x, y, bg_argb);
+            fb_putpixel((int)x, logo_top_px + y, bg_argb);
     }
     mark_dirty_full();
 }
@@ -338,6 +404,7 @@ static void vt_clear_internal(int vt, uint8_t bg) {
     }
     if (vt == g_active_vt && present_enabled) {
         fb_clear(vga_rgb(bg));
+        draw_logo();
         draw_cursor();
         mark_dirty_full();
     }
@@ -488,6 +555,18 @@ static void fb_console_present_locked(void) {
         dirty = 0;
         dirty_full = 0;
     }
+}
+
+void fb_console_refresh_logo(void) {
+#ifdef CONFIG_LOGO
+    uint64_t flags = spin_lock_irqsave(&console_lock);
+    if (present_enabled && logo_top_px > 0) {
+        draw_logo();
+        mark_dirty_rect(0, 0, (int)fb.width, logo_top_px);
+        fb_console_present_locked();
+    }
+    spin_unlock_irqrestore(&console_lock, flags);
+#endif
 }
 
 void fb_console_present(void) {

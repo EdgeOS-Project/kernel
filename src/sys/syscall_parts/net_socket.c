@@ -3036,6 +3036,8 @@ static uint64_t unix_record_send_iov_to(
                 socket_waiter_add(fde->pipe_id, cur->pid,
                                   LINUX_POLLOUT | LINUX_POLLWRNORM);
             }
+            __atomic_fetch_add(&peer->record_send_waiters, 1u,
+                               __ATOMIC_RELEASE);
             room = peer->rx_len < socket_rx_capacity(peer) ?
                    socket_rx_capacity(peer) - peer->rx_len : 0;
             if (peer->packet_count < EDGE_SOCKET_PACKET_QUEUE &&
@@ -3043,10 +3045,14 @@ static uint64_t unix_record_send_iov_to(
                 (!rights || !*rights ||
                  kernel_socket_rights_queue_count(&peer->rights) <
                      peer->rights.limit)) {
+                __atomic_fetch_sub(&peer->record_send_waiters, 1u,
+                                   __ATOMIC_ACQ_REL);
                 if (cur) waiter_remove_pid(cur->pid);
                 continue;
             }
             socket_blocking_wait_step(0);
+            __atomic_fetch_sub(&peer->record_send_waiters, 1u,
+                               __ATOMIC_ACQ_REL);
             continue;
         }
 
@@ -3126,6 +3132,29 @@ static void unix_record_consume_front_locked(
     }
     socket_rights_note_packet_read(socket);
     if (consumed_out) *consumed_out = packet_length;
+}
+
+static void unix_record_wake_senders_after_drain(edge_socket_t *receiver) {
+    int receiver_id;
+
+    if (!receiver) return;
+    receiver_id = socket_id_from_ptr(receiver);
+    if (receiver_id < 0) return;
+    if (__atomic_load_n(&receiver->record_send_waiters,
+                        __ATOMIC_ACQUIRE) != 0) {
+        for (int sender_id = 0; sender_id < EDGE_MAX_SOCKETS; ++sender_id) {
+            edge_socket_t *sender = &g_sockets[sender_id];
+            if (sender->used && sender->domain == LINUX_AF_UNIX &&
+                socket_type_is_record(sender->type) &&
+                sender->unix_peer_id == receiver_id)
+                fd_wake_socket_waiters_events(
+                    sender_id, LINUX_POLLOUT | LINUX_POLLWRNORM);
+        }
+    }
+    if (receiver->unix_peer_id >= 0 &&
+        receiver->unix_peer_id < EDGE_MAX_SOCKETS)
+        fd_wake_socket_waiters_events(
+            receiver->unix_peer_id, LINUX_POLLOUT | LINUX_POLLWRNORM);
 }
 
 static uint64_t unix_record_recv_iov(int fd, edge_socket_t *s, edge_fd_t *fde,
@@ -3234,6 +3263,7 @@ unix_record_wait:
                 unix_record_consume_front_locked(
                     s, packet_len, received_rights, consumed_out);
             spin_unlock_irqrestore(&s->io_lock, irq_flags);
+            if (!peek) unix_record_wake_senders_after_drain(s);
             return (uint64_t)(int64_t)status;
         }
         room = iov.iov_len;
@@ -3243,6 +3273,7 @@ unix_record_wait:
                 unix_record_consume_front_locked(
                     s, packet_len, received_rights, consumed_out);
             spin_unlock_irqrestore(&s->io_lock, irq_flags);
+            if (!peek) unix_record_wake_senders_after_drain(s);
             return (uint64_t)-EFAULT;
         }
         copied += n;
@@ -3267,11 +3298,7 @@ unix_record_wait:
             *received_rights = rights_info.handle;
     }
     spin_unlock_irqrestore(&s->io_lock, irq_flags);
-    if (!peek && s->unix_peer_id >= 0 &&
-        s->unix_peer_id < EDGE_MAX_SOCKETS) {
-        fd_wake_socket_waiters_events(s->unix_peer_id,
-                                      LINUX_POLLOUT | LINUX_POLLWRNORM);
-    }
+    if (!peek) unix_record_wake_senders_after_drain(s);
     return (flags_u & LINUX_MSG_TRUNC) ? packet_len : copied;
 }
 
@@ -3360,6 +3387,29 @@ static int netlink_queue_kernel_response(edge_socket_t *socket,
     uint32_t capacity = socket_rx_capacity(socket);
     int acknowledge = request_length >= sizeof(*header) &&
         (header->nlmsg_flags & LINUX_NLM_F_ACK) != 0;
+    uint32_t offset = 0;
+
+    /* A responder may already include the ACK in its reply datagram. */
+    while (acknowledge && response_start <= capacity &&
+           response_length <= capacity - response_start &&
+           response_length - offset >= sizeof(*header)) {
+        struct edge_linux_nlmsghdr reply;
+        uint32_t aligned_length;
+
+        memcpy(&reply, socket->rx_buf + response_start + offset,
+               sizeof(reply));
+        if (reply.nlmsg_len < sizeof(reply) ||
+            reply.nlmsg_len > response_length - offset)
+            break;
+        if (reply.nlmsg_type == LINUX_NLMSG_ERROR &&
+            reply.nlmsg_seq == header->nlmsg_seq) {
+            acknowledge = 0;
+            break;
+        }
+        aligned_length = (reply.nlmsg_len + 3u) & ~3u;
+        if (aligned_length > response_length - offset) break;
+        offset += aligned_length;
+    }
     uint32_t acknowledgement_length = acknowledge ?
         (uint32_t)(sizeof(struct edge_linux_nlmsghdr) +
                    sizeof(struct edge_linux_nlmsgerr)) : 0u;

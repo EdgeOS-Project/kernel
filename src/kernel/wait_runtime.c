@@ -18,9 +18,28 @@ __attribute__((weak)) void kernel_arch_wait_deadline_request(uint64_t deadline_u
     (void)deadline_us;
 }
 
+static uint64_t g_wait_earliest_deadline_us;
+
 void kernel_wait_deadline_request(uint64_t deadline_us) {
-    if (deadline_us && deadline_us != UINT64_MAX)
-        kernel_arch_wait_deadline_request(deadline_us);
+    uint64_t previous;
+    if (!deadline_us || deadline_us == UINT64_MAX) return;
+    previous = __atomic_load_n(&g_wait_earliest_deadline_us, __ATOMIC_RELAXED);
+    while ((!previous || deadline_us < previous) &&
+           !__atomic_compare_exchange_n(&g_wait_earliest_deadline_us,
+               &previous, deadline_us, 0, __ATOMIC_RELEASE,
+               __ATOMIC_RELAXED)) {}
+    kernel_arch_wait_deadline_request(deadline_us);
+}
+
+int kernel_wait_deadline_claim(uint64_t now_us) {
+    uint64_t previous = __atomic_load_n(&g_wait_earliest_deadline_us,
+                                        __ATOMIC_ACQUIRE);
+    while (previous && previous <= now_us) {
+        if (__atomic_compare_exchange_n(&g_wait_earliest_deadline_us,
+                &previous, 0u, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            return 1;
+    }
+    return 0;
 }
 
 static kernel_wait_probe_observer_t g_wait_probe_observer;

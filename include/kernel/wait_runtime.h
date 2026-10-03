@@ -157,6 +157,7 @@ uint64_t kernel_wait_plan_deadline(const kernel_wait_plan_t *plan,
 
 /* Publish only after the blocked state and deadline are visible. */
 void kernel_wait_deadline_request(uint64_t deadline_us);
+int kernel_wait_deadline_claim(uint64_t now_us);
 void kernel_arch_wait_deadline_request(uint64_t deadline_us);
 void kernel_wait_deadline_poll(void);
 

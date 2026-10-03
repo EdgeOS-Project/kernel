@@ -181,6 +181,8 @@ void sqfs_data_header(uint32_t hdr, bool *compressed, uint32_t *size) {
 sqfs_err sqfs_block_read(sqfs *fs, sqfs_off_t pos, bool compressed,
 		uint32_t size, size_t outsize, sqfs_block **block) {
 	sqfs_err err = SQFS_ERR;
+	const char *failure = "allocation";
+	static uint32_t failure_budget;
 	if (!fs || !block || pos < 0 || !size || !outsize || size > outsize ||
 		(uint64_t)pos >= fs->sb.bytes_used ||
 		(uint64_t)size > fs->sb.bytes_used - (uint64_t)pos)
@@ -197,6 +199,7 @@ sqfs_err sqfs_block_read(sqfs *fs, sqfs_off_t pos, bool compressed,
 		if (!(*block)->data) goto error;
 	}
 
+	failure = "input";
 	if (sqfs_pread(fs->fd, (*block)->data, size, pos + fs->offset) != size)
 		goto error;
 
@@ -205,6 +208,7 @@ sqfs_err sqfs_block_read(sqfs *fs, sqfs_off_t pos, bool compressed,
 		if (!decomp)
 			goto error;
 
+		failure = "decode";
 		err = fs->decompressor((*block)->data, size, decomp, &outsize);
 		if (err) {
 			free(decomp);
@@ -220,6 +224,11 @@ sqfs_err sqfs_block_read(sqfs *fs, sqfs_off_t pos, bool compressed,
 	return SQFS_OK;
 
 error:
+	(void)failure;
+	if (__atomic_fetch_add(&failure_budget, 1u, __ATOMIC_RELAXED) < 12u)
+		SQFS_READER_DIAGNOSTIC(
+			"[squashfs] block failure=%s pos=%llu size=%u compressed=%u\n",
+			failure, (unsigned long long)pos, size, compressed ? 1u : 0u);
 	sqfs_block_dispose(*block);
 	*block = NULL;
 	return err;

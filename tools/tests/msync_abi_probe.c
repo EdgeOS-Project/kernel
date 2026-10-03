@@ -154,6 +154,7 @@ static int run_tests(void) {
     static const char regular_name[] = "/edgeos-msync-regular";
     static const char rename_source[] = "/edgeos-msync-rename-source";
     static const char rename_target[] = "/edgeos-msync-rename-target";
+    static const char unlinked_name[] = "/edgeos-msync-unlinked-before-map";
     volatile uint8_t *mapping;
     volatile uint8_t *shared;
     uint8_t readback[2];
@@ -401,6 +402,52 @@ static int run_tests(void) {
             raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0), 0);
         (void)raw_syscall6(SYS_unlinkat, AT_FDCWD, (long)rename_target,
                            0, 0, 0, 0);
+    }
+
+    (void)raw_syscall6(SYS_unlinkat, AT_FDCWD, (long)unlinked_name,
+                       0, 0, 0, 0);
+    descriptor = raw_syscall6(SYS_openat, AT_FDCWD, (long)unlinked_name,
+                              O_RDWR | O_CREAT | O_TRUNC, 0600, 0, 0);
+    failures += expect_true("unlinked-before-map create", descriptor >= 0);
+    if (descriptor >= 0) {
+        failures += expect_result("unlinked-before-map truncate",
+            raw_syscall6(SYS_ftruncate, descriptor, PAGE_SIZE,
+                         0, 0, 0, 0), 0);
+        failures += expect_result("unlinked-before-map unlink",
+            raw_syscall6(SYS_unlinkat, AT_FDCWD, (long)unlinked_name,
+                         0, 0, 0, 0), 0);
+        shared_mapped = raw_syscall6(SYS_mmap, 0, PAGE_SIZE,
+                                     PROT_READ | PROT_WRITE, MAP_SHARED,
+                                     descriptor, 0);
+        failures += expect_true("unlinked-before-map mapping",
+                                shared_mapped > 0);
+        if (shared_mapped > 0) {
+            shared = (volatile uint8_t *)(uintptr_t)shared_mapped;
+            shared[47] = 0x61u;
+            shared[48] = 0x92u;
+            failures += expect_result("unlinked-before-map sync",
+                raw_syscall6(SYS_msync, shared_mapped, PAGE_SIZE,
+                             MS_SYNC, 0, 0, 0), 0);
+            failures += expect_result("unlinked-before-map pread",
+                raw_syscall6(SYS_pread64, descriptor, (long)readback,
+                             sizeof(readback), 47, 0, 0),
+                (long)sizeof(readback));
+            failures += expect_true("unlinked-before-map data",
+                readback[0] == 0x61u && readback[1] == 0x92u);
+            failures += expect_result("unlinked-before-map close",
+                raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0), 0);
+            descriptor = -1;
+            shared[49] = 0x3du;
+            failures += expect_result("unlinked-before-map sync after close",
+                raw_syscall6(SYS_msync, shared_mapped, PAGE_SIZE,
+                             MS_SYNC, 0, 0, 0), 0);
+            failures += expect_result("unlinked-before-map unmap",
+                raw_syscall6(SYS_munmap, shared_mapped, PAGE_SIZE,
+                             0, 0, 0, 0), 0);
+        }
+        if (descriptor >= 0)
+            failures += expect_result("unlinked-before-map close fallback",
+                raw_syscall6(SYS_close, descriptor, 0, 0, 0, 0, 0), 0);
     }
 
     failures += expect_result("unmap first page",

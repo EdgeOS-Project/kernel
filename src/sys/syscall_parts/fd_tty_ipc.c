@@ -1812,49 +1812,6 @@ static int futex_waiter_requeue_matching_locked(
     return moved;
 }
 
-static void futex_waiters_irq_poll(void) {
-    uint64_t now_us = boottime_monotonic_us();
-    uint64_t flags;
-
-    /*
-     * This runs from the timer interrupt.  Process context can hold the futex
-     * lock while the interrupt arrives on the same CPU, so waiting here would
-     * deadlock that CPU.  A missed timeout scan is harmless: the next timer
-     * tick retries it.
-     */
-    if (!spin_trylock_irqsave(&g_futex_lock, &flags)) return;
-    for (int i = 0; i < PROC_MAX_TASKS; ++i) {
-        edge_futex_waiter_t *w = &g_futex_waiters[i];
-        task_t *t;
-        uint32_t wake_cpu;
-        if (!w->used) continue;
-        t = (task_t *)(uintptr_t)process_get_task(w->pid);
-        if (!t || t->state == TASK_UNUSED || t->state == TASK_ZOMBIE) {
-            futex_waiter_clear(w);
-            continue;
-        }
-        if (!w->waiting) continue;
-        if (!w->deadline_us || now_us < w->deadline_us) continue;
-        w->waiting = 0;
-        w->result = -ETIMEDOUT;
-        if (t->state == TASK_BLOCKED) {
-            /*
-             * Timer polling is intentionally centralized, but timeout expiry
-             * must not concentrate every sleeping task on that timer CPU.
-             * Preserve the waiter's runqueue owner and use the reschedule IPI
-             * implemented by the shared scheduler when that owner is remote.
-             * An explicit FUTEX_WAKE remains a dense handoff to the waker;
-             * timeout placement is a different policy because no userspace
-             * waker supplies useful locality.
-             */
-            wake_cpu = t->assigned_cpu >= 0 ?
-                (uint32_t)t->assigned_cpu : scheduler_cpu_id();
-            scheduler_task_make_runnable(t, wake_cpu);
-        }
-    }
-    spin_unlock_irqrestore(&g_futex_lock, flags);
-}
-
 static void task_timer_poll(void) {
     kernel_posix_timer_poll();
     kernel_itimer_real_poll();
@@ -1863,6 +1820,7 @@ static void task_timer_poll(void) {
 void kernel_wait_deadline_poll(void) {
     uint64_t now = boottime_monotonic_us();
     uint64_t next = 0u;
+    if (!kernel_wait_deadline_claim(now)) return;
     for (int i = 0; i < PROC_MAX_TASKS; ++i) {
         task_t *t = (task_t *)(uintptr_t)process_task_by_index(i);
         uint64_t deadline;
@@ -4762,7 +4720,7 @@ static edge_fd_proc_t *fd_proc_storage_allocate(void) {
     }
     spin_unlock_irqrestore(&g_fd_proc_registry_lock, irq_flags);
     if (!process)
-        process = (edge_fd_proc_t *)arch_vm_alloc_pages(pages);
+        process = (edge_fd_proc_t *)arch_vm_alloc_mapped_pages(pages);
     if (!process) {
         if (g_fd_proc_allocation_failure_budget > 0) {
             uint32_t registry_live = 0;
@@ -4829,9 +4787,7 @@ static void fd_proc_storage_release(edge_fd_proc_t *process) {
         spin_unlock_irqrestore(&g_fd_proc_registry_lock, irq_flags);
         if (!process) return;
     }
-    for (uint32_t page = 0; page < pages; ++page)
-        arch_vm_free_page(
-            (uint8_t *)process + (uint64_t)page * 4096u);
+    arch_vm_free_mapped_pages(process, pages);
 }
 
 static edge_fd_proc_t *fd_proc_lookup_or_create(

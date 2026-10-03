@@ -736,6 +736,7 @@ void kmain(uint32_t magic, void *mb_info) {
 #ifdef CONFIG_SMP
     bootlog_stage("Starting secondary CPUs");
     (void)x86_smp_start_secondaries();
+    if (g_has_fb_console) fb_console_refresh_logo();
 #endif
 #endif
 
